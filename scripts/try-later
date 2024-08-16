@@ -1,0 +1,279 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/try-later                       Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+use warnings;
+
+use Cpanel::Alarm           ();
+use Cpanel::Binaries        ();
+use Cpanel::SafeRun::Errors ();
+use Cpanel::SafeRun::Object ();
+use Cpanel::Usage           ();
+use DateTime                ();
+use IPC::Open3              ();
+use Cpanel::Version::Full   ();
+
+my $act_finally;
+my $action_command;
+my $at_args;
+my $check_command;
+my $delay = 5;
+my $max_retries;
+my $skip_first;
+my $has_jobs;
+my $at_cmd  = Cpanel::Binaries::path('at');
+my $atd_cmd = Cpanel::Binaries::path('atd');
+
+if ( !-x $at_cmd || !-x $atd_cmd ) {
+    print_usage_and_exit('System "at" command required to run this utility.');
+}
+
+Cpanel::Usage::wrap_options(
+    \@ARGV,
+    \&print_usage_and_exit,
+    {
+        'act-finally' => \$act_finally,
+        'action'      => \$action_command,
+        'at'          => \$at_args,
+        'check'       => \$check_command,
+        'delay'       => \$delay,
+        'max-retries' => \$max_retries,
+        'skip-first'  => \$skip_first,
+        'has-jobs'    => \$has_jobs,
+    },
+);
+
+if ($has_jobs) {
+
+    # exit 0 : queue is empty
+    # exit 1 : queue has at least one job
+    exit try_later_has_jobs();
+}
+
+if ( !$action_command ) {
+    print_usage_and_exit('An action command is required.');
+}
+
+if ( !$check_command ) {
+    print_usage_and_exit('A check command is required');
+}
+
+# The extra parens are necessary.
+if ( $max_retries && ( $max_retries !~ m/^\d+$/ || $max_retries < 1 ) ) {
+    print_usage_and_exit('Invalid value for --max-retries');
+}
+
+# if we're skipping running the check immediately, then
+# we need to add a retry as it is decremented during
+# do_later
+if ( $skip_first && $max_retries ) {
+    ++$max_retries;
+}
+
+if ( $delay && $delay =~ m/^\d+$/ && $delay > 0 ) {
+
+    # at seems to subtract a minute from the now +, so adding
+    # an extra minute seems to make it more understandable
+    ++$delay;
+    $at_args = "now + $delay minutes";
+}
+elsif ($delay) {
+    print_usage_and_exit('Invalid value for --delay');
+}
+
+check() unless $skip_first;
+
+if ( $max_retries == 1 ) {
+    if ($act_finally) {
+        exit run_command($action_command);
+    }
+    exit;
+}
+
+if ( !start_atd() ) {
+    print "Unable to start 'atd', which is required to run this utility.\n";
+    exit 1;
+}
+
+do_later();
+
+sub check {
+    if ( run_command($check_command) ) {
+        return;
+    }
+    exit run_command($action_command);
+}
+
+sub do_later {
+    my %arg_for_name = (
+        '--act-finally' => $act_finally,
+        '--action'      => $action_command,
+        '--at'          => $at_args,
+        '--check'       => $check_command,
+    );
+    my $me = '/usr/local/cpanel/scripts/try-later';
+
+    # during a fast upgrade / downgrade we could disappear
+    # we should empty the at queue before upgrading or downgrading
+    exit unless -x $me;
+    my @self_command = ($me);
+
+    if ($max_retries) {
+        --$max_retries;
+        push @self_command, '--max-retries', $max_retries;
+    }
+
+    while ( my ( $name, $arg ) = each %arg_for_name ) {
+        next if !length $arg;
+        push @self_command, $name, "'$arg'";
+    }
+
+    # _job_tag() is used to identify jobs in queue
+    # could be used to clean the at queue when launching an upgrade
+    my $stdin = _job_tag() . "\nif [ -x $me ]; then \n" . join( ' ', @self_command ) . "\nfi\n";
+
+    my $result = Cpanel::SafeRun::Object->new(
+        'program' => $at_cmd,
+        'args'    => [$at_args],
+        'stdin'   => $stdin,
+    );
+
+    exit( $result->error_code() // 0 );
+}
+
+sub start_atd {
+
+    # Before we start atd, we need to check for stale jobs so that if atd has
+    # been disabled, we don't unleash an angry horde of ancient jobs on the
+    # system when we re-enable it.
+
+    my $alarm    = Cpanel::Alarm->new( 60, sub { print "Unable to start 'atd' (required for try-later)\n"; exit 1; } );
+    my $atq_cmd  = Cpanel::Binaries::path('atq');
+    my $atrm_cmd = Cpanel::Binaries::path('atrm');
+    my @jobs;
+    my @check_cmd = (
+        '/usr/local/cpanel/scripts/cpservice',
+        'atd',
+        'status'
+    );
+    return if !-x $check_cmd[0];
+
+    # Don't bother starting atd if it's already running.
+    Cpanel::SafeRun::Errors::saferunnoerror(@check_cmd);
+    return 1 unless $?;
+
+    return unless -x $atq_cmd;
+
+    open( my $fh, '-|', $atq_cmd );
+
+    while ( defined( my $line = <$fh> ) ) {
+        next unless $line =~ m/(\d+)\s+(\d{4})-(\d{2})-(\d{2})\s+(\d{2}):(\d{2})/;
+        push @jobs, $1 if DateTime->new( year => $2, month => $3, day => $4, hour => $5, minute => $6 ) <= DateTime->now();
+    }
+
+    close($fh);
+
+    if (@jobs) {
+        return unless -x $atrm_cmd;
+        return if system( $atrm_cmd, @jobs );
+    }
+
+    my @enable_cmd = (
+        '/usr/local/cpanel/scripts/cpservice',
+        'atd',
+        'enable'
+    );
+    return if !-x $enable_cmd[0];
+
+    # Sometimes if atd exits uncleanly (e.g. with kill -9), simply trying to
+    # start it won't work. This is true of CentOS 5, but not CentOS 6. So
+    # instead, we call restart to stop it first to make sure that all the
+    # appropriate state is cleaned up, and then start it again.
+    my @start_cmd = (
+        '/usr/local/cpanel/scripts/cpservice',
+        'atd',
+        'restart'
+    );
+    return if !-x $start_cmd[0];
+
+    return if system @enable_cmd;
+
+    return !system @start_cmd;
+}
+
+sub _job_tag {
+    return "# cPanel try-later version " . Cpanel::Version::Full::getversion();
+}
+
+sub try_later_has_jobs {
+    my @results = Cpanel::SafeRun::Errors::saferunallerrors( Cpanel::Binaries::path('atq') );
+
+    foreach (@results) {
+        next unless $_ =~ /^(\d+)/;
+        my $jid    = $1;
+        my $job    = Cpanel::SafeRun::Errors::saferunallerrors( $at_cmd, '-c', $jid );
+        my $tag    = _job_tag();
+        my $regexp = qr{$tag};
+        return 1 if $job =~ /^$regexp/m;
+    }
+
+    return 0;
+}
+
+# This function exists because we may be running under atd.  If we are, and we
+# produce output of any sort, the system administrator will receive an email
+# entitled "Output from your job", which will only serve to confuse them.
+# Consequently, we suppress all output here.
+sub run_command {
+    my ($command) = @_;
+
+    local *STDOUT = *STDOUT;
+    local *STDERR = *STDERR;
+    open( STDOUT, ">", "/dev/null" ) or die;
+    open( STDERR, ">", "/dev/null" ) or die;
+    return system($command);
+}
+
+sub print_usage_and_exit {
+    my ($error) = @_;
+
+    my %options = (
+        'act-finally' => 'Perform action when retries run out',
+        'action'      => 'Command to run when a check succeeds',
+        'at'          => 'Args to specify when the at command will retry the check',
+        'check'       => 'Command to run to check whether or not to run the action',
+        'delay'       => 'Specify a delay in minutes after which to check and act (default 5)',
+        'help'        => 'Brief help message',
+        'max-retries' => 'Maximum attempts to retry before giving up (default infinite)',
+        'skip-first'  => 'Skip the first check command',
+        'has-jobs'    => 'Check if the try-later queue is empty or not ( exit with 0 if queue is empty )'
+    );
+
+    if ( defined $error ) {
+        print $error, "\n\n";
+    }
+
+    print "Usage: $0 ";
+    print "[options]\n\n";
+    print "    Options:\n";
+
+    while ( my ( $opt, $desc ) = each %options ) {
+        print "      --$opt";
+        my $space = 12 - length $opt;
+        ( 0 < $space ) ? print ' ' x $space : print '  ';
+        print "$desc\n";
+    }
+
+    print "\n";
+    print "This utility will execute a check command at the configured interval.  If the\n";
+    print "check command returns in error, it will be retried later as often as allowed by\n";
+    print "max-retries.  When the check succeeds, the action command will be run.";
+    print "\n";
+
+    exit 1 if defined $error;
+    exit;
+}

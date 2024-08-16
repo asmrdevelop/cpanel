@@ -1,0 +1,37 @@
+[% WRAPPER 'master_templates/master.tmpl'
+    theme="bootstrap"
+    app_key='repair_a_mysql_database'
+-%]
+
+[% PROCESS 'warnings/_mysql_version.tmpl' %]
+
+[% IF data.is_remote %]
+<div class="alert alert-info">
+    <span class='glyphicon glyphicon-info-sign' aria-hidden="true"></span>
+    <div class="alert-message">
+        [% locale.maketext('The system is configured to use a remote database server profile. This feature is disabled and repairs will need to be made on the remote server “[_1]”.', data.host) %]
+    </div>
+</div>
+[% ELSIF data.display_dbs %]
+<form action="[% cp_security_token %]/scripts/repairmysql">
+    <div class="form-group">
+        <div class="row">
+            <div class="col-xs-12 col-sm-6">
+                <label for="user">[% locale.maketext('Select a database to repair:') %]</label>
+                <select class="form-control" name="user" id="user" size="7">
+                [% FOREACH db IN data.display_dbs.sort %]<option value="[% db.html() %]">[% db.html() %]</option>[% END %]
+                </select>
+            </div>
+        </div>
+    </div>
+    <div class="form-group">
+        <input type="submit" class="btn btn-primary" value="Repair Database" name="submit" id="submit">
+    </div>
+</form>
+[% ELSE %]
+<div class="alert alert-info">
+    <span class='glyphicon glyphicon-info-sign' aria-hidden="true"></span>
+    <div class="alert-message"> [% locale.maketext('No databases found.') %] </div>
+</div>
+[% END %]
+[% END #wrapper -%]

@@ -1,0 +1,55 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/purge_modsec_log                Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::purge_modsec_log;
+
+use strict;
+
+use Cpanel::Config::LoadCpConf ();
+use Cpanel::ModSecurity::DB    ();
+use Cpanel::Logger             ();
+use Cpanel::Locale             ();
+
+if (@ARGV) {
+    die <<EOU;
+usage: $0
+
+Purges away stale ModSecurity hits from the database, based on
+the number of days desired by the user.
+
+This script does not accept any arguments.
+EOU
+}
+
+exit run() unless caller;
+
+sub run {
+    my $logger = Cpanel::Logger->new();
+    my $lh     = Cpanel::Locale->new();
+
+    my $retention = Cpanel::Config::LoadCpConf::loadcpconf()->{'modsec_keep_hits'};
+    $retention = 7 if ( !defined $retention );    #shouldn't be, but just in case.
+
+    if ( $retention == 0 ) {
+        $logger->info( $lh->maketext(q{Purging of stale records from [asis,modsec] database is disabled.}) );
+        exit 0;
+    }
+
+    my $db_ok = Cpanel::ModSecurity::DB::purge_stale_records_from_database($retention);
+    if ($db_ok) {
+        $logger->info( $lh->maketext(q{Purged stale records from [asis,modsec] database.}) );
+    }
+    else {
+        $logger->warn( $lh->maketext(q{Could not purge stale records from [asis,modsec] database.}) );
+    }
+
+    exit 0 if $db_ok;
+
+    exit 1;
+}
+
+1;

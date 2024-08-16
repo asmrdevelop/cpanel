@@ -1,0 +1,138 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/convert_accesshash_to_token     Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+use warnings;
+
+use File::Basename ();
+use Getopt::Long   ();
+
+use Cpanel::Rand::Get                                   ();
+use Cpanel::ResellerFunctions                           ();
+use Cpanel::SafeFile                                    ();
+use Cpanel::ConfigFiles                                 ();
+use Cpanel::Security::Authn::APITokens::Write::whostmgr ();
+use Whostmgr::AccessHash                                ();
+
+use Digest::SHA ();
+
+exit _main(@ARGV) unless caller;
+
+sub _main {
+    my @args = @_;
+
+    unless ( $> == 0 && $< == 0 ) {
+        return bail_out('error: This program can only be run by root!');
+    }
+
+    Getopt::Long::GetOptionsFromArray(
+        \@args,
+        'help|?'  => \my $print_help,
+        'verbose' => \my $verbose,
+
+        'all-resellers' => \my $all_resellers,
+    ) || return bail_out('Invalid usage. See --help');
+
+    return print_help() if $print_help;
+
+    $ENV{'REMOTE_USER'} = 'root';
+
+    my @users = @args;
+    @users = Cpanel::ResellerFunctions::getresellerslist() if $all_resellers;
+    @users = ( $ENV{'REMOTE_USER'} )                       if !@users;
+
+    foreach my $user (@users) {
+        my $details = eval { import_accesshash($user) };
+        if ($@) {
+            next if $@ =~ m/^No accesshash exists for/;
+            print STDERR "error: $user: $@";
+        }
+        elsif ($verbose) {
+            print "Imported accesshash for “$user” as “$details->{name}”\n";
+        }
+    }
+
+    return 0;
+}
+
+sub _update_accounting_log {
+    my ( $action, $token_name ) = @_;
+
+    my $acctlog = Cpanel::SafeFile::safeopen( my $accounting_log_fh, '>>', $Cpanel::ConfigFiles::ACCOUNTING_LOG_FILE );
+    if ( !$acctlog ) {
+        logger->warn("Could not write to /var/cpanel/accounting.log");
+    }
+    else {
+        chmod 0600, $Cpanel::ConfigFiles::ACCOUNTING_LOG_FILE;
+
+        # The accounting log format is:
+        # <time>:<action keyword>:<remote user>:<user>:<domain>:<other items particular to the action>
+        # We are using "not-applicable" for the domain since it isn't really necessary here.
+        print $accounting_log_fh localtime() . ":$action:$ENV{'REMOTE_USER'}:$ENV{'REMOTE_USER'}:not-applicable:$token_name\n";
+        Cpanel::SafeFile::safeclose( $accounting_log_fh, $acctlog );
+    }
+    return 1;
+}
+
+sub import_accesshash {
+    my ($user) = @_;
+
+    my ( $status, $msg, $accesshash ) = Whostmgr::AccessHash::get_access_hash($user);
+    die "$msg\n" if !$status;
+    $accesshash =~ s/\s//g;
+    my $token_hash = Digest::SHA::sha512_hex($accesshash);
+
+    my $data_obj = Cpanel::Security::Authn::APITokens::Write::whostmgr->new( { user => $user } );
+
+    my $count    = 0;
+    my $suffix   = '';
+    my $basename = "accesshash-" . time;
+    my $token_details;
+    while ( !$token_details ) {
+        die "Cannot import accesshash: $@" if ++$count > 25;
+
+        $token_details = eval {
+            $data_obj->import_token_hash(
+                {
+                    name       => "$basename$suffix",
+                    token_hash => $token_hash,
+                }
+            );
+        };
+
+        # TODO: Why no error report here?
+
+        $suffix = "-" . Cpanel::Rand::Get::getranddata( 8, [ 0 .. 9, 'A' .. 'Z' ] );
+    }
+    $data_obj->save_changes_to_disk();
+
+    _update_accounting_log( "CREATEAPITOKEN", "$basename$suffix" );
+
+    return $token_details;
+}
+
+sub print_help {
+    my $basename = File::Basename::basename($0);
+    print <<HELP;
+Usage: $basename [OPTIONS] [reseller ...]
+
+Options:
+   -?, --help           Display this message
+   --verbose            Print all of the tokens generated
+
+   --all-resellers      Process all reseller users
+HELP
+    return 0;
+}
+
+sub bail_out {
+    my $error_msg = shift;
+    print STDERR $error_msg . "\n\n" if $error_msg;
+
+    print_help();
+    return 1;
+}

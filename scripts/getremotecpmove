@@ -1,0 +1,358 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/getremotecpmove                 Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::getremotecpmove;
+
+use cPstrict;
+no warnings;    ## no critic qw(ProhibitNoWarnings)
+
+use Socket                    ();
+use MIME::Base64              ();
+use Cpanel::Carp              ();
+use Cpanel::Encoder::Tiny     ();
+use Cpanel::Encoder::URI      ();
+use Cpanel::MD5               ();
+use Cpanel::FileUtils::Open   ();
+use Cpanel::Filesys::Home     ();
+use Cpanel::Locale            ();
+use Cpanel::HTTP::Client      ();
+use Cpanel::RemoteAPI::cPanel ();
+use Cpanel::Version::Compare  ();
+
+local $| = 1;
+
+my $locale = Cpanel::Locale->get_handle();
+
+__PACKAGE__->script(@ARGV);
+
+sub script {
+    my ( $self, @args ) = @_;
+
+    chdir("/usr/local/cpanel/scripts");
+
+    my $host = $args[0];
+    my $user = $args[1];
+
+    $host =~ s/\///g;
+    $user =~ s/\///g;
+    $host =~ s/\.\.//g;
+    $user =~ s/\.\.//g;
+    my $pass = <STDIN>;
+    $pass =~ s/\n//g;
+
+    $host = "[$host]" if $host =~ tr{:}{};
+
+    if ( !length $pass ) {
+        print $locale->maketext( "This utility requires that the account password be sent over “[_1]”.", 'STDIN' );
+        exit(1);
+    }
+
+    my $part = Cpanel::Filesys::Home::get_homematch_with_most_free_space() || '/home';
+
+    my @PKGDEBUG;
+    my ( $fetch_ok, $archive_file, $extractdir, $md5sum, $pkgdebug ) = fetch_acct_by_cpanel( 'user' => $user, 'host' => $host, 'pass' => $pass, 'part' => $part );
+    push @PKGDEBUG, $pkgdebug;
+
+    if ( !$fetch_ok ) {
+        print "Failed to fetch cpmove file via cPanel API.\n";
+        exit(1);
+    }
+
+    if ($fetch_ok) {
+        if ($md5sum) {
+            my $newmd5 = Cpanel::MD5::getmd5sum($archive_file);
+            if ( $newmd5 eq $md5sum ) {
+                print "Checksum Matches!\n";
+            }
+            else {
+                print "Checksum Failure [[$newmd5]] [[$md5sum]]…trace information follows…<table width=\"100%\" style=\"border: 1px #000 solid;\"><tr><td><pre>" . join( "\n\n\n", @PKGDEBUG ) . "</pre></td></tr></table>\n\n";
+                exit(1);
+            }
+        }
+        elsif ( -z $archive_file ) {
+            print "Checksum Failure: Failed to download account file.\n";
+            exit(1);
+        }
+        print "extract dir name is: $extractdir\n";
+        print "pkgacctfile is: $archive_file\n";
+        print "MOVE IS GOOD!\n";
+        exit(0);
+    }
+    else {
+        print "Failed to fetch account via cpanel and ftp/web\n";
+        exit(1);
+    }
+}
+
+my $ua;
+
+sub _ua {
+    return $ua ||= Cpanel::HTTP::Client->new( verify_SSL => 0 );
+}
+
+my $api;
+
+sub _api ( $host, $user, $pass ) {
+    return $api ||= Cpanel::RemoteAPI::cPanel->new_from_password(
+        $host,
+        $user => $pass,
+    )->disable_tls_verify();
+}
+
+sub _can_fullbackup_to_homedir ($api) {
+    my $MIN_VERSION = '77';
+
+    my $version = eval { $api->get_cpanel_version_or_die };
+
+    return 0 unless defined $version;
+
+    return Cpanel::Version::Compare::compare( $version, '>=', $MIN_VERSION );
+}
+
+sub fetch_acct_by_cpanel {    ## no critic qw(ExcessComplexity) - TODO
+    my %OPTS                  = @_;
+    my $host                  = $OPTS{'host'};
+    my $user                  = $OPTS{'user'};
+    my $pass                  = $OPTS{'pass'};
+    my $filesystem_target_dir = $OPTS{'part'};
+
+    print "Trying to fetch cpmove file via cPanel API!\n";
+
+    my $api = _api( $host, $user, $pass );
+
+    require MIME::Base64;
+    print $locale->maketext("Fetching current backups from remote server …");
+    my ( $login_ok, $current_resp_data, $current_bck_ref ) = get_current_backups($api);
+    return 0 if !$login_ok;
+    print "    " . $locale->maketext( "[quant,_1,backup,backups] found.", ( scalar keys %$current_bck_ref ) );
+    print "\n";
+    print $locale->maketext(" … done.") . "\n";
+
+    foreach my $bck ( keys %$current_bck_ref ) {
+        if ( $current_bck_ref->{$bck} ) {
+            print $locale->maketext( "A backup to the file “[_1]” is currently in progress on the remote server.", $bck ) . "\n";
+            print $locale->maketext("Please wait until it is complete and try again.") . "\n";
+            exit(1);
+        }
+    }
+
+    print $locale->maketext("Starting the backup …") . "\n";
+
+    if ( _can_fullbackup_to_homedir($api) ) {
+
+        # start the backup
+        my $result = $api->request_uapi(
+            'Backup', 'fullbackup_to_homedir',
+            {
+
+                # If the remote is pre-v88 it’ll just ignore this parameter,
+                # so we don’t need a version check here.
+                dbbackup_mysql => 'schema',
+
+                # Same situation as “dbbackup_mysql”, but for v94.
+                homedir => 'skip',
+            },
+        );
+
+        if ( $result->status() ) {
+            my $pid = $result->data()->{'pid'};
+
+            print "Remote backup started (PID $pid)\n";
+        }
+        else {
+            die "Failed to start backup on $host as $user: " . $result->errors_as_string();
+        }
+    }
+    else {
+        my $resp     = _ua()->request( 'GET', "https://$host:2083/json-api/cpanel?cpanel_jsonapi_module=Fileman&cpanel_jsonapi_func=fullbackup&cpanel_jsonapi_apiversion=1", { headers => { Authorization => 'Basic ' . MIME::Base64::encode( "$user:$pass", '' ) } } );
+        my $page     = $resp->{'content'};
+        my $response = "$resp->{'status'} $resp->{'reason'}";
+
+        unless ( $resp->{'success'} ) {
+            die "Failed to start backup on $host as $user: $resp->{'status'} $resp->{'reason'}";
+        }
+    }
+
+    # Having started the backup, we now look for a new cpmove file. The file
+    # is built in-place. This file will, when it’s finished, be the new
+    # account archive that we’ll download.
+
+    my ( $backup_file, $new_resp_data, $new_bck_ref );
+  FIND:
+    for ( 1 .. 10 ) {
+        print $locale->maketext("Waiting for backup to start …") . "\n";
+        sleep(5);
+        print $locale->maketext(" … done.") . "\n";
+
+        print $locale->maketext("Checking remote server for backups …");
+        ( $login_ok, $new_resp_data, $new_bck_ref ) = get_current_backups($api);
+        return 0 if !$login_ok;
+        print "    " . $locale->maketext( "[quant,_1,backup,backups] found.", ( scalar keys %$new_bck_ref ) );
+        print "\n";
+        foreach my $back ( keys %{$new_bck_ref} ) {
+            if ( !exists $current_bck_ref->{$back} ) {
+                $backup_file = $back;
+                last FIND;
+            }
+        }
+    }
+
+    if ( !$backup_file ) {
+        print "Failed to retrieve the backup from the remote machine (if a previous backup is in progress you will need to wait until it is complete)!\n";
+        print "(Trace information follows for initial backups)…<table width=\"100%\" style=\"border: 1px #000 solid;\"><tr><td><pre>" . _convert_response_data_to_trace_html($current_resp_data) . "</pre></td></tr></table>\n";
+        print "(Trace information follows for backups after request started)…<table width=\"100%\" style=\"border: 1px #000 solid;\"><tr><td><pre>" . _convert_response_data_to_trace_html($new_resp_data) . "</pre></td></tr></table>\n";
+        return 0;
+    }
+
+    print $locale->maketext( "The remote server is creating the backup file “[_1]”.", $backup_file ) . "\n";
+    print $locale->maketext("Starting wait cycle for remote backup.") . "\n";
+    my $bck_ref;
+    my $MAX_POLL = 1440;    # AKA about 24 hours
+    for my $attempt ( 1 .. $MAX_POLL ) {
+        print $locale->maketext( "Polling remote server (Attempt [numf,_1]/[numf,_2]) …", $attempt, $MAX_POLL ) . "\n";
+
+        ( $login_ok, undef, $bck_ref ) = get_current_backups($api);
+        return 0 if !$login_ok;
+
+        if ( exists $bck_ref->{$backup_file} ) {
+            if ( !$bck_ref->{$backup_file} ) {
+                last;
+            }
+            else {
+                print $locale->maketext( "The backup file, [_1], is still being generated on the remote server “[_2]”.", $backup_file, $host ) . "\n";
+                print "…60…\n";
+                sleep(15);
+                print "…45…\n";
+                sleep(15);
+            }
+        }
+        else {
+            print $locale->maketext( "The backup file “[_1]” unexpectedly disappeared from the remote server “[_2]”.", $backup_file, $host ) . "\n";
+            return 0;
+        }
+        print "…30…\n";
+        sleep(15);
+        print "…15…\n";
+        sleep(15);
+    }
+
+    print $locale->maketext( "Downloading “[_1]” …", $backup_file ) . "\n";
+
+    chdir($filesystem_target_dir) || return 0;
+
+    my $now = time();
+    my $out_fh;
+    my $dest = "cpmove-$user-$now.tmp";
+    if ( !Cpanel::FileUtils::Open::sysopen_with_real_perms( $out_fh, $dest, 'O_WRONLY|O_TRUNC|O_CREAT', 0600 ) ) {
+        print "Could not open output file, “$dest” for download.\n";
+        return 0;
+    }
+
+    my $new_percent;
+    my ( $cl, $cc );
+    my $percent;
+    my $bytesread = 0;
+    my $resp      = _ua()->request(
+        'GET',
+        "https://$host:2083/download/$backup_file",
+        {
+            headers => {
+                Authorization => 'Basic ' . MIME::Base64::encode( "$user:$pass", '' ),
+            },
+            data_callback => sub {
+                my ( $data, $resp ) = @_;
+                my $headers = $resp->{'headers'};
+                if ( !defined $cl ) {
+                    if ( $headers->{'content-type'} =~ m/text/i ) {
+                        print "Could not download backup file; security policy on the remote server forbids it.\n";
+                        die;
+                    }
+                    if ( $headers->{'content-length'} =~ /^\d+$/ ) {
+                        $cl = $headers->{'content-length'};
+                    }
+                }
+
+                $bytesread += length $data;
+                $cc++;
+                if ( $cc == 170 && $cl ) {
+                    my $new_percent = int( ( $bytesread / $cl ) * ( $cl == 1 ? 1 : 100 ) );
+                    if ( $new_percent != $percent ) {
+                        $percent = $new_percent;
+                        print "..${percent}" . ( $cl == 1 ? '' : '%' ) . "..\n";
+                    }
+                    $cc = 0;
+                }
+                print {$out_fh} $data;
+            },
+        }
+    );
+    my $page = $resp->{content};
+    if ( !$resp->{success} ) {
+        print $locale->maketext( "Could not connect to “[_1]” on port 2083 because of an error: [_2]", $host, "$resp->{status} $resp->{reason}" ) . "\n";
+        return 0;
+    }
+
+    close($out_fh);
+    print " … done.\n";
+
+    my $extractdir = $backup_file;
+    $extractdir =~ s/(\.tar)?(\.gz)?$//g;
+
+    # We are chdired to $filesystem_target_dir at this point
+    system( '/bin/mv', '-f', '--', $dest, "cpmove-$user-$now.tar.gz" );
+
+    return ( 1, "$filesystem_target_dir/cpmove-$user-$now.tar.gz", $extractdir, '', '' );
+}
+
+sub get_current_backups ($api) {
+
+    #look for backups
+    my %CURRENT_BACKUPS;
+
+    my $resp = $api->request_api2( 'Backups', 'listfullbackups' );
+
+    if ( my $err = $resp->{'error'} ) {
+        my $hostname = $api->get_hostname();
+        print Cpanel::Encoder::Tiny::safe_html_encode_str("cPanel login on $hostname failed: $err");
+        return ( 0, [], {} );
+    }
+
+    for my $item_hr ( $resp->{'data'}->@* ) {
+        my $is_in_progress = $item_hr->{'status'} =~ m<progress>i;
+
+        $CURRENT_BACKUPS{ $item_hr->{'file'} } = $is_in_progress ? 1 : 0;
+    }
+
+    return ( 1, $resp->{'data'}, \%CURRENT_BACKUPS );
+}
+
+# NOTE: This function is pulled from Cpanel::Backups::listfullbackups and is used to preserve
+#       pre-existing functionality which would dump the cpapi1 HTML response as part of the
+#       trace information when the script failed to retrieve a backup file from the remote server
+sub _convert_response_data_to_trace_html ($response_data) {
+
+    my $html;
+
+    foreach my $bck_ref (@$response_data) {
+        my $html_safe_file = Cpanel::Encoder::Tiny::safe_html_encode_str( $bck_ref->{'file'} );
+        my $uri_safe_file  = Cpanel::Encoder::URI::uri_encode_str( $bck_ref->{'file'} );
+        if ( $bck_ref->{'status'} eq 'complete' ) {
+            $html .= qq(<div class="okmsg"><b><a href="$ENV{'cp_security_token'}/download?file=$uri_safe_file">$html_safe_file</a></b> ($bck_ref->{'localtime'})<br /></div>\n);
+        }
+        elsif ( $bck_ref->{'status'} eq 'inprogress' ) {
+            $html .= qq(<div class="warningmsg">$html_safe_file ($bck_ref->{'localtime'}) [in progress]<br /></div>\n);
+        }
+        else {
+            $html .= qq(<div class="errormsg">$html_safe_file ($bck_ref->{'localtime'}) [failed, timeout]<br /></div>\n);
+        }
+
+    }
+
+    return $html;
+}
+
+1;

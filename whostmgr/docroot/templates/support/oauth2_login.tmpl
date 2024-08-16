@@ -1,0 +1,75 @@
+[%
+    USE Whostmgr;
+    USE JSON;
+    WRAPPER 'master_templates/master.tmpl'
+        header = locale.maketext('Grant [asis,cPanel] Support Access - Login')
+        breadcrumburl = '/scripts7/authorizesupport'
+        stylesheets = [
+            Whostmgr.find_file_url('/templates/support/authorizesupport.min.css')
+        ]
+        scripts = [
+            Whostmgr.find_file_url('/libraries/jquery/current/jquery.min.js'),
+            Whostmgr.find_file_url('/libraries/angularjs/1.4.4/angular.min.js'),
+            Whostmgr.find_file_url('/libraries/angular-ui-bootstrap/optimized/ui-bootstrap-tpls-1.2.5.min.js'),
+            Whostmgr.find_file_url('/sharedjs/angular/oauth2.min.js')
+        ]
+        theme='bootstrap'
+        app_key='grant_cpanel_support_access';
+-%]
+
+<div id="content" ng-app="OAuth2App" ng-controller="OAuth2Landing" ng-cloak class="ng-cloak">
+[% IF data.error.defined %]
+    <div id="auth-alert-danger" class="alert alert-danger">
+        <span class="glyphicon glyphicon-remove-sign"></span>
+        <div class="alert-message">
+            <strong>[% locale.maketext('Error:') %]</strong> [% data.error %]
+        </div>
+    </div>
+[% END %]
+
+[% UNLESS data.security_token_error.defined %]
+    <div class="description">
+        <p>[% locale.maketext('To grant [asis,cPanel] support access to your server, you [output,strong,must] connect your server to the [asis,cPanel] Customer Portal and transfer the necessary authentication details.') %]</p>
+        <p>[% locale.maketext('Click [output,em,Log in to cPanel Customer Portal] to establish a secure connection between your server and the [asis,cPanel] Customer Portal.') %]</p>
+    </div>
+
+    <div class="alert alert-warning">
+        <span class="glyphicon glyphicon-exclamation-sign"></span>
+        <div class="alert-message">
+            [% locale.maketext('[output,strong,Warning:] If you suspect your server is root compromised, do not use this functionality. Contact [asis,cPanel] support directly by using the [output,url,_1,cPanel Customer Portal,target,_2].',data.new_ticket_url.html,'_new') %]
+        </div>
+    </div>
+
+    <section>
+        <form novalidate>
+            <div class="form-group">
+                <button id="login-button" type="submit" class="btn btn-primary" ng-disabled="isProcessing" ng-click="login()">[% locale.maketext('Log in to [asis,cPanel] Customer Portal') %]</button>
+            </div>
+        </form>
+    </section>
+
+    <div class="alert alert-info">
+        <span class="glyphicon glyphicon-info-sign"></span>
+        <div class="alert-message">
+            [% locale.maketext('[output,strong,Info:] If you need to remove [asis,cPanel] support’s access to your system, and you do not have a [asis,cPanel] Customer Portal account, use WHM’s [output,url,_1,Manage root’s SSH Keys] interface.', cp_security_token _ '/scripts2/sshkeys') %]
+        </div>
+    </div>
+[% END %]
+</div>
+
+<script type="text/javascript">
+    var PAGE = PAGE || {};
+    PAGE.oauth2_endpoint =  [% data.oauth2_config.auth_endpoint.json() %];
+    PAGE.oauth2_config   =  {
+            response_type           :   [% data.oauth2_config.response_type.json() %],
+            client_id               :   [% data.oauth2_config.client_id.json() %],
+            redirect_uri            :   [% data.oauth2_config.redirect_uri.json()  %],
+            scopes                  :   [% data.oauth2_config.scopes.json() %]
+        [%- FOR extra IN data.oauth2_config.extras %]
+            ,[% extra.key.json() %]   :   [% extra.value.json() %]
+        [%- END %]
+    };
+
+</script>
+
+[% END #wrapper -%]

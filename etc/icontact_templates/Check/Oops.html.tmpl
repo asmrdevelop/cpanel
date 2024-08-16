@@ -1,0 +1,35 @@
+[%#
+Variables passed in:
+
+origin          - the system component that originated the action
+log_preview     - An arrayref of 10(or less) line preview of attached log file
+
+For more information about how to customize notification templates, read our documentation at https://go.cpanel.net/notificationtemplates
+
+-%]
+
+[%
+    PROCESS "include/colors.tmpl";
+    PROCESS "include/styles.tmpl";
+    PROCESS "include/code_block.tmpl";
+
+    WRAPPER 'wrapper/main.html.tmpl';
+
+    NOTICE.email_reason = CPANEL.locale.maketext('Kernel problem detected.');
+
+%]
+
+<p>
+    [% CPANEL.locale.maketext('IMPORTANT: Do not ignore this email. Your kernel had an [asis,Oops]! This is the result of bad hardware or a kernel bug.') %]
+</p>
+<p>
+    [% CPANEL.locale.maketext('A kernel [asis,oops] is a [asis,Linux] kernel problem severe enough that it may impact system stability. Your system may continue to function as normal, however this can cause some subsystems or resources to become unavailable, which can later lead to a full kernel panic. We recommend that you contact your datacenter or hardware manufacturer to check your [output,abbr,RAM,Random Access Memory] and provide further assistance.') %]
+</p>
+<p>
+    http://www.memtest86.com/
+</p>
+<p>
+    [% code_block(formatted_code=NOTICE.log_preview.0, title=CPANEL.locale.maketext('[asis,Oops] log preview:')) %]
+</p>
+
+[% END %]

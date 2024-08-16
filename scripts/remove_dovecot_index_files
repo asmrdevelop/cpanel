@@ -1,0 +1,186 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/remove_dovecot_index_files      Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::remove_dovecot_index_files;
+
+use strict;
+
+use File::Find   ();
+use File::Spec   ();
+use Getopt::Long ();
+
+use Cpanel::Config::LoadCpConf           ();
+use Cpanel::PwCache                      ();
+use Cpanel::Reseller                     ();
+use Cpanel::Config::Users                ();
+use Cpanel::Config::LoadUserOwners       ();
+use Cpanel::AccessIds::ReducedPrivileges ();
+
+exit run(@ARGV) unless caller();
+
+my $verbose = 0;
+
+sub run {
+    my @cmdline_args = @_;
+    return usage(1) if !@cmdline_args;
+
+    unless ( $> == 0 && $< == 0 ) {
+        return usage( 1, "[!] This program can only be run by root!\n" );
+    }
+
+    my $opts = {};
+    Getopt::Long::GetOptionsFromArray(
+        \@cmdline_args,
+        'all'         => \$opts->{'all'},
+        'reseller=s@' => \$opts->{'reseller'},
+        'user=s@'     => \$opts->{'user'},
+        'verbose'     => \$verbose,
+        'help|h'      => \$opts->{'help'},
+    );
+
+    return usage(0) if $opts->{'help'};
+
+    my $cpconf_ref = Cpanel::Config::LoadCpConf::loadcpconf();
+    if ( $cpconf_ref->{'mailserver'} ne 'dovecot' ) {
+        return usage( 1, "[!] The configured mailserver is not Dovecot. Action aborted.\n" );
+    }
+
+    return process_all_users_on_server()    if $opts->{'all'};
+    process_reseller( $opts->{'reseller'} ) if $opts->{'reseller'} && scalar @{ $opts->{'reseller'} };
+    process_cpanel_user( $opts->{'user'} )  if $opts->{'user'}     && scalar @{ $opts->{'user'} };
+
+    return 0;
+}
+
+sub process_cpanel_user {
+    my $cpusers_to_process = shift;
+
+    my ( $index, $total ) = ( 1, scalar @{$cpusers_to_process} );
+    foreach my $cpuser ( @{$cpusers_to_process} ) {
+        print "[*] ($index/$total) Processing cPanel user: '$cpuser' …\n";
+
+        $index++;
+        my $homedir = Cpanel::PwCache::gethomedir($cpuser);
+        my $maildir = File::Spec->catfile( $homedir, 'mail' );
+        if ( !-d $maildir ) {
+            print "[!] User's maildir was not found: $maildir - $!\n";
+            next;
+        }
+
+        my $maxdepth                 = File::Spec->splitdir($maildir) + 4;
+        my $purge_index_files_codref = sub {
+            File::Find::find(
+                {
+                    'wanted' => sub {
+
+                        # Dovecot index files are in "$homedir/mail/domain.tld/emailuser/<dirname>".
+                        # So we limit the depth here to what was determined above.
+                        return if File::Spec->splitdir($File::Find::name) > $maxdepth;
+
+                        # Remove files that match:
+                        # dovecot.index
+                        # dovecot.index.cache
+                        # dovecot.index.log
+                        # dovecot.index.log.\d+ (rotated log files)
+                        return if $_ !~ m/^dovecot\.index(\.cache|\.log(\.\d+)?)?$/;
+
+                        print "Unlinking '$File::Find::name' …\n" if $verbose;
+
+                        if ( -e $File::Find::name && -f $File::Find::name ) {
+                            unlink $File::Find::name or print "Failed to unlink '$File::Find::name': $!\n";
+                        }
+                    },
+                    'no_chdir'    => 0,    # default, but setting to be explicit about the usage.
+                    'follow_skip' => 2,    # ignore any duplicate files and directories
+                },
+                $maildir
+            );
+        };
+        eval { Cpanel::AccessIds::ReducedPrivileges::call_as_user( $purge_index_files_codref, $cpuser ) };
+
+        print "[+] '$cpuser' processed.\n";
+    }
+    return;
+}
+
+sub process_reseller {
+    my $resellers_to_process = shift;
+
+    foreach my $reseller ( @{$resellers_to_process} ) {
+        print "[*] Processing Reseller: '$reseller' …\n";
+        if ( !Cpanel::Reseller::isreseller($reseller) ) {
+            print "[!] '$reseller' is not reseller.\n\n";
+            next;
+        }
+
+        my $owners_hr = Cpanel::Config::LoadUserOwners::loadtrueuserowners( {} );
+        if ( !( $owners_hr->{$reseller} && 'ARRAY' eq ref $owners_hr->{$reseller} ) ) {
+            print "[!] Failed to fetch list of accounts owned by reseller, '$reseller'.\n\n";
+            return;
+        }
+
+        print "\n";
+        process_cpanel_user( $owners_hr->{$reseller} );
+        print "\n";
+    }
+
+    return;
+}
+
+sub process_all_users_on_server {
+    my $cpusers = Cpanel::Config::Users::getcpusers();
+    if ( !( $cpusers && 'ARRAY' eq ref $cpusers ) ) {
+        print "[!] Failed to fetch list of cPanel accounts on server.\n";
+        return;
+    }
+
+    print "[*] Processing all cPanel users on the server …\n\n";
+    process_cpanel_user($cpusers);
+    print "\n[+] Finished processing all cPanel users on the server.\n";
+
+    return 0;
+}
+
+sub usage {
+    my ( $retval, $msg ) = @_;
+    my $fh = $retval ? \*STDERR : \*STDOUT;
+
+    if ( !defined $msg ) {
+        $msg = <<USAGE;
+$0
+
+Utility to remove Dovecot index files. Available options:
+
+    --user [cPanel username]
+
+        Remove Dovecot index files from all email accounts setup under the specified cPanel user.
+        Can be specified more than once, to process multiple users at once.
+
+    --reseller [reseller username]
+
+        Remove Dovecot index files from all email accounts setup under all the cPanel accounts owned by the specified Reseller.
+        Can be specified more than once, to process multiple resellers at once.
+
+    --all
+
+        Remove Dovecot index files from all email accounts setup on the server.
+
+    --verbose
+
+        Prints the full paths of the files being removed.
+
+    --help
+
+        Prints this help text.
+USAGE
+    }
+
+    print {$fh} $msg;
+    return $retval;
+}
+
+1;

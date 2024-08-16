@@ -1,0 +1,55 @@
+[% SET current_users = Whostmgr.get_users_count(); -%]
+[% SET max_users = Whostmgr.get_max_users(); -%]
+<div id="calloutSingleUserLicense" class="callout callout-danger">
+    <h2><i class="glyphicon glyphicon-remove-sign text-danger"></i> [% locale.maketext("License User Limit Exceeded") -%]</h2>
+    <p>
+    [% locale.maketext('[quant,_1,user exists,users exist] on this server, but the current license allows only [quant,_2,user,users].', current_users, max_users) %]
+    </p>
+    <p>
+            [% locale.maketext('Because of this excess, this server has locked [numerate,_1,the cPanel user,all cPanel users] out of their [numerate,_1,account,accounts].', current_users) -%]
+    </p>
+    [%
+
+        SET actions = [];
+        SET custom_url = Whostmgr.get_custom_url();
+        SET cpanel_url = cp_security_token _ '/scripts12/license_purchase_status/checkout?upgrade=1&current_users=' _ current_users;
+
+        IF custom_url;
+            SET upgrade_link = custom_url;
+        ELSE;
+            SET upgrade_link = cpanel_url;
+        END;
+
+        SET terminate_link = cp_security_token _ '/scripts4/multikillacct/';
+        SET excess = Whostmgr.get_users_count() - Whostmgr.get_max_users();
+
+        IF Whostmgr.hasroot();
+
+            # All upgrade links are handled on manage 2 side so this isn't just for cpanel direct any more
+            actions.push( '<a href="' _ upgrade_link _ '">' _ locale.maketext('Upgrade the server’s license and login again.') _ '</a>' );
+
+            IF excess == 1;
+                SET terminate_msg = locale.maketext('Terminate the additional account.');
+            ELSE;
+                SET terminate_msg = locale.maketext('Terminate the additional [quant,_1,account,accounts].', excess);
+            END;
+            actions.push( '<a href="' _ terminate_link _ '">' _ terminate_msg _ '</a>' );
+        ELSE;
+            SET public_contact = Whostmgr.get_public_contact();
+            IF public_contact;
+                actions.push( locale.maketext('Ask your server administrator, “[output,url,_1,_2,target,_blank]”, to upgrade the server’s license.', public_contact.url, public_contact.name) );
+            ELSE;
+                actions.push( locale.maketext('Ask your server administrator to upgrade the server’s license.') );
+            END;
+        END;
+
+    %]
+    <p>
+        [% locale.maketext('To resolve this issue, perform [numerate,_1,the following,one of the following]:', actions.size) %]
+    </p>
+    <ul>
+        [% FOREACH action IN actions %]
+           <li>[% action %]</li>
+        [% END %]
+    </ul>
+</div>

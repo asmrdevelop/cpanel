@@ -1,0 +1,60 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/primary_virtual_host_migration  Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+#----------------------------------------------------------------------
+# NOTE: This script recreates the primary_virtual_hosts.conf file from
+# httpd.conf. THIS IS BACKWARDS from the normal order of things; ordinarily,
+# we rebuild httpd.conf from primary_virtual_hosts.conf (and userdata);
+# however, this script is around for migration and repair.
+
+use strict;
+use warnings;
+
+use Cpanel::Locale                              ();
+use Cpanel::Config::Httpd::IpPort               ();
+use Cpanel::HttpUtils::Vhosts::Primary          ();
+use Cpanel::HttpUtils::Vhosts::Primary::Extract ();
+
+sub script {
+    my $pvh_file = $Cpanel::ConfigFiles::APACHE_PRIMARY_VHOSTS_FILE;
+
+    if ( -f $pvh_file && !-z _ ) {
+        my $locale = Cpanel::Locale->get_handle();
+        die $locale->maketext(
+            'The primary virtual hosts file ([_1]) already exists. If you really want to rebuild this file from [asis,Apache]’s configuration, you must delete this file first. [output,strong,Unless you are doing a migration or a repair~, however~, this is probably not what you want to do.] Ordinarily, [asis,Apache]’s configuration is built from the primary virtual hosts file, not the other way around.',
+            $pvh_file,
+        );
+    }
+
+    my $primary_obj = Cpanel::HttpUtils::Vhosts::Primary->new();
+
+    my ( $ok, $primary_hr ) = Cpanel::HttpUtils::Vhosts::Primary::Extract::extract_primary_vhosts_from_apache_conf();
+    die $primary_hr if !$ok;
+
+    my $ssl_port = Cpanel::Config::Httpd::IpPort::get_ssl_httpd_port();
+
+    for my $ip_port ( keys %$primary_hr ) {
+        my ( $ip, $port ) = split m{:}, $ip_port;
+        next if $ip eq '*';
+
+        if ( $port eq $ssl_port ) {
+            $primary_obj->set_primary_ssl_servername( $ip, $primary_hr->{$ip_port} );
+        }
+        else {
+            $primary_obj->set_primary_non_ssl_servername( $ip, $primary_hr->{$ip_port} );
+        }
+    }
+
+    my ( $save_ok, $save_msg ) = $primary_obj->save();
+    die $save_msg if !$save_ok;
+    my ( $close_ok, $close_msg ) = $primary_obj->close();
+    die $close_msg if !$close_ok;
+
+    return;
+}
+
+__PACKAGE__->script(@ARGV) if !caller;

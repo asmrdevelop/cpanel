@@ -1,0 +1,81 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/install_cpanel_analytics        Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::install_cpanel_analytics;
+
+use cPstrict;
+
+use Getopt::Long ();
+use Cpanel::Imports;
+
+use Cpanel::OS                    ();
+use Cpanel::Plugins               ();
+use Cpanel::Analytics::UiIncludes ();
+
+exit( __PACKAGE__->run(@ARGV) // 0 ) unless caller();
+
+sub run (@args) {
+    if ( $> != 0 ) {
+        die "$0: must run as root\n";
+    }
+
+    my $help;
+
+    return usage(1) unless Getopt::Long::GetOptionsFromArray(
+        \@args,
+        'help' => \$help,
+    );
+
+    return usage() if $help;
+
+    if ( !Cpanel::OS::supports_cpanel_analytics() ) {
+        logger()->warn( "cpanel-analytics is not supported on " . Cpanel::OS::pretty_distro() );
+        return 1;
+    }
+
+    logger()->info(q{Installing the analytics plugin.});
+    require Cpanel::Plugins;
+    my $ok = eval { Cpanel::Plugins::install_plugins('cpanel-analytics'); 1 };
+    logger()->warn($@) if $@ && ref $@ !~ m/ProcessFailed/;    # ProcessFailed stacks aren't very interesting.
+
+    logger()->info(q{Enabling the analytics user interface.});
+    if ( $ENV{'CPANEL_BASE_INSTALL'} ) {
+        local $@;
+        eval {
+            require Cpanel::Analytics::UiIncludes;
+            Cpanel::Analytics::UiIncludes::enable();
+        };
+        logger()->warn($@) if length $@;
+    }
+
+    return !$ok;
+}
+
+sub usage ( $status = 0 ) {
+
+    my $msg = <<"EOM";
+
+install_cpanel_analytics: install cpanel-analytics plugin
+
+Usage:
+    install_cpanel_analytics [--help]
+
+  Options:
+    --help: print usage and exit
+EOM
+
+    if ($status) {
+        print STDERR $msg;
+    }
+    else {
+        print $msg;
+    }
+
+    return $status;
+}
+
+1;

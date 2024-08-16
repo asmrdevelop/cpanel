@@ -1,0 +1,104 @@
+[%
+    USE Whostmgr;
+    USE JSON;
+
+    SET PAGE_BASE = '/scripts12/task_queue_monitor/';
+    SET PAGE_NAME = Whostmgr.get_page_name_by_url(PAGE_BASE);
+
+    WRAPPER 'master_templates/master.tmpl'
+        breadcrumburl = PAGE_BASE,
+        base =  PAGE_BASE,
+        stylesheets = [
+            rtl_bootstrap,
+            Whostmgr.find_file_url('/templates/task_queue_monitor/index.min.css'),
+        ],
+        theme='bootstrap'
+        CJT2_EXCLUSIVE = 1,
+        app_key = 'task_queue_monitor';
+
+    PROCESS 'master_templates/cjt2_header_include.tt';
+%]
+
+<div id="content"
+    ng-controller="BaseController as base"
+    class="ng-cloak"
+    ng-cloak>
+
+    <p class="description">[% locale.maketext('This interface monitors [asis,cPanel amp() WHM]’s task queue in real time.') %]</p>
+
+    <div id="loadingView" class="alert alert-info ng-hide" ng-hide="queue || sched">
+        <i id="loadingSpinner" class="fas fa-spinner fa-spin" aria-hidden="true"></i>
+        [% locale.maketext('Loading …') %]
+    </div>
+
+    <section ng-if="queue || sched">
+        <p>{{last_update_descr}}</p>
+
+        <p class="set-apart">
+        <label><input type="checkbox" ng-model="showDetails"> [% locale.maketext('Show Task Details') %]</label>
+        </p>
+
+        <div ng-if="queue">
+            <div ng-if="queue.processing.length">
+                <h4>[% locale.maketext('Processing[comment,a task is running right now]') %] ({{LOCALE.numf(queue.processing.length)}}):</h4>
+                <tasklist tasks=queue.processing>
+            </div>
+
+            <div ng-if="queue.waiting.length">
+                <h4>[% locale.maketext('Pending') %] ({{LOCALE.numf(queue.waiting.length)}}):</h4>
+                <tasklist tasks=queue.waiting>
+            </div>
+
+            <div ng-if="queue.deferred.length">
+                <h4>[% locale.maketext('Deferred') %] ({{LOCALE.numf(queue.deferred.length)}}):</h4>
+                <tasklist tasks=queue.deferred>
+            </div>
+        </div>
+
+        <div ng-if="sched && sched.length">
+            <h4>[% locale.maketext('Scheduled') %] ({{LOCALE.numf(sched.length)}}):</h4>
+            <tasklist tasks=sched>
+        </div>
+
+        <p ng-if="queue && sched && !queue_count && !sched.length">
+            [% locale.maketext('The task queue is empty. Any updates to the queue will appear here.') %]
+        </p>
+    </section>
+
+    <div ng-class="{'view-disabled': loading}" class="animate-view" ng-view></div>
+
+    <div growl></div>
+</div>
+
+<!--
+<style type="text/css">
+textarea {
+    font-family: monospace;
+}
+</style>
+
+<p>
+<label for="raw-queue">Queue:</label><br>
+<textarea id="raw-queue" rows=12 cols=80></textarea>
+</p>
+
+<p>
+<label for="raw-queue">Schedule:</label><br>
+<textarea id="raw-sched" rows=12 cols=80></textarea>
+</p>
+
+<script>
+var es = new EventSource("[% cp_security_token %]/sse/Tasks");
+["queue","sched"].forEach( (watched) => {
+    es.addEventListener(watched + "-update", (e) => {
+        document.getElementById("raw-" + watched).textContent = e.data;
+    });
+});
+</script>
+-->
+<script>
+    var PAGE = PAGE || {};
+    PAGE.security_token = [% JSON.stringify(cp_security_token) %];
+</script>
+
+[% END #wrapper -%]

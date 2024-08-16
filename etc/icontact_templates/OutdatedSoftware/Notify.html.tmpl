@@ -1,0 +1,57 @@
+[%#
+Variables passed in:
+
+origin                  - the system component from which the notification was requested.
+outdated_software       - list of softwares that are outdated list contains hashes that get converted below [{'label'=>'','current_version'=>'','label'=>'min_reco_version','label'=>'upgrade_url'}]
+
+For more information about how to customize notification templates, read our documentation at https://go.cpanel.net/notificationtemplates
+
+-%]
+
+[%
+    PROCESS "include/colors.tmpl";
+    PROCESS "include/styles.tmpl";
+    PROCESS "include/zebra_table.tmpl";
+
+    WRAPPER 'wrapper/main.html.tmpl';
+        IF NOTICE.outdated_software.size == 1;
+            IF NOTICE.update_required;
+                NOTICE.email_reason = CPANEL.locale.maketext('The installation of “[_1]” is at or near end-of-life and requires an update.', NOTICE.outdated_software.0.label);
+            ELSE;
+                NOTICE.email_reason = CPANEL.locale.maketext('The installation of “[_1]” is at or near end-of-life.', NOTICE.outdated_software.0.label);
+            END;
+        ELSE;
+            IF NOTICE.update_required;
+                NOTICE.email_reason = CPANEL.locale.maketext('The server contains [quant,_1,application that is at or near end-of-life and requires an update,applications that are at or near end-of-life and require updates].', NOTICE.outdated_software.size);
+            ELSE;
+                NOTICE.email_reason = CPANEL.locale.maketext('The server contains [quant,_1,application that is at or near end-of-life,applications that are at or near end-of-life].', NOTICE.outdated_software.size);
+            END;
+        END;
+
+    NOTICE.table_titles = [
+        CPANEL.locale.maketext("Application"),
+        CPANEL.locale.maketext("Currently"),
+        CPANEL.locale.maketext("Recommended Minimum"),
+        CPANEL.locale.maketext("How to Upgrade")
+    ];
+    NOTICE.table_items = [];
+    FOREACH item IN NOTICE.outdated_software;
+        NOTICE.table_items.push([
+            item.label,
+            item.current_version,
+            item.min_reco_version,
+            CPANEL.locale.maketext("For instructions on how to upgrade “[_1]”, visit [output,url,_2]", item.label, item.upgrade_url)
+        ]);
+    END;
+%]
+
+[% IF NOTICE.update_required; %]
+<p>[% CPANEL.locale.maketext('The following [numerate,_1,application,applications] on the server should be updated as soon as possible because we plan to remove support for [numerate,_1,it,them] in a future version of [asis,cPanel amp() WHM]. If you do not update the outdated software, the system may block your [asis,cPanel amp() WHM] updates until you do.', NOTICE.outdated_software.size); %]</p>
+[% ELSE; %]
+<p>[% CPANEL.locale.maketext('The following [numerate,_1,application,applications] on the server should be updated as soon as possible.', NOTICE.outdated_software.size); %]</p>
+[% END; %]
+
+
+[% zebra_table(titles=NOTICE.table_titles,items=NOTICE.table_items); %]
+
+[% END %]

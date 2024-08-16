@@ -1,0 +1,29 @@
+[%#
+Variables passed in:
+
+level     - one of the values defined in the backend Perl module
+
+message   - the message to display
+
+For more information about how to customize notification templates, read our documentation at https://go.cpanel.net/notificationtemplates
+
+-%]
+
+[%
+    PROCESS "include/colors.tmpl";
+    PROCESS "include/styles.tmpl";
+    PROCESS 'include/zebra_table.tmpl';
+
+    PROCESS 'include/code_block.tmpl';
+
+    SWITCH NOTICE.level;
+        CASE 'error';
+            NOTICE.email_reason = CPANEL.locale.maketext('“[_1]” failed because of an error.', NOTICE.application_name);
+        CASE 'warn';
+            NOTICE.email_reason = CPANEL.locale.maketext('“[_1]” produced a warning.', NOTICE.application_name);
+    END;
+
+    WRAPPER 'wrapper/main.html.tmpl';
+%]
+
+[% code_block( formatted_code => NOTICE.message.html() ) %][% END -%]

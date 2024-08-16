@@ -1,0 +1,41 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - bin/icontact                            Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+use Cpanel::SafeStorable ();
+use Getopt::Long;
+use Cpanel::iContact qw( );
+
+exit if ( !defined $ARGV[0] );
+
+my %msgdata = -f $ARGV[0] ? getparamsfromfile( $ARGV[0] ) : getparamsfromcli();
+
+Cpanel::iContact::icontact(%msgdata);
+
+sub getparamsfromfile {
+    my $file = shift;
+    my $msg_ref;
+    eval { $msg_ref = Cpanel::SafeStorable::retrieve($file); };
+    if ( defined $msg_ref && ref $msg_ref eq 'HASH' ) {
+        unlink $file;
+        return %{$msg_ref};
+    }
+    else {
+        warn "Unable to retrieve message hash from file $file";
+        exit;
+    }
+}
+
+sub getparamsfromcli {
+    my %msg_hash = (
+        'application' => q{Info},
+        'subject'     => q{},
+        'message'     => q{},
+    );
+    GetOptions( 'define=s' => \%msg_hash );
+    return %msg_hash;
+}

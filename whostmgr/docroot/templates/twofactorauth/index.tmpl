@@ -1,0 +1,139 @@
+[%
+USE Whostmgr;
+USE JSON;
+
+SET stylesheet_includes = [
+    Whostmgr.find_file_url('/templates/twofactorauth/index.css')
+];
+
+SET debug_mode = CPANEL.is_debug_mode_enabled();
+SET has_root = Whostmgr.hasroot();
+SET policy_active = data.status;
+SET issuer = data.issuer;
+SET system_wide_issuer = data.system_wide_issuer;
+SET current_users_status = data.user_status;
+SET server_info = Whostmgr.get_server_info();
+SET server_hostname = server_info.hostname;
+
+SET on_switch_text = "ON";
+SET off_switch_text = "OFF";
+IF (locale.get_language_tag() != "en");
+    # These characters should not be translated.
+    on_switch_text = "I";
+    off_switch_text = "O";
+END;
+
+SET BREADCRUMB = '/scripts7/twofactorauth/';
+SET ROOT_URL = (Whostmgr.ENV.HTTPS == 'on' ? 'https://' : 'http://') _ Whostmgr.ENV.HTTP_HOST _ ':' _ Whostmgr.ENV.SERVER_PORT _ cp_security_token;
+%]
+
+[% WRAPPER 'master_templates/master.tmpl'
+    header = locale.maketext('Two-Factor Authentication'),
+    breadcrumburl = BREADCRUMB,
+    base = BREADCRUMB,
+    stylesheets = stylesheet_includes,
+    theme='bootstrap'
+    CJT2_EXCLUSIVE = 1,
+    app_key='two_factor_authentication';
+-%]
+
+<div id="content" class="ng-cloak" ng-cloak>
+    <p>[% locale.maketext("Two-factor authentication (2FA) is an improved security measure that requires two forms of identification: your password and a generated security code. When 2FA is enabled, an app on your smartphone supplies a code that you must enter with your password to log in.") %]</p>
+    <div ng-controller="enableController as enabler">
+        <div id="enable_disable_control">
+            <div class="enable_disable_row">
+                [% IF has_root -%]
+                <div class="enable_disable_cell" class="ng-hide" ng-show="enabler.hasRoot">
+                    <toggle-switch
+                        id="tfa_status_toggle"
+                        ng-model="enabler.tfaEnabled"
+                        on-toggle="enabler.toggle_status()"
+                        ng-disabled="enabler.changing_status"
+                        no-spinner="true"
+                        enabled-label="[% on_switch_text %]"
+                        disabled-label="[% off_switch_text %]"
+                        aria-label="[% locale.maketext("Configure Two-Factor Authentication") %]"
+                    ></toggle-switch>
+                </div>
+                <div class="enable_disable_cell" ng-hide="!enabler.changing_status">
+                    <span class="fas fa-spinner fa-spin"></span>
+                </div>
+                [% END -%]
+                <div class="enable_disable_cell" ng-hide="enabler.tfaEnabled || enabler.changing_status">
+                    <div class="led led-red"></div>
+                </div>
+                <div class="enable_disable_cell" ng-hide="!enabler.tfaEnabled || enabler.changing_status">
+                    <div class="led led-green"></div>
+                </div>
+                <div class="enable_disable_cell" ng-hide="enabler.changing_status">
+                    <span class="tfa_status_message" ng-hide="!enabler.tfaEnabled">[% locale.maketext('The Two-Factor Authentication Security Policy is [output,strong,Enabled]') %]</span>
+                    <span class="tfa_status_message" ng-hide="enabler.tfaEnabled">[% locale.maketext('The Two-Factor Authentication Security Policy is [output,strong,Disabled]') %]</span>
+                </div>
+            </div>
+        </div>
+        <div id="tabContainer">
+            <ul class="nav nav-tabs">
+                <li ng-class="{active: currentRoute === '/config'}"><a href="config">[% locale.maketext('Settings') %]</a></li>
+                <li ng-class="{active: currentRoute === '/users'}"><a href="users">[% locale.maketext('Manage Users') %]</a></li>
+                <li ng-class="{active: currentRoute === '/myaccount'}"><a href="myaccount">[% locale.maketext('Manage My Account') %]</a></li>
+            </ul>
+            <div class="tab-content" ng-view></div>
+        </div>
+    </div>
+    <div growl></div>
+    [%# DEBUG mode uses a different template path by default %]
+    [% IF debug_mode %]
+    <script type="text/ng-template" id="[% ROOT_URL %]/libraries/cjt2/directives/toggleSwitch.phtml">
+    [% ELSE %]
+    <script type="text/ng-template" id="libraries/cjt2/directives/toggleSwitch.phtml">
+    [% END %]
+        <div role="checkbox"
+            class="tfa-toggle-switch toggle-switch-wrapper"
+            tabindex="0"
+            aria-checked="{{ get_aria_value() }}"
+            aria-label="{{ariaLabel}}"
+            ng-click="toggle_status()"
+            ng-keyup="handle_keyup($event)"
+            ng-keydown="handle_keydown($event)"
+            ng-class="{disabled: (changing_status || isDisabled), 'switch-off': !ngModel, 'switch-on': ngModel, 'no-label':noLabel}">
+            <div
+                class="toggle-switch"
+                ng-class="{disabled: (changing_status || isDisabled)}">
+                <div id="{{parentID}}_toggle_visual" class="toggle-switch-animate" ng-class="{'switch-off': !ngModel, 'switch-on': ngModel}">
+                    <span class="switch-left">{{ enabledLabel }}</span>
+                    <span class="knob">&nbsp;</span>
+                    <span class="switch-right">{{ disabledLabel }}</span>
+                </div>
+            </div>
+        </div>
+    </script>
+
+    <script type="text/ng-template" id="confirm_disable.html">
+        <div class="modal-header">
+            <h4><span class="glyphicon glyphicon-check"></span><span class="confirm_message">[% locale.maketext('Confirm Removal of Two-Factor Authentication') %]</span></h4>
+        </div>
+        <div class="modal-body">
+            {{dc.disableConfirmationMessage()}}
+        </div>
+        <div class="modal-footer">
+            <button class="btn btn-primary btn-sm" ng-click="dc.disableTFAFor()">[% locale.maketext('Continue') %]</button>
+            <button class="btn btn-link btn-sm" ng-click="dc.cancelDisable()">[% locale.maketext('Cancel') %]</button>
+        </div>
+    </script>
+</div>
+[% PROCESS 'master_templates/cjt2_header_include.tt' %]
+
+<script type="text/javascript">
+    var PAGE = PAGE || {};
+
+    PAGE.tfa_status = [% policy_active.json() %];
+    PAGE.has_root = [% has_root.json() %];
+    PAGE.user = [% Whostmgr.ENV.REMOTE_USER.json() %];
+    PAGE.issuer = [% issuer.json() %];
+    PAGE.system_wide_issuer = [% system_wide_issuer.json() %];
+    PAGE.current_user_tfa_status = [% current_users_status.json() %];
+    PAGE.server_hostname = [% server_hostname.json() %];
+
+</script>
+
+[% END #wrapper -%]

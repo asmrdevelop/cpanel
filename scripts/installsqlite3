@@ -1,0 +1,69 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/installsqlite3                  Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+use warnings;
+
+use Cpanel::Logger  ();
+use Cpanel::SysPkgs ();
+use Cpanel::Usage   ();
+use Cpanel::Rlimit  ();
+
+run(@ARGV) unless caller();
+
+sub run {
+
+    my $force;
+    Cpanel::Usage::wrap_options( \@ARGV, \&usage, { 'force' => \$force } );
+
+    my $logger = Cpanel::Logger->new();
+
+    if ( has_sqlite3() && !$force ) {
+        $logger->info("Sqlite3 is already installed.");
+        return;
+    }
+
+    # Case 64238: yum can consume a lot of memory on 64-bit systems, and the global maxmem setting gets in the way
+    Cpanel::Rlimit::set_rlimit_to_infinity();
+
+    my $syspkgs = Cpanel::SysPkgs->new();
+    if ( !$syspkgs ) { $logger->die("Could not create SysPkgs object"); }
+
+    $syspkgs->install(
+        'pkglist' => [
+            'sqlite',        'sqlite-devel', 'sqlite-dev', 'sqlite3',
+            'sqlite3-devel', 'sqlite3-dev'
+        ]
+    );
+
+    if ( has_sqlite3() ) {
+        $logger->info("Sqlite3 was installed successfully using the OS package manager");
+        return;
+    }
+
+    $logger->info("Failed to install sqlite3 using operating system package manager.");
+    exit(1);
+}
+
+sub has_sqlite3 {
+    foreach my $path ( '/usr/', '/usr/local/' ) {
+        return 1 if ( -x "${path}bin/sqlite3" && -e "${path}include/sqlite3.h" );
+    }
+    return 0;
+}
+
+sub usage {
+    print <<EO_USAGE;
+installsqlite3 [options]
+
+    Options:
+      --help       Brief help message
+      --force      Force installation even if sqlite3 already appears installed
+
+EO_USAGE
+    exit 0;
+}

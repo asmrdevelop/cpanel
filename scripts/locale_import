@@ -1,0 +1,126 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/locale_import                   Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+
+use Getopt::Param              ();
+use Cpanel::Locale::Utils::XML ();
+
+my $prm = Getopt::Param->new(
+    {
+        'no_args_help' => 1,
+        'help_coderef' => sub {
+            print <<"END_USAGE";
+$0 [--locale={locale_tag} [--locale=… --locale=… …]] [--import={path} [--import=… --import=… …]] [--quiet] [--no-rebuild]
+
+Import locales in XML format into the Locale database.
+
+Options:
+  --help                Show this help screen
+  --quiet               Show less output than normal.
+  --locale={locale_tag} Specify a locale to import. You can pass the flag multiple times in order to import multiple locales.
+      This works on files in paths that `/usr/local/cpanel/scripts/locale_export --locale={locale_tag}` created.
+  --import={file}       Specify the path to an XML file that is importable. You can pass the flag multiple times in order to import multiple files.
+      This uses files in any arbitrary location and name.
+  --no-rebuild          Do not rebuild the locale database after importing the XML file(s).
+  --type={import_type}  Specify the import type as "xml" or "xlf" rather than guessing based on the file extension.
+
+You must specify at least one --locale or --import flag.
+
+The XML files that this script works with are created via /usr/local/cpanel/scripts/locale_export.
+
+If nothing was imported the script will exit with an error status. To examine the reasons nothing was imported do not use --quiet.
+END_USAGE
+            exit;
+        },
+    }
+);
+
+my $overwrite_keys = $prm->get_param('overwrite-keys') ? 1 : 0;
+
+my $verbose = $prm->get_param('quiet') ? 0 : 1;
+
+my $type = $prm->get_param('type') || '';
+
+my @files;
+
+for my $loc ( $prm->get_param('locale') ) {
+    if ( -e "/var/cpanel/locale/export/$loc.xlf" ) {
+        push @files, "/var/cpanel/locale/export/$loc.xlf";
+    }
+    elsif ( -e "/var/cpanel/locale/export/$loc.xml" ) {
+        push @files, "/var/cpanel/locale/export/$loc.xml";
+    }
+    else {
+        print "Could not import “$loc” locale because it does not have an export file.\n" if $verbose;
+    }
+}
+my $euid_home;
+for my $file ( $prm->get_param('import') ) {
+
+    # expand ~/ that was treated as a string and not expanded by the shell before being put in @ARGV
+    if ( substr( $file, 0, 2 ) eq '~/' ) {
+        $euid_home ||= ( getpwuid($>) )[7];    # only look it up if needed, and only look it up one time
+        substr( $file, 0, 2, "$euid_home/" );
+    }
+
+    if ( -e $file ) {
+        push @files, $file;
+    }
+    else {
+        print "Could not import “$file” because that file does not exist.\n" if $verbose;
+    }
+}
+
+if (@files) {
+    my @recompile_flags;
+
+    for my $file (@files) {
+        my $error = '';
+        print "Importing “$file” …\n" if $verbose;
+        my $locale_tag;
+        if ( $type eq 'xml' ) {
+            $locale_tag = Cpanel::Locale::Utils::XML::xml_file_to_locale( $file, \$error );
+        }
+        elsif ( $type eq 'xlf' ) {
+            $locale_tag = Cpanel::Locale::Utils::XML::xlf_file_to_locale( $file, \$error );
+        }
+        else {
+            $locale_tag = Cpanel::Locale::Utils::XML::xml_to_locale( $file, \$error );
+        }
+
+        if ($locale_tag) {
+            push @recompile_flags, "--locale=$locale_tag";
+        }
+        else {
+            $error ||= 'An unknown error has occurred.';
+            print "\tError: $error\n" if $verbose;
+            next;
+        }
+    }
+
+    if (@recompile_flags) {
+        if ( $prm->get_param('no-rebuild') ) {
+            print "Skipping database rebuild.\n" if $verbose;
+        }
+        else {
+
+            # We do @recompile_flags as an array and then join it here so we could
+            # easily switch to array context system() and/or saferun() based call
+            my $cmd = join( ' ', '/usr/local/cpanel/bin/build_locale_databases', @recompile_flags );
+            system( $verbose ? $cmd : "$cmd > /dev/null" );
+        }
+    }
+    else {
+        print "None of the files were importable\n";
+        exit(1);
+    }
+}
+else {
+    print "No files to import\n" if $verbose;
+    exit 1;
+}

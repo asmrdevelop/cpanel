@@ -1,0 +1,77 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - bin/rormgr                              Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+use warnings;
+
+use Cpanel::AcctUtils::Suspended ();
+use Cpanel::RoR                  ();
+use Cpanel::PwCache::Helpers     ();
+use Cpanel::PwCache::Build       ();
+use Cpanel::Config::Users        ();
+use Cpanel::AccessIds::SetUids   ();
+use Cpanel::OSSys                ();
+use Cwd                          ();
+use Cpanel                       ();
+
+my $command = $ARGV[0];
+
+my $cpanel_users = Cpanel::Config::Users::getcpusers();
+my %CPUSERS      = map { $_ => undef } @$cpanel_users;
+
+Cpanel::PwCache::Helpers::no_uid_cache();    #uid cache only needed if we are going to make lots of getpwuid calls
+
+Cpanel::PwCache::Build::init_passwdless_pwcache();
+
+if ( $command =~ m/(stopall|status|startall|startboot)/i ) {
+    if ( fork() ) { exit; }
+    Cpanel::OSSys::setsid();
+
+    my $pwcache_ref = Cpanel::PwCache::Build::fetch_pwcache();
+
+    foreach my $pwref (@$pwcache_ref) {
+        my ( $user, $uid, $gid, $homedir ) = (@$pwref)[ 0, 2, 3, 7 ];
+        next
+          if ( $user eq 'root' || $user eq 'toor' || !exists $CPUSERS{$user} || Cpanel::AcctUtils::Suspended::is_suspended($user) );
+        $Cpanel::user       = $user;
+        $Cpanel::homedir    = $homedir;
+        $Cpanel::abshomedir = Cwd::abs_path($Cpanel::homedir);
+
+        if ( my $pid = fork() ) {
+            waitpid( $pid, 0 );
+        }
+        else {
+            Cpanel::AccessIds::SetUids::setuids( $uid, $gid );
+            my $ror_data = Cpanel::RoR::read_from_admin('RAILSDBREAD');
+            my $applist  = Cpanel::RoR::api2_listapps();
+            foreach my $app ( @{$applist} ) {
+                if ( $command =~ m/status/ ) {
+                    print '[' . $user . '] (' . $app->{'name'} . '): ' . ( $app->{'running'} ? 'running : ' . $app->{'pid'} : 'stopped' ) . "\n";
+                }
+                elsif ( $command =~ m/stop/ ) {
+                    if ( $app->{'running'} ) {
+                        print '[' . $user . '] (' . $app->{'name'} . '): stopped : ' . $app->{'pid'} . "\n";
+                        Cpanel::RoR::api2_stopapp( 'appname' => $app->{'name'} );
+                    }
+                }
+                elsif ( $command =~ m/start/ && $ror_data->[0]{'loadonboot'} ) {
+                    if ( !$app->{'running'} ) {
+                        print '[' . $user . '] (' . $app->{'name'} . '): started' . "\n";
+                        Cpanel::RoR::api2_startapp( 'appname' => $app->{'name'} );
+                    }
+                }
+            }
+            exit 0;
+        }
+    }
+}
+else {
+    print "$0: unknown command $command\n";
+    exit 1;
+}
+
+exit 0;

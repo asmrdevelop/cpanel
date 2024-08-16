@@ -1,0 +1,49 @@
+[% USE Whostmgr -%]
+[% WRAPPER 'master_templates/master.tmpl'
+    app_key = 'rearrange_an_account'
+    breadcrumburl = '/scripts/rearrangeacctslist'
+    theme = "bootstrap"
+    stylesheets = ['/cjt/css/ajaxapp-min.css',
+                   '/templates/common/revised_notices.min.css',
+                   '/templates/packages/common.min.css',
+                   '/styles/unified_optimized.css'
+                  ]
+    extrastyle = ''
+    include_legacy_stylesheets = 1
+-%]
+[% PROCESS '_pkg_hover.tmpl' -%]
+[% PROCESS '_ajaxapp_header.tmpl' -%]
+
+<form method="POST" action="[% cp_security_token %]/scripts5/dorearrange">
+<table class="table table-striped responsive-table" border="1" cellspacing="0" cellpadding="2" width="700">
+    <tr><td>[% locale.maketext('Account User Name') %]</td>     <td>[% data.user %]</td></tr>
+    <tr><td>[% locale.maketext('Primary Domain Name') %]</td>   <td>[% data.xdomain %]</td></tr>
+    <tr><td>[% locale.maketext('Current Home Directory') %]</td><td>[% data.user_homedir %]</td></tr>
+    <tr><td>[% locale.maketext('Current Mount Point') %]</td>   <td>[% data.mount_point %]</td></tr>
+    <tr><td>[% locale.maketext('Current Partition') %]</td>     <td>[% data.mp_device %]</td></tr>
+    <tr><td>[% locale.maketext('Current Disk Usage') %]</td>    <td>[% data.du_free %] / [% data.du_used %] Blocks used, ( [% data.du_pctfree %] % Free )</td></tr>
+    <tr>
+        <td>[% locale.maketext('New mount point:') %]</td>
+        <td>
+            [% IF data.candidates.keys.size %]
+            <input type="hidden" name="user" value="[% data.user %]" />
+            <select name="mnt">
+            [% FOREACH mountpoint IN data.candidates.keys %]
+                <option [% IF data.most_free == mountpoint %]selected[% END %] value="[% mountpoint %]" >
+                    [% mountpoint %] ( [% data.candidates.$mountpoint.device %] ) [% data.candidates.$mountpoint.pct_used %]% used)
+                </option>
+            [% END %]
+            </select>
+            [% ELSE %]
+            [% locale.maketext("The user is already installed on the only usable partition on this machine.") %]
+            [% END %]
+        </td>
+    </tr>
+</table>
+[% IF data.candidates.keys.size %]
+<input type="submit" class="btn-primary pull-right" value="Move Account">
+[% END %]
+</form>
+
+[% PROCESS '_ajaxapp_footer.tmpl' -%]
+[% END #wrapper -%]

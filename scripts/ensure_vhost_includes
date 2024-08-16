@@ -1,0 +1,365 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/ensure_vhost_includes           Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+
+# use warnings;
+use Getopt::Param ();
+
+use Cpanel::PwCache::Build ();
+
+my %errors;
+my @PHP_INI_INCLUDE_PATHS_CACHE;
+my $php_ini_include_paths_have_been_cached = 0;
+
+my %checks = (
+    'cp_bw_all_limit.conf' => {
+        'name' => 'bandwidth limit',
+
+        # 'user' ...
+        'domain' => {
+            'on' => sub {
+                my ( $user, $domain, $value ) = @_;
+                if ( -x '/usr/local/cpanel/scripts/setbwlimit' ) {
+                    system '/usr/local/cpanel/scripts/setbwlimit', '--domain=' . $domain, '--limit=' . $value;
+                }
+                else {
+                    if ( !exists $errors{'/usr/local/cpanel/scripts/setbwlimit missing or not executable!'} ) {
+                        print "/usr/local/cpanel/scripts/setbwlimit missing or not executable!\n";
+                        $errors{'/usr/local/cpanel/scripts/setbwlimit missing or not executable!'} = 0;
+                    }
+                    $errors{'/usr/local/cpanel/scripts/setbwlimit missing or not executable!'}++;
+                }
+            },
+            'off' => sub {
+                my ( $user, $domain, $value, $verbose, $skip_userdata_update ) = @_;
+                Cpanel::EditHttpdconf::del_vhost_include(
+                    {
+                        'skip_userdata_update'            => ( $skip_userdata_update ? 1 : 0 ),
+                        'domain'                          => $domain,
+                        'file'                            => 'cp_bw_all_limit.conf',
+                        'restart_apache'                  => 0,
+                        'ensure_vhost_include_directives' => 0,
+                    }
+                );
+            },
+        },
+    },
+    'cp_php_magic_include_path.conf' => {
+        'name' => 'magic php include path',
+
+        # 'user' ...
+        'domain' => {
+            'on' => sub {
+                my ( $user, $domain, $value, $verbose, $skip_userdata_update ) = @_;
+                my $homedir = ( Cpanel::PwCache::getpwnam($user) )[7];
+
+                if ( !$php_ini_include_paths_have_been_cached ) {
+                    @PHP_INI_INCLUDE_PATHS_CACHE = Cpanel::PHPINI::include_paths();
+                    $php_ini_include_paths_have_been_cached++;
+                }
+
+                my @INCP = @PHP_INI_INCLUDE_PATHS_CACHE;
+                if ( $homedir && $homedir ne '' && $homedir ne '/' ) {
+                    push @INCP, $homedir . '/php';
+                }
+                my $php5path      = join( ':', @INCP );
+                my $first_include = shift @INCP;
+                unshift @INCP, '/usr/local/php4/lib/php';
+                unshift @INCP, '/usr/php4/lib/php';
+                unshift @INCP, $first_include;
+                my $php4path = join( ':', @INCP );
+                my $content  = <<"END_CONT";
+    <IfModule concurrent_php.c>
+       php4_admin_value include_path "$php4path"
+       php5_admin_value include_path "$php5path"
+    </IfModule>
+    <IfModule !concurrent_php.c>
+       <IfModule mod_php4.c>
+          php_admin_value include_path "$php4path"
+       </IfModule>
+       <IfModule mod_php5.c>
+          php_admin_value include_path "$php5path"
+       </IfModule>
+       <IfModule sapi_apache2.c>
+          php_admin_value include_path "$php4path"
+       </IfModule>
+    </IfModule>
+
+END_CONT
+
+                Cpanel::EditHttpdconf::add_vhost_include(
+                    {
+                        'skip_userdata_update'            => ( $skip_userdata_update ? 1 : 0 ),
+                        'user'                            => $user,
+                        'file'                            => 'cp_php_magic_include_path.conf',
+                        'restart_apache'                  => 0,
+                        'ensure_vhost_include_directives' => 0,
+                        'content'                         => {
+                            'std' => {
+                                '1' => $content,
+                                '2' => $content,
+                            },
+                            'ssl' => {
+                                '1' => $content,
+                                '2' => $content,
+                            },
+                        },
+                    }
+                );
+                return 'once_per_user';
+            },
+            'off' => sub {
+                my ( $user, $domain, $value, $verbose, $skip_userdata_update ) = @_;
+                Cpanel::EditHttpdconf::del_vhost_include(
+                    {
+                        'skip_userdata_update'            => ( $skip_userdata_update ? 1 : 0 ),
+                        'user'                            => $user,
+                        'file'                            => 'cp_php_magic_include_path.conf',
+                        'restart_apache'                  => 0,
+                        'ensure_vhost_include_directives' => 0,
+                    }
+                );
+                return 'once_per_user';
+            },
+        },
+    },
+);
+
+my $help_cr = sub {
+    print <<"END_HELP";
+Ensure all vhost includes are setup as per userdata.
+
+$0 --help  (this screen)
+$0 --all-users | --user=USERNAME1 [--user=USERNAME2 --user=...] | --domain=DOMAIN1 [--domain=DOMAIN2 --domain=...] | --domainowner=DOMAIN1OWNER [--domainowner=DOMAIN1OWNER]
+
+'--verbose' have output reporting what it is doing
+
+'--skip-file-check' will skip the check that makes sure the setting in the userdata reflects what is on the filesystem
+
+'--no-restart' will skip restarting Apache after httpd.conf is updated
+
+'--skip-conf-rebuild' do not rebuild httpd.conf, implies --no-restart
+
+'--debug' implies --verbose and makes the verbose information include more arcane information about what it's doing
+
+END_HELP
+    exit;
+};
+
+# purposefully don't have --force-value and --only-check in help
+
+my $prm = Getopt::Param->new(
+    {    #issafe
+        'help_coderef' => $help_cr,
+    }
+);
+
+if ( $prm->exists_param('only-check') ) {
+    my %only;
+    for my $check ( $prm->get_param('only-check') ) {
+        $only{$check} = 1 if exists $checks{$check};
+    }
+
+    for my $real_check ( sort keys %checks ) {
+        delete $checks{$real_check} if !exists $only{$real_check};
+    }
+
+    die "--only-check arguments removed all checks" if !keys %checks;
+}
+
+my %user_map;
+my @users;
+my $do_domain_filter = 0;
+require Cpanel::AcctUtils::DomainOwner::Tiny;
+Cpanel::AcctUtils::DomainOwner::Tiny::build_domain_cache();
+
+if ( $prm->get_param('all-users') ) {
+    require Cpanel::Config::LoadUserDomains;
+    require Cpanel::PwCache;
+
+    Cpanel::PwCache::Build::init_passwdless_pwcache();
+    %user_map = %{ Cpanel::Config::LoadUserDomains::loaduserdomains( undef, 0, 1 ) };
+    @users    = sort keys %user_map;
+}
+elsif ( $prm->get_param('user') ) {
+    require Cpanel::Config::LoadCpUserFile;
+    foreach my $user ( $prm->get_param('user') ) {
+        if ( my $cpuser_ref = Cpanel::Config::LoadCpUserFile::load($user) ) {
+            if ( $cpuser_ref->{'DOMAIN'} ) {
+                $user_map{$user} = [ $cpuser_ref->{'DOMAIN'}, @{ $cpuser_ref->{'DOMAINS'} } ];
+                push @users, $user;
+            }
+        }
+        else {
+            print "Invalid user: $user\n";
+        }
+    }
+    die "No valid --user arguments given" unless @users;
+}
+elsif ( $prm->get_param('domain') ) {
+    $do_domain_filter = {};
+
+    my @domain_owners = $prm->get_param('domainowner') ? ( $prm->get_param('domainowner') ) : ();
+
+    require Cpanel::Config::LoadCpUserFile;
+    require Cpanel::Validate::Domain::Tiny;
+    require Cpanel::Validate::Domain::Normalize;
+
+    for my $dom ( $prm->get_param('domain') ) {
+        $dom = Cpanel::Validate::Domain::Normalize::normalize($dom);
+        if ( Cpanel::Validate::Domain::Tiny::validdomainname($dom) ) {
+            if ( my $owner = ( shift @domain_owners || Cpanel::AcctUtils::DomainOwner::Tiny::getdomainowner( $dom, { 'default' => '', 'skiptruelookup' => 1 } ) ) ) {
+                unless ( exists $user_map{$owner} ) {
+                    if ( my $cpuser_ref = Cpanel::Config::LoadCpUserFile::load($owner) ) {
+                        $user_map{$owner} = [ $cpuser_ref->{'DOMAIN'}, @{ $cpuser_ref->{'DOMAINS'} } ];
+                        push @users, $owner;
+                    }
+                }
+                if ( exists $user_map{$owner} ) {
+                    $do_domain_filter->{$dom}++;
+                }
+            }
+        }
+        else {
+            print "Invalid domain: $dom\n";
+        }
+    }
+
+    die "No valid --domain arguments given" unless keys %{$do_domain_filter};
+}
+else {
+    $help_cr->();
+}
+
+my $verbose = $prm->get_param('debug') || $prm->get_param('verbose') ? 1 : 0;
+
+my %domains_processed;
+
+if ( $prm->get_param('skip-file-check') ) {
+    print "Skipping file check as per --skip-file-check\n\n";
+}
+else {
+    require Cpanel::PHPINI;
+    require Cpanel::EditHttpdconf;
+    require Cpanel::DataStore;
+    require Cpanel::PwCache;
+    my $userdata = '/var/cpanel/userdata';
+  USER:
+    for my $user (@users) {
+        my %once;
+        print "Starting $user...\n" if $verbose;
+        my $userdir = "$userdata/$user";
+        next USER if !-d $userdir;
+        next USER if ref $user_map{$user} ne 'ARRAY';
+
+        my $userdata_main;
+
+      DOM:
+        for my $dom ( sort @{ $user_map{$user} } ) {
+            my $userdata_domain;
+
+            if ( ref $do_domain_filter eq 'HASH' && !exists $do_domain_filter->{$dom} ) {
+                print "\tProcessing $dom...\n\t\tSkipping $dom since it was not passed in via --domain flag\n" if $prm->get_param('debug');
+                next DOM;
+            }
+
+            print "\tProcessing $dom...\n" if $verbose;
+
+            my $domfile = "$userdir/$dom";
+            next DOM if !-e $domfile;
+            $domains_processed{$dom}++;
+
+          DATACHECK:
+            for my $check ( sort keys %checks ) {
+                next DATACHECK if exists $once{$check};
+
+                print "\t\tChecking $checks{ $check }->{'name'}..." if $verbose;
+                my $skip_userdata_update = 0;
+                my $val;
+                if ( $prm->exists_param('force-value') ) {
+                    $val = $prm->get_param('force-value');
+                }
+                else {
+                    $skip_userdata_update = 1;    # we read it from the datastore, we are not
+                                                  # ever going to need to update it if we are
+                                                  # not forcing a new value
+                    $userdata_main ||= Cpanel::DataStore::fetch_ref("$userdir/main");
+                    $val = $userdata_main->{$check};
+                    if ( !$val ) {                # if its not in the main datastore we look in the domain one
+                        $userdata_domain ||= Cpanel::DataStore::fetch_ref($domfile);
+                        $val = $userdata_domain->{$check};
+                    }
+                }
+                my @args = ( $user, $dom, $val, $verbose, $skip_userdata_update );
+
+                my $rc;
+
+                if ($val) {
+                    print "On\n" if $verbose;
+                    $rc = $checks{$check}->{'domain'}{'on'}->(@args);
+                }
+                else {
+                    print "Off\n" if $verbose;
+                    $rc = $checks{$check}->{'domain'}{'off'}->(@args);
+                }
+                $once{$check} = 1 if $rc eq 'once_per_user';
+            }
+        }
+    }
+}
+
+if ( $prm->get_param('skip-conf-rebuild') ) {
+    print "Skipping httpd.conf rebuild as per --skip-conf-rebuild\n" if $verbose;
+    if ( $prm->get_param('skip-file-check') ) {
+        print "Specifying both --skip-conf-rebuild and --skip-file-check means nothing was done.\n";
+    }
+}
+else {
+    print "Ensuring that Include entries are correct...\n" if $verbose;
+
+    my $vhosts_updated = 0;
+
+    # ? other threshhold of when individual vhost building is less efficient than just rebuilding the entire httpd.conf ?
+    if ( keys %domains_processed < 3 ) {
+        require Cpanel::ConfigFiles::Apache::VhostUpdate;
+        my ( $vhost_status, $vhost_message, $vhosts_changed );
+        for my $domain ( keys %domains_processed ) {
+            ( $vhost_status, $vhost_message, $vhosts_changed ) = Cpanel::ConfigFiles::Apache::VhostUpdate::do_vhost($domain);
+            if ( !$vhost_status ) {
+                warn "Could not rebuild vhost for $domain: $vhost_message";
+            }
+
+            $vhosts_updated = 1 if ( $vhosts_changed && ref $vhosts_changed && @{$vhosts_changed} );
+        }
+    }
+    else {
+        $vhosts_updated = 1;
+        Cpanel::EditHttpdconf::rebuild_httpd_conf(
+            sub {
+                my ($line) = @_;
+                return $line;    # Cpanel::SafeRun::Dynamic::livesaferun() prints whatever is returned
+            }
+        );
+    }
+
+    no warnings 'once';
+    require Whostmgr::UI;
+    local $Whostmgr::UI::nohtml = 1;
+    if ( !$vhosts_updated ) {
+        print "Skipping Apache restart as not vhosts were updated\n" if $verbose;
+    }
+    elsif ( $prm->get_param('no-restart') ) {
+        print "Skipping Apache restart as per --no-restart\n" if $verbose;
+    }
+    else {
+        print "Updated domains: " . join( ', ', sort keys %domains_processed ) . "\n" if $verbose;
+        print "Restarting Apache...\n"                                                if $verbose;
+        require Cpanel::HttpUtils::ApRestart::BgSafe;
+        Cpanel::HttpUtils::ApRestart::BgSafe::restart();
+    }
+}

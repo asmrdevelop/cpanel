@@ -1,0 +1,218 @@
+---------------------------------------------
+ Server Side Setup
+---------------------------------------------
+To setup initially:
+
+>> npm install
+
+or
+
+>> make tests
+
+
+To run with Selenium Debugging on your client:
+
+On your sandbox:
+
+If you do not have the ~/.karma.conf.json yet:
+
+>> touch ~/.karma.conf.json
+>> vi ~/.karma.conf.json
+
+Edit the JSON below and paste it in your preferred configuration.
+
+{
+    "webdrivers": [
+        {
+            "config" : {
+                "hostname": "10.1.4.188",
+                "port": 5555
+            },
+            "type": "WINDOWS_WORKSTATION",
+            "enabled": true
+        },
+        {
+            "config" : {
+                "hostname": "10.1.4.188",
+                "port": 5555
+            },
+            "type": "MAC_WORKSTATION",
+            "enabled": false
+        },
+        {
+            "type": "CLUSTER",
+            "enabled": false
+        },
+        {
+            "type": "LOCAL",
+            "enabled": false
+        }
+    ],
+    "hostname" : "tomg.dev.cpanel.net",
+    "browsers" : [
+        "Firefox"
+    ],
+    "tapReporter": {
+        "suppressPassedTests": true,
+        "suppressSkippedTests": false,
+        "showSummary": true
+    },
+    "colors": true
+}
+
+Enable the correct profile for your platform. You can have more then one profile enabled, but some
+combination don't make sense. The LOCAL and CLUSTER profile are stubs right now until those testing
+environments have been setup.
+
+There are many additional properties of the karma.conf.js that you can override:
+
+    Tap Report Setting:
+
+        "tapReporter": {
+            "suppressPassedTests": : true | false,
+            "suppressSkippedTests": : true | false,
+            "showSummary": : true | false
+        },
+
+    Turning on and off color output:
+
+        "colors": true | false
+
+    Using a custom set of reporters:
+
+        "reporters": []
+
+    Changing the log level for karma:
+
+        "logLevel": "???"
+
+    Enabling and disabling the auto-watch feature. Note we have found this somewhat unreliable for
+    use with the selenium based testing so use with caution. Its more reliable to kill and restart
+    karma.
+
+        "autoWatch": true | false
+
+    Turn on single run vs continuous run mode.
+
+        "singleRun": true | false
+
+If you want to have any special settings just for cjt2, you can create the following file:
+
+>> touch ~/.cjt.karma.conf.json
+>> vi ~/.cjt.karma.conf.json
+
+
+---------------------------------------------
+ Workstation Setup
+---------------------------------------------
+
+  SETUP THE TESTING ENVIORNMENT
+
+  >> mkdir WebDriverGrid
+  >> cd WebDriverGrid
+
+  Install Selenium Standalone Server (selenium-server-standalone-2.42.2.jar) - http://docs.seleniumhq.org/download/
+
+  For various third party drivers: http://docs.seleniumhq.org/download/#thirdPartyDrivers
+  Install chromedriver.exe
+  Install IEDriverServer.exe (either 32 or 64 bit depending on your os bitness and only on windows)
+  Install SafariDriver????
+
+  Setup your node.config.json: Yours may vary depending on what browser you want to make available.
+
+{
+    "capabilities": [
+        {
+            "browserName": "chrome",
+            "version": "35.0",
+            "platform": "WINDOWS",
+            "maxInstances": 5,
+            "webdriver.chrome.driver": "e:\\WebDriverGrid\\chromedriver.exe"
+        },
+        {
+            "browserName": "firefox",
+            "version": "29.0",
+            "platform": "WINDOWS",
+            "maxInstances": 5
+        },
+        {
+            "browserName": "internet explorer",
+            "version": "11.0",
+            "platform": "WINDOWS",
+            "maxInstances": 5,
+            "webdriver.ie.driver": "E:\\WebDriverGrid\\IEDriverServer.64.exe"
+        }
+    ],
+    "configuration": {
+        "nodeTimeout": 120,
+        "host": "10.1.4.188",
+        "port": 5555,
+        "hubHost": "10.1.4.188",
+        "hubPort": 4444,
+        "nodePolling": 2000,
+        "registerCycle": 10000,
+        "register": true,
+        "cleanUpCycle": 2000,
+        "timeout": 30000,
+        "maxSession": 1,
+    }
+}
+
+Starting Selenium on your workstation:
+
+  In one command window:
+
+  >> cd WebDriverGrid
+  >> java -jar selenium-server-standalone-2.42.2.jar -role hub -verbose
+
+  For information on setting up a grid: http://docs.seleniumhq.org/docs/07_selenium_grid.jsp
+  For general selenium remote webdriver capabilities: https://code.google.com/p/selenium/wiki/DesiredCapabilities
+
+  In another command window:
+
+  >> cd WebDriverGrid
+
+  For Firefox Testing:
+  >> java -jar selenium-server-standalone-2.42.2.jar -role node -nodeConfig="node.config.json" -verbose
+
+  For more information on the Firefox driver: https://code.google.com/p/selenium/wiki/FirefoxDriver
+
+  For Chrome Testing:
+  >> java -jar selenium-server-standalone-2.42.2.jar -role node -nodeConfig="node.config.json" -Dwebdriver.chrome.driver=e:\WebDriverGrid\chromedriver.exe
+
+  For more information on chrome driver: https://code.google.com/p/selenium/wiki/ChromeDriver
+  For capabilities information: https://sites.google.com/a/chromium.org/chromedriver/capabilities
+
+
+  For IE Testing: (Only works on windows)
+  >> java -jar selenium-server-standalone-2.42.2.jar -role node -nodeConfig="node.config.json" -Dwebdriver.ie.driver="e:\WebDriverGrid\IEDriverServer.64.exe
+
+  For Safari Testing:
+  >> ??
+
+  For more information on the safari driver: https://code.google.com/p/selenium/wiki/SafariDriver
+
+Go back to your sandbox and start the testing environment:
+
+  >> karma start
+
+
+Troubleshooting:
+
+Testing your workstation setup:
+
+    Selenium provide a webpage to view your hub at:  http://127.0.0.1:5555/wd/hub/static/resource/hub.html
+
+    From this page you can manually create sessions for each of the registered browsers to see if you have the configuration correct.
+
+    If you can't create session here, Karma won't be able to either.
+
+Firewall rules on windows.
+    - If you have a firewall on your workstation, you must disable it or open an inbound require for port 4444 and 5555.
+    - If you have a firewall, you may also need to create an outbound rule for the call back on port ????
+
+Paths on windows.
+    - If you have the browser drivers in the path, you don't need to provide them on the java command line if they have the original file names.
+    - If you change the filenames or they are not on the path, you much pass the correct -D paramter to the java command line.
+
+Firewall rules on mac.?

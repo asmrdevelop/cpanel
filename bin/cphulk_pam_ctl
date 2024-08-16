@@ -1,0 +1,182 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - bin/cphulk_pam_ctl                      Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package cphulk_pam_ctl;
+
+use cPstrict;
+
+use Cpanel::SafeFile ();
+use Cpanel::Logger   ();
+
+### This version number should match the values in /u/l/c/bin/hulkdsetup
+### and the pam_hulk RPM.
+my $version = '4.1';
+
+our $PAMD_DIR  = q[/etc/pam.d];
+our $PAMD_CONF = q[/etc/pam.conf];
+our $logger    = Cpanel::Logger->new();
+
+my $rPAM_CONFIG = {
+    'linux' => {
+        'pamobj'   => '/lib64/security/pam_hulk.so',
+        'pam.d'    => "%method%\trequired\t%dir%/pam_hulk.so\n",
+        'pam.conf' => "%service%\t%method%\trequired\t%dir%/pam_hulk.so\n",
+    },
+};
+
+my $system = 'linux';
+
+exit( run(@ARGV) // 0 ) unless caller;
+
+sub run (@args) {
+
+    if ( !defined( $rPAM_CONFIG->{$system} ) ) {
+        die "$0: $system is not supported";
+    }
+
+    my $action = $ARGV[0] // '';
+
+    if ( $action eq '--enable' ) {
+        activate_pam();
+    }
+    elsif ( $action eq '--disable' ) {
+        deactivate_pam();
+    }
+    else {
+        print "$0: usage [--enable|--disable]\n";
+        return 0 if $action =~ m{^--help};
+        return 1;
+    }
+
+    return 0;
+}
+
+sub get_pam_module_list() {
+    opendir( my $pamd, $PAMD_DIR ) or return [];
+    my @MODULES = grep( !/^\./, readdir($pamd) );
+    closedir($pamd);
+
+    return \@MODULES;
+}
+
+sub mod_hulkd_pamconf ($action) {
+
+    return unless -e $PAMD_CONF;
+
+    my $service;
+    my $method;
+    my $dir;
+
+    my $plock = Cpanel::SafeFile::safeopen( my $fh, '+<', $PAMD_CONF );
+    if ( !$plock ) {
+        $logger->warn("Could not edit $PAMD_CONF");
+        return;
+    }
+    my @PAMD = <$fh>;
+    @PAMD = grep( !/_hulk/, @PAMD );    # delete all lines related to hulk
+    seek( $fh, 0, 0 );
+    foreach my $line (@PAMD) {
+
+        if ( $line =~ m/^\s*(\S+)\s+(\S+)\s+\S+\s+(\S+)/ ) {
+            $service = $1;
+            $method  = $2;
+            $dir     = pam_basedir($3);
+        }
+
+        if ( defined $method && $method eq 'auth' && $line =~ m/pam_unix/ && $action =~ m/add/i ) {
+            my $config_line = $rPAM_CONFIG->{$system}->{'pam.conf'};
+            $config_line =~ s/\%service\%/$service/g;
+            $config_line =~ s/\%method\%/$method/g;
+            if ($dir) {
+                $config_line =~ s/\%dir\%/$dir/g;
+            }
+            else {
+                $config_line =~ s/\%dir\%\///g;
+            }
+
+            print {$fh} $config_line;
+        }
+        print {$fh} $line;
+    }
+    truncate( $fh, tell($fh) );
+    Cpanel::SafeFile::safeclose( $fh, $plock );
+
+    return 1;
+}
+
+sub mod_hulkd_pamd ( $service, $action ) {
+
+    my $service_file = $PAMD_DIR . '/' . $service;
+
+    return unless -e $service_file;
+
+    my $dir;
+    my $method;
+    my $plock = Cpanel::SafeFile::safeopen( my $fh, '+<', $service_file );
+    if ( !$plock ) {
+        $logger->warn("Could not edit $service_file");
+        return;
+    }
+
+    my @PAMD = <$fh>;
+    @PAMD = grep( !/_hulk/, @PAMD );
+    seek( $fh, 0, 0 );
+    foreach my $line (@PAMD) {
+        if ( $line =~ m/^\s*(\S+)\s+\S+\s+(\S+)/ ) {
+            $method = $1;
+            $dir    = pam_basedir($2);
+        }
+        if ( $method && $method eq 'auth' && $line =~ m/pam_unix/ && $action =~ m/add/i ) {
+            my $config_line = $rPAM_CONFIG->{$system}->{'pam.d'};
+            $config_line =~ s/\%method\%/$method/g;
+            if ($dir) {
+                $config_line =~ s/\%dir\%/$dir/g;
+            }
+            else {
+                $config_line =~ s/\%dir\%\///g;
+            }
+            print {$fh} $config_line;
+        }
+        print {$fh} $line;
+    }
+    truncate( $fh, tell($fh) );
+    Cpanel::SafeFile::safeclose( $fh, $plock );
+
+    return 1;
+}
+
+sub pam_basedir ($file) {
+    my @FILE = split( /\//, $file );
+    pop @FILE;
+
+    return '' unless scalar @FILE;
+    return join( '/', @FILE );
+}
+
+sub deactivate_pam() {
+    my $pmodref = get_pam_module_list();
+
+    foreach my $service ( @{$pmodref} ) {
+        mod_hulkd_pamd( $service, 'delete' );
+    }
+    mod_hulkd_pamconf('delete');
+
+    return;
+}
+
+sub activate_pam() {
+    my $pmodref = get_pam_module_list();
+
+    foreach my $service ( @{$pmodref} ) {
+        mod_hulkd_pamd( $service, 'add' );
+    }
+    mod_hulkd_pamconf('add');
+
+    return;
+}
+
+1;

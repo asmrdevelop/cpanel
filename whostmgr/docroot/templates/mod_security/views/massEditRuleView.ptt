@@ -1,0 +1,104 @@
+<div>
+    <div class="row">
+        <div class="col-xs-10">
+            [% locale.maketext('Use the text box to edit all of your custom [asis,ModSecurity™] rules.') %]
+        </div>
+    </div>
+</div>
+
+<div>
+    <h1>
+        [% locale.maketext('Edit Custom [asis,ModSecurity™] Rules') %]
+    </h1>
+    <div class="col-xs-12 col-sm-8 col-md-8 col-lg-8" ng-show="notice">
+        <div class="alert alert-info">
+            <span class="glyphicon glyphicon-info-sign"></span>
+            <div class="alert-message" id="ajax-notices">
+                <strong>[% locale.maketext('Processing') %]</strong>
+                <span id="notice" ng-bind-html="notice | break"></span>
+            </div>
+        </div>
+    </div>
+
+    <form name="form" novalidate class="layout-medium ng-pristine ng-valid container">
+        <div class="row">
+            <div class="col-xs-12 col-sm-12 col-md-9 col-lg-8">
+                <label>[% locale.maketext('Rules') %]</label>
+            </div>
+            <div class="hidden-xs hidden-sm col-md-3 col-lg-4">
+                <label>[% locale.maketext('References') %]</label>
+            </div>
+        </div>
+        <div class="row">
+            <div class="col-xs-12 col-sm-12 col-md-9 col-lg-8">
+                <progressbar value="progress" ng-show="showProgress">{{progress}}%</progressbar>
+            </div>
+        </div>
+        <div class="row">
+            <div class="col-xs-12 col-sm-12 col-md-9 col-lg-8">
+                <textarea id="txtRules" class="form-control rule-editor" name="txtRules" ng-model="rules" auto-focus ng-disabled="cantEdit"></textarea>
+            </div>
+            <div class="col-xs-12 col-sm-12 col-md-3 col-lg-4">
+                <h2 class="visible-xs visible-sm">[% locale.maketext('References') %]</h3>
+                <ul class="list-group">
+                    <li class="list-group-item">
+                        [% # Don't switch this to a go.cpanel.net redirect. See cases 117165, 117345.
+                           SET manual_url = 'https://github.com/SpiderLabs/ModSecurity/wiki/Reference-Manual-%28v2.x%29' %]
+                        <a id="ref-manual" href="[% manual_url %]" target="_blank">[% locale.maketext('[asis,ModSecurity™] Specification Reference') %] <span class="fas fa-external-link-alt"></span></a>
+                        <ul class="list-unstyled list-indent">
+                            <li>
+                                <a id="ref-SecRule" href="[% manual_url %]#SecRule" target="_blank">[% locale.maketext("[asis,SecRule] Reference") %] <span class="fas fa-external-link-alt"></span></a>
+                            </li>
+                            <li>
+                                <a id="ref-SecAction" href="[% manual_url %]#SecAction" target="_blank">[% locale.maketext("[asis,SecAction] Reference") %] <span class="fas fa-external-link-alt"></span></a>
+                            </li>
+                            <li>
+                                <a id="ref-Variables" href="[% manual_url %]#Variables" target="_blank">[% locale.maketext("[asis,Variables] Reference") %] <span class="fas fa-external-link-alt"></span></a>
+                            </li>
+                            <li>
+                                <a id="ref-Actions" href="[% manual_url %]#Actions" target="_blank">[% locale.maketext("[asis,Actions] Reference") %] <span class="fas fa-external-link-alt"></span></a>
+                            </li>
+                            <li>
+                                <a id="ref-Transforms" href="[% manual_url %]#Transformation_functions" target="_blank">[% locale.maketext("[asis,Transformations] Reference") %] <span class="fas fa-external-link-alt"></span></a>
+                            </li>
+                        </ul>
+                    </li>
+                    <li class="list-group-item">
+                        <a id="ref-FAQ" href="https://go.cpanel.net/ModSecurityReference-FAQ" target="_blank">[% locale.maketext('[asis,ModSecurity™] FAQ') %] <span class="fas fa-external-link-alt"></span></a>
+                    </li>
+                </ul>
+            </div>
+        </div>
+
+        <div class="row">
+            <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                <span class="help-block">
+                [% locale.maketext('Do you want to deploy your rules and restart [asis,Apache]?') %]
+                </span>
+                <div class="checkbox">
+                    <label>
+                        <input type="checkbox"
+                               name="chkDeploy"
+                               id="chkDeploy"
+                               ng-model="deploy"
+                               ng-disabled="cantEdit"
+                               ng-checked="deploy === true">
+                        <span id="chkLabel">[% locale.maketext('Deploy and Restart [asis,Apache]') %]</span>
+                    </label>
+                </div>
+                <span class="help-block">
+                [% locale.maketext('The system will deploy any other unpublished changes when you select this checkbox.') %]
+                </span>
+
+            </div>
+        </div>
+
+        <div class="row controls">
+            <div class="controls col-xs-12 col-sm-10 col-md-8 col-lg-6">
+                <button id="btnSaveBottom" class="btn  btn-primary" ng-disabled="disableSave(form)" ng-click="save(form, true)">[% locale.maketext('Save') %]</button>
+                <button id="btnCancel" class="btn  btn-link" ng-click="cancel()">[% locale.maketext('Cancel') %]</button>
+                <span spinner id="loadingSpinner" class="addSpinner" title="[% locale.maketext('Loading …') %]"></span>
+            </div>
+        </div>
+    </form>
+</div>

@@ -1,0 +1,226 @@
+[%
+USE JSON;
+
+WRAPPER 'master_templates/master.tmpl' theme="yui";
+    app_key = 'manage_hooks'
+
+-%]
+[% PROCESS '_ajaxapp_styles.tmpl' -%]
+[% PROCESS '_ajaxapp_header.tmpl' -%]
+
+[% null = locale.set_context_html %]
+
+<script type="text/plain" id="hook_to_reorder_template">
+<div class="hook-wrapper">
+    <div class="hook-to-reorder" id="reorder-{id}">
+        <div class="hook-name">{hook}</div>
+        <div class="hook-id">([% locale.maketext('ID: [_1]',"<code>{id}</code>") %])</div>
+    </div>
+</div>
+</script>
+
+<script type="text/plain" id="reorder_hooks_template">
+<p>[% locale.maketext('Drag the following hooks into their new order, then save.') %]</p>
+<div class="hook-reorder-container">{hooks_to_reorder}</div>
+</script>
+
+<script type="text/plain" id="delete_prompt_template">
+<p class="delete-highlight">[% locale.maketext("Event/Hook: [_1]",'{{hook}}') %]</p>
+<p class="delete-highlight">[% locale.maketext("Insertion point: [_1]",'{{insertion}}') %]</p>
+<p>[% locale.maketext('This hook may be part of an installed application, and deleting it may break that application.') %]<br />
+[% locale.maketext('Are you sure you want to delete this hook?') %]</p>
+</script>
+
+<script type="text/plain" id="details_template">
+<div class="details-error-notice"></div>
+<table class="details-table">
+<tr><th class="header">[% locale.maketext('Category:') %]</td><td>{category}</td></tr>
+<tr><th class="header">[% locale.maketext('Event:') %]</td><td>{event}</td></tr>
+<tr><th class="header">[% locale.maketext('Stage:') %]</td><td>{stage}</td></tr>
+<tr><td colspan="99"><p class="details-notes">{stage_description}</p></td></tr>
+</table>
+<div class="attribute blocking-on">[% locale.maketext('Blocking is enabled for this stage. Hooks in this stage may prevent the event’s execution.') %]</div>
+<div class="attribute blocking-off">[% locale.maketext('Blocking is enabled for this stage. Hooks in this stage cannot prevent the event’s execution.') %]</div>
+<div class="view-break"></div>
+<table class="details-table bottom-details-table">
+<tr><th class="header">[% locale.maketext('Hook:') %]</td><td>{hook}</td></tr>
+<tr><th class="header">[% locale.maketext('ID:') %]</td><td>{id}</td></tr>
+<tr><td colspan="99"><label for="{id}-notes">[% locale.maketext('Notes:') %]<br /><textarea id="{id}-notes" class="hook-notes" name="hook_notes" width="365px">{notes}</textarea></td></tr>
+</table>
+<div class="attributes-header">[% locale.maketext('Attributes:') %]</div>
+<div class="attribute enabled-on">[% locale.maketext('This hook is enabled.') %]</div>
+<div class="attribute enabled-off">[% locale.maketext('This hook is disabled.') %]</div>
+<div class="attribute escalate-on">[% locale.maketext('This hook runs as the root user.') %]</div>
+<div class="attribute escalate-off">[% locale.maketext('This hook runs as a normal user.') %]</div>
+<div class="attribute check-on">[% locale.maketext('A check action is configured.') %]<br>
+    <span class="attribute-detail">[% locale.maketext('Action: [output,class,_1,attribute-value]','{check}') %]</span>
+</div>
+<div class="attribute check-off">[% locale.maketext('No check action is configured.') %]</div>
+<div class="attribute rollback-on">[% locale.maketext('A rollback action is configured.') %]<br>
+    <span class="attribute-detail">[% locale.maketext('Action: [output,class,_1,attribute-value]','{rollback}') %]</span>
+</div>
+<div class="attribute rollback-off">[% locale.maketext('No rollback action is configured.') %]</div>
+</script>
+
+<ul class="hooks-head">
+  <li><p class="description">[% locale.maketext('This interface is used to manage hooks that already exist on your server. For information on how to add hooks, what can be hooked into, and how to write hooks, please see the documentation at [output,url,_1,target,_blank].','https://go.cpanel.net/standardhooksdocs') %]</p>
+
+    <p class="description">[% locale.maketext('Individual hooks are always sorted in execution order. You can reorder hooks using the up/down arrows on the left side of each hook’s table row.') %]</p>
+    <div id="cjt_pagenotice_container"></div>
+</li>
+  <li class="legend-box" [% !data.structured_hooks.size ? 'style="display:none"': '' %]><h4>[% locale.maketext('Legend') %]</h4>
+    <ul class="hooks-legend">
+    <li><img src="[% MagicRevision("/images/hooks/hks-enabled.png") %]" alt="" height="16px" width="16px"/><span>[% locale.maketext('Enabled') %]</span></li>
+    <li><img src="[% MagicRevision("/images/hooks/hks-blocking.png") %]" alt=""  height="16px" width="16px"/><span>[% locale.maketext('Blocking') %]</span></li>
+    <li><img src="[% MagicRevision("/images/hooks/hks-escalate.png") %]" alt=""  height="16px" width="16px"/><span>[% locale.maketext('Escalated') %]</span></li>
+    <li><img src="[% MagicRevision("/images/hooks/hks-check.png") %]" alt=""  height="16px" width="16px"/><span>[% locale.maketext('Check') %]</span></li>
+    <li><img src="[% MagicRevision("/images/hooks/hks-rollback.png") %]" alt=""  height="16px" width="16px"/><span>[% locale.maketext('Rollback') %]</span></li>
+    </ul>
+  </li>
+</ul>
+
+
+<script>
+var no_hooks_notice = new CPANEL.widgets.Page_Notice( {
+    level: "info",
+    content: "[% locale.maketext('No hooks are currently installed.') %]",
+    visible: [% !data.structured_hooks.size ? 'true' : 'false' -%]
+} );
+</script>
+
+[% IF data.structured_hooks.size -%]
+
+<div id="hooks_section">
+
+<label for="table_search_box">[% locale.maketext('Search:') %]</label>
+[%# onclick because WebKit has a control for clearing the search box %]
+<input id="table_search_box" type="search" onkeyup="update_table_search()" onclick="update_table_search()" placeholder="[% locale.maketext('Search …') %]">
+<div id="expand_collapse">
+<button class="btn-secondary" type="button" onclick="collapse_all()">[% locale.maketext('Collapse All') %]</button>
+<button class="btn-secondary" type="button" onclick="expand_all()">[% locale.maketext('Expand All') %]</button>
+</div>
+
+<div id="no_hooks_match_message" style="display:none">
+[% locale.maketext('No hooks match your search.') -%]
+</div>
+
+[% SET hooks_by_key = {} -%]
+[% SET stage_descriptions = {} -%]
+[% SET stage_orders = {} -%]
+
+[% FOR cat_evts = data.structured_hooks -%]
+<div class="category-container" id="[% cat_evts.category %]-container">
+    <div class="hd">
+        <span class="header">[% cat_evts.category FILTER html -%]</span>
+    </div>
+    <div class="bd">
+        <table id="[% cat_evts.category %]-table" class="hooks-table cpanel-table">
+        <thead>
+            <tr>
+                <th></th>
+                <th class="safe-sortable sorted-asc" onclick="reverse_sort([% cat_evts.category.json() FILTER html -%],this)"><span class="liner">[% locale.maketext('Event/Hook') %]</span></th>
+                <th>[% locale.maketext('Stage') %]</th>
+                <th>[% locale.maketext('Description/Notes') %]</th>
+                <th>[% locale.maketext('Attributes') %]</th>
+                <th>[% locale.maketext('Actions') %]</th>
+            </tr>
+        </thead>
+        <tbody>
+        [% FOR evt_stgs = cat_evts.events -%]
+        [% SET stage_key = cat_evts.category _ '-' _ evt_stgs.event -%]
+        [% stage_key = stage_key.replace(':','-'); -%]
+        [% stage_orders.$stage_key = evt_stgs.stage_order -%]
+        [% SET even = 1; -%]
+        [% FOR stg_acts = evt_stgs.stages -%]
+            [% SET key = stage_key _ '-' _ stg_acts.stage -%]
+            [% hooks_by_key.$key = [] -%]
+            [% stage_descriptions.$key = stg_acts.description -%]
+
+            <tr id="[% "$key-event" %]" class="event-stage [% even ? 'shown-even' : 'shown-odd' %]">
+                <td class="toggle"><a class="toggle-link" href="javascript:void(0)" onclick="toggle_hooks('[% key FILTER html %]',this)" title="[% locale.maketext('Toggle View') %]">&#9660;</a></td>
+                <td class="event">[% evt_stgs.event FILTER html -%]</td>
+                <td class="stage">[% stg_acts.stage FILTER html -%]</td>
+                <td class="description">[% stg_acts.description FILTER html -%]</td>
+                <td class="attributes">
+                    [% IF stg_acts.attributes.blocking -%]
+                        <span class="attribute blocking-on" title="[% locale.maketext('Blocking is enabled for this stage. Hooks in this stage may prevent the event’s execution.') %]"></span>
+                    [% ELSE -%]
+                        <span class="attribute blocking-off" title="[% locale.maketext('Blocking is disabled for this stage. Hooks in this stage cannot prevent the event’s execution.') %]"></span>
+                    [% END -%]
+                </td>
+                <td class="actions">
+[%# TODO: Remove this before merge -%]
+                    [% IF 0 && stg_acts.actions.size > 1 -%]
+                        <a href="javascript:void(0)" onclick="reorder_hooks([% cat_evts.category.json() _ ',' _ evt_stgs.event.json() _ ',' _ stg_acts.stage.json() FILTER html %], this)">[% locale.maketext('Reorder Hooks') %]</a></td>
+                    [% END -%]
+                </td>
+            </tr>
+
+            [% FOR action = stg_acts.actions -%]
+                [% hooks_by_key.$key.push( action ) -%]
+                [% SET row_classes = [
+                    'hook',
+                    "$key-hook",
+                ] %]
+                [% row_classes.push( action.enabled ? 'hook-enabled' : 'hook-disabled' ) -%]
+                [% IF loop.first; row_classes.push('first-hook'); END -%]
+                [% IF loop.last; row_classes.push('final-hook'); END -%]
+                <tr id="hook-[% action.id FILTER html %]" class="[% row_classes.join(' ') FILTER html %]">
+                    <td>
+                                        </td>
+                    <td class="action" colspan="2">
+                    [% IF stg_acts.actions.size > 1 -%]
+                        <div class="hook-movers">
+                            <a href="javascript:void(0)" onclick="move_up([% action.id.json() FILTER html%], this)" class="up-link" title="[% loop.first ? locale.maketext('Move this hook to the bottom.') : locale.maketext('Move this hook up.') %]">&#9650;</a>
+                            <a href="javascript:void(0)" onclick="move_down([% action.id.json() FILTER html%], this)" class="down-link" title="[% loop.last ? locale.maketext("Move this hook to the top.") : locale.maketext("Move this hook down.") %]">&#9660;</a>
+                        </div>
+                    [% END -%]
+                    <span class="hook-event-detail">[% action.hook FILTER html -%]</span>
+                    </td>
+                    <td class="notes">[% action.notes FILTER html -%]</td>
+                    <td class="attributes">
+                        [% IF action.enabled -%]
+                            <span class="attribute enabled-on" title="[% locale.maketext('This hook is enabled.') %]"></span>
+                        [% ELSE -%]
+                            <span class="attribute enabled-off" title="[% locale.maketext('This hook is disabled.') %]"></span>
+                        [% END -%]
+                        [% IF action.escalateprivs -%]
+                            <span class="attribute escalate-on" title="[% locale.maketext('This hook runs as the root user.') %]"></span>
+                        [% ELSE -%]
+                            <span class="attribute escalate-off" title="[% locale.maketext('This hook runs as a normal user.') %]"></span>
+                        [% END -%]
+                        [% IF action.check -%]
+                            <span class="attribute check-on" title="[% locale.maketext('Check action: [_1]',action.check) FILTER html %]"></span>
+                        [% ELSE -%]
+                            <span class="attribute check-off" title="[% locale.maketext('No check action is configured.') %]"></span>
+                        [% END -%]
+                        [% IF action.rollback -%]
+                            <span class="attribute rollback-on" title="[% locale.maketext('Rollback action: [_1]',action.rollback) FILTER html %]"></span>
+                        [% ELSE -%]
+                            <span class="attribute rollback-off" title="[% locale.maketext('No rollback action is configured.') %]"></span>
+                        [% END -%]
+                    </td>
+                    <td class="actions"><a href="javascript:void(0)" onclick="show_details([% action.id.json() FILTER html %], this)" title="[% locale.maketext("Show details for this hook.") %]">[% locale.maketext('Details') %]</a>&nbsp;&nbsp;<a href="javascript:void(0)" onclick="toggle_enabled([% action.id.json() FILTER html %], this)" title="[% action.enabled ? locale.maketext('Disable this hook.') : locale.maketext('Enable this hook.') %]">[% action.enabled ? locale.maketext('Disable') : locale.maketext('Enable') %]</a>&nbsp;&nbsp;<a href="javascript:void(0)" onclick="delete_prompt([% action.id.json() FILTER html %], this)" title="[% locale.maketext('Delete this hook.') %]">[% locale.maketext('Delete') %]</a></td>
+                </tr>
+            [% END -%]
+        [% END -%]
+        [% END -%]
+        </tbody>
+        </table>
+    </div>
+</div>
+[% END -%]
+</div>
+
+[% PROCESS '_ajaxapp_footer.tmpl' -%]
+<script src="[% MagicRevision('/cjt/dragdrop.js') %]"></script>
+<script>
+var hooks_by_key = [% hooks_by_key.json() %];
+var stage_descriptions = [% stage_descriptions.json() %];
+var stage_orders = [% stage_orders.json() -%];
+</script>
+
+[% END -%]
+
+
+[% END -%]

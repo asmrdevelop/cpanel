@@ -1,0 +1,67 @@
+#!/bin/bash
+eval 'if [ -x /usr/local/cpanel/3rdparty/bin/perl ]; then exec /usr/local/cpanel/3rdparty/bin/perl -x -- $0 ${1+"$@"}; else exec /usr/bin/perl -x $0 ${1+"$@"}; fi;'    ## no critic qw(ProhibitStringyEval RequireUseStrict)
+  if 0;
+
+#!/usr/bin/perl
+# cpanel - scripts/dump_databases_and_users          Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+# NOTE: This script is designed to run on other systems during a transfer, usually as /usr/bin/perl.
+
+use strict;
+
+BEGIN {
+    unshift @INC, '/usr/local/cpanel';
+    my %seen_inc;
+    @INC = grep { !/(?:^\.|\.\.|\/\.+)/ && !$seen_inc{$_}++ } @INC;
+    undef %seen_inc;
+}
+
+our $VERSION = '1.2';
+
+#
+# No USE statements so this runs on other platforms
+# We must require everything in AFTER the version line
+#
+
+if ( @ARGV && grep( m/version/, @ARGV ) ) {
+    print "dump_databases_and_users VERSION $VERSION\n";
+    exit(0);
+}
+
+require Cpanel::Config::Users;
+require Cpanel::DB::Map::Reader;
+require Cpanel::JSON;
+require Cpanel::PwCache::Build;
+
+Cpanel::PwCache::Build::init_passwdless_pwcache();
+
+my @cpusers    = Cpanel::Config::Users::getcpusers();
+my $master_map = {};
+
+foreach my $cpuser ( Cpanel::Config::Users::getcpusers() ) {
+    my $dbmap = eval { Cpanel::DB::Map::Reader->new( cpuser => $cpuser, engine => 'mysql' ) };
+    if ($dbmap) {
+
+        my @myusers = $dbmap->get_dbusers();
+        my @mydbs   = $dbmap->get_databases();
+
+        my @pgusers = $dbmap->get_dbusers();
+        my @pgdbs   = $dbmap->get_databases();
+
+        @{ $master_map->{'dbs'}{'PGSQL'} }{@pgdbs} = ( ( { 'owner' => $cpuser } ) x scalar @pgdbs );
+        @{ $master_map->{'dbs'}{'MYSQL'} }{@mydbs} = ( ( { 'owner' => $cpuser } ) x scalar @mydbs );
+
+        @{ $master_map->{'users'}{'PGSQL'} }{@pgusers} = ( ( { 'owner' => $cpuser } ) x scalar @pgusers );
+        @{ $master_map->{'users'}{'MYSQL'} }{@myusers} = ( ( { 'owner' => $cpuser } ) x scalar @myusers );
+    }
+}
+
+delete $master_map->{'users'}{'PGSQL'}{''};
+delete $master_map->{'users'}{'MYSQL'}{''};
+delete $master_map->{'dbs'}{'PGSQL'}{''};
+delete $master_map->{'dbs'}{'MYSQL'}{''};
+
+print Cpanel::JSON::Dump($master_map);

@@ -1,0 +1,56 @@
+#!/bin/bash
+# spamd - System V init script for CentOS
+#
+# chkconfig: 2345 58 58
+# description: spamd
+
+# Source function library.
+. /etc/init.d/cpfunctions
+
+if [ -e '/etc/spamddisable' ]; then
+	exit 1
+fi
+
+NAME='spamd'
+PROG="/usr/bin/$NAME"
+PIDFILE="/var/run/$NAME.pid"
+
+# Source cPanel spamd config file
+if [ -e '/etc/cpspamd.conf' ]; then
+    . /etc/cpspamd.conf
+fi
+
+start()
+{
+    echo "Starting $NAME: "
+    daemon $PROG -d ${local+"--local"} --allowed-ips=${allowedips-127.0.0.1} \
+        ${timeouttcp+"--timeout-tcp="}${timeouttcp} ${timeoutchild+"--timeout-child="}${timeoutchild} \
+        --pidfile=${pidfile-$PIDFILE} --max-children=${maxchildren=5} \
+        ${maxconnperchild+"--max-conn-per-child="}${maxconnperchild} \
+        ${maxspare+"--max-spare="}${maxspare}
+}
+
+stop()
+{
+    echo "Shutting down $NAME: "
+    killproc $PROG
+}
+
+case "$1" in
+	start)
+	    start
+		;;
+	stop)
+	    stop
+	    ;;
+	restart)
+        stop
+        start
+        ;;
+	status)
+	    status $NAME
+	    ;;
+	*)
+	    echo "Usage: $NAME {start|stop|restart|status}"
+	    ;;
+esac

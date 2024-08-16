@@ -1,0 +1,83 @@
+[%
+    USE Whostmgr;
+    USE JSON;
+    USE EasyApache;
+
+    SET ea_version = EasyApache.get_ea_version();
+
+    SET easy_apache_url = Whostmgr.ENV.cp_security_token _ '/scripts7/EasyApache4';
+
+    SET PAGE_BASE = '/scripts2/manage_mod_security_vendors/';
+    SET PAGE_NAME = Whostmgr.get_page_name_by_url(PAGE_BASE);
+
+    WRAPPER 'master_templates/master.tmpl'
+        header = locale.makevar(PAGE_NAME),
+        breadcrumburl = PAGE_BASE,
+        base =  PAGE_BASE,
+        stylesheets = [
+            Whostmgr.find_file_url('/templates/mod_security/vendors.min.css')
+        ],
+        theme='bootstrap',
+        CJT2_EXCLUSIVE = 1,
+        app_key='modsecurity_vendors';
+%]
+
+<a id="top"></a>
+
+<div ng-controller="applicationController">
+    <div ng-controller="commonController" class="ng-cloak" ng-cloak>
+        <div>
+            <div class="row view-navigation">
+                <div class="col-xs-12 col-sm-6">
+                    <h2 id="applicationSubTitle"></h2>
+                </div>
+                <div class="col-xs-12 col-sm-6 text-right-sm" ng-show="isCurrentView('/vendors') && isInstalled">
+                    <div class="navigation-controls">
+                        <button id="addVendor"
+                                class="btn btn-default"
+                                ng-click="loadView('vendors/add')">
+                            [% locale.maketext('Add Vendor') %]
+                        </button>
+                    </div>
+                </div>
+            </div>
+            <div class="row ng-cloak" ng-cloak ng-show="!isInstalled">
+                <div class="col-xs-12">
+                    <div class="alert alert-info">
+                        <span class="glyphicon glyphicon-info-sign"></span>
+                        <div class="alert-message" id="modsecDisabledInfo">
+                            <strong>[% locale.maketext('Info:') %]</strong>
+                            [% IF ea_version > 3 -%]
+                                [% locale.maketext('[asis,ModSecurity] is not enabled on your server. You cannot manage vendors with [asis,ModSecurity] disabled. Please refer to this document on [output,url,_1,how to install ModSecurity,target,_blank].', "https://go.cpanel.net/InstallModSecurity") %]
+                            [% ELSE -%]
+                                [% locale.maketext('[asis,ModSecurity] is not enabled on your server. You cannot manage vendors with [asis,ModSecurity] disabled. To enable [asis,ModSecurity] go to [output,url,_1,EasyApache] and select [asis,Mod Security] as an option when attempting to rebuild [asis,Apache].', easy_apache_url) %]
+                            [% END -%]
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="row">
+                <div class="col-xs-12">
+                    <cp-alert-list></cp-alert-list>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="content"
+         class="ng-cloak"
+         ng-view
+         ng-cloak></div>
+</div>
+
+<script type="text/javascript">
+    var PAGE = PAGE || {};
+    PAGE.NAME = 'manage_mod_security_vendors';
+    PAGE.MAIN_TITLE = [% PAGE_NAME.json() %]; // common parent of all views (untranslated)
+    PAGE.installed = [% data.installed == 1 ? 'true' : 'false' %];
+    PAGE.vendors = [% data.vendors.json() %];
+</script>
+
+[% PROCESS 'master_templates/cjt2_header_include.tt' %]
+
+[% END %]

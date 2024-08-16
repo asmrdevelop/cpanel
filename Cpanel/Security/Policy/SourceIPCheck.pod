@@ -1,0 +1,122 @@
+
+# cpanel - Cpanel/Security/Policy/SourceIPCheck.pod
+#                                                  Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+=head1 NAME
+
+Cpanel::Security::Policy::SourceIPCheck - Cpanel::SecurityPolicy plugin for recognizing a user
+
+=head1 DESCRIPTION
+
+The C<Cpanel::Security::Policy::SourceIPCheck> plugin validates a user logging
+into the system from an unknown IP address. This validation is handled through
+security questions driven by the L<Cpanel::Security::Policy::SourceIPCheck::UI>
+modules.
+
+The security policy enforced by this module consists of two parts:
+
+=over 4
+
+=item 1.
+
+trusted request IP address
+
+=item 2.
+
+a method for validating a new IP address as associated with the real user
+
+=back
+
+This system is applied in addition to the normal password-based login. This
+approach limits logins to IP addresses that have been validated by the user.
+
+If this is a cluster request,
+
+Like all L<Cpanel::SecurityPolicy> plugins, it is loaded by that module and not
+used directly by the programmer.
+
+=head1 INTERFACE
+
+=head2 Cpanel::Security::Policy::SourceIPCheck::check( $app, $acct, $sec, $cpconf, $cookie )
+
+This is the main interface to the module. When validating a module, this method
+is called to verify if the request is coming from a recognized IP address. The
+parameters are:
+
+=over 4
+
+=item $app
+
+The name of the application that is being accessed.
+
+=item $acct
+
+A reference to a hash containing account information about the user logging in.
+
+=item $sec
+
+A reference to a hash containing security information about the user logging in.
+
+=item $cpconf
+
+A reference to the CPCONF hash for this server.
+
+=item $cookie
+
+A reference to a hash of HTTP cookies that were part of the request.
+
+=back
+
+If the IP address is successfully verified, this method returns 0. Otherwise,
+the method returns a priority code of 20.
+
+=head2 Cpanel::Security::Policy::SourceIPCheck::fetch_ip_list( $dir, $user )
+
+Return a hash ref where the keys are allowed IP addresses for the supplied
+user.
+
+=head1 DIAGNOSTICS
+
+=over
+
+=item C<< I am missing the users remote ip.  Security Policy requires exec termination. >>
+
+If we cannot determine the user's remote IP address, we cannot validate the origin
+of the request. Therefore, we will not allow the request to continue.
+
+=back
+
+
+=head1 CONFIGURATION AND ENVIRONMENT
+
+Cpanel::Security::Policy::SourceIPCheck requires no configuration files or environment variables.
+
+The module depends on files in the directory F<$HOME/.cpanel/securitypolicy/iplist/>
+to recognize known IP addresses. It also depends on files in the directory
+F<$HOME/.cpanel/securitypolicy/questions/> to know whether or not security questions
+exist for this user.
+
+=head1 DEPENDENCIES
+
+L<Storable>, L<Cpanel::Security::Policy::SourceIPCheck::Util>. and
+L<Cpanel::DNSLib::Config>.
+
+=head1 INCOMPATIBILITIES
+
+None reported.
+
+=head1 BUGS AND LIMITATIONS
+
+No bugs have been reported.
+
+=head1 AUTHOR
+
+G. Wade Johnson  C<< wade@cpanel.net >>
+
+=head1 LICENSE AND COPYRIGHT
+
+Copyright (c) 2009, cPanel, Inc. All rights reserved.
+This code is subject to the cPanel license. Unauthorized copying is prohibited

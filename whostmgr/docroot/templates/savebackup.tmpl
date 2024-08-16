@@ -1,0 +1,32 @@
+[% WRAPPER 'master_templates/master.tmpl' theme="yui"
+	header=locale.maketext('Backup Configuration Saved')
+	breadcrumburl = '/scripts/backupset'
+-%]
+<pre>
+[% IF data.backup_onto_quota -%]
+Quotas cannot be built! Your cpbackup destination is on a filesystem which has quotas enabled.  Please move it to a filesystem which does not have quotas turned on or a separate partition/disk slice mounted at /backup.
+Backup has been disabled to prevent quota problems...
+[% ELSIF data.invalid_backup_conf_file -%]
+Only accounts can be backed up over FTP.  The configuration file backup option has been turned off.<br />
+[% ELSIF ! data.backupdir
+# Do not require user to specify backup dir for remote backups, only for local backups
+                           && ! data.ftp.enabled -%]
+No backup directory provided.
+Backup has been disabled to prevent file loss...
+[% ELSIF data.bad_backupdir -%]
+Setting the backup dir to [% data.backupdir FILTER html %] is a very, very bad idea.
+Backup has been disabled to prevent file loss...
+[% ELSIF data.backupdir_is_symlink -%]
+[% data.backupdir FILTER html %] is not a directory, but a symlink.
+Backup has been disabled to prevent file loss...
+[% ELSIF data.backupdir_nonexistent -%]
+[% data.backupdir FILTER html %] does not exist and could not be created.
+Backup has been disabled to prevent file loss...
+[% ELSIF data.backupdir_not_dir -%]
+[% data.backupdir FILTER html %] is not a directory.
+Backup has been disabled to prevent file loss...
+[% END -%]
+</pre>
+<br />
+<b>Backup configuration saved!</b>
+[% END #wrapper -%]

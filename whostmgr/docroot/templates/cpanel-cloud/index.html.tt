@@ -1,0 +1,62 @@
+[%
+# Copyright 2022 cPanel, L.L.C. - All rights reserved.
+# copyright@cpanel.net
+# https://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+%]
+
+[%
+USE Whostmgr;
+USE JSON;
+
+SET TEMPLATE_PATH = '/templates/cpanel-cloud/';
+SET breadcrumb_url = '/scripts7/cpanel-cloud';
+SET ROUTER_PATH   = cp_security_token _ breadcrumb_url;
+SET RESOURCE_PATH = cp_security_token _ TEMPLATE_PATH;
+SET style_sheets  = [];
+SET scripts       = []; # Do not change this name unless it is also changed in the partials below.
+
+# The following content is inserted by underscore-template-loader's require macro.
+#
+#----------------------------------------------------
+# ∨∨∨ THIS IS GENERATED CODE, DO NOT MODIFY IT ∨∨∨
+#----------------------------------------------------
+#
+# Build webpack css bundle list
+style_sheets.push(Whostmgr.find_file_url(TEMPLATE_PATH _ "styles.ef46db3751d8e999.css"));
+
+# Build webpack javascript bundle list
+scripts.push(Whostmgr.find_file_url(TEMPLATE_PATH _ "runtime.d6341b34e6b10ee7.js"));
+scripts.push(Whostmgr.find_file_url(TEMPLATE_PATH _ "vendor.dd9d3f2df892eb7f.js"));
+scripts.push(Whostmgr.find_file_url(TEMPLATE_PATH _ "polyfills.93a2763e7db1da97.js"));
+scripts.push(Whostmgr.find_file_url(TEMPLATE_PATH _ "main.2d5c605192f31837.js"));
+
+#
+# ^^^ THIS IS GENERATED CODE, DO NOT MODIFY IT ^^^
+#----------------------------------------------------
+
+SET locale_is_rtl = 0;
+
+IF locale.get_html_dir_attr() == 'rtl';
+    SET locale_is_rtl = 1;
+END;
+
+WRAPPER 'master_templates/master.tmpl'
+    app_key = 'cpanel_cloud',
+    breadcrumburl = breadcrumb_url,
+    base = RESOURCE_PATH,
+    stylesheets = style_sheets,
+    scripts = scripts,
+    theme = 'bootstrap',
+    CJT2_EXCLUSIVE=1,
+    is_ng = 1
+%]
+<cp-cloud-root></cp-cloud-root>
+<script>
+    window.PAGE = {
+        base: [% ROUTER_PATH.json() %],
+        locale_is_rtl: "[% locale_is_rtl %]",
+        securityToken: [% cp_security_token.json() %],
+    }
+</script>
+[% END %]

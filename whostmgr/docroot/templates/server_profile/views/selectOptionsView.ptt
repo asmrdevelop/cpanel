@@ -1,0 +1,78 @@
+<div ng-cloak>
+
+    <h3>[% locale.maketext("Select Options") %]</h3>
+
+    <div class="alert alert-info" role="alert" ng-if="licenseBasedServerProfile">
+        <p>
+            [% locale.maketext("This server’s license is for the “[_1]” profile, which has optional roles. You can configure which optional roles the server uses.", "{{selectedProfile.name}}") %]
+        </p>
+        [%
+            SET custom_url = Whostmgr.get_custom_url();
+            SET cpanel_url = cp_security_token _ '/scripts12/license_purchase_status/checkout?upgrade=1';
+
+            IF custom_url;
+                SET upgrade_link = custom_url;
+            ELSE;
+                SET upgrade_link = cpanel_url;
+            END;
+        %]
+        <p>
+            [% locale.maketext('To select a different profile, you must upgrade your server’s license.') %]
+            <a href="[% upgrade_link %]" title="[% locale.maketext('Upgrade the server’s license and login again.') %]"  rel='noopener'>
+                [% locale.maketext('Upgrade the server’s license and login again.') %]
+                <i class="fas fa-external-link-alt" aria-hidden="true"></i>
+            </a>
+        </p>
+    </div>
+
+    <h4>{{ selectedProfile.name }}</h4>
+
+    <div class="panel panel-default">
+        <div class="panel-body">
+            <div ng-if="selectedProfile.enabled_roles.length > 0">{{ selectedProfile.enabled_roles | rolesLocaleString:'Enables [list_and,_1].' }}</div>
+            <div ng-if="selectedProfile.disabled_roles.length > 0">{{ selectedProfile.disabled_roles | rolesLocaleString:'Disables [list_and,_1].' }}</div>
+            <div ng-if="selectedProfile.optional_roles.length > 0">{{ selectedProfile.optional_roles | rolesLocaleString:'[list_and,_1] [numerate,_2,is,are] optional.' }}</div>
+        </div>
+    </div>
+
+    <div cp-loading-panel id="determiningAvailableOptions" ng-show="loading">
+         [% locale.maketext("Determining available options …") %]
+    </div>
+
+    <div ng-if="!loading">
+
+        <div class="panel panel-info" ng-if="optional.length > 0">
+            <div class="panel-heading">[% locale.maketext("This profile has the following optional roles:") %]</div>
+            <div class="panel-body role-select-table">
+                <div class="row" ng-repeat="role in optional">
+                    <div class="cell toggle-cell">
+                        <toggle-switch id="{{role.module}}Toggle" ng-model="role.selected" on-toggle="role.selected = !role.selected"
+                            enabled-label="{{role.name}}" disabled-label="{{role.name}}" aria-label="{{role.name}}" class="roleSwitch"/>
+                    </div>
+                    <div class="cell profileDescription">
+                        <div class="roleDescription">
+                            <span>{{ role.description }}</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div>
+            <button ng-if="loaded"
+                class="btn btn-primary"
+                cp-action="continue()"
+                >
+                [% locale.maketext("Continue") %]
+            </button>
+            <button ng-if="loaded && !licenseBasedServerProfile"
+                class="btn btn-link"
+                ng-disabled="settingProfile"
+                cp-action="cancel()">
+                [% locale.maketext("Cancel") %]
+            </button>
+        </div>
+
+    </div>
+
+</div>

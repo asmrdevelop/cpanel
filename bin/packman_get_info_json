@@ -1,0 +1,30 @@
+#!/usr/local/cpanel/bin/python-packman
+# -*- coding: utf-8 -*-
+
+# cpanel - bin/packman_get_info_json               Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+# NOTE: We purposefully set this to the system python
+#       because we need to interact with the system yum library.
+
+from __future__ import print_function
+import sys
+import packman
+
+packman.init_yum()
+
+if len(sys.argv) != 2:
+    print("Usage:  " + sys.argv[0] + " <package name>")
+    sys.exit(1)
+
+package_name = sys.argv[1]
+response = packman.get_info_for_single_package(package_name, populate_provides=False)
+packman.output_json(response)
+# this optimization allows the caller
+# to be unblocked a tiny bit quicker
+
+sys.stdout.close()
+sys.stderr.close()
+sys.exit(0)

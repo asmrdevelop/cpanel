@@ -1,0 +1,82 @@
+[%
+USE Whostmgr;
+
+SET safe_hosts = [];
+FOR host = domains;
+  SET safe_host = host.html();
+  safe_hosts.push(safe_host);
+END;
+
+SET safe_host = locale.list_and( safe_hosts );
+
+%]
+
+[% WRAPPER 'master_templates/master.tmpl'
+    breadcrumburl = '/scripts2/gencrthtml'
+    theme="bootstrap" %]
+
+[% IF !data.status; %]
+<div class="alert alert-danger">
+    Failed to generate the Certificate Signing Request and Private Key.
+    <p>[% data.message FILTER html %]</p>
+</div>
+[% ELSE %]
+
+<p>
+    [% locale.maketext('The system has successfully generated the [output,acronym,CSR,Certificate Signing Request] and private key for “[output,strong,_1]”. The system also generated a self-signed certificate that you can temporarily use until you receive a signed certificate from your SSL certificate vendor.', safe_host) %]
+</p>
+
+[% IF data.email_message %]
+<p [% IF !data.email_status %]class="alert alert-danger"[% END %]>
+    [% data.email_message %]
+</p>
+[% END %]
+
+<form class="layout-medium">
+    <div class="form-group">
+        <div class="row">
+            <div class="col-xs-12 col-md-8">
+                <label for="csr" class="title">[% locale.maketext('Signing Request:') %]</label>
+            </div>
+        </div>
+        <div class="row">
+            <div class="col-xs-12 col-md-8">
+                <textarea rows="15" readonly="readonly" dir="ltr" id="csr" class="output-mono">[% data.csr FILTER html %]</textarea>
+            </div>
+        </div>
+    </div>
+    <div class="form-group">
+        <div class="row">
+            <div class="col-xs-12 col-md-8">
+            [% IF data.cert %]
+                <label for="cert" class="title">[% locale.maketext('Certificate:') %]</label>
+            [% END %]
+            </div>
+        </div>
+        <div class="row">
+            <div class="col-xs-12 col-md-8">
+            [% IF data.cert %]
+                <textarea rows="15" readonly="readonly" dir="ltr" id="cert" class="output-mono">[% data.cert FILTER html %]</textarea>
+            [% END %]
+            </div>
+        </div>
+    </div>
+    <div class="form-group">
+        <div class="row">
+            <div class="col-xs-12 col-md-8">
+                <label for="key" class="title">[% locale.maketext('Key:') %]</label>
+            </div>
+        </div>
+        <div class="row">
+            <div class="col-xs-12 col-md-8">
+                <textarea rows="15" readonly="readonly" dir="ltr" id="key" class="output-mono">[% data.key FILTER html %]</textarea>
+            </div>
+        </div>
+    </div>
+</form>
+[% END %]
+
+<div class="return-link">
+<b>[</b> <a href="[% cp_security_token %]/scripts2/gencrthtml">[% locale.maketext('Go Back') %]</a><b> ]</b>
+</div>
+[% END %]

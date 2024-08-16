@@ -1,0 +1,96 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/transfer_account_as_user        Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::transfer_account_as_user;
+
+use cPstrict;
+
+=encoding utf-8
+
+=head1 USAGE
+
+    transfer_account_as_user --host=the.source --user=hank
+
+=head1 DESCRIPTION
+
+This utility transfers an account from a remote server to the local one,
+authenticated as that account on the remote.
+
+The parameters are:
+
+=over
+
+=item * C<--host> - The remote (source) hostname or IP address. Required.
+
+=item * C<--user> - The name of the user to transfer.
+
+=item * C<--session> - (optional) An argument, in C<key=value> format, to give
+to the C<create_remote_user_transfer_session> API call. May be given 0 or
+more times.
+
+=item * C<--enqueue> - (optional) An argument, in C<key=value> format, to give
+to the C<enqueue_transfer_item> API call. May be given 0 or more times.
+
+=back
+
+=head1 AUTHENTICATION
+
+This script will prompt for the user’s password. No other authentication
+mechanisms are supported currently.
+
+=head1 SEE ALSO
+
+F</usr/local/cpanel/scripts/transfer_accounts_as_root> is like this script
+but authenticates to the source server as root.
+
+=cut
+
+#----------------------------------------------------------------------
+
+use parent qw(
+  Cpanel::CLI::TransferAccounts
+);
+
+use constant _OPTIONS => (
+    __PACKAGE__->SUPER::_OPTIONS(),
+    'user=s',
+);
+
+__PACKAGE__->new(@ARGV)->run() if !caller;
+
+#----------------------------------------------------------------------
+
+sub run ($self) {
+    my ( $host, $username ) = $self->parse_opts();
+
+    my $authn_username = $username;
+
+    my ( $prompt, $prompt_var, @authn_args );
+
+    $prompt     = "Enter “$authn_username”’s password on “$host”:";
+    $prompt_var = 'password';
+
+    my $secret = $self->get_secret($prompt);
+
+    push @authn_args, ( $prompt_var => $secret );
+
+    my $guard = $self->create_session_and_aborter(
+        'create_remote_user_transfer_session',
+        {
+            host => $host,
+            @authn_args,
+        },
+    );
+
+    $self->enqueue_users( 'AccountRemoteUser', [$username] );
+
+    $self->do_transfer_and_finish();
+
+    return;
+}
+
+1;

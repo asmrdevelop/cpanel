@@ -1,0 +1,208 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - bin/create-swap                         Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package bin::create_swap;
+
+use strict;
+use warnings;
+
+use Getopt::Long ();
+
+use Cpanel::Locale                ();
+use Cpanel::Sys::Hardware::Memory ();
+use Cpanel::SafeFile              ();
+use Cpanel::SafeFile::Replace     ();
+use Cpanel::SafeRun::Errors       ();
+use Cpanel::SafeRun::Simple       ();
+use Cpanel::OSSys::Env            ();
+
+my $MB_FACTOR = 1024 * 1024;
+
+exit script(@ARGV) unless caller;
+
+sub new {
+    my ( $class, %args ) = @_;
+
+    return bless {%args}, $class;
+}
+
+sub script {
+    my (@args) = @ARGV;
+    my %options;
+
+    umask(077);
+
+    Getopt::Long::GetOptionsFromArray(
+        \@args,
+        \%options,
+        'help',
+        'size=s',
+        'verbose|v',
+        'if-needed',
+    ) or return usage(1);
+
+    return usage(0) if $options{'help'};
+
+    eval { main(%options) };
+    if ($@) {
+        print STDERR "E: $@\n";
+        return 2;
+    }
+
+    return 0;
+}
+
+sub main {
+    my (%options) = @_;
+
+    # The argument order to new matters for the unit tests.
+    my $obj = __PACKAGE__->new(
+        file  => '/usr/swpDSK',
+        fstab => '/etc/fstab',
+        %options,
+        size => parse_size( $options{'size'} ),
+    );
+
+    if ( Cpanel::OSSys::Env::get_envtype() eq 'virtuozzo' ) {
+        die $obj->locale->maketext('The system will not create a [asis,swap] file because it is not supported on Virtuozzo containers.');
+    }
+
+    if ( $obj->has_sufficient_space && $options{'if-needed'} ) {
+        $obj->note( $obj->locale->maketext('The system will not create a [asis,swap] file because sufficient memory or [asis,swap] space exists on your server.') );
+        return 0;
+    }
+    $obj->note( $obj->locale->maketext( 'The system will create a [asis,swap] file of [format_bytes,_1].', $obj->size * $MB_FACTOR ) );
+
+    $obj->disable_swap if $obj->is_swap_active;
+    $obj->create_swap;
+    $obj->enable_swap;
+    $obj->edit_fstab;
+    $obj->note( $obj->locale->maketext('The system created the [asis,swap] file successfully.') );
+    return 0;
+}
+
+sub create_swap {
+    my ($self) = @_;
+    my $file   = $self->{'file'};
+    my $size   = $self->{'size'};
+
+    my $output = Cpanel::SafeRun::Errors::saferunallerrors( 'dd', 'if=/dev/zero', "of=$file", "bs=$MB_FACTOR", "count=$size" );
+    die $self->locale->maketext( 'The system failed to allocate [format_bytes,_1] of disk space: [_2].', $size * $MB_FACTOR, $output ) if $?;
+    Cpanel::SafeRun::Simple::saferun( 'mkswap', $file );
+    die $self->locale->maketext( 'The system failed to initialize the [asis,swap] file.', $self->size ) if $?;
+    return;
+}
+
+sub enable_swap {
+    my ($self) = @_;
+    my $file = $self->{'file'};
+
+    Cpanel::SafeRun::Simple::saferun( 'swapon', $file );
+    die $self->locale->maketext( 'The system failed to enable the [asis,swap] file “[_1]”.', $file ) if $?;
+
+    return;
+}
+
+sub disable_swap {
+    my ($self) = @_;
+    my $file = $self->{'file'};
+
+    Cpanel::SafeRun::Simple::saferun( 'swapoff', $file );
+    die $self->locale->maketext( 'The system failed to enable the [asis,swap] file “[_1]”.', $file ) if $?;
+
+    return;
+}
+
+sub is_swap_active {
+    my ($self) = @_;
+    my $file = $self->{'file'};
+
+    my $swap_list = Cpanel::SafeRun::Simple::saferun( 'swapon', '--show=NAME', '--noheadings' );
+
+    return scalar grep { $_ eq $file } split /\n/, $swap_list;
+}
+
+sub edit_fstab {
+    my ($self) = @_;
+
+    my $lock  = Cpanel::SafeFile::safeopen( my $fh, '+<', $self->{'fstab'} ) or die "Could not open '$self->{'fstab'}' for reading: $!";
+    my @lines = <$fh>;
+
+    if ( !grep { m{^\s*\Q$self->{'file'}\E\s+} } @lines ) {
+
+        # Don't break if /etc/fstab doesn't end with a newline.
+        push @lines, "\n";
+        push @lines, "$self->{'file'}\tswap\tswap\tdefaults\t0\t0\n";
+        seek( $fh, 0, 0 );
+        Cpanel::SafeFile::Replace::safe_replace_content( $fh, $lock, @lines );
+    }
+    Cpanel::SafeFile::safeclose( $fh, $lock );
+    return;
+}
+
+sub locale {
+    my ($self) = @_;
+
+    return $self->{'locale'} //= Cpanel::Locale->get_handle;
+}
+
+sub note {
+    my ( $self, @message ) = @_;
+
+    return unless $self->{'verbose'};
+    print @message, "\n";
+    return;
+}
+
+sub has_sufficient_space {
+    my ($self) = @_;
+
+    my $installed = Cpanel::Sys::Hardware::Memory::get_installed();
+    my $swap      = Cpanel::Sys::Hardware::Memory::get_swap();
+
+    foreach my $value ( $installed, $swap ) {
+        $value = 0 if $value eq 'unknown';
+    }
+
+    $self->note( $self->locale->maketext( "The system has [format_bytes,_1] of total memory.",          $installed * $MB_FACTOR ) );
+    $self->note( $self->locale->maketext( "The system has [format_bytes,_1] of [asis,swap] available.", $swap * $MB_FACTOR ) );
+
+    return 1 if $installed > 4096;
+    return 1 if $swap > 0;
+    return 0;
+}
+
+# Returns size in bytes.
+sub size {
+    return shift->{'size'};
+}
+
+# Returns size in MiB.
+sub parse_size {
+    my ($size) = @_;
+
+    $size //= '1G';
+
+    return $1 * 1024 if $size =~ /^(\d+)G$/;
+    return $1        if $size =~ /^(\d+)M$/;
+    die "Invalid size: $size";
+}
+
+sub usage {
+    my ($ret) = @_;
+    my $fh = $ret ? \*STDERR : \*STDOUT;
+    print {$fh} <<EOM;
+create-swap [--if-needed] [--size SIZE] [-v | --verbose]
+
+Creates a swap file of size SIZE, which is a number followed by M (for MiB) or G
+(for GiB).  If omitted, defaults to 1G.
+
+If --if-needed is specified, perform the action only if the system is low on
+memory and has no existing swap.
+EOM
+    return $ret;
+}

@@ -1,0 +1,256 @@
+[%
+USE JSON;
+USE Whostmgr;
+WRAPPER 'master_templates/master.tmpl' theme="yui"
+  app_key = 'apps_managed_by_appconfig'
+  stylesheets = ['/yui/datatable/assets/skins/sam/datatable.css']
+  scripts = [
+        '/yui/datasource/datasource-min.js'
+        '/yui/datatable/datatable-min.js'
+  ]
+  extrastyle = '
+        .description {
+            margin-left: 0;
+            margin-right: 0;
+            font-style: normal;
+        }
+        #cjt_pagenotice_container {
+            margin-left: 5px;
+            margin-right: 5px;
+        }
+        h2 {
+           font-size: 18px;
+           margin-top: 25px;
+        }';
+-%]
+[% PROCESS '_ajaxapp_styles.tmpl' -%]
+[% PROCESS '_ajaxapp_header.tmpl' -%]
+
+[% null = locale.set_context_html %]
+
+<ul class="appconfig-head">
+  <li><p class="description">[% locale.maketext('This interface is used to view applications that are installed and registered with [asis,AppConfig].') %]
+            [% locale.maketext('For information on how to register applications with [asis,AppConfig], please see the documentation at [output,url,_1,_1,_2,_3].','https://go.cpanel.net/appconfig','target','_blank') %]</p>
+
+    <div id="cjt_pagenotice_container"></div>
+</ul>
+
+<div id="clearit" style="clear:both;"></div>
+
+<script>
+(function() {
+    var reseller_not_enforced = new CPANEL.widgets.Page_Notice( {
+        level: "info",
+        content: [%
+                    locale.maketext(
+                        '“[_1]” is enabled in “[output,url,_2,_3,target,_4].”',
+                        'Allow apps that have not registered with AppConfig to be run when logged in as a reseller to WHM',    # Tweak Setting labels are not translated
+                        '../scripts2/tweaksettings?find=permit_unregistered_apps_as_reseller',
+                        locale.maketext('Tweak Settings'),
+                        '_blank',
+                    ).json
+                 %] + ' ' +
+                 [% locale.maketext('Applications that are running when logged in as a reseller will not be forced to register with [asis,AppConfig].').json %] + ' ' +
+                 [% locale.maketext('Unregistered applications do not receive the security benefit of WHM ACL enforcement in cpsrvd.').json %],
+        visible: [% CPANEL.CPCONF().permit_unregistered_apps_as_reseller ? 'true' : 'false' -%]
+    } );
+
+    var root_not_enforced = new CPANEL.widgets.Page_Notice( {
+        level: "info",
+        content: [%
+                    locale.maketext(
+                        '“[_1]” is enabled in “[output,url,_2,_3,target,_4].”',
+                        'Allow apps that have not registered with AppConfig to be run when logged in as root or a reseller with the "all" ACL in WHM', # Tweak Setting labels are not translated
+                        '../scripts2/tweaksettings?find=permit_unregistered_apps_as_root',
+                        locale.maketext('Tweak Settings'),
+                        '_blank',
+                    ).json
+                 %] + ' ' +
+                 [% locale.maketext('Applications that are running when logged in as root will not be forced to register with [asis,AppConfig].').json %] + ' ' +
+                 [% locale.maketext('Unregistered applications do not receive the security benefit of WHM ACL enforcement in cpsrvd.').json %],
+        visible: [% CPANEL.CPCONF().permit_unregistered_apps_as_root ? 'true' : 'false' -%]
+    } );
+
+    var features_not_required = new CPANEL.widgets.Page_Notice( {
+        level: "info",
+        content: [%
+                    locale.maketext(
+                        '“[_1]” is enabled in “[output,url,_2,_3,target,_4].”',
+                        'This setting allows cPanel and Webmail applications and addons to execute even if a feature list has not been defined',   # Tweak Setting labels are not translated
+                        '../scripts2/tweaksettings?find=permit_appconfig_entries_without_features',
+                        locale.maketext('Tweak Settings'),
+                        '_blank',
+                    ).json
+                 %] + ' ' +
+                 [% locale.maketext('Applications that are registered with [asis,AppConfig] are not required to set a Features List.').json %],
+        visible: [% CPANEL.CPCONF().permit_appconfig_entries_without_features ? 'true' : 'false' -%]
+    } );
+
+    var acls_not_required = new CPANEL.widgets.Page_Notice( {
+        level: "info",
+        content: [%
+                    locale.maketext(
+                        '“[_1]” is enabled in “[output,url,_2,_3,target,_4].”',
+                        'This setting allows WHM applications and addons to execute even if an ACL list has not been defined', # Tweak Setting labels are not translated
+                        '../scripts2/tweaksettings?find=permit_appconfig_entries_without_acls',
+                        locale.maketext('Tweak Settings'),
+                        '_blank',
+                    ).json
+                 %] + ' ' +
+                 [% locale.maketext('Applications that are registered with [asis,AppConfig] are not required to set an ACLs List.').json %],
+        visible: [% CPANEL.CPCONF().permit_appconfig_entries_without_acls ? 'true' : 'false' -%]
+    } );
+})();
+</script>
+
+<h2>[% locale.maketext('Registered [asis,Web Host Manager] Applications') %]</h2>
+<div id="whostmgr_services_container">
+    <table class="sortable" id="whostmgr_services">
+    <thead>
+      <tr>
+      <th>Name</th>
+      <th>ACLS required</th>
+      <th>System User</th>
+      <th>URL(s)</th>
+      <th>Origin</th>
+      <th>PHP Config</th>
+      <th>Display Name</th>
+      <th>Entry URL</th>
+      </tr>
+    </thead>
+    <tbody>
+    [% SET service = 'whostmgr' %]
+      [% FOR app IN data.application_list.$service %]
+      <tr>
+          <td>[% app.name %]</td>
+          <td>[% app.acls.join("<br>") %]</td>
+          <td>[% app.user %]</td>
+          <td>[% app.url.join("<br>") %]</td>
+          <td>[% app.origin || locale.maketext('internal') %]</td>
+          <td>[% app.phpConfig %]</td>
+          <td>[% app.displayname %]</td>
+          <td>[% IF app.entryurl %]<a href="[% '../cgi/' _ app.entryurl %]" target="_blank">[% app.entryurl %]</a>[% END %]</td>
+      </tr>
+      [% END %]
+    </tbody>
+    </table>
+</div>
+
+<h2>[% locale.maketext('Registered [asis,cPanel] Applications') %]</h2>
+<div id="cpanel_services_container">
+    <table class="sortable" id="cpanel_services">
+    <thead>
+      <tr>
+      <th>Name</th>
+      <th>Features required</th>
+      <th>System User</th>
+      <th>URL(s)</th>
+      <th>Origin</th>
+      <th>PHP Config</th>
+      </tr>
+    </thead>
+    <tbody>
+    [% SET service = 'cpanel' %]
+      [% FOR app IN data.application_list.$service %]
+      <tr>
+          <td>[% app.name %]</td>
+          <td>[% app.features.join("<br>") %]</td>
+          <td>[% app.user %]</td>
+          <td>[% app.url.join("<br>") %]</td>
+          <td>[% app.origin || locale.maketext('internal') %]</td>
+          <td>[% app.phpConfig %]</td>
+      </tr>
+      [% END %]
+    </tbody>
+    </table>
+</div>
+
+<h2>[% locale.maketext('Registered [asis,Webmail] Applications') %]</h2>
+<div id="webmail_services_container">
+    <table class="sortable" id="webmail_services">
+    <thead>
+      <tr>
+      <th>Name</th>
+      <th>Features required</th>
+      <th>System User</th>
+      <th>URL(s)</th>
+      <th>Origin</th>
+      <th>PHP Config</th>
+      </tr>
+    </thead>
+    <tbody>
+    [% SET service = 'webmail' %]
+      [% FOR app IN data.application_list.$service %]
+        <tr>
+            <td>[% app.name %]</td>
+            <td>[% app.features.join("<br>") %]</td>
+            <td>[% app.user %]</td>
+            <td>[% app.url.join("<br>") %]</td>
+            <td>[% app.origin || locale.maketext('internal') %]</td>
+            <td>[% app.phpConfig %]</td>
+        </tr>
+      [% END %]
+    </tbody>
+    </table>
+</div>
+
+<script type="text/javascript">
+YAHOO.util.Event.addListener(window, "load", function() {
+    var whostmgr_col_defs = [
+        {key:"name",label:"Name",resizeable:false,sortable:true,width:200},
+        {key:"acls",label:"ACLS required",resizeable:false,sortable:true,width:100},
+        {key:"user",label:"System User",resizeable:false,sortable:true,width:150},
+        {key:"urls",label:"URL(s)",resizeable:false,sortable:true,width:250},
+        {key:"origin",label:"Origin",resizeable:false,sortable:true,width:150},
+        {key:"phpConfig",label:"PHP Config",resizeable:false,sortable:true,width:100},
+        {key:"displayname",label:"Display Name",resizeable:false,sortable:true},
+        {key:"entryurl",label:"Entry URL",resizeable:false,sortable:true}
+    ];
+
+    var cpanel_webmail_col_defs = [
+        {key:"name",label:"Name",resizeable:false,sortable:true,width:200},
+        {key:"features",label:"Features required",resizeable:false,sortable:true,width:100},
+        {key:"user",label:"System User",resizeable:false,sortable:true,width:150},
+        {key:"urls",label:"URL(s)",resizeable:false,sortable:true,width:250},
+        {key:"origin",label:"Origin",resizeable:false,sortable:true,width:150},
+        {key:"phpConfig",label:"PHP Config",resizeable:false,sortable:true,width:100}
+    ];
+
+    /* whostmgr */
+    (function() {
+        var whostmgr_services_ds = new YAHOO.util.DataSource(YAHOO.util.Dom.get("whostmgr_services"));
+        whostmgr_services_ds.responseType = YAHOO.util.DataSource.TYPE_HTMLTABLE;
+        whostmgr_services_ds.responseSchema = { fields:whostmgr_col_defs };
+
+        var whostmgr_services_dt = new YAHOO.widget.DataTable("whostmgr_services_container",
+                whostmgr_col_defs, whostmgr_services_ds,
+                {sortedBy:{key:"name",dir:"asc"}});
+    })();
+
+    /* cpanel */
+    (function() {
+        var cpanel_services_ds = new YAHOO.util.DataSource(YAHOO.util.Dom.get("cpanel_services"));
+        cpanel_services_ds.responseType = YAHOO.util.DataSource.TYPE_HTMLTABLE;
+        cpanel_services_ds.responseSchema = { fields:cpanel_webmail_col_defs };
+
+        var cpanel_services_dt = new YAHOO.widget.DataTable("cpanel_services_container",
+                cpanel_webmail_col_defs, cpanel_services_ds,
+                {sortedBy:{key:"name",dir:"asc"}});
+    })();
+
+    /* webmail */
+    (function() {
+        var webmail_services_ds = new YAHOO.util.DataSource(YAHOO.util.Dom.get("webmail_services"));
+        webmail_services_ds.responseType = YAHOO.util.DataSource.TYPE_HTMLTABLE;
+        webmail_services_ds.responseSchema = { fields:cpanel_webmail_col_defs };
+
+        var webmail_services_dt = new YAHOO.widget.DataTable("webmail_services_container",
+                cpanel_webmail_col_defs, webmail_services_ds,
+                {sortedBy:{key:"name",dir:"asc"}});
+    })();
+});
+</script>
+
+[% PROCESS '_ajaxapp_footer.tmpl' -%]
+
+[% END -%]

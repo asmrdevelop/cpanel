@@ -1,0 +1,43 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/fixnamedviews                   Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+use warnings;
+use Cpanel::DNSLib  ();
+use Cpanel::SafeRun ();
+
+exit if ( -e '/etc/nameddisable' || -e '/etc/binddisable' );
+
+my $no_restart = ( @ARGV && grep( /^--norestart$/, @ARGV ) ) ? 1 : 0;
+
+my $dnslib = Cpanel::DNSLib->new();
+
+if ( !$dnslib ) {
+    print "Syntactically correct named.conf required.\n";
+    exit;
+}
+
+my $restart = 0;
+
+my ( $status, $message ) = $dnslib->editviewdirective( 'external', 'match-.*', '' );
+if ($status) {
+    $restart++;
+    print $message . "\n";
+}
+
+$status = 0;
+( $status, $message ) = $dnslib->editviewdirective( 'localhost_resolver', 'match-clients\s*{\s*localhost\s*;\s*}.*', "    match-clients         { 127.0.0.0/24; };\n" );
+
+if ($status) {
+    $restart++;
+    print $message . "\n";
+}
+
+if ( !$no_restart && $restart ) {
+    print "Restarting Bind\n";
+    Cpanel::SafeRun::bgrun('/usr/local/cpanel/scripts/restartsrv_named');
+}

@@ -1,0 +1,86 @@
+[%
+    USE Whostmgr;
+    USE JSON;
+
+    SET PAGE_BASE = '/scripts2/manage_plugins/';
+    SET PAGE_NAME = Whostmgr.get_page_name_by_url(PAGE_BASE);
+
+    WRAPPER 'master_templates/master.tmpl'
+        app_key = 'manage_plugins'
+        breadcrumburl = PAGE_BASE,
+        base = PAGE_BASE,
+        stylesheets = [
+            Whostmgr.find_file_url('/templates/manage_plugins/index.min.css')
+        ],
+        theme='bootstrap',
+        CJT2_EXCLUSIVE = 0;
+
+    PROCESS 'master_templates/cjt2_header_include.tt';
+
+    SET REQUIRED_FEATURES = ['autossl'];
+%]
+
+<div id="content"
+    ng-controller="BaseController as base"
+    class="ng-cloak"
+    ng-cloak>
+
+    <div ng-repeat="plugin in plugins" class="plugin-ctr">
+        <div class="plugin-info">
+            <div class="plugin-logo-ctr">
+                <span class="plugin-logo" style="background-image: url('{{plugin.logo}}')"></span>
+            </div>
+            <div class="plugin-metadata-and-controls">
+                <div class="plugin-metadata">
+                    <div ng-repeat="metaitem in plugin.metadata" class="plugin-metadata-item">
+                        <span class="meta-key">{{metaitem.label}}:</span>
+                        <span class="meta-value">{{metaitem.value}}</span>
+                    </div>
+                </div>
+
+                <div class="plugin-controls">
+                    <div class="plugin-toggle-ctr">
+                        <button ng-disabled="any_plugin_in_progress()" cp-action="toggle(plugin)">
+                            <span ng-if="plugin.enabled">[% locale.maketext('Uninstall “[_1]”', '{{plugin.label}}') %]</span>
+                            <span ng-if="!plugin.enabled">[% locale.maketext('Install “[_1]”', '{{plugin.label}}') %]</span>
+                        </button>
+                    </div>
+                    <div ng-if="plugin.alert" class="plugin-notice alert alert-warning" id="{{plugin.pkg_name}}-alert">
+                        <span class="glyphicon glyphicon-exclamation-sign" aria-hidden="true"></span>
+                        <div class="alert-message">{{plugin.alert}}
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div ng-if="plugin.last_status_message" class="plugin-notice alert alert-{{plugin.last_status_notice_type}} {{plugin_notice_is_dismissable(plugin) ? 'alert-dismissable' : ''}}" id="{{plugin.pkg_name}}-statusMessage">
+            <button ng-if="plugin.last_status_dismissable" type="button" class="close" data-dismiss="alert" aria-hidden="true" ng-click="clear_plugin_message($parent.plugin)">&times;</button>
+            <span class="glyphicon glyphicon-{{plugin_notice_glyphicon(plugin)}}-sign"></span>
+            <div class="alert-message">
+                <span ng-if="plugin.tailing_log"><i class="fas fa-spinner fa-spin" aria-hidden="true"></i></span>
+                {{plugin.last_status_message}}
+            </div>
+        </div>
+        <div ng-if="plugin.log_entry" class="plugin-log-ctr">
+            <div class="plugin-log-entry">
+                [% locale.maketext('Log entry: [_1]', '{{plugin.log_entry}}') %]
+            </div>
+
+            [%# We inject into this guy manually. -%]
+            <textarea id="{{plugin.pkg_name}}-log" rows="12" cols="80" class="plugin-log" readonly></textarea>
+        </div>
+    </div>
+
+    <div ng-class="{'view-disabled': loading}" class="animate-view" ng-view></div>
+
+    <div growl></div>
+</div>
+
+<script type="text/javascript">
+    var PAGE          = PAGE || {};
+    PAGE.plugins      = [% JSON.stringify(data.addons) %];
+    PAGE.total_memory = [% data.total_memory %];
+    PAGE.cpus         = [% data.cpus %];
+</script>
+
+[% END %]

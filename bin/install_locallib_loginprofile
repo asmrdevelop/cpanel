@@ -1,0 +1,121 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - bin/install_locallib_loginprofile       Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package install::locallib_loginprofile;
+
+use strict;
+use warnings;
+
+use Cpanel::LoginProfile    ();
+use Cpanel::SafeRun::Simple ();
+use Getopt::Long            ();
+
+exit( run(@ARGV) // 0 ) unless caller();
+
+sub run {
+    my (@args) = @_;
+
+    my $help;
+    Getopt::Long::GetOptionsFromArray(
+        \@args,
+        'help' => \$help,
+    ) or return usage(1);
+    return usage(0) if $help;
+
+    return usage(1) unless ( $> == 0 && $< == 0 );
+    chdir '/root';
+
+    bootstrap_modules();
+
+    if ( !system_perl_has_modules("CPAN::Config") ) {
+
+        # only install it once during fresh install / or when missing
+        system('/usr/local/cpanel/scripts/cpan_config');
+    }
+
+    if ( !Cpanel::LoginProfile::profile_is_installed('locallib') ) {
+        Cpanel::LoginProfile::install_profile('locallib');
+    }
+
+    return;
+}
+
+sub usage {
+    my ($retval) = @_;
+    my $fh = $retval ? \*STDERR : \*STDOUT;
+    $fh->print(<<EOM);
+Usage: install_localllib_loginprofile
+
+Bootstrap the modules required for /usr/bin/perl to be able to run
+/usr/local/cpanel/scripts/perlinstaller.
+
+NOTE: This script must be executed as the root user
+EOM
+    return $retval;
+}
+
+# Almost no /ust/bin/perl code in cPanel will function without Try::Tiny
+# This special case HAS to be bootstrapped or no /usr/bin/perl code will work.
+sub bootstrap_modules {
+    my @modules = modules_to_bootstrap();
+
+    return if system_perl_has_modules(@modules);
+
+    print "Trying to Bootstrap missing Perl modules via cpanm\n";
+    my $cpanm = '/usr/local/cpanel/bin/cpanm';
+
+    foreach my $extra ( ['--notest'], [qw/--notest --reinstall/] ) {
+        my @run = ($cpanm);
+        push @run, @$extra if @$extra;
+        push @run, @modules;
+        print "Running: " . join( ' ', @run ) . "\n";
+        system(@run);
+        return if system_perl_has_modules(@modules);
+    }
+
+    print <<MSG;
++-------------------------------------------------------------------------------+
+|                                                                               |
+|   ERROR! cPanel cannot bootstrap Try::Tiny, HTTP::Tiny & co to /usr/bin/perl. |
+|   Most cPanel scripts which use /usr/bin/perl                                 |
+|   will not function correctly until you resolve this.                         |
+|                                                                               |
++-------------------------------------------------------------------------------+
+MSG
+
+    die( "Cannot bootstrap " . join( ", ", @modules ) . " on /usr/bin/perl" );
+}
+
+sub system_perl_has_modules {
+    my (@modules) = @_;
+
+    return 1 unless scalar @modules;
+
+    my @args = map { "-M$_" } @modules;
+    Cpanel::SafeRun::Simple::saferunnoerror( '/usr/bin/perl', @args, '-e', '1' );
+
+    return !$?;
+}
+
+sub modules_to_bootstrap {
+
+    return qw/
+      CPAN
+      CPAN::Meta::Requirements
+      CPAN::Meta::YAML
+      Expect
+      HTTP::Tiny
+      IO::Tty
+      JSON::XS
+      local::lib
+      Try::Tiny
+      version
+      YAML::Syck
+      /;
+}
+
+1;

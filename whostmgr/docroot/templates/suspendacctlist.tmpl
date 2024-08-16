@@ -1,0 +1,198 @@
+[% USE Whostmgr -%]
+[% USE JSON -%]
+[% WRAPPER 'master_templates/master.tmpl' theme="yui"
+    app_key = 'manage_account_suspension'
+    extrastyle = '
+.suspended {
+    background-color: #ffcccc;
+}
+.notice-section {
+    max-width: 720px;
+}
+.tablecomplex2 {
+    min-width:400px;
+}
+#retain-proxying-info {
+    cursor:help;
+}
+.warning {
+    color:red;
+    font-weight:bold;
+}
+.note {
+    font-weight:bold;
+}
+.info_link {
+    font-size: 10px;
+    font-style: italic;
+}
+'
+-%]
+
+[% PROCESS '_ajaxapp_header.tmpl' -%]
+
+<div class="notice-section">
+    <p>[% IF data.suspended_delivery == 'deliver' %]<span class="warning">Warning:</span>[% ELSE %]<span class="note">Note:</span>[% END %] Suspended cPanel accounts are set to: [% data.suspended_delivery_label.html() %] <span class="info_link"><a href="https://go.cpanel.net/suspended_account_deliveries" target="_blank">(more info)</a></span></p>
+</div>
+
+<div class="notice-section">
+    <p><strong>Important:</strong> If you try to unsuspend an account that is actually bandwidth limited, the unsuspension will not work. You must modify the <a href="[% cp_security_token %]/scripts/limitbwlist">account's bandwidth limit</a> instead.</p>
+</div>
+
+<form action="[% cp_security_token %]/scripts2/suspendacct" name="fmain">
+<table class="tablecomplex2">
+    <tr>
+        <td class="lightbg">Select by domain</td>
+        <td>&nbsp;</td>
+        <td class="lightbg">Select by username</td>
+    </tr>
+    <tr>
+        <td class="heavybg">
+            <select size="7" name="domain" onChange="selectionChanged(this)">
+[%
+    FOR userdata = data.userdata.sort('domain'); #sorting hash
+        SET html_class = [];
+        IF userdata.suspended;
+            html_class.push( 'suspended' );
+
+            IF userdata.locked;
+                html_class.push( 'locked' );
+            END;
+        END;
+        SET disabled = !Whostmgr.hasroot() && userdata.locked;
+-%]
+<option
+    id="domain-[% userdata.domain FILTER html %]-option"
+    class="[% html_class.join(' ') %]"
+    data-transferred="[% userdata.transferred %]"
+    data-suspended="[% userdata.suspended %]"
+    [% disabled ? 'disabled="disabled"' : '' %]
+    value="[% userdata.domain FILTER html %]"
+>[%- userdata.domain FILTER html -%][%- userdata.locked ? ' (locked)' : '' -%]</option>
+[% END -%]
+            </select>
+        </td>
+        <td>&nbsp;<span class="b2"><font size="+1">OR</font></span>&nbsp;</td>
+        <td class="heavybg">
+            <select size="7" name="user" onChange="selectionChanged(this)">
+[% FOR userdata = data.userdata.sort('user') -%]
+[% SET disabled = !Whostmgr.hasroot() && userdata.locked; -%]
+<option
+    id="user-[% userdata.user FILTER html %]-option"
+    data-transferred="[% userdata.transferred %]"
+    data-suspended="[% userdata.suspended %]"
+    [%- userdata.suspended ? ' class="suspended"' : '' -%]
+    [%- disabled ? ' disabled="disabled"' : '' -%]
+    value="[% userdata.user FILTER html %]"
+>[% userdata.user -%][%- userdata.locked ? ' (locked)' : '' -%]</option>
+[% END -%]
+            </select>
+        </td>
+    </tr>
+    <tr>
+        <td colspan="3">
+            <div>
+                <input type="submit"
+                    class="btn-primary"
+                    value="Suspend"
+                    name="suspend-domain"
+                    id="suspend-domain" />
+                <input type="submit"
+                    class="btn-primary"
+                    value="Unsuspend"
+                    name="unsuspend-domain"
+                    id="unsuspend-domain" />
+            </div>
+        </td>
+<!--
+        <td>&nbsp;</td>
+        <td background="[% Whostmgr.getbggif() %]">
+            <div> <input type="submit" class="btn-primary" value="Suspend" name="suspend-user"><input type="submit" class="btn-primary" value="UnSuspend" name="unsuspend-user"></div>
+        </td>
+-->
+    </tr>
+    <tr>
+        <td colspan="3" class="heavybg">
+            <div id="suspensionReasonSet" class="hidden">Reason: <input type="text" name="reason" size="30"></div>
+            <div class="checkbox hidden" id="retain-proxying">
+                <label>
+                    <input type="checkbox" name="retain-proxying" value="1" />
+                    [% locale.maketext('Retain [output,url,_1,Service Proxying,target,serviceProxyingDocs]','https://go.cpanel.net/ServiceProxying') %]
+                </label>
+                <span
+                    id='retain-proxying-info'
+                    onclick='CPANEL.ajax.toggleToolTip(this,"[% locale.maketext('Retain Service Proxying') %]");'
+                    title='[% locale.maketext('Select this checkbox to keep the account’s current service proxying settings. If you do not select this checkbox, the system will disable service proxying by default.') %]'>
+                        <span class='fas fa-question-circle fa-large' aria-hidden></span>
+                </span>
+            </div>
+        </td>
+    </tr>
+[% IF Whostmgr.hasroot() -%]
+    <tr>
+        <td colspan="3" class="heavybg"><div id="preventUnsuspendingSet" class="hidden">Prevent resellers from unsuspending: <input type="checkbox" name="disallowun" value="1"></div></td>
+    </tr>
+[% END -%]
+</table>
+</form>
+<script type="text/javascript">
+var user_sel = document.fmain.user;
+var domain_sel = document.fmain.domain;
+var unsuspend_btn = document.getElementById('unsuspend-domain');
+var suspend_btn = document.getElementById('suspend-domain');
+var retainProxyingElements = document.getElementById('retain-proxying');
+var suspensionReasonSet = document.getElementById("suspensionReasonSet");
+var preventUnsuspendingSet = document.getElementById("preventUnsuspendingSet");
+unsuspend_btn.disabled = true;
+suspend_btn.disabled = true;
+
+var user_domains = {};
+var domain_users = {};
+[% data.userdata.json() -%].forEach( function(ud) {
+    user_domains[ud.user] = ud.domain;
+    domain_users[ud.domain] = ud.user;
+} );
+
+function selectionChanged( src_select ) {
+    var obj_select;
+    var isSuspended;
+    var isTransferred;
+    var optionClicked;
+
+    if ( src_select == domain_sel ) {
+        optionClicked = domain_sel.options[ domain_sel.selectedIndex ];
+        var domain = optionClicked.value;
+        document.getElementById('user-'+domain_users[domain]+'-option').selected = true;
+    }
+    else {
+        optionClicked = user_sel.options[ user_sel.selectedIndex ];
+        var user = optionClicked.value;
+        document.getElementById('domain-'+user_domains[user]+'-option').selected = true;
+    }
+
+    isSuspended = optionClicked.dataset.suspended === "1";
+    isTransferred = optionClicked.dataset.transferred === "1";
+
+    unsuspend_btn.disabled = !isSuspended;
+    suspend_btn.disabled = isSuspended;
+
+    if(!isSuspended){
+        suspensionReasonSet && suspensionReasonSet.classList.remove('hidden');
+        preventUnsuspendingSet && preventUnsuspendingSet.classList.remove('hidden');
+    }else{
+        suspensionReasonSet && suspensionReasonSet.classList.add('hidden');
+        preventUnsuspendingSet && preventUnsuspendingSet.classList.add('hidden');
+    }
+
+    if(isTransferred) {
+        retainProxyingElements && retainProxyingElements.classList.remove("hidden");
+    }else{
+        retainProxyingElements && retainProxyingElements.classList.add("hidden");
+    }
+}
+
+</script>
+
+[% PROCESS '_ajaxapp_footer.tmpl' -%]
+
+[% END -%]

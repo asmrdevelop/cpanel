@@ -1,0 +1,62 @@
+[%#
+Variables passed in:
+
+origin                  - the system component from which the action originated
+ip_address              - the IP address from which the action originated
+ip_address_is_public    - whether the “ip_address” is public (i.e., not a loopback, private, &c.)
+reverse_dns_hostnames   - arrayref of whatever a reverse DNS lookup returned, if successful
+country_name            - the name of the country that GeoIP reports is where the IP address’s computer is
+country_code            - the two-letter country code of the “country_name”
+country_lookup_error    - whatever error may have prevented getting a “country_name”
+is_root                 - if the user is root
+is_local                - if the login is from the local machine
+
+user                    - account that was unsuspended
+user_domain             - domain tied to account that is unsuspended
+host_server             - server that hosts the account that is unsuspended
+env_remote_user         - the account that created this one.
+env_user                - user roll action was performed as(ex: root if has root privileges )
+sent_to_root            - A default boolean flag sent to all templates that indicates if the message was sent to 'root'
+
+For more information about how to customize notification templates, read our documentation at https://go.cpanel.net/notificationtemplates
+
+-%]
+
+[%
+    PROCESS "include/colors.tmpl";
+    PROCESS "include/styles.tmpl";
+
+    WRAPPER 'wrapper/main.html.tmpl';
+
+    NOTICE.email_reason = CPANEL.locale.maketext('Account Unsuspended');
+%]
+
+<table>
+    <tbody>
+        <tr>
+            <th align="right">
+                [% CPANEL.locale.maketext('Domain') %]:
+            </th>
+            <td align="left">
+                [% NOTICE.user_domain.html() %]
+            </td>
+        </tr>
+        <tr>
+            <th align="right">
+                [% CPANEL.locale.maketext('Username') %]:
+            </th>
+            <td align="left">
+                [% NOTICE.user.html() %]
+            </td>
+        </tr>
+    </tbody>
+</table>
+<p>
+    [% CPANEL.locale.maketext('“[_1]” unsuspended the account.', NOTICE.env_remote_user.html() ); %]
+</p>
+
+<p>
+[% CPANEL.locale.maketext('You can manage account suspension in [asis,WHM]’s [_1] interface at: [output,url,_2,_2,target,_3]', CPANEL.locale.maketext('Manage Account Suspension'), CPANEL.assemble_whm_url("scripts2/suspendacctlist"),'_blank') %]
+</p>
+
+[% END %]

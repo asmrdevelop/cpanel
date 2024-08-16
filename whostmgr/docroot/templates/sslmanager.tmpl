@@ -1,0 +1,219 @@
+[% WRAPPER 'master_templates/master.tmpl' theme="yui"
+    app_key = 'ssl_storage_manager'
+    scripts = ['/js/sorttable.js']
+    extrastyle = '
+.links-group {
+    text-align: right;
+    float: right;
+    margin-left: 10px;
+}
+
+.page-section {
+    margin-top: 25px;
+}
+
+.clear {
+    clear: both;
+}
+
+table div.text {
+    width: 270px;
+    float: left;
+    white-space: normal;
+}
+.description {
+    margin: 0;
+    font-style: normal;
+    width: 600px;
+    margin-bottom: 20px;
+}
+
+#installed_resources td,
+#all_resources td {
+    vertical-align: top;
+    padding-top: 8px;
+    padding-left: 10px;
+    padding-right: 10px;
+    white-space: nowrap;
+}
+
+.delete-icon {
+    color: red;
+}
+'
+-%]
+[%
+USE JSON;
+USE CPScalar;
+-%]
+
+[% MACRO deletable_key_links_view(key) BLOCK -%]
+    [% undeletable_key_links_view(key); -%]
+    <a href="delssldata?id=[% key.id.uri() %]&storage=[% STORAGE %]&type=key" onclick="return confirm_delete_key([% key.id.json().html() %])"><i class="delete-icon fas fa-times-circle" aria-hidden="true"></i></a>
+[% END -%]
+
+[% MACRO deletable_cert_links_view(cert) BLOCK -%]
+    [% undeletable_cert_links_view(cert); -%]
+    <a href="delssldata?id=[% cert.id.uri() %]&storage=[% STORAGE %]&type=crt" onclick="return confirm_delete_cert([% cert.id.json().html() %])"><i class="delete-icon fas fa-times-circle" aria-hidden="true"></i></a>
+[% END -%]
+
+[% MACRO undeletable_key_links_view(key) BLOCK -%]
+    <a href="getssldata?id=[% key.id.uri() %]&storage=[% STORAGE %]&type=key"><i class="fas fa-search" aria-hidden="true"></i></a>
+[% END -%]
+[% MACRO undeletable_cert_links_view(cert) BLOCK -%]
+    <a href="getssldata?id=[% cert.id.uri() %]&storage=[% STORAGE %]&type=crt"><i class="fas fa-search" aria-hidden="true"></i></a>
+[% END -%]
+
+[% MACRO deletable_key_view(key) BLOCK -%]
+    <div class="clear">
+        [% IF key.friendly_name %]
+            <div  class="text" title="[% key.id.html() %]">[% key.friendly_name.html().breakOn('_') %]</div>
+        [% ELSE %]
+            <div class="text">[% key.id.html().breakOn('_') %]</div>
+        [% END %]
+        <div class="links-group">
+            [% deletable_key_links_view(key) -%]
+        </div>
+    </div>
+[% END -%]
+
+[% MACRO deletable_cert_list_view(certs) BLOCK -%]
+    [% FOR cert = certs -%]
+    <div class="clear">
+        [% IF cert.friendly_name %]
+            <div class="text" title="[% cert.id.html() %]">[% cert.friendly_name.html().breakOn('_') %]</div>
+        [% ELSE %]
+            <div class="text">[% cert.id.html().breakOn('_') %]</div>
+        [% END %]
+        <div class="links-group">
+            [% deletable_cert_links_view(cert) -%]
+        </div>
+    </div>
+    [% END -%]
+
+[% END -%]
+
+[% MACRO undeletable_key_view(key) BLOCK -%]
+    <div class="clear">
+        [% IF key.friendly_name %]
+            <div  class="text" title="[% key.id.html() %]">[% key.friendly_name.html().breakOn('_') %]</div>
+        [% ELSE %]
+            <div class="text">[% key.id.html().breakOn('_') %]</div>
+        [% END %]
+        <div class="links-group">
+            [% undeletable_key_links_view(key) -%]
+        </div>
+    </div>
+[% END -%]
+
+[% MACRO undeletable_cert_list_view(certs) BLOCK -%]
+    [% FOR cert = certs -%]
+    <div class="clear">
+        [% IF cert.friendly_name %]
+            <div class="text" title="[% cert.id.html() %]">[% cert.friendly_name.html().breakOn('_') %]</div>
+        [% ELSE %]
+            <div class="text">[% cert.id.html().breakOn('_') %]</div>
+        [% END %]
+        <div class="links-group">
+            [% undeletable_cert_links_view(cert) -%]
+        </div>
+    </div>
+    [% END -%]
+[% END -%]
+
+[% MACRO csr_list_view(csrs) BLOCK -%]
+    [% FOR csr = csrs -%]
+    <div class="clear">
+        [% IF csr.friendly_name %]
+            <div class="text" title="[% csr.id.html() %]">[% csr.friendly_name.html().breakOn('_') %]</div>
+        [% ELSE %]
+            <div class="text">[% csr.id.html().breakOn('_') %]</div>
+        [% END %]
+        <div class="links-group">
+                <a href="getssldata?id=[% csr.id.uri() %]&type=csr"><i class="fas fa-search" aria-hidden="true"></i></a>
+                <a href="delssldata?id=[% csr.id.uri() %]&type=csr" onclick="return confirm_delete_csr([% csr.id.json().html() %])"><i class="delete-icon fas fa-times-circle" aria-hidden="true"></i></a>
+        </div>
+    <div>
+    [% END -%]
+[% END -%]
+
+[%#---------------------------------------------------------------------- -%]
+
+<p class="description">
+[% locale.maketext('Listed below are all SSL keys, certificates, and [output,acronym,CSRs,Certificate Signing Requests] that you control. Certificates and CSRs are grouped with their associated private key, if any.') %]
+</p>
+
+<div class="page-section">
+    [% IF !data.apache_installs.size -%]
+        [% IF data.hasroot %]
+            <h4>[% locale.maketext("No SSL certificates are installed in [asis,Apache]’s configuration.") %]</h4>
+        [% ELSE %]
+            <h4>[% locale.maketext("No SSL certificates are installed in [asis,Apache]’s configuration for your account.") %]</h4>
+        [% END %]
+    [% ELSE -%]
+        <h2>[% locale.maketext("[asis,Apache]’s Installed SSL Resources") %]</h2>
+        <p class="description">[% locale.maketext("This server hosts the following [asis,SSL]/[asis,TLS] [numerate,_1,website,websites].", data.apache_installs.size) %]</p>
+        <table id="installed_resources" class="sortable">
+            <tr>
+                <th>[% locale.maketext("Website") %]</th>
+                <th>[% locale.maketext("Owner") %]</th>
+            </tr>
+
+            [% FOR entry = data.apache_installs.sort('vhost') -%]
+            <tr class="[% loop.index % 2 ? 'tdshade1' : 'tdshade2' %]">
+                <td>[% entry.vhost.html() %]
+                    <a href="view_apache_vhost_tls?vhost=[% entry.vhost.uri() %]"><i class="fas fa-search" aria-hidden="true"></i></a>
+                </td>
+                <td>[% entry.user.html() %]</td>
+            </tr>
+            [% END -%]
+        </table>
+    [% END -%]
+</div>
+
+[% SET STORAGE  = 'user' -%]
+
+<div class="page-section">
+    <h2>[% locale.maketext("User Account SSL Resources") %]</h2>
+    <p class="description">[% locale.maketext('The SSL resources below are available to your account.') %]</p>
+    <table id="all_resources" class="sortable">
+        <tr>
+            <th>[% locale.maketext("Key") %]</th>
+            <th>[% locale.maketext("Certificates") %]</th>
+            <th>[% locale.maketext("Certificate Signing Requests") %]</th>
+        </tr>
+
+        [% FOR entry = data.ssldata.user.matched -%]
+        <tr class="[% loop.index % 2 ? 'tdshade1' : 'tdshade2' %]">
+            <td>[% deletable_key_view(entry.key) %]</td>
+            <td>[% deletable_cert_list_view(entry.certificates) -%]</td>
+            <td>[% csr_list_view(entry.csrs) -%]</td>
+        </tr>
+        [% END -%]
+
+        [% SET unmatched = data.ssldata.user.unmatched -%]
+        [% IF unmatched.certificates.size || unmatched.csrs.size -%]
+        <tr>
+            <td>[% locale.maketext("(None)") %]</td>
+            <td>[% deletable_cert_list_view(unmatched.certificates) -%]</td>
+            <td>[% csr_list_view(unmatched.csrs) -%]</td>
+        </tr>
+        [% END -%]
+    </table>
+</div>
+
+
+<script type="text/javascript">
+function confirm_delete_key(name) {
+    return confirm( [% locale.maketext('Are you sure you wish to delete the key “[_1]”?','{id}').json() %].replace("{id}", name) );
+}
+
+function confirm_delete_cert(name) {
+    return confirm( [% locale.maketext('Are you sure you wish to delete the certificate “[_1]”?','{id}').json() %].replace("{id}", name) );
+}
+
+function confirm_delete_csr(name) {
+    return confirm( [% locale.maketext('Are you sure you wish to delete the CSR “[_1]”?','{id}').json() %].replace("{id}", name) );
+}
+</script>
+[% END #wrapper -%]

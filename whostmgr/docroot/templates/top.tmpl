@@ -1,0 +1,65 @@
+[% USE CPSort -%]
+[% USE CPMath -%]
+[% USE CPList -%]
+[% USE Whostmgr -%]
+[% WRAPPER 'master_templates/master.tmpl' theme="yui"
+    app_key = 'process_manager'
+    header = locale.maketext('Process Manager')
+    breadcrumburl = '/scripts2/top'
+    scripts = ['/js/sorttable.js']
+    extrastyle = '
+#toptbl td {
+    padding: 3px;
+}
+'
+-%]
+[% IF Whostmgr.hasroot() -%]
+<div style="margin-bottom: 20px">
+<form action="[% cp_security_token %]/scripts2/managepid">
+<input type="hidden" name="action" value="killuser" />
+<label>Kill all processes by user:
+<select name="user">
+[% FOR user = data.users.unique -%]
+<option value="[% user %]">[% user %]</option>
+[% END %]
+</select>
+</label>
+<input type="submit" value="Kill user's processes" class="btn-primary" />
+</form>
+</div>
+[% END #hasroot -%]
+<div>
+<table class="sortable" id="toptbl">
+<tr>
+            <th>Pid</th>
+            <th class="sorttable_alpha">Owner</th>
+            <th>Priority</th>
+            <th>CPU %</th>
+            <th>Memory %</th>
+            <th>Command</th>
+</tr>
+[% FOR procdata = data.procdata.cpsort(
+    {'field' => 'cpu', 'num' => 1, 'desc' => 1, },
+    {'field' => 'mem', 'num' => 1, 'desc' => 1, },
+    {'field' => 'pid', 'num' => 1, }
+) -%]
+[%
+    SET mem_length = procdata.mem > 100 ? 400 : CPMath.int(procdata.mem * 2);
+    SET cpu_length = procdata.cpu > 100 ? 400 : CPMath.int(procdata.cpu * 2);
+-%]
+<tr class="[% loop.index % 2 ? 'tdshade1' : 'tdshade2' %]">
+    <td class="pid" sorttable_customkey="[% procdata.pid %]">[% procdata.pid %]
+[%- IF ! data.dnsonly -%]
+&nbsp;(<a href="[% cp_security_token %]/scripts2/managepid?pid=[% procdata.pid %]&action=trace">Trace</a>)&nbsp;(<a href="[% cp_security_token %]/scripts2/managepid?pid=[% procdata.pid %]&action=kill">Kill</a>)
+[%- END -%]
+</td>
+    <td class="user">[% procdata.user %]</td>
+    <td class="nice">[% procdata.nice %]</td>
+    <td class="cpu" sorttable_customkey="[% procdata.cpu %]">[% IF cpu_length %]<div style="width: [% cpu_length %]px; background: url([% Whostmgr.getbggif() %]) repeat-x;">&nbsp;</div>&nbsp;[% END %][% procdata.cpu %]</td>
+    <td class="mem" sorttable_customkey="[% procdata.mem %]">[% IF mem_length %]<div style="width: [% mem_length %]px; background: url([% Whostmgr.getbggif() %]) repeat-x;">&nbsp;</div>&nbsp;[% END %][% procdata.mem %]</td>
+    <td class="command">[% procdata.command FILTER html %]</td>
+</tr>
+[% END -%]
+</table>
+</div>
+[% END -%]

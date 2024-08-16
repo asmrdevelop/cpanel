@@ -1,0 +1,1 @@
+../../../base/backend/passwordstrength.cgi

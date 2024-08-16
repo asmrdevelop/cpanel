@@ -1,0 +1,202 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - bin/register_cpanelplugin               Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+use IPC::Open3                   ();
+use MIME::Base64                 ();
+use Cpanel                       ();
+use Cpanel::SafeDir::MK          ();
+use Cpanel::FileUtils::TouchFile ();
+use Cpanel::FileUtils::Copy      ();
+use Cpanel::FileUtils::Path      ();
+use Cpanel::ModReg               ();
+use Cpanel::Themes::Get          ();
+
+my $mfile = $ARGV[0];
+if ( !-e $mfile ) {
+    print "Usage $0 <cpanelplugin config file>\n";
+    print "[$mfile does not exist.  You should provide the absolute path to the file]\n";
+    exit(1);
+}
+
+Cpanel::SafeDir::MK::safemkdir( '/usr/local/cpanel/whostmgr/addonfeatures', '0755' );
+
+my $rMODCFG = Cpanel::ModReg::loadcfg($mfile);
+die "Invalid cpanelplugin file" if !defined $rMODCFG->{'name'};
+my $image = MIME::Base64::decode_base64( $rMODCFG->{'image'} );
+die "Invalid image (no data)" if $image eq '';
+
+my $file_cmd = Cpanel::FileUtils::Path::findinpath('file');
+if ( !$file_cmd || !-x $file_cmd ) {
+    die "Aborting: 'file' command not found.";
+}
+
+my $wrimg;
+my $ritype;
+my $imgtype = '';
+my $pid     = IPC::Open3::open3( $wrimg, $ritype, ">&STDERR", "file", "-" );
+if ( !defined $pid ) {
+    die "Aborting: failed to fork for image mime check.";
+}
+print {$wrimg} $image;
+close($wrimg);
+$imgtype = readline($ritype);
+close($ritype);
+
+waitpid( $pid, 0 );
+
+die "Invalid image ($imgtype) in cpaddonsfile" if $imgtype !~ /(png|jpe?g|gif)/i;
+
+my $name = $rMODCFG->{'name'};
+$name =~ s/\///g;
+
+my $regdir = '/var/cpanel/registered_cpanelplugins';
+if ( !-d $regdir ) { Cpanel::SafeDir::MK::safemkdir( $regdir, '0755' ); }
+my $regfile = $regdir . '/' . $name;
+if ( $mfile ne $regfile ) {
+    Cpanel::FileUtils::Copy::safecopy( $mfile, $regfile );
+}
+Cpanel::FileUtils::TouchFile::touchfile($regfile);
+
+my $imgext;
+my $finalimg;
+my $rimg;
+if ( $imgtype =~ /png/i ) {
+    $rimg   = GD::Image->newFromPngData( $image, 1 );
+    $imgext = 'png';
+}
+elsif ( $imgtype =~ /jpe?g/i ) {
+    $rimg   = GD::Image->newFromJpegData( $image, 1 );
+    $imgext = 'jpg';
+}
+elsif ( $imgtype =~ /gif/ ) {
+    $rimg   = GD::Image->newFromGifData($image);
+    $imgext = 'gif';
+}
+
+my ( $rwidth, $rheight ) = $rimg->getBounds();
+
+print "Registering cpanelplugin: ${name}\n";
+print "Searching for themes that support the cpanelplugin system....";
+my %THEMECFGS;
+opendir( my $themedirs, "/usr/local/cpanel/base/frontend" );
+while ( my $theme = readdir($themedirs) ) {
+    next if ( $theme =~ /^\./ );
+    next if ( $theme =~ /paper_lantern/ );
+    next if ( $theme =~ /jupiter/ );
+    if ( -e "/usr/local/cpanel/base/frontend/" . $theme . '/cpanelplugins.conf' ) {
+        print "$theme\n";
+        $THEMECFGS{$theme} = Cpanel::ModReg::loadcfg( "/usr/local/cpanel/base/frontend/" . $theme . '/cpanelplugins.conf' );
+    }
+}
+print "Done\n";
+
+foreach my $theme ( keys %THEMECFGS ) {
+    next if !Cpanel::Themes::Get::theme_has_reached_eol($theme);
+    print "Installing image in theme $theme\n";
+    my $newheight     = $THEMECFGS{$theme}->{'height'};
+    my $newwidth      = int( ( $newheight * $rwidth ) / $rheight );
+    my $installmethod = $THEMECFGS{$theme}->{'method'};
+    my $brandingdir   = "/usr/local/cpanel/base/frontend/" . $theme . '/branding/';
+
+    my $scaleimg = GD::Image->newTrueColor( $newwidth, $newheight );
+    $scaleimg->copyResampled( $rimg, 0, 0, 0, 0, $newwidth, $newheight, $rwidth, $rheight );
+    my $imgfile = $brandingdir . $name . '.' . $imgext;
+    print "Wrote $imgfile ($newwidth x $newheight)\n";
+    open( my $bimg_fh, '>', $imgfile );
+    if ( $imgext eq 'png' ) {
+        print $bimg_fh $scaleimg->png(9);
+    }
+    elsif ( $imgext eq 'jpg' ) {
+        print $bimg_fh $scaleimg->jpeg(100);
+    }
+    else {
+        print $bimg_fh $scaleimg->gif;
+    }
+    close($bimg_fh);
+
+    if ( $installmethod eq 'dynamicui' || $installmethod eq 'dyanmicui' ) {    #legacy misspelling
+        print "Writing dynamic ui config for $theme....";
+        my @OCC;
+        my $dynamicuidir = "/usr/local/cpanel/base/frontend/" . $theme . '/dynamicui';
+
+        # make sure the dynamicui/ directory is available
+        if ( !-d $dynamicuidir ) {
+            Cpanel::SafeDir::MK::safemkdir( $dynamicuidir, '0755' ) or die "Plugin installation failed: $!";
+        }
+        open( my $dyb_fh, '>', $dynamicuidir . '/' . "dynamicui_" . $name . '.conf' );
+        foreach my $key ( keys %{$rMODCFG} ) {
+            next if ( $key eq 'image' );
+            next if ( $key eq 'name' );
+            next if ( $key eq 'featuremanager' );
+            next if ( $rMODCFG->{$key} eq '' );
+            push( @OCC, $key . '=>' . $rMODCFG->{$key} );
+        }
+        if ( !defined $rMODCFG->{'featuremanager'} || $rMODCFG->{'featuremanager'} ne '0' ) {
+            push( @OCC, 'feature=>' . $name );
+        }
+        push( @OCC, 'imgtype=>icon' );
+        push( @OCC, 'subtype=>img' );
+        push( @OCC, 'type=>image' );
+        push( @OCC, 'width=>' . $newwidth );
+        push( @OCC, 'height=>' . $newheight );
+        push( @OCC, 'file=>' . $name );
+
+        # remove any comma from string
+        # we could use HTML::Entities::encode_entities($str, ',')
+        # but we want to avoid using this module in Branding
+        print {$dyb_fh} join( ',', map { s/\,/&#44;/; $_; } @OCC ) . "\n";    ## no critic(ProhibitMutatingListFunctions) - OCC is about to go out of scope.
+        close($dyb_fh);
+        print "Done\n";
+
+        Cpanel::ModReg::rebuildsprites( $theme, $THEMECFGS{$theme}->{'sprites'} );
+    }
+    elsif ( $installmethod eq 'htmlfilegen' ) {
+        print "Generating html for $theme...";
+        my $dir = $THEMECFGS{$theme}->{'dir'};
+        $dir =~ s/\.//g;
+        my $templatedir = "/usr/local/cpanel/base/frontend/" . $theme . '/' . $dir;
+        my $template    = $THEMECFGS{$theme}->{'template'};
+        $template =~ s/\$\{feature\}/\$\{name\}/g;
+        $template =~ s/\$\{item\}/\$\{name\}/g;
+        while ( $template =~ /\$\{[^\}]+\}/ ) {
+            $template =~ s/\$\{([^\}]+)\}/$rMODCFG->{$1}/g;
+        }
+
+        my @TEMPLATE = split( /\n/, $template );
+        if ( defined $rMODCFG->{'featuremanager'} && $rMODCFG->{'featuremanager'} eq '0' ) {
+            @TEMPLATE = grep( !/\<\/?cpanelfeature/, @TEMPLATE );
+        }
+        if ( !defined $rMODCFG->{'if'} || $rMODCFG->{'if'} eq '' ) {
+            @TEMPLATE = grep( !/\<\/?cpanelif/, @TEMPLATE );
+        }
+        open( my $addon_html, '>', $templatedir . '/' . "cpanelplugin_" . $name . '.html' );
+        print {$addon_html} join( "\n", @TEMPLATE );
+        close($addon_html);
+        print "Done\n";
+    }
+}
+
+if ( !defined $rMODCFG->{'featuremanager'} || $rMODCFG->{'featuremanager'} ne '0' ) {
+    print "Installing $name in feature manager ...";
+    open( my $feature_cfg, '>', '/usr/local/cpanel/whostmgr/addonfeatures' . '/' . $name );
+    print {$feature_cfg} "${name}:" . $rMODCFG->{'description'} . "\n";
+    close($feature_cfg);
+    print "Done\n";
+}
+
+if ( -e '/usr/local/cpanel/cpanel' ) {
+    Cpanel::FileUtils::TouchFile::touchfile('/usr/local/cpanel/cpanel');    #clear branding cache
+}
+
+if ( -x "$Cpanel::root/scripts/verify_api_spec_files" ) {
+    print "Rebuilding API specification indexes...";
+    system("$Cpanel::root/scripts/verify_api_spec_files");
+    print "Done\n";
+}
+
+print "Register Complete\n";

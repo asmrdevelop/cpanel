@@ -1,0 +1,544 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/initquotas                      Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::initquotas;
+
+use strict;
+use warnings;
+
+use IPC::Open3                      ();
+use Cpanel::ArrayFunc::Uniq         ();
+use Cpanel::Quota::Filesys          ();
+use Quota                           ();
+use Cpanel::TimeHiRes               ();
+use Cpanel::ConfigFiles             ();
+use Cpanel::Backup::Config          ();
+use Cpanel::FileUtils::TouchFile    ();
+use Cpanel::Binaries                ();
+use Cpanel::FindBin                 ();
+use Cpanel::Filesys::Info           ();
+use Cpanel::Filesys::FindParse      ();
+use Cpanel::Filesys::Mounts         ();
+use Cpanel::SafeRun::Simple         ();
+use Cpanel::SafeRun::Errors         ();
+use Cpanel::Transaction::File::Raw  ();
+use Cpanel::Config::LoadWwwAcctConf ();
+use Cpanel::Unix::PID::Tiny         ();
+use Cpanel::OS                      ();
+use Cpanel::Quota::Cache            ();
+use Cpanel::SysQuota::Cache         ();
+use Cpanel::MysqlUtils::Dir         ();
+use Try::Tiny;
+
+my %cmd = (
+    'quota'        => undef,
+    'quotaon'      => undef,
+    'quotaoff'     => undef,
+    'quotacheck'   => undef,
+    'convertquota' => undef,
+);
+
+our $FSTAB_FILE = '/etc/fstab';
+my $ENABLE_QUOTA                          = 1;
+my $DISABLE_QUOTA                         = 0;
+my $pidfile                               = '/var/run/initquotas.pid';
+my @ALL_QUOTA_FILES                       = ( 'quota.user', 'aquota.user', 'quota.group', 'aquota.group' );
+my $supported_file_system_regex           = 'ext[234]|reiserfs';
+my $journaled_supported_file_system_regex = 'ext[34]|reiserfs';
+my $do_quotacheck                         = ( grep( m/skipquotacheck/i, @ARGV ) || -d '/proc/vz/vzaquota' ) ? 0 : 1;
+my $supports_journaled_quota              = supports_journaled_quota();
+my $mountkeyword                          = 'remount';
+
+if ( Cpanel::OS::has_quota_support_for_xfs() ) {
+    $supported_file_system_regex .= '|xfs';
+}
+my $DEFAULT_MYSQL_DATADIR = '/var/lib/mysql';
+
+if ( !caller() ) {
+    local $| = 1;
+    my $upid = Cpanel::Unix::PID::Tiny->new();
+
+    # Check for running instances of initquotas.
+
+    if ( !$upid->pid_file($pidfile) ) {
+        my $pid = $upid->get_pid_from_pidfile($pidfile);
+        print "Another instance of initquotas appears to be running at PID '$pid'.\n";
+        exit 1;
+    }
+
+    # Check for running instance of quotacheck.
+
+    if ( my $pid = $upid->is_pidfile_running('/var/run/quotacheck.pid') ) {
+        print "An instance of quotacheck appears to be running at PID '$pid'.\n";
+        exit 1;
+    }
+
+    my $ok = __PACKAGE__->run();
+    exit( $ok ? 0 : 1 );
+}
+
+sub run {
+
+    if ( !verify_all_quota_binaries_are_in_place() ) {
+        return 0;
+    }
+
+    chmod oct(4755), $cmd{'quota'};
+
+    my @mount_output               = split( /\n/, Cpanel::SafeRun::Simple::saferun('mount') );
+    my $has_filesystems_with_quota = grep( /with\s+quotas|usrj?quota/, @mount_output ) ? 1 : 0;
+    my $mount_point_config         = get_mount_point_config();
+
+    # Modify fstab as needed
+    my ( $fses_to_convert_arrayref, $mount_cmds_ref, $need_quotacheck ) = setup_quotas($mount_point_config);
+
+    # Don't run quotacheck if none of our file systems use it.
+    $do_quotacheck &&= $need_quotacheck;
+
+    if ( @$mount_cmds_ref || $do_quotacheck ) {
+        local $ENV{'LANG'} = 'C';
+        my $quota_off = Cpanel::SafeRun::Errors::saferunnoerror( $cmd{'quotaoff'}, '-a' );
+
+        foreach my $line ( split( /\n/, $quota_off ) ) {
+            next if $line =~ /no\s+such\s+process/i;
+            print "Running quotaoff failed!\n";
+            Cpanel::SafeRun::Errors::saferunnoerror( $cmd{'quotaon'}, '-a' );
+            exit 1;
+        }
+    }
+
+    # Now actually remount the file systems with or without quotas based on the logic above.
+    # So /etc/fstab matches what is actually going on
+    foreach my $data ( @{$mount_cmds_ref} ) {
+        my ( $cmdref, $fstab, $journaled ) = @{$data}{qw/cmd fstab journaled/};
+        my $result = Cpanel::SafeRun::Errors::saferunallerrors( @{$cmdref} );
+        if ($result) {
+            my $cmd = join( " ", @{$cmdref} );
+            print "Warning: mount failure while executing $cmd: $result\n";
+            if ($journaled) {
+                print "Trying non-journaled quotas instead for $cmdref->[-1]\n";
+                _update_fstab_line( \$fstab, $DISABLE_QUOTA, $journaled );
+                _update_fstab_line( \$fstab, $ENABLE_QUOTA,  0 );
+                rebuild_fstab( sub { $data->{'fstab'} eq $_[0] ? $fstab : $_[0] } );
+                $result = Cpanel::SafeRun::Errors::saferunallerrors( @{$cmdref} );
+                print "Warning: mount failure while executing $cmd: $result\n" if $result;
+            }
+            if ($result) {
+                print "Disabling quotas for $cmdref->[-1]\n";
+                _update_fstab_line( \$fstab, $DISABLE_QUOTA, 0 );
+                rebuild_fstab( sub { $data->{'fstab'} eq $_[0] ? $fstab : $_[0] } );
+            }
+        }
+    }
+
+    if ( !$do_quotacheck ) {
+        Cpanel::SafeRun::Errors::saferunnoerror( $cmd{'quotaon'}, '-a' );
+        if ( !$need_quotacheck ) {
+            print "Quotas have been enabled and updated.\n";
+        }
+        else {
+            print "Quotas have been enabled, however they may not be up to date as quotacheck has been skipped.\n";
+        }
+        exit 0;
+    }
+
+    purge_quotas($fses_to_convert_arrayref);
+
+    Cpanel::Filesys::Mounts::clear_mounts_cache();
+
+    run_quota_check();
+
+    convert_quotas($fses_to_convert_arrayref);
+
+    Cpanel::SafeRun::Errors::saferunnoerror( $cmd{'quotaon'}, '-a' );
+
+    reset_quota_caches();
+
+    Cpanel::Filesys::Mounts::clear_mounts_cache();
+
+    print "Quotas have been enabled and updated.\n";
+
+    return 1;
+}
+
+sub reset_quota_caches {
+    Cpanel::SysQuota::Cache::purge_cache();
+
+    try {
+        Cpanel::Quota::Cache::update_quota_cache_dir();
+    };
+
+    # No reason to catch as update_quota_cache_dir
+    # has already logged the error.
+    return;
+}
+
+sub purge_quotas {
+    my $fses_to_purge_arrayref = shift;
+
+    foreach my $mntpoint (@$fses_to_purge_arrayref) {
+        _purge_quota_files($mntpoint);
+    }
+    return;
+}
+
+sub convert_quotas {
+    my $fses_to_convert_arrayref = shift;
+
+    foreach my $mntpoint (@$fses_to_convert_arrayref) {
+        Cpanel::SafeRun::Errors::saferunnoerror( $cmd{'convertquota'}, $mntpoint ) unless $supports_journaled_quota;
+        _set_quota_file_perms($mntpoint);
+    }
+    return;
+}
+
+sub run_quota_check {
+
+    my $fs        = Cpanel::Quota::Filesys->new();
+    my $paths_ref = $fs->get_devices_with_quotas_enabled();
+    print 'Updating Quota Files......';
+    foreach my $dev ( sort keys %$paths_ref ) {
+        next if index( $paths_ref->{$dev}{'fstype'}, 'xfs' ) > -1;
+        next if index( $paths_ref->{$dev}{'mode'},   'quota' ) == -1;
+        my ($format) = $paths_ref->{$dev}{'mode'} =~ m{jqfmt=([a-z0-9]+)};
+        if ( $paths_ref->{$dev}{'mode'} =~ m{usrjquota}i ) {
+            $format ||= 'vfsv1';
+        }
+        my @args = ( '--create-files', '--user', '--group', '--verbose', '--force', '--use-first-dquot', '--no-remount' );
+        if ($format) {
+            quotarun( $cmd{'quotacheck'}, @args, '--format=' . $format, $dev );
+        }
+        else {
+            # Cannot detect so do all three
+            quotarun( $cmd{'quotacheck'}, @args, '--format=vfsold', $dev );
+            quotarun( $cmd{'quotacheck'}, @args, '--format=vfsv0',  $dev );
+            quotarun( $cmd{'quotacheck'}, @args, '--format=vfsv1',  $dev );
+        }
+    }
+    print '....Done' . "\n";
+    return;
+}
+
+sub quotarun {
+    my (@CMD) = @_;
+    print "\n\t";
+
+    my $empty_dir = q{/var/cpanel/empty_directory};
+    if ( !-d $empty_dir ) {
+        die "Cannot create directory '$empty_dir': $!" unless mkdir( $empty_dir, 0700 );
+    }
+
+    local $ENV{'LD_PRELOAD'} = "$Cpanel::ConfigFiles::CPANEL_ROOT/lib/quotacheck_virtfs_wrapper.so";
+    print "Running Task: “@CMD”.\n";
+
+    my $start_time = Cpanel::TimeHiRes::time();
+    my $qout_fh;
+
+    my $pid = IPC::Open3::open3( '>/dev/null', $qout_fh, $qout_fh, @CMD );
+    while ( read( $qout_fh, $_, 1 ) ) {
+        syswrite( STDOUT, $_ eq "\n" ? "\n\t" : $_ );
+    }
+    print "\n";
+    close($qout_fh);
+    waitpid( $pid, 0 );
+    my $end_time  = Cpanel::TimeHiRes::time();
+    my $exec_time = sprintf( "%.3f", ( $end_time - $start_time ) );
+    print "Completed Task: “@CMD” in $exec_time second(s).\n";
+
+    return;
+}
+
+sub _purge_quota_files {
+    my $mntpoint       = shift;
+    my @files_to_purge = map { ( "$_.new", $_ ) } @ALL_QUOTA_FILES;
+    foreach my $quota_file (@files_to_purge) {
+        if ( -e $mntpoint . '/' . $quota_file ) { unlink( $mntpoint . '/' . $quota_file ) }
+    }
+    return;
+}
+
+sub _set_quota_file_perms {
+    my $mntpoint = shift;
+    foreach my $quota_file (@ALL_QUOTA_FILES) {
+        if ( -e $mntpoint . '/' . $quota_file ) { chmod 0644, $mntpoint . '/' . $quota_file }
+    }
+    return;
+}
+
+sub wall {
+    my $wall_txt = shift;
+    my $wall_cmd = Cpanel::Binaries::path('wall');
+    -x $wall_cmd
+      or return;
+
+    if ( open( my $wall_fh, '|-' ) || exec($wall_cmd ) ) {
+        print {$wall_fh} $wall_txt;
+        close($wall_fh);
+    }
+    return;
+}
+
+sub rebuild_fstab {
+    my ($changeref) = @_;
+
+    my @CFILE;
+
+    my $trans    = _get_fstab_transaction();
+    my $fstab_sr = $trans->get_data();
+    foreach my $fstab_line ( split( m{^}, $$fstab_sr ) ) {
+        push @CFILE, &$changeref($fstab_line);
+    }
+
+    my $data = join( '', @CFILE );
+    $trans->set_data( \$data );
+    $trans->save_and_close_or_die();
+
+    return;
+}
+
+sub _get_fstab_transaction {
+    return Cpanel::Transaction::File::Raw->new( 'path' => $FSTAB_FILE, 'permissions' => 0644, 'restore_original_permissions' => 1 );
+}
+
+#
+# Cycle though the fstab and add usrquota to all supported filesystems
+# and remove from filesystems that should not have them
+#
+sub setup_quotas {    ## no critic(Subroutines::ProhibitExcessComplexity)  -- Refactoring this function is a project, not a bug fix
+
+    my $mount_point_config = shift;
+
+    my @CFILE;
+    my @MOUNT_CMDS;
+    my @NEED_CONVERT;
+    my $wwwacct_ref = Cpanel::Config::LoadWwwAcctConf::loadwwwacctconf();
+    my $home        = $wwwacct_ref->{'HOMEDIR'} || '/home';
+
+    my $trans           = _get_fstab_transaction();
+    my $fstab_sr        = $trans->get_data();
+    my $need_quotacheck = 0;
+
+  LINE:
+    foreach my $fstab_line ( split( m{^}, $$fstab_sr ) ) {
+        if ( $fstab_line =~ /^(\S+)\s*(\S+)/ ) {
+            if ( $fstab_line =~ /^#/ ) {
+                push @CFILE, $fstab_line;
+                next LINE;
+            }
+            my ( $dsk, $mntpoint, $fstype, $options, $dump, $pass, @opts ) = split( /\s+/, $fstab_line );
+            my @options = split( /\s*\,\s*/, $options || '' );
+            if ( grep( /^(?:ro|noauto|loop)/, @options ) ) {
+                push @CFILE, $fstab_line;
+                next LINE;
+            }
+            if ( grep( /^noquota/, @options ) ) {
+                print "The system will leave quotas disabled on $mntpoint because the noquota option was specified in the fstab file.\n";
+                push @CFILE, $fstab_line;
+                next LINE;
+            }
+            my $has_usr_quota = ( $fstab_line =~ /\bu(srj?)?quota\b/ ? 1 : 0 );
+            $dsk =~ s/^LABEL=//g;
+            if ( $fstab_line =~ /\s*$supported_file_system_regex/ ) {
+                foreach my $quota_file (@ALL_QUOTA_FILES) {
+                    if ( -l $mntpoint . '/' . $quota_file ) {
+                        push( @CFILE, $fstab_line );
+                        next LINE;    #openvz
+                    }
+                }
+
+                my $use_journaled         = $fstab_line =~ /\s*$journaled_supported_file_system_regex/ ? $supports_journaled_quota : 0;
+                my $mountpnt_can_do_quota = ( $mntpoint =~ /^(?:\/boot|\/tmp)/ ? 0 : 1 );
+
+                $need_quotacheck ||= ( $fstype ne 'xfs' || Cpanel::OS::has_quota_support_for_xfs() ) && $mountpnt_can_do_quota;
+
+                my $config = $mount_point_config->{$mntpoint} // {};
+                $mountpnt_can_do_quota = 0 if $config->{'disable'};
+
+                if ( !$mountpnt_can_do_quota && $has_usr_quota ) {
+                    print_config_messages( $config, 'action' );
+                    print "$dsk (removing " . ( $use_journaled ? 'journaled ' : '' ) . "quotas)\n";
+                    _update_fstab_line( \$fstab_line, $DISABLE_QUOTA, $use_journaled );
+                    push @MOUNT_CMDS, { 'cmd' => [ 'mount', '-o', $mountkeyword, $mntpoint ], 'fstab' => $fstab_line, 'journaled' => $use_journaled };
+                }
+                elsif ( $mountpnt_can_do_quota && !$has_usr_quota ) {
+                    print_config_messages( $config, 'action' );
+                    print "$dsk (enabling " . ( $use_journaled ? 'journaled ' : '' ) . "quotas)\n";
+                    _update_fstab_line( \$fstab_line, $ENABLE_QUOTA, $use_journaled );
+                    push @MOUNT_CMDS, { 'cmd' => [ 'mount', '-o', $mountkeyword, $mntpoint ], 'fstab' => $fstab_line, 'journaled' => $use_journaled };
+                }
+                else {
+                    print_config_messages( $config, 'inaction' );
+                    print "$dsk (already configured quotas = $has_usr_quota).\n";
+                }
+
+                if ( $mountpnt_can_do_quota && $fstype ne 'xfs' ) {
+                    _set_quota_file_perms($mntpoint);
+                    foreach my $quota_file (@ALL_QUOTA_FILES) {
+                        my $quota_file_with_path = $mntpoint eq '/' ? $mntpoint . $quota_file : $mntpoint . '/' . $quota_file;
+                        if ( !-e $quota_file_with_path ) {
+                            Cpanel::FileUtils::TouchFile::touchfile($quota_file_with_path);
+                        }
+                    }
+                    _set_quota_file_perms($mntpoint);
+                    push @NEED_CONVERT, $mntpoint;
+                }
+            }
+        }
+        push( @CFILE, $fstab_line );
+    }
+
+    my $data = join( '', @CFILE );
+    $trans->set_data( \$data );
+    $trans->save_and_close_or_die();
+
+    return ( \@NEED_CONVERT, \@MOUNT_CMDS, $need_quotacheck );
+}
+
+sub get_mount_point_config {
+    my %mounts;
+
+    # If a mount point exactly matches the MySQL datadir it should be skipped (CPANEL-28760)
+    my $mysql_datadir       = get_mysql_datadir();
+    my $mysql_datadir_mount = get_mount_point($mysql_datadir);
+    if ( $mysql_datadir_mount eq $mysql_datadir ) {
+        $mounts{$mysql_datadir_mount} = {
+            disable => 1,
+            message => {
+                action   => "The system will disable quotas on $mysql_datadir_mount because it is a MySQL or MariaDB data directory.",
+                inaction => "The system will leave quotas disabled on $mysql_datadir_mount because it is a MySQL or MariaDB data directory.",
+            },
+        };
+    }
+
+    #NOTE:: QUOTAS CAN BE ON A BACKUP DISK SINCE ALL FILES ARE ALWAYS OWNED BY ROOT -- HOWEVER IT IS SLOW
+    for my $backup_mount ( @{ get_backup_dir_mount_points() } ) {
+        if ( $backup_mount eq '/' ) {
+            $mounts{$backup_mount} = {
+                disable => 0,
+                message => {
+                    always => "Warning : Your system does not have a separate filesystem for backups. This may cause performance degradation during the backup process.",
+                },
+            };
+        }
+        else {
+            $mounts{$backup_mount} = {
+                disable => 1,
+                message => {
+                    action   => "The system will disable quotas on $backup_mount in order to prevent performance degradation.",
+                    inaction => "The system will leave quotas disabled on $backup_mount in order to prevent performance degradation.",
+                },
+            };
+        }
+    }
+
+    return \%mounts;
+}
+
+# Scans the backup configuraiton for fses that are set to be backup fses that have
+# quotas enabled on them and disables them.  Returns a hashref list of backup fses that exist
+#
+sub get_backup_dir_mount_points {
+    my @mountpoints;
+    my $backup_dir_ref = Cpanel::Backup::Config::get_backup_dirs();
+    foreach my $backup_dir ( Cpanel::ArrayFunc::Uniq::uniq( @{$backup_dir_ref} ) ) {
+        print "checking out $backup_dir\n";
+        my $backup_mount = get_mount_point($backup_dir);
+        push @mountpoints, $backup_mount;
+    }
+    return \@mountpoints;
+}
+
+sub supports_journaled_quota {
+    require Cpanel::LoadFile;
+    if ( Cpanel::LoadFile::loadfile('/sbin/quotaon') =~ m/usrjquota/ ) {
+        print "journaled quota support: kernel supports, user space tools supports (available)\n";
+        return 1;
+    }
+    print "journaled quota support: kernel supports, user space tools not updated (disabled)\n";
+    return 0;
+}
+
+sub _update_fstab_line {
+    my ( $fstab_line_ref, $action, $supports_journaled_quota ) = @_;
+
+    my ( $device, $mntpoint, $fstype, $options, $dump, $pass, @opts ) = split( /\s+/, $$fstab_line_ref );
+    my @options_list = split( m/\s*,\s*/, $options );
+
+    if ( $action == $DISABLE_QUOTA ) {
+        @options_list = grep( !m/(?:quota|jqfmt)/, @options_list );
+        push @options_list, 'defaults' if scalar @options_list == 0;
+    }
+    else {
+        @options_list = grep( !m/(?:u(srj?)?quota|jqfmt)/, @options_list );
+        if ($supports_journaled_quota) {
+            @options_list = grep( !m/^defaults$/, @options_list );    #defaults seems to cause usrjquota to break on some systems
+            push @options_list, 'usrjquota=quota.user', 'jqfmt=vfsv1';
+        }
+        else {
+            unshift @options_list, 'defaults' if !grep( m/^defaults$/, @options_list );
+            my $usrquota = 'usrquota';
+            if ( Cpanel::OS::has_quota_support_for_xfs() && $$fstab_line_ref =~ m{\bxfs\b} ) {
+                print "The system will configure quotas on the “$device” which is using the “xfs” filesystem.\n";
+                print "A reboot will be required to enable quotas on xfs.\n";
+                $usrquota = 'uquota';
+            }
+
+            push @options_list, $usrquota;
+        }
+    }
+    $options = join( ',', @options_list );
+
+    $$fstab_line_ref = join( "\t", $device, $mntpoint, $fstype, $options, $dump, $pass, @opts ) . "\n";
+
+    return 1;
+}
+
+sub verify_all_quota_binaries_are_in_place {
+
+    my @missing_cmds;
+    foreach my $cmd_name ( keys %cmd ) {
+
+        $cmd{$cmd_name} = Cpanel::FindBin::findbin($cmd_name);
+        if ( !( $cmd{$cmd_name} && -x $cmd{$cmd_name} ) ) {
+
+            push @missing_cmds, $cmd_name;
+        }
+    }
+
+    if ( scalar @missing_cmds ) {
+        print "Incomplete quota kit: unable to initialize quotas.\n";
+        print 'Missing commands: ', join( ', ', sort @missing_cmds ), "\n";
+        return 0;
+    }
+    return 1;
+}
+
+sub get_mount_point {
+    my $dir         = shift;
+    my $filesys_ref = Cpanel::Filesys::Info::_all_filesystem_info();
+    return Cpanel::Filesys::FindParse::find_mount( $filesys_ref, $dir );
+}
+
+sub get_mysql_datadir {
+    my $datadir = Cpanel::MysqlUtils::Dir::getmysqldir() // $DEFAULT_MYSQL_DATADIR;
+    $datadir =~ s{/$}{};    # Remove any trailing slash.
+    return $datadir;
+}
+
+sub get_config_messages {
+    my ( $ref, @selections ) = @_;
+    unshift @selections, 'always' unless grep { $_ eq 'always' } @selections;
+    return map { $ref->{'message'}->{$_} } grep { exists $ref->{'message'}->{$_} && length $ref->{'message'}->{$_} } @selections;
+}
+
+sub print_config_messages {
+    return unless my @messages = get_config_messages(@_);
+    print join( "\n", @messages ) . "\n";
+    return;
+}
+
+1;

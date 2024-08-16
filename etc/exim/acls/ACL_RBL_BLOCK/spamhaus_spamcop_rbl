@@ -1,0 +1,20 @@
+
+ deny message = JunkMail rejected - $sender_fullhost is in an RBL: $dnslist_text
+     hosts = +backupmx_hosts
+     dnslists = zen.spamhaus.org : bl.spamcop.net
+
+ warn
+     [% ACL_RBL_WHITELIST %]
+     dnslists = zen.spamhaus.org : bl.spamcop.net
+     set acl_m8 = 1
+     set acl_m9 = "JunkMail rejected - $sender_fullhost is in an RBL: $dnslist_text"
+
+ warn
+     condition = ${if eq {${acl_m8}}{1}{1}{0}}
+     ratelimit = 0 / 1h / strict / per_conn
+     log_message = "Increment Connection Ratelimit - $sender_fullhost because of RBL match"
+
+ drop
+     condition = ${if eq {${acl_m8}}{1}{1}{0}}
+     message = ${acl_m9}
+

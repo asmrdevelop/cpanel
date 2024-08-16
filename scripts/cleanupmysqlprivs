@@ -1,0 +1,13 @@
+#!/bin/bash
+
+echo -n "Cleaning up mysql privs.  Please ignore errors about non-existent columns as you may have an older version of mysql....."
+
+mysql -v -f mysql <<EOM
+update user set Create_priv='N' where Create_priv='Y' and User != 'root';
+update user set Create_tmp_table_priv='N' where Create_tmp_table_priv='Y' and User != 'root';
+update user set Lock_tables_priv='N' where Lock_tables_priv='Y' and User != 'root';
+update user set Execute_priv='N' where Execute_priv='Y' and User != 'root';
+EOM
+mysqladmin reload
+
+echo "Done."

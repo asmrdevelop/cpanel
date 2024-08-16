@@ -1,0 +1,192 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+# cpanel - scripts/check_security_advice_changes     Copyright 2022 cPanel L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::check_security_advice_changes;
+
+use strict;
+use Cpanel::Transaction::File::JSON ();
+use Cpanel::Hash                    ();
+use Cpanel::Locale                  ();
+use Cpanel::Usage                   ();
+use Cpanel::Alarm                   ();
+use Capture::Tiny                   ();
+
+my $WANT_TYPE = 'mod_advice';
+my $CHANNEL   = 'securityadvisor';
+our $HISTORY_FILE = '/var/cpanel/security_advisor_history.json';
+
+_run_from_command_line(@ARGV) if !caller();
+
+sub _run_from_command_line {
+    my (@args) = @_;
+    if ( grep { index( $_, '-background' ) > -1 } @args ) {
+        @args = grep { index( $_, '-background' ) == -1 } @args;    # CPANEL-41626: we want to keep elements of @args which DON'T match '-background', so we should check for equality to -1, not non-equality.
+        require Cpanel::Daemonizer::Tiny;
+        require Cpanel::FileUtils::Open;
+        require Cpanel::ConfigFiles;
+        my $pid = Cpanel::Daemonizer::Tiny::run_as_daemon(
+            sub {
+                ####
+                # The next two calls are unchecked because it cannot be captured when running as a daemon
+                no warnings 'once';
+                Cpanel::FileUtils::Open::sysopen_with_real_perms( \*STDERR, $Cpanel::ConfigFiles::CPANEL_ROOT . '/logs/error_log', 'O_WRONLY|O_APPEND|O_CREAT', 0600 );
+                open( STDOUT, '>&', \*STDERR ) || warn "Failed to redirect STDOUT to STDERR";
+
+                return _exit( __PACKAGE__->script( \@args ) );
+            }
+        );
+        return _exit(0);
+    }
+    return _exit( __PACKAGE__->script( \@args ) );
+}
+
+sub _exit {
+    my ($code) = @_;
+    return exit($code);
+}
+
+sub script {
+    my ( $class, $argv ) = @_;
+
+    my %opts = (
+        notify => 0,
+        quiet  => 0,
+    );
+    my $self = bless {}, $class;
+    Cpanel::Usage::wrap_options(
+        $argv,
+        sub { my (@args) = @_; $self->usage(@args); },
+        { 'notify' => \$opts{'notify'}, 'quiet' => \$opts{'quiet'} },
+    );
+    $self->{'notify'} = $opts{'notify'};
+    $self->{'quiet'}  = $opts{'quiet'};
+
+    local $Cpanel::Locale::Context::DEFAULT_OUTPUT_CONTEXT = 'html';
+
+    # Make sure Cpanel::Locale->get_handle() is invoked before being invoked
+    # by the security advisor modules; otherwise Net::SMTP will throw warnings.
+    $self->_locale();
+
+    # The yum calls can take a while if yum is in use so we now
+    # wait up to 30m.  Since v78+ does the security advisor
+    # checks in the background this should be ok now.
+    my $main_alarm = Cpanel::Alarm->new( 1800, sub { die "$0 timed out because it was running for longer than 30 minutes."; } );    #max 30m
+
+    my $trans_obj = Cpanel::Transaction::File::JSON->new( 'path' => $HISTORY_FILE );
+
+    my $previous_run      = $trans_obj->get_data();
+    my %prev_hashes       = ( ref $previous_run eq 'HASH' and $previous_run->{'hashes'} )       ? %{ $previous_run->{'hashes'} }       : ();
+    my %prev_message_keys = ( ref $previous_run eq 'HASH' and $previous_run->{'message_keys'} ) ? %{ $previous_run->{'message_keys'} } : ();
+    my ( %hashes, %message_keys );
+
+    require Cpanel::Security::Advisor;
+    require Cpanel::Security::AdvisorFetch;
+    my $msgs = Cpanel::Security::AdvisorFetch::fetch_security_advice();
+
+    my $highest_notice_type = 0;
+    my %notices;
+
+    foreach my $data ( @{$msgs} ) {
+        my $block = ( $data->{'advice'}{'block_notify'} ) ? $data->{'advice'}{'block_notify'} : 0;
+        if ( $data->{'type'} eq $WANT_TYPE && !$block ) {
+            my $module      = $data->{'module'};
+            my $text        = $data->{'advice'}{'text'} . ( $data->{'advice'}{'suggestion'} ? " " . $data->{'advice'}{'suggestion'} : '' );
+            my $hash        = Cpanel::Hash::get_fastest_hash($text);
+            my $message_key = ( $data->{'advice'}{'key'} ) ? $data->{'advice'}{'key'} : $data->{'module'};
+
+            # NOTE: Condition description:
+            # NOTE: True If advice type is INFO/WARN/BAD && (advice not seen before (via static key or hash) or advise type is greater [i.e., worse] then seen type)
+            my $good = Cpanel::Security::Advisor::_lookup_advise_type_by_value(q{ADVISE_GOOD});
+            if ( $data->{'advice'}{'type'} > $good && ( !( $prev_hashes{$hash} || $prev_message_keys{$message_key} ) || $prev_hashes{$hash} < $data->{'advice'}{'type'} ) ) {
+                push @{ $notices{$module} }, $data->{'advice'};
+                if ( $highest_notice_type < $data->{'advice'}{'type'} ) {
+                    $highest_notice_type = $data->{'advice'}{'type'};
+                }
+            }
+
+            # maintain the augmented datastructure
+            $hashes{$hash} = $data->{'advice'}{'type'};
+
+            # message key hash will store advise type as string
+            $message_keys{$message_key}{$hash} = Cpanel::Security::Advisor::_lookup_advise_type( $data->{'advice'}{'type'} );
+        }
+    }
+    $trans_obj->set_data( { 'hashes' => \%hashes, 'message_keys' => \%message_keys } );
+    my ( $status, $statusmsg ) = $trans_obj->save_and_close();
+
+    # Need to notify
+    {
+        no warnings 'once';
+        if (
+            $highest_notice_type
+            &&
+
+            # case CPANEL-6053: Only generate an iContact notification if there
+            # are changes to WARN or higher.
+            $highest_notice_type >= $Cpanel::Security::Advisor::ADVISE_WARN
+        ) {
+            $self->notify( $highest_notice_type, \%notices );
+        }
+        else {
+            print $self->_locale()->maketext("There are no changes to the Security Advisor state that require notification.") . "\n";
+        }
+    }
+    return 0;
+}
+
+sub usage {
+    my ($self) = @_;
+
+    print $self->_locale()->maketext(q{This tool monitors the state of the Security Advisor and can send a notification when the state changes.}), "\n\n";
+    print $self->_locale()->maketext( q{Usage: [_1][comment,a program name] ~[options~]}, $0 ),                                                    "\n\n";
+    print $self->_locale()->maketext(q{Options:}),                                                                                                 "\n";
+    print "\t--help     ",                                                                                                                         $self->_locale()->maketext(q{Display this help message.}),                                               "\n";
+    print "\t--notify   ",                                                                                                                         $self->_locale()->maketext(q{Send a notification to the system administrator.}),                         "\n";
+    print "\t--quiet    ",                                                                                                                         $self->_locale()->maketext(q{Do not display output, and instead set the [output,asis,UNIX] exit code.}), "\n\n";
+
+    exit 0;
+}
+
+sub notify {
+    my ( $self, $highest_notice_type, $notices ) = @_;
+
+    require Cpanel::Locale;
+    my $old = $self->_locale()->set_context_plain();
+
+    require Cpanel::Notify;
+    my $ic_obj = Cpanel::Notify::notification_class(
+        'class'            => 'Check::SecurityAdvisorStateChange',
+        'application'      => 'Check::SecurityAdvisorStateChange',
+        'status'           => 'changes',
+        'interval'         => 1,
+        'constructor_args' => [
+            'origin'              => 'check_for_security_advise_changes',
+            'notices'             => $notices,
+            'highest_notice_type' => $highest_notice_type,
+            'skip_send'           => 1,
+        ]
+    );
+
+    unless ( $self->{'quiet'} ) {
+        print $ic_obj->render_template_include_as_text( 'template' => 'subject', 'type' => 'text' ) . "\n\n" . $ic_obj->render_template_include_as_text( 'template' => 'body', 'type' => 'html' );
+    }
+
+    if ( $self->{'notify'} ) {
+        $ic_obj->send();
+    }
+    $self->_locale()->set_context($old);
+
+    return 1;
+}
+
+sub _locale {
+    my ($self) = @_;
+    require Cpanel::Locale;
+    return ( $self->{'_locale'} ||= Cpanel::Locale->get_handle() );
+}
+
+1;
+

@@ -1,0 +1,325 @@
+[% SET CPANEL.CPVAR.dprefix = "../../";
+
+SET leech_protection_nvdata = execute( 'NVData', 'get', {
+    'names' => 'optionselect_leechprotect'
+} );
+
+SET directory = RAW_FORM.dir;
+SET default_dir = "";
+
+Api2.pre_exec("Email", "listmaildomains");
+SET domains_list =  Api2.exec("Email", "listmaildomains", {} );
+Api2.post_exec("Email", "listmaildomains");
+
+IF leech_protection_nvdata.status;
+    SET nvdata_value = leech_protection_nvdata.data.0.value,
+        value = nvdata_value.split(':'),
+        selected_option = value.0,
+        domain = value.1,
+        always_open_dir = value.2;
+
+    IF always_open_dir == 1;
+        IF selected_option == 'home';
+                default_dir = CPANEL.homedir;
+        ELSIF selected_option == 'webroot';
+            default_dir = CPANEL.homedir _ '/public_html';
+        ELSIF selected_option ==  'domainrootselect';
+            default_dir = Api2.exec("DomainLookup" , "getdocroot" , {"domain" => domain}).0.docroot;
+        ELSE;
+            default_dir = CPANEL.homedir _ '/public_html'
+            selected_option = 'webroot';
+        END;
+    END;
+END;
+
+directory = directory || default_dir || CPANEL.homedir;
+
+SET directories = execute("DirectoryProtection", "list_directories", {
+        dir      => directory,
+    });
+
+%]
+
+[% WRAPPER '_assets/master.html.tt'
+    app_key = 'leech_protection'
+    use_master_bootstrap = 0,
+    page_stylesheets = [
+        'cpanelpro/imagemanager.css',
+        'htaccess/leechprotect/leechprotect.css',
+    ]
+-%]
+
+[% PROCESS '_assets/cjt2_header_include.tt' %]
+
+<div class="body-content">
+    <p id="descLeechProtect">[% locale.maketext("Leech Protect allows you to prevent your users from giving out or publicly posting their passwords to a restricted area of your site. This feature will redirect accounts which have been compromised to a URL of your choice (and suspend them, if you choose).") %]</p>
+    <p id="descPleaseSelect">
+        [% locale.maketext("Click a folder’s icon or name to navigate the file system. To select a folder, click “[output,em,_1]”.", locale.maketext('Edit')) %]
+    </p>
+    <div class="box">
+        <div class="row row-controls">
+            <div class="col-xs-12">
+                <ul class="list-inline">
+                    <li>
+                        <a id="home" href="?dir=[% directories.data.home.path.uri().html() || '/' %]" class="btn btn-default btn-sm">
+                            <i class="fas fa-home"></i>
+                            [% locale.maketext('Home') %]
+                        </a>
+                    </li>
+                    [% IF directories.data.parent.path != directories.data.current.path %]
+                    <li>
+                        <a id="up-one" href="?dir=[% directories.data.parent.path.uri().html() %]" class="btn btn-default btn-sm">
+                            <i class="fas fa-level-up-alt"></i>
+                            [% locale.maketext('Up One Level') %]
+                        </a>
+                    </li>
+                    [% END %]
+                    <li class="pull-right">
+                        <a id="btnSettings"
+                           class="btn btn-default btn-sm"
+                           data-toggle="modal"
+                           data-target="#modalSettings">
+                            <i class='fas fa-cog' aria-hidden="true"></i>
+                            <span class="hidden-xs">[% locale.maketext('Settings') %]</span>
+                        </a>
+                    </li>
+                </ul>
+            </div>
+        </div>
+        <div class="row row-list">
+            [%
+                IF directories.status;
+                SET crumbs = directories.data.current.path.remove(directories.data.home.path).split('/');
+                CALL crumbs.shift();
+                %]
+                <div class="col-xs-12">
+                    <table id="files" class="table table-striped">
+                        <thead>
+                            <tr>
+                                <th>
+                                    [% locale.maketext('Current Directory') %]
+                                </th>
+                                <th class="text-center">
+                                    [% locale.maketext('Protected') %]
+                                </th>
+                                <th class="text-center">
+                                    [% locale.maketext('Actions') %]
+                                </th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td>
+                                    <ul class="breadcrumb">
+                                        <li>
+                                            <a href="leechprotect.html?dir=[% directories.data.home.path.uri().html() %]">
+                                                <i class="fas fa-home"></i>
+                                            </a>
+                                        </li>
+                                        [%
+                                        SET base = directories.data.home.path;
+                                        FOREACH crumb IN crumbs;
+                                            SET path = base _ '/' _ crumb;
+                                            IF !loop.last(); %]
+                                                <li>
+                                                    <a href="leechprotect.html?dir=[% path.uri().html() %]">
+                                                        [% crumb.html().replace('[.]', '.<wbr>') %]
+                                                    </a>
+                                                </li>
+                                            [%  ELSE %]
+                                                <li>
+                                                    [% crumb.html().replace('[.]', '.<wbr>')  %]
+                                                </li>
+                                            [%  END;
+                                            base = path;
+                                        END;
+                                        %]
+                                    </ul>
+                                </td>
+                                <td class="text-center" >
+                                    <div class="current-privacy">
+                                        [% IF directories.data.current.state.error %]
+                                            <div class="alert alert-danger" role="alert">
+                                                <span class="glyphicon glyphicon-remove-sign" aria-hidden="true"></span>
+                                                <div class="alert-message">
+                                                    <strong class="alert-title">
+                                                        [% locale.maketext('Error:') %]
+                                                    </strong>
+                                                    <span class="alert-body">
+                                                        [% directories.data.current.state.error.html() %]
+                                                    </span>
+                                                </div>
+                                            </div>
+                                        [% ELSIF directories.data.current.state.has_leech_protection %]
+                                            <i class="fas fa-shield-alt fa-lg" aria-hidden="true"></i>
+                                            [%locale.maketext('Yes')%]
+                                        [% ELSE %]
+                                            [%locale.maketext('No')%]
+                                        [% END %]
+                                    </div>
+                                </td>
+                                <td class="text-center">
+                                    <a id="edit-current"
+                                       href="dohtaccess.html?is_parent=1&dir=[% directories.data.current.path.uri().html() %]"
+                                       class="btn btn-outline-primary btn-sm file-select-button"
+                                       alt="[%locale.maketext('Edit “[_1]”', directories.data.current.path.html())%]">
+                                        <i class="fas fa-pencil-alt" aria-hidden="true"></i>
+                                        <span class="current-label">[% locale.maketext('Edit') %]</span>
+                                    </a>
+                                </td>
+                            </tr>
+                            [% FOREACH directory IN directories.data.children.list %]
+                            <tr>
+                                <td class="child">
+                                    <a href="leechprotect.html?dir=[% directory.path.uri().html() %]" id="navigate-[% directory.path.slugify() %]">
+                                        [% IF directory.state.has_leech_protection %]
+                                            <span class="dirstack fa-stack">
+                                                <i class="diricon fas fa-folder" aria-hidden="true"></i>
+                                                <i class="fas fa-shield-alt fa-stack-1x" aria-hidden="true"></i>
+                                            </span>
+                                        [% ELSE %]
+                                            <span class="dirstack fa-stack">
+                                                <i class="diricon fas fa-folder fa-lg" aria-hidden="true"></i>
+                                            </span>
+                                        [% END %]
+                                        [% directory.path.split("/").pop().html().replace('[.]', '.<wbr>') %]
+                                    </a>
+                                </td>
+                                <td class="text-center">
+                                    [% IF directory.state.error %]
+                                        <div class="alert alert-danger" role="alert">
+                                            <span class="glyphicon glyphicon-remove-sign" aria-hidden="true"></span>
+                                            <div class="alert-message">
+                                                <strong class="alert-title">
+                                                    [% locale.maketext('Error:') %]
+                                                </strong>
+                                                <span class="alert-body">
+                                                    [% directory.state.error.html() %]
+                                                </span>
+                                            </div>
+                                        </div>
+                                    [% ELSIF directory.state.has_leech_protection %]
+                                        <i class="fas fa-shield-alt fa-lg" aria-hidden="true"></i> [% locale.maketext('Yes') %]
+                                    [% ELSE %]
+                                        [% locale.maketext('No') %]
+                                    [% END %]
+                                </td>
+                                <td class="text-center">
+                                    <a id="edit-[% directory.path.slugify() %]"
+                                       href="dohtaccess.html?dir=[% directory.path.uri().html() %]"
+                                       class="btn btn-outline-primary btn-sm file-select-button"
+                                       alt="[%locale.maketext('Edit “[_1]”', directory.path.html())%]" >
+                                        <i class="fas fa-pencil-alt" aria-hidden="true"></i>
+                                        [% locale.maketext('Edit') %]
+                                    </a>
+                                </td>
+                            </tr>
+                            [% END %]
+                            [% IF directories.data.children.size() == 0 %]
+                            <tr class="empty-directory">
+                                <td colspan="3">
+                                    <div class="alert alert-info" role="alert">
+                                        <span class="glyphicon glyphicon-info-sign" aria-hidden="true"></span>
+                                        <div class="alert-message">
+                                            <strong class="alert-title">
+                                                [% locale.maketext('Notice:') %]
+                                            </strong>
+                                            <span class="alert-body">
+                                                <span id="error-no-child">
+                                                    [% locale.maketext("There are no folders in this path.") %]
+                                                </span>
+                                            </span>
+                                        </div>
+                                    </div>
+                                </td>
+                            </tr>
+                            [% END %]
+                        </tbody>
+                    </table>
+                </div>
+            [% ELSE %]
+                <div class="alert alert-danger" role="alert">
+                    <span class="glyphicon glyphicon-remove-sign" aria-hidden="true"></span>
+                    <div class="alert-message">
+                        <strong class="alert-title">
+                            [% locale.maketext('Error:') %]
+                        </strong>
+                        <span class="alert-body">
+                        <span id="error-directories">
+                            [% directories.errors_as_string().html() %]
+                        </span>
+                    </span>
+                    </div>
+                </div>
+            [% END %]
+        </div>
+    </div>
+
+    [% INCLUDE _assets/return_link.html.tt return_location='../../index.html' return_link_text=locale.maketext('Go Back') %]
+</div>
+
+<!-- Modal -->
+<div class="modal fade" id="modalSettings" tabindex="-1" role="dialog" aria-labelledby="lblModalLabel">
+    <div class="modal-dialog" role="document">
+        <div class="modal-content">
+            <div class="modal-header">
+                <button id="btnHeaderSettingsClose" type="button" class="close" data-dismiss="modal" aria-label="Close">
+                    <span aria-hidden="true">&times;</span>
+                </button>
+                <h4 class="modal-title" id="lblModalLabel">[% locale.maketext("Leech Protection") %]</h4>
+            </div>
+            <div class="modal-body">
+                <div class="radio" id="settings_home">
+                    <label for="dirselect_home">
+                      <input type="radio" name="dirselect" value="home" id="dirselect_home" [% selected_option == 'home' || !selected_option ? ' checked' : '' %]/>
+                      [% locale.maketext("Home") %]
+                    </label>
+                </div>
+                <div class="radio" id="settings_webroot">
+                    <label for="dirselect_webroot">
+                      <input type="radio" name="dirselect" value="webroot" id="dirselect_webroot" [% selected_option == 'webroot' ? ' checked' : '' %]/>
+                      [% locale.maketext("Web Root ([asis,public_html or www])") %]
+                    </label>
+                </div>
+                <div class="radio" id="settings_domainroot">
+                    <label for="optionselect_domainrootselect_radio">
+                      <input  type="radio" name="dirselect" id="optionselect_domainrootselect_radio" value="domainrootselect" [% selected_option == 'domainrootselect' ? ' checked' : '' %]/>
+                      [% locale.maketext("Document Root for:") %]
+                    </label>
+                    <select id="ddlDomainSelect" name="domainselect" class="form-control option-directory-select" [% selected_option == 'domainrootselect' ? '' : 'disabled' %]>
+                        [% IF domains_list.size(); %]
+                           [% FOREACH item IN domains_list; %]
+                                <option value="[%  item.domain.html() %]" [% IF selected_option == 'domainrootselect' AND domain == item.domain.html();%] selected="true"[% END %]>
+                                    [%  item.domain.html() %]
+                                </option>
+                            [% END %]
+                        [% END %]
+                    </select>
+                </div>
+
+                <div class="settings-select-extras">
+                    <div class="checkbox">
+                        <label for="settings_saved">
+                            <input type="checkbox" id="settings_saved" name="saveoption" [% always_open_dir == "1" ? 'checked': "" %] />
+                            <span id="lblOpenDirectoryTxt">
+                                [% locale.maketext("Always open this directory in the future") %]
+                            </span>
+                        </label>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button id="btnSettingsCancel" type="button" class="btn btn-default" data-dismiss="modal">[% locale.maketext('Close')%]</button>
+                <button id="btnSettingsSave" type="submit" class="btn btn-primary">[% locale.maketext('Save Changes')%]</button>
+            </div>
+        </div>
+    </div>
+</div>
+<script>
+var PAGE = {
+    homeFolder: [% CPANEL.homedir.json() %],
+    pubHtmlFolder: [% SET pub_html_dir = CPANEL.homedir _ '/public_html'; pub_html_dir.json() %]
+};
+</script>
+[% END #wrapper %]
+

@@ -1,0 +1,245 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/ftpquotacheck                   Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::ftpquotacheck;
+
+use strict;
+use warnings;
+use Cpanel::PwCache::Helpers   ();
+use Cpanel::PwCache::Build     ();
+use Cpanel::Config::LoadCpConf ();
+use Cpanel::JSON               ();    # PPI NO PARSE - speed up LoadCpConf
+use Cpanel::ConfigFiles        ();
+use Try::Tiny;
+
+use constant ANON_FTP_UID => 65535;
+use constant FTP_GID      => 65535;
+
+exit( __PACKAGE__->new( 'force' => ( @ARGV && grep( /force/, @ARGV ) ), 'verbose' => 1 )->run() ) unless caller();
+
+sub new {
+    my ( $class, %args ) = @_;
+
+    require Cpanel::IONice;
+    require Cpanel::OSSys;
+
+    my $cpconf_ref = Cpanel::Config::LoadCpConf::loadcpconf_not_copy();
+    my $self       = {%args};
+    $self->{'purequotacheck'}            = _find_purequotacheck();
+    $self->{'ftp_gid'}                   = scalar( getgrnam 'ftp' ) || FTP_GID;
+    $self->{'start_time'}                = time();
+    $self->{'ftpquotacheck_expire_time'} = $cpconf_ref->{'ftpquotacheck_expire_time'};
+    $self->{'ionice_ftpquotacheck'}      = $cpconf_ref->{'ionice_ftpquotacheck'};
+
+    return bless $self, $class;
+
+}
+
+sub run {
+    my ($self) = @_;
+    print "Ftp Quota Check v2.0\n" if $self->{'verbose'};
+    return 0                       if !$self->{'purequotacheck'};
+
+    if ( Cpanel::IONice::ionice( 'best-effort', exists $self->{'ionice_ftpquotacheck'} ? $self->{'ionice_ftpquotacheck'} : 6 ) ) {
+        print "[ftpquotacheck] Setting I/O priority to reduce system load: " . Cpanel::IONice::get_ionice() . "\n" if $self->{'verbose'};
+    }
+    Cpanel::OSSys::nice(10);
+
+    local $| = 1;
+
+    $self->process_users();
+    return 0;
+}
+
+sub process_users {
+    my ($self) = @_;
+    Cpanel::PwCache::Helpers::no_uid_cache();    #uid cache only needed if we are going to make lots of getpwuid calls
+    Cpanel::PwCache::Build::init_passwdless_pwcache();
+    my $pwcache_ref = Cpanel::PwCache::Build::fetch_pwcache();
+
+    my $processed_users = 0;
+    foreach my $pwref (@$pwcache_ref) {
+        my ( $username, $uid, $gid, $homedir ) = (@$pwref)[ 0, 2, 3, 7 ];
+        if ( $self->_ftp_is_suspended_for_user($username) ) {
+            print "Skipping suspended FTP users for cPanel Account \"$username\"\n" if $self->{'verbose'};
+            next;
+        }
+        if ( -e $homedir . '/etc/ftpquota' ) {
+            my $ftp_users_to_process_ar = $self->_get_ftp_users_to_process($username);
+
+            if ( $ftp_users_to_process_ar && @$ftp_users_to_process_ar ) {
+                $processed_users++;
+                print "Processing cPanel Account \"$username\": \n" if $self->{'verbose'};
+                $self->_rebuild_ftp_quota_for_virtual_ftp_users(
+                    'system_user'     => $username,
+                    'uid'             => $uid,
+                    'gid'             => $gid,
+                    'user_ftphome_ar' => $ftp_users_to_process_ar,
+                );
+                print "Done\n" if $self->{'verbose'};
+            }
+        }
+    }
+    return $processed_users;
+}
+
+sub _get_ftp_users_to_process {
+    my ( $self, $username ) = @_;
+
+    open my $ftp_fh, '<', $self->_get_ftp_user_pw_file($username) or return undef;
+    my @ftp_users_to_process;
+
+    while ( my $line = readline $ftp_fh ) {
+
+        # Do not process comments.
+        # The official file format does not support comments, but we add one anyway when users are suspended.
+        next if $line =~ m{ \A \s* [#] }xms;
+
+        chomp $line;
+        my ( $ftpuser, $ftphome ) = ( split( /:/, $line ) )[ 0, 5 ];
+
+        # Do not process the main username or the _logs
+        # user as this will result in building an .ftpquota
+        # for the entire home directory
+        next if $ftpuser eq $username . '_logs' || $ftpuser eq $username || $ftpuser eq 'anonymous';
+
+        push @ftp_users_to_process, [ $ftpuser, $ftphome ];
+    }
+    close($ftp_fh);
+
+    return \@ftp_users_to_process;
+}
+
+sub _update_anon_ftpquota {
+    my ( $self, %args ) = @_;
+
+    my ( $mode, $uid, $gid, $ftphome ) = @args{ 'ftphome_mode', 'uid', 'gid', 'ftphome' };
+
+    require Cpanel::SafeFind;
+    require Cpanel::AccessIds::ReducedPrivileges;
+    require Cpanel::FileUtils::Write;
+    require Cpanel::Finally;
+
+    my $files = 0;
+    my $bytes = 0;
+
+    $mode //= 0750;
+    $mode &= 07777;                  # Mask off any non-perm bits so it can be restored later. This will be 0 if the account is suspended!
+    my $temp_mode = $mode | 0770;    # Ensure user and group can write, but retain "other" perms which is the anonymous access switch.
+
+    my $restore_perms = Cpanel::Finally->new(
+        sub {
+            if ( $mode != $temp_mode ) {
+
+                # Restore previous perms.
+                my $privs = Cpanel::AccessIds::ReducedPrivileges->new( $uid, $gid );
+                chmod $mode, $ftphome;
+            }
+        }
+    );
+
+    {
+        my $privs = Cpanel::AccessIds::ReducedPrivileges->new( $uid, $gid );
+        chmod $temp_mode, $ftphome if ( $mode != $temp_mode );
+        Cpanel::SafeFind::find(
+            {
+                'wanted' => sub {
+                    return if $File::Find::name =~ m/\/\.+$/;
+                    my ( $tuid, $tgid, $tbytes ) = ( lstat($File::Find::name) )[ 4, 5, 7 ];
+                    return if ( $tuid != ANON_FTP_UID || $tgid != $self->{'ftp_gid'} );
+                    $files += 1;
+                    $bytes += $tbytes;
+                },
+                'no_chdir' => 1
+            },
+            $ftphome
+        );
+    }
+    {
+        my $privs = Cpanel::AccessIds::ReducedPrivileges->new( ANON_FTP_UID, $self->{'ftp_gid'}, $gid );
+        try {
+            Cpanel::FileUtils::Write::overwrite( $ftphome . '/.ftpquota', "$files $bytes\n", 0644 );
+        }
+        catch {
+            warn "Unable to write $ftphome/.ftpquota: $@";
+        }
+    }
+    return 1;
+}
+
+sub _run_pure_quota_check_for_user {
+    my ( $self, %args ) = @_;
+
+    require Cpanel::SafeRun::Object;
+    my ( $system_user, $ftphome ) = @args{ 'system_user', 'ftphome' };
+
+    my $run = Cpanel::SafeRun::Object->new(
+        'program' => $self->{'purequotacheck'},
+        'args'    => [ '-u', $system_user, '-d', $ftphome ],
+        'user'    => $system_user,
+        'homedir' => $ftphome,
+        'stdout'  => \*STDOUT,
+        'stderr'  => \*STDERR,
+    );
+
+    return $run->CHILD_ERROR() ? 0 : 1;
+}
+
+sub _rebuild_ftp_quota_for_virtual_ftp_users {
+    my ( $self, %args ) = @_;
+
+    my ( $system_user, $users_to_process_ar, $uid, $gid ) = @args{ 'system_user', 'user_ftphome_ar', 'uid', 'gid' };
+
+    foreach my $user_ref (@$users_to_process_ar) {
+        my ( $user, $ftphome ) = @{$user_ref};
+        if ( -d $ftphome ) {
+            my $mode = ( stat(_) )[2];
+            if ( !$self->{'force'} && -e $ftphome . '/.ftpquota' && ( stat(_) )[9] + ( 86400 * ( $self->{'ftpquotacheck_expire_time'} || 30 ) ) > $self->{'start_time'} ) {
+                print "  $system_user : $user ... skipped (not expired)\n" if $self->{'verbose'};
+                next;
+            }
+            print "  $system_user : $user ($ftphome)..." if $self->{'verbose'};
+
+            my %args = (
+                'system_user'  => $system_user,
+                'ftp_user'     => $user,
+                'ftphome_mode' => $mode,
+                'uid'          => $uid,
+                'gid'          => $gid,
+                'ftphome'      => $ftphome
+            );
+
+            if ( $user eq 'ftp' ) {
+                $self->_update_anon_ftpquota(%args);
+            }
+            else {
+                $self->_run_pure_quota_check_for_user(%args);
+
+            }
+            print "rebuilt\n" if $self->{'verbose'};
+        }
+    }
+
+    return 1;
+}
+
+sub _get_ftp_user_pw_file {
+    my ( $self, $user ) = @_;
+    return "/$Cpanel::ConfigFiles::FTP_PASSWD_DIR/$user";
+}
+
+sub _ftp_is_suspended_for_user {
+    my ( $self, $user ) = @_;
+    return -e $self->_get_ftp_user_pw_file($user) . '.suspended';
+}
+
+sub _find_purequotacheck {    # Mocked in tests.
+    return
+        -x '/usr/sbin/pure-quotacheck'       ? '/usr/sbin/pure-quotacheck'
+      : -x '/usr/local/sbin/pure-quotacheck' ? '/usr/local/sbin/pure-quotacheck'
+      :                                        '';
+}

@@ -1,0 +1,50 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/update_dkim_keys                Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+#
+
+package Script::Update::DKIM::Keys;
+
+use strict;
+use warnings;
+
+use Cpanel::Config::Users ();
+use Cpanel::DKIM          ();
+use Cpanel::Logger        ();
+
+__PACKAGE__->script(@ARGV) unless caller();
+
+sub script {
+    my ($class) = @_;
+
+    my $logger = Cpanel::Logger->new();
+
+    # This logic is left out of Cpanel::DKIM::Transaction because
+    # full DKIM setup for every user is an exceptional case, not logic
+    # we need to load every time we make a DKIM change.
+    for my $username ( sort( Cpanel::Config::Users::getcpusers() ) ) {
+        next if !Cpanel::DKIM::has_dkim( user => $username );
+
+        $logger->info("Regenerating DKIM keys for user “$username” …");
+
+        my ( $status, $msg ) = Cpanel::DKIM::setup_domain_keys(
+            user => $username,
+        );
+
+        $logger->warn($msg) if !$status;
+    }
+
+    $logger->info('The system will now update each hosted domain’s DKIM validity cache.');
+
+    require 'scripts/refresh-dkim-validity-cache';    ## no critic qw(RequireBarewordIncludes)
+
+    scripts::refresh_dkim_validity_cache->new('--all-domains')->run();
+
+    return;
+}
+
+1;

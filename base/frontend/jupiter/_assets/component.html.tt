@@ -1,0 +1,40 @@
+[%
+DEFAULT SLOT = 'default';
+DEFAULT APP_KEY = 'home';
+DEFAULT APP = 'cpanel';
+DEFAULT ARGS = {};
+DEFAULT TAG = 'div';
+
+# INPUTS:
+# APP_KEY - application key defining the page. HOME is the homepage.
+# TAG - HTML wrapper tag
+# ROLE - Optional, Role attribute value
+# CLASSES - Optional, The list of CSS class names to apply to the surrounding tag
+# SLOT - Optional, The name of the section to expand
+USE Components;
+SET page_components = Components.get_components(APP, APP_KEY);
+IF page_components && page_components.$SLOT;
+    SET section_components = page_components.$SLOT;
+%]
+<[%TAG%] role="[%ROLE%]" id="[% "$APP-$APP_KEY-$SLOT" %]-components" class="[%CLASSES%]">
+    [% FOREACH component IN section_components %]
+        [% IF component.css_url %]
+        <link rel="stylesheet" type="text/css" href="[% theme_magic_url(component.css_url) %]" />
+        [% ELSIF component.css %]
+        <style>
+            [% component.css %]
+        </style>
+        [% END %]
+        [% IF component.markup %]
+            [% Components.render_component(component, ARGS) %]
+        [% END %]
+        [% IF component.js_url %]
+        <script type="text/javascript" src="[% theme_magic_url(component.js_url) %]"></script>
+        [% ELSIF component.js %]
+        <script>
+            [% component.js %]
+        </script>
+        [% END %]
+    [% END %]
+</[%TAG%]>
+[% END %]

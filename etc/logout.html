@@ -1,0 +1,52 @@
+<script type="text/javascript">
+//<![CDATA[
+function XMLHTTP() {
+    try {
+        if (window.XMLHttpRequest) {
+            xmlhttp = new XMLHttpRequest();
+        }
+        else if (window.ActiveXObject) {
+            xmlhttp=new ActiveXObject('Microsoft.XMLHTTP');
+        }
+    } catch (e) {
+        xmlhttp=false
+    }
+    return xmlhttp;
+}
+
+function forceLogout() {
+    try{
+        var agt=navigator.userAgent.toLowerCase();
+        if (agt.indexOf('msie') != -1) {
+            if (%clearhttpauth%) {
+                document.execCommand('ClearAuthenticationCache');
+            }
+        }
+        else {
+            var xmlhttp = XMLHTTP();
+            xmlhttp.open('GET', '/cpanel__force__logout.html', true, 'cpanel__force__logout', 'cpanel__force__logout');
+            xmlhttp.send('');
+            xmlhttp.abort();
+        }
+    } catch(e) {
+        return;
+    }
+}
+
+function addLoadEvent(func) {
+    var oldonload = window.onload;
+    if (typeof window.onload != 'function') {
+        window.onload = func;
+    } else {
+        window.onload = function() {
+            if (oldonload) {
+                oldonload();
+            }
+            func();
+        }
+    }
+}
+
+addLoadEvent(forceLogout);
+//]]>
+</script>

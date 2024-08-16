@@ -1,0 +1,29 @@
+[%#
+    Variables passed in:
+
+    origin                  - the system component from which the request originated
+    host                    - host server the notification was sent from
+    starting_version        - the cPanel version currently installed
+    target_version          - the cPanel version the system is updating to
+    log_preview             - An arrayref of 10(or less) line preview of attached log file
+    sent_to_root            - A default boolean flag sent to all templates that indicates if the message was sent to 'root'
+
+For more information about how to customize notification templates, read our documentation at https://go.cpanel.net/notificationtemplates
+
+-%]
+
+[%
+    PROCESS "include/colors.tmpl";
+    PROCESS "include/styles.tmpl";
+    PROCESS "include/code_block.tmpl";
+
+    WRAPPER 'wrapper/main.html.tmpl';
+
+    NOTICE.email_reason = CPANEL.locale.maketext('The system detected an error during the [asis,cPanel] [output,amp] [asis,WHM] version change from “[_1]” to “[_2]”, which prevented the [asis,updatenow] process from completing normally.', NOTICE.starting_version, NOTICE.target_version);
+%]
+
+<p>
+    [% code_block(formatted_code=NOTICE.log_preview.0, title=CPANEL.locale.maketext('Review the attached log for further details.')) %]
+</p>
+
+[% END %]

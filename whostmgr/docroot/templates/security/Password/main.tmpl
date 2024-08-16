@@ -1,0 +1,95 @@
+[% WRAPPER 'master_templates/master.tmpl' theme="yui" header=locale.maketext('Change Password') -%]
+<link rel="stylesheet" type="text/css" href="/unprotected/yui/container/assets/container.css" />
+<script language="javascript">
+//<![CDATA[
+var REQUIRED_PASSWORD_STRENGTH = parseInt('[% data.minpwstrength %]') || 0;
+var init_page = function() {
+   var oldpass_validator = new CPANEL.validate.validator("Old Password");
+   oldpass_validator.add("oldpassword", "min_length(%input%, 1)", "[% locale.maketext('Old password cannot be empty.') %]");
+   oldpass_validator.attach();
+
+   var password_validators = CPANEL.password.setup("password", "pass2", "password_strength", REQUIRED_PASSWORD_STRENGTH, "create_strong_password", "why_strong_passwords_link", "why_strong_passwords_text");
+
+   CPANEL.validate.attach_to_form("submit", [oldpass_validator, password_validators[0], password_validators[1]]);
+
+   YAHOO.util.Dom.get("oldpassword").focus();
+};
+YAHOO.util.Event.onDOMReady(init_page);
+//]]>
+</script>
+<div class="body-content">
+
+<div class="h1Title"><div class="spriteicon_img_mini" id="icon-password_mini"></div></div>
+
+[%- IF data.msg == 'age' -%]
+<div class="highlight">
+[% locale.maketext( 'You have not changed your password in [quant,_1,day,days]. The current security policy requires that you change your password every [quant,_2,day,days] to prevent compromised accounts.', data.days_since_change, data.maxage) -%]
+</div>
+[% END -%]
+[%- IF data.msg == 'strength' -%]
+<div class="highlight">[% locale.maketext( 'Your password does not meet the strength requirements. Change it now to avoid compromised accounts.' ) %]</div>
+[% END -%]
+
+<p class="description">[% locale.maketext("Change your account password below. Password strength is important in web hosting; we strongly recommend using the Password Generator to create your password. Follow the tips below to keep your password safe.") %]</p>
+
+<form  method="post" name="userform" id="userform" action="[% cp_security_token %]/?key=[% data.acct_randkey %]" target="_top">
+<!-- prevent password autofill -->
+<input type="text" style="display:none">
+<input type="password" autocomplete='off' style="display:none">
+<input type="hidden" name="formaction" value="changepw">
+   <div class="highlight">
+   <table border="0" cellspacing="2" cellpadding="0">
+      <tr>
+         <td align="right"><label for="oldpassword">[% locale.maketext( 'Old Password:' ) %]</label></td>
+         <td><input style="width: 150px" type="password" autocomplete='off' maxlength="128" name="oldpass" id="oldpassword" size="20" /></td>
+         <td><div id="oldpassword_error"></div></td>
+      </tr>
+      <tr>
+         <td align="right"><label for="password">[% locale.maketext( 'New Password:' ) %]</label></td>
+         <td><input style="width: 150px" type="password" autocomplete='off' name="newpass" id="password" maxlength="128" /></td>
+         <td><div id="password_error"></div></td>
+      </tr>
+      <tr>
+         <td align="right"><label for="pass2">[% locale.maketext( 'New Password (again):' ) %]</label></td>
+         <td><input style="width: 150px" maxlength="128" size="20" name="newpass2" id="pass2" type="password" autocomplete='off' /></td>
+         <td><div id="pass2_error"></div></td>
+      </tr>
+      <tr>
+         <td align="right">[% locale.maketext( 'Strength' ) %] (<div style="display: inline" id="why_strong_passwords_link" class="action_link">[% locale.maketext("[comment,lowercase]why?") %]</div>):</td>
+         <td><div id="password_strength" style="width: 150px; height: 20px; border: 1px solid black; margin: 5px 0px 3px 0px"></div></td>
+         <td><input type="button"class="btn-secondary" id="create_strong_password" value="[% locale.maketext( 'Password Generator' ) %]" tabindex="-1" /></td>
+      </tr>
+      <tr><td colspan="3"><br /></td></tr>
+      <tr>
+         <td>&nbsp;</td>
+         <td colspan="2"><input name="B1" type="submit" class="btn-primary" value="[% locale.maketext( 'Change your password now!' ) %]" id="submit" /></td>
+      </tr>
+   </table>
+   <div id="why_strong_passwords_text" style="display: none">
+       [% locale.maketext( 'In web hosting, it is particularly important that you choose a strong password. Web servers are usually more powerful and have access to greater bandwidth than your personal computer. This makes them a prime target for [output,url,_1,password crackers,target,_blank].','http://en.wikipedia.org/wiki/Password_cracking' ) %]
+       [% locale.maketext( 'To increase the strength of your password, add UPPER CASE letters, numbers, and symbol characters (@, #, $, %, etc).' ) %]</div>
+   </div><!-- end highlight -->
+   </form>
+
+   <h2>[% locale.maketext( 'Protect your password:' ) %]</h2>
+   <ul>
+      <li>[% locale.maketext("Memorize your password. Do [output,strong,not] write it down.") %]</li>
+      <li>[% locale.maketext("Do [output,strong,not] share your password. Create a new account instead.") %]</li>
+      <li>[% locale.maketext("Do [output,strong,not] use one password for multiple accounts.") %]</li>
+      <li>[% locale.maketext("Do [output,strong,not] provide your password to someone unless you verify that the following are true:") %]
+         <ul>
+            <li>[% locale.maketext("The person needs to know the password.") %]</li>
+            <li>[% locale.maketext("You have verified the person’s identity.") %]</li>
+         </ul>
+      </li>
+      <li>[% locale.maketext("If possible, do [output,strong,not] log in from public computers.") %]</li>
+      <li>[% locale.maketext("Change your password frequently.") %]</li>
+   </ul>
+   <h2>[% locale.maketext( 'Password tips:' ) %]</h2>
+   <ul>
+      <li>[% locale.maketext("Avoid dictionary words.") %]</li>
+      <li>[% locale.maketext("Avoid familiar information (for example, names or phone numbers).") %]</li>
+      <li>[% locale.maketext("Use a combination of letters, numbers, and special characters.") %]</li>
+      <li>[% locale.maketext("Use eight or more characters.") %]</li>
+   </ul>
+[% END -%]

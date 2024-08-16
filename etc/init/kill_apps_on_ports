@@ -1,0 +1,27 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - etc/init/kill_apps_on_ports             Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+use warnings;
+
+use Cpanel::Kill::AppPort ();
+
+my @opts     = grep { index( $_, '-' ) == 0 } @ARGV;
+my @non_opts = grep { index( $_, '-' ) == -1 } @ARGV;
+my $timeout;
+if ( my @timeout_opts = grep { index( $_, 'timeout' ) > -1 } @opts ) {
+    ($timeout) = $timeout_opts[0] =~ m{([0-9]+)};
+}
+
+local $| = 1;
+Cpanel::Kill::AppPort::kill_apps_on_ports(
+    'ports'   => \@non_opts,
+    'verbose' => $Cpanel::Kill::AppPort::VERBOSE,
+    'timeout' => $timeout
+);
+
+exit(0);

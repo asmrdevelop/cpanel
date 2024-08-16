@@ -1,0 +1,48 @@
+[%#
+Variables passed in:
+
+user                    - The user being distributed
+worker_type         - The worker function being distributed
+worker_alias            - The alias (friendly name) the worker function is being distributed to.
+origin                  - The system component from which the request originated
+distribution_errors     - Errors that occured during the process
+
+For more information about how to customize notification templates, read our documentation at https://go.cpanel.net/notificationtemplates
+
+-%]
+
+[%
+    PROCESS "include/colors.tmpl";
+    PROCESS "include/styles.tmpl";
+
+    WRAPPER 'wrapper/main.html.tmpl';
+
+    NOTICE.email_reason = CPANEL.locale.maketext('Failure: The Server Failed to Offloaded “[_1]” for the user “[_2]”.', NOTICE.worker_type, NOTICE.user, NOTICE.worker_alias);
+
+%]
+
+<p style="margin-bottom:25px;">
+[% SWITCH NOTICE.worker_type %]
+[% CASE 'Mail' %]
+    [% CPANEL.locale.maketext('The server failed to offload mail functionality and storage to “[_1]” for the user “[_2]”.', NOTICE.user, NOTICE.worker_alias) %]
+[% CASE DEFAULT %]
+    [% CPANEL.locale.maketext("The child node “[_1]” failed to handle “[_2]” functionality for the user “[_3]”.", NOTICE.worker_type, NOTICE.user, NOTICE.worker_alias) %]
+[% END %]
+</p>
+
+<p>
+    [% CPANEL.locale.maketext('The server will now attempt to revert any changes.') %]
+</p>
+
+[% IF NOTICE.distribution_errors.size %]
+    <p>
+        [%-
+            PROCESS "include/zebra_table.tmpl";
+            SET lead_in_phrase = CPANEL.locale.maketext('The following [numerate,_1,error,errors] caused the failure:', NOTICE.distribution_errors.size);
+
+            zebra_table(items=NOTICE.distribution_errors, titles=[lead_in_phrase]);
+        -%]
+    </p>
+[% END %]
+
+[% END %]

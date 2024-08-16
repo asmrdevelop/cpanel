@@ -1,0 +1,159 @@
+[% PROCESS 'master_templates/_defheader.tmpl'
+    theme="yui"
+    app_key=data.app_key
+    extrastyle = '
+    .align-div-with-table {
+        margin-left: 120px;
+        padding: 10px 0;
+    }
+
+    .highlight-section {
+        background: #faebcc;
+        border-radius: 2px;
+        box-shadow: 0 1px 1px rgba(0, 0, 0, 0.05) inset;
+        min-height: 20px;
+        padding: 19px;
+        border: 1px solid #faebcc;
+    }
+
+    .highlight-section p {
+        margin: 0 0 10px 0;
+        font-weight: bold;
+    }
+
+    .label-column {
+        width: 120px;
+        text-align: right;
+    }
+
+    ';
+-%]
+
+[% PROCESS 'warnings/_mysql_version.tmpl' %]
+
+[% IF !data.root_user && !data.users.size %]
+<div>
+    <p>[% locale.maketext("No users available.") %]</p>
+</div>
+[% ELSE %]
+<script type="text/javascript">
+    var REQUIRED_PASSWORD_STRENGTH = [% data.minpwstrength %];
+    var validUserSelected = function(el) {
+        return el.selectedIndex > 0;
+    };
+
+    var init_page = function() {
+        var is_root_user = [% (data.root_user) ? 1 : 0 %];
+        var password_validators = CPANEL.password.setup("password", "password2", "password_strength", REQUIRED_PASSWORD_STRENGTH, "create_strong_password", "why_strong_passwords_link", "why_strong_passwords_text");
+        if (!is_root_user) {
+            var select_user = new CPANEL.validate.validator("[% locale.maketext("Database User") %]");
+            select_user.add('user', validUserSelected, "[% locale.maketext("You must select a user.") %]");
+            select_user.attach();
+            password_validators.push(select_user);
+        }
+        CPANEL.validate.attach_to_form("submit", password_validators);
+        YAHOO.util.Dom.get("password").focus();
+    };
+    YAHOO.util.Event.onDOMReady(init_page);
+</script>
+
+
+<div>
+    <div id="why_strong_passwords_text" style="display: none">
+        [% data.password_why %]
+        <br /><br />
+        [% data.password_tip %]
+    </div>
+
+    <div class="span12">
+        <form method="post" action="../scripts/passwdmysql">
+            <!-- prevent password autofill -->
+            <input type="text" style="display:none">
+            <input type="password" autocomplete='off' style="display:none">
+
+            <table>
+                <tr>
+                    [% IF !data.root_user %]
+                        <td class="label-column">[% locale.maketext('Database User:') %]</td>
+                        <td>
+                            <select name="user" id="user">
+                                <option value="">[% locale.maketext('Select') %]</option>
+                                [% FOREACH user IN data.users %]
+                                    [% IF user.user.length() %]
+                                    <option value="[% user.user.html() %]">[% user.user.html() %]</option>
+                                    [% END %]
+                                [% END %]
+                            </select>
+                        </td>
+                        <td><div id="user_error"></div></td>
+                    [% ELSE %]
+                        <input type="hidden" name="user" id="user" value="root" />
+                    [% END %]
+                </tr>
+                <tr>
+                    <td class="label-column">[% locale.maketext('Password:') %]</td>
+                    <td><input type="password" autocomplete='off' id="password" name="password" style="width: 150px" /></td>
+                    <td><div id="password_error"></div></td>
+                </tr>
+                <tr>
+                    <td class="label-column">[% locale.maketext('Password (again):') %]</td>
+                    <td><input type="password" autocomplete='off' id="password2" name="password2" style="width: 150px" /></td>
+                    <td><div id="password2_error"></div></td>
+                </tr>
+                <tr>
+                    <td class="label-column">[% locale.maketext('Strength') %] (
+                        <div style="display: inline" id="why_strong_passwords_link" class="action_link">
+                            [% locale.maketext('Why?') %]
+                        </div>):
+                    </td>
+                    <td>
+                        [%# width changed to 156px to match the text fields above and account for the padding and border size of those fields %]
+                        <div id="password_strength" style="width: 156px; height: 20px; border: 1px solid black; margin: 5px 0px 3px 0px"></div>
+                    </td>
+                    <td>
+                        <input type="button" id="create_strong_password" value="[% locale.maketext('Password Generator') %]" tabindex="-1" class="btn-secondary" style="vertical-align: middle;" />
+                    </td>
+                </tr>
+            </table>
+
+            [% IF data.root_user && data.defined('using_remote_host') && data.using_remote_host %]
+            <div class="align-div-with-table">
+                <div class="highlight-section">
+                    <p>[% locale.maketext('You are currently using a remote database server. Which server’s password do you want to change?') %]</p>
+                    <div class="radio">
+                        <label>
+                            <input type="radio"
+                                id="local_host"
+                                name="mysqlhost"
+                                value="1" />
+                            [% locale.maketext('Local database server') %]
+                        </label>
+                    </div>
+                    <div class="radio">
+                        <label>
+                            <input type="radio"
+                                id="remote_host"
+                                name="mysqlhost"
+                                checked="checked"
+                                value="0" />
+                            [% locale.maketext('Remote database server') %]
+                        </label>
+                    </div>
+                </div>
+            </div>
+            [% END %]
+
+            <div class="align-div-with-table">
+                <input type="submit" id="submit" value="[% locale.maketext('Change Password') %]" name="submit" class="btn-primary" />
+            </div>
+        </form>
+        [% IF data.root_user %]
+            <p>
+                [% locale.maketext('[output,strong,Note]: By default, the database root password is set to a random string. You should set this to something that is very hard to guess. You do not need to remember this password unless you plan to connect manually to the database server as the root user.') %]
+            </p>
+        [% END %]
+    </div>
+</div>
+[% END %]
+[% PROCESS 'master_templates/_deffooter.tmpl'
+    theme="yui" %]

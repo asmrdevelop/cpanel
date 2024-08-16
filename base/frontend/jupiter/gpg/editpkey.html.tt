@@ -1,0 +1,158 @@
+[% SET CPANEL.CPVAR.dprefix="../"  %]
+[%
+    SET export_key_call = execute("GPG", "export_secret_key", { "key_id" => RAW_FORM.key, "passphrase" => RAW_FORM.passphrase });
+    SET export_key = "";
+
+    IF export_key_call.status;
+        SET export_key = export_key_call.data.key_data;
+    END;
+%]
+
+[% js_code = PROCESS js_block %]
+[% WRAPPER '_assets/master.html.tt'
+    app_key = 'encryption'
+    page_js = js_code
+    embed_stylesheets = [ 'gpg/editpkey.css' ]
+%]
+
+<div class="body-content">
+    <div class="section">
+        [% IF export_key_call.status %]
+            <div class="form-group">
+                <label id="lblPrivateKey">
+                    [% locale.maketext("Private Key") %]
+                </label>
+                <div class="row">
+                    <div class="col-xs-12 col-lg-6">
+                        <textarea id="txtPrivateKey" cols="80" class="form-control" rows="10" readonly>[% export_key %]</textarea>
+                    </div>
+                </div>
+            </div>
+        [% ELSIF export_key_call.data.type == 'Cpanel::Exception::GPG::PassphraseRequired' ||
+                 export_key_call.data.type == 'Cpanel::Exception::GPG::IncorrectPassphrase' %]
+            <div class="row">
+                <div class="col-xs-12 col-sm-8 col-md-6">
+                    [% IF export_key_call.data.type == 'Cpanel::Exception::GPG::IncorrectPassphrase' %]
+                        <div>
+                            <div class="alert alert-danger" role="alert">
+                                <span class="glyphicon glyphicon-remove-sign" aria-hidden="true"></span>
+                                <div class="alert-message">
+                                    <strong class="alert-title">
+                                        [% locale.maketext('Error:') %]
+                                    </strong>
+                                    <span class="alert-body">
+                                        <span id="incorrectPassphrase">
+                                            [% locale.maketext('You entered an incorrect passphrase. Please try again.') %]
+                                        </span>
+                                    </span>
+                                </div>
+                            </div>
+                        </div>
+                    [% END %]
+                    <form method="post" id="frmPassphrase">
+                        <div class="form-group">
+                            <div class="row">
+                                <div class="col-xs-12">
+                                    <label id="lblPassphrase">
+                                        [% locale.maketext('Please enter the passphrase for the key “[_1]”.', FORM.key) %]
+                                    </label>
+                                </div>
+                            </div>
+                            <div class="row">
+                                <div class="col-xs-12">
+                                    <input name="passphrase" type="password" class="form-control" id="pwdPassphrase">
+                                </div>
+                            </div>
+                            <div class="row">
+                                <div class="col-xs-12">
+                                    <ul class="validation-container hidden" role="alert" id="pwdPassphraseErrorPanel">
+                                        <li class="validation validation-error">
+                                            <i class="fas fa-exclamation-circle" aria-hidden="true"></i>
+                                            <span id="pwdPassphraseErrorPanelRequired" class="validation-message">
+                                                <span>
+                                                    [% locale.maketext('You must enter a passphrase.') %]
+                                                </span>
+                                            </span>
+                                        </li>
+                                    </ul>
+                                </div>
+                            </div>
+                        </div>
+                        <button type="submit" class="btn btn-primary" id="btnPassphraseSubmit">
+                            <i class="fas fa-sync fa-fw fa-spin hidden" aria-hidden="true" id="btnPassphraseSubmitSpinner"></i>
+                            [% locale.maketext('Submit') %]
+                        </button>
+                    </form>
+                </div>
+            </div>
+        [% ELSE %]
+            <div class="col-xs-12 col-sm-8 col-md-6">
+                <div class="alert alert-danger" role="alert">
+                    <span class="glyphicon glyphicon-remove-sign" aria-hidden="true"></span>
+                    <div class="alert-message">
+                        <strong class="alert-title">
+                            [% locale.maketext('Error:') %]
+                        </strong>
+                        <span class="alert-body">
+                            <span id="loadError">
+                                [% locale.maketext('The key failed to load due to an error: [_1]', export_key_call.errors.0) %]
+                            </span>
+                        </span>
+                    </div>
+                </div>
+            </div>
+        [% END %]
+    </div>
+    [% INCLUDE _assets/return_link.html.tt return_location="index.html"  return_link_text=locale.maketext("Go Back" ) %]
+</div>
+[% END %]
+
+[% BLOCK js_block %]
+<script type="text/javascript">
+    document.addEventListener("DOMContentLoaded", function(event) {
+        var txtarea = document.getElementById("txtPrivateKey");
+        if (txtarea) {
+            txtarea.addEventListener("click", function (e) {
+                e.target.select();
+            });
+        }
+
+        var passphraseForm = document.getElementById("frmPassphrase");
+        var passphraseInput = document.getElementById("pwdPassphrase");
+        var validationContainer = document.getElementById("pwdPassphraseErrorPanel");
+
+        if(!passphraseInput || !validationContainer || !passphraseForm) {
+            return;
+        }
+
+        passphraseInput.addEventListener("input", _validatePassphrase);
+        passphraseInput.addEventListener("change", _validatePassphrase);
+        passphraseInput.addEventListener("blur", _validatePassphrase);
+
+        function _validatePassphrase(e) {
+            if(passphraseInput.value) {
+                passphraseInput.dataset.valid = "1";
+                validationContainer.classList.add("hidden");
+            }
+            else {
+                delete passphraseInput.dataset.valid;
+                validationContainer.classList.remove("hidden");
+            }
+        }
+
+        passphraseForm.addEventListener("submit", function(e) {
+            _validatePassphrase(e);
+            if( !passphraseInput.dataset.valid ) {
+                e.preventDefault();
+                return;
+            }
+
+            var spinner = document.getElementById("btnPassphraseSubmitSpinner");
+            spinner.classList.remove("hidden");
+
+            var submitButton = document.getElementById("btnPassphraseSubmit");
+            submitButton.setAttribute("disabled", true);
+        });
+    });
+</script>
+[% END %]

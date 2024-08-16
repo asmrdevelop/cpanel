@@ -1,0 +1,72 @@
+[% SET is_rtl = locale.get_html_dir_attr() == 'rtl' %]
+<div id="docrootEditor">
+<div class="ng-hide" ng-show="docroot.loading">
+    <div class="alert alert-info">
+        <div class="alert-message">
+            <i id="loadingSpinner" class="fas fa-spinner fa-spin"></i>
+            [% locale.maketext('Loading …') %]
+        </div>
+    </div>
+</div>
+<form class="layout-medium ng-hide" ng-show="!docroot.loading">
+    <div class="row">
+        <div class="col-xs-12">
+            <div class="panel panel-default">
+                <div class="panel-heading">
+                    <h3 class="panel-title">[% locale.maketext('Website Configuration for “[_1]”', '{{docroot.addonDomain}}') %]</h3>
+                </div>
+                <div class="panel-body">
+                    <div class="checkbox-row">
+                        <div class="checkbox">
+                            <label>
+                                <input id="moveDocrootCheckbox" type="checkbox" ng-model="docroot.moveIt">
+                                <span>[% locale.maketext('Copy contents of document root directory') %]</span>
+                            </label>
+                        </div>
+                    </div>
+                    <div class="checkbox-row">
+                        <div class="checkbox">
+                            <label>
+                                <input id="moveVhostIncludesCheckbox" type="checkbox" ng-model="docroot.moveVhostIncludes">
+                                <span>[% locale.maketext('Copy custom [asis,VirtualHost] include files') %]</span>
+                            </label>
+                        </div>
+                    </div>
+                    <div class="checkbox-row">
+                        <div class="alert-icon alert-icon__absolute">
+                            <i class="fas fa-exclamation-triangle ng-hide"
+                                ng-show="!docroot.sslCertInstalled"
+                                uib-tooltip="{{docroot.noSSLCertTooltip}}"
+                                [% IF is_rtl %]
+                                tooltip-placement="left"
+                                [% ELSE %]
+                                tooltip-placement="right"
+                                [% END %]
+                                tooltip-append-to-body="true">
+                            </i>
+                        </div>
+                        <div class="checkbox">
+                            <label>
+                                <input id="moveSSLCertCheckbox" type="checkbox"
+                                    ng-model="docroot.copySSLCert"
+                                    ng-disabled="!docroot.sslCertInstalled">
+                                <span>[% locale.maketext('Copy the installed [asis,SSL] certificate') %]</span>
+                             </label>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="form-group action-group">
+                <button type="button"
+                    id="docrootSave"
+                    ng-click="docroot.save()"
+                    class="btn btn-primary">[% locale.maketext('Save Selections') %]</button>
+                <button type="button"
+                    id="docrootCancel"
+                    ng-click="docroot.cancel()"
+                    class="btn btn-link">[% locale.maketext('Cancel') %]</button>
+            </div>
+        </div>
+    </div>
+</form>
+</div>

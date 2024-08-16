@@ -1,0 +1,309 @@
+<h4 class="section-heading">[% locale.maketext('[asis,Rsync] Destination') %]</h4>
+<div class="section-body">
+    <form name="rsyncDestination" ng-if="!destinationState.fetching_data" ng-show="!destinationState.showKeyGenerationForm" ng-disabled="destinationState.savingDestination || destinationState.validatingDestination" novalidate>
+        <div class="form-group">
+            <div class="row">
+                <div class="col-xs-12 col-sm-6">
+                    <label for="name">[% locale.maketext('Destination Name') %]</label>
+                    <span class="info-block">[% locale.maketext('Enter a name for this destination.') %]</span>
+                </div>
+            </div>
+            <div class="row">
+                <div class="col-xs-12 col-sm-6">
+                    <input type="text" name="name" id="rsync_name" required class="form-control" minlength="1" ng-maxlength="256" ng-model="destinationState.destination.rsync.name" />
+                </div>
+                <div class="col-xs-12 col-md-6">
+                    <ul class="validation-container" ng-show="rsyncDestination.name.$dirty && (rsyncDestination.name.$error.required || rsyncDestination.name.$error.minlength || rsyncDestination.name.$error.maxlength)">
+                        <li class="validation validation-error" ng-show="rsyncDestination.name.$error.required">
+                            <span class="glyphicon glyphicon-exclamation-sign"></span>
+                            <span class="validation-message">[% locale.maketext('You must enter a destination name.') %]</span>
+                        </li>
+                        <li class="validation validation-error" ng-show="rsyncDestination.name.$error.minlength || rsyncDestination.name.$error.maxlength">
+                            <span class="glyphicon glyphicon-exclamation-sign"></span>
+                            <span class="validation-message">[% locale.maketext('The destination name must contain between [numf,1] and [numf,256] characters.') %]</span>
+                        </li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+        <div class="form-group">
+            <div class="row">
+                <div class="col-xs-12 col-sm-6">
+                    <input type="checkbox" name="upload_system_backup" id="rsync_system" ng-model="destinationState.destination.rsync.upload_system_backup"/>
+                    <label for="rsync_system">[% locale.maketext('Transfer System Backups to this Destination') %]</label>
+                    <div class="callout callout-warning">[% locale.maketext('[output,strong,Warning:] System Backups contain sensitive security details.') %] [% locale.maketext('You should transfer System Backups over encrypted methods.') %]</div>
+                </div>
+            </div>
+        </div>
+        <div class="form-group">
+            <div class="row">
+                <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                    <input
+                        ng-model="destinationState.destination.rsync.only_used_for_logs"
+                        type="checkbox"
+                        name="only_used_for_logs"
+                        id="rsync_logsonly"/>
+                    <label for="rsync_logsonly">[% locale.maketext('Only use this destination for log file transfers[comment,title of option like one above, but looks wrong title cased]') %]</label>
+                    <div class="callout callout-warning">
+                        <span>[% locale.maketext('[output,strong,Warning:] Enabling this option will prevent it from being used for account and/or system backups.') %] [% locale.maketext('Only enable this option if this destination will only be used for log backups. If it will be used for all backups, leave this unchecked.') %]</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="form-group">
+            <div class="row">
+                <div class="col-xs-12 col-sm-6">
+                    <label for="path">[% locale.maketext('Backup Directory') %]</label>
+                    <span class="info-block">[% locale.maketext('Optional. Specify the path, relative to the account’s home directory, where the system stores backups.') %]</span>
+                </div>
+            </div>
+            <div class="row">
+                <div class="col-xs-12 col-sm-6">
+                    <input type="text" name="path" id="rsync_path" backup-location class="form-control" ng-model="destinationState.destination.rsync.path" ng-change="checkForDisallowedChars(rsyncDestination.path.$viewValue, disallowedPathChars)" />
+                </div>
+                <div class="col-xs-12 col-md-6">
+                    <ul validation-container field-name="path">
+                    </ul>
+                </div>
+            </div>
+        </div>
+        <div class="form-group">
+            <div class="row">
+                <div class="col-xs-12 col-sm-6">
+                    <label for="host">[% locale.maketext('Remote Host') %]</label>
+                    <span class="info-block">[% locale.maketext('Enter the remote server’s address.') %] [% locale.maketext('The address should not include [asis,http]://, [asis,https]://, a trailing port, or path information.') %]</span>
+                </div>
+            </div>
+            <div class="row">
+                <div class="col-xs-12 col-sm-6">
+                    <input type="text" name="host" id="rsync_host" ng-trim="false" remote-host required class="form-control" ng-model="destinationState.destination.rsync.host" />
+                </div>
+                <div class="col-xs-12 col-md-6">
+                    <ul validation-container field-name="host">
+                        <li class="validation validation-error" ng-show="rsyncDestination.host.$dirty && rsyncDestination.host.$error.required">
+                            <span class="glyphicon glyphicon-exclamation-sign"></span>
+                            <span class="validation-message">[% locale.maketext('You must enter a remote host.') %]</span>
+                        </li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+        <div class="form-group">
+            <div class="row">
+                <div class="col-xs-12 col-sm-6">
+                    <label for="port">[% locale.maketext('Port') %]</label>
+                    <span class="info-block">[% locale.maketext('The port that the system uses to communicate with the remote server.') %] [% locale.maketext('By default, [asis,Rsync] destinations use an [asis,SSH] channel on port 22.') %]</span>
+                </div>
+            </div>
+            <div class="row">
+                <div class="col-xs-12 col-sm-6">
+                    <input
+                        type="number"
+                        name="port"
+                        id="rsync_port"
+                        class="form-control"
+                        ng-model="destinationState.destination.rsync.port"
+                        positive-integer
+                        ng-keydown="noDecimalPoints($event)"
+                        ng-paste="onlyNumbers($event)"
+                        min="1"
+                        max="65535" />
+                </div>
+                <div class="col-xs-12 col-md-6">
+                    <ul class="validation-container" ng-show="rsyncDestination.port.$dirty && (rsyncDestination.port.$error.min || rsyncDestination.port.$error.max || rsyncDestination.port.$error.number)">
+                        <li class="validation validation-error">
+                            <span class="glyphicon glyphicon-exclamation-sign"></span>
+                            <span class="validation-message">[% locale.maketext('The port number must be between [numf,1] and [numf,65535].') %]</span>
+                        </li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+        <div class="form-group">
+            <div class="row">
+                <div class="col-xs-12 col-sm-6">
+                    <label for="username">[% locale.maketext('Remote Account Username') %]</label>
+                    <span class="info-block">[% locale.maketext('The remote server’s account username.') %]</span>
+                </div>
+            </div>
+            <div class="row">
+                <div class="col-xs-12 col-sm-6">
+                    <input type="text"
+                        maxlength="32"
+                        name="username"
+                        id="rsync_username"
+                        required
+                        nospaces
+                        class="form-control"
+                        ng-model="destinationState.destination.rsync.username" />
+                </div>
+                <div class="col-xs-12 col-md-6">
+                    <ul validation-container field-name="username">
+                        <li class="validation validation-error" ng-show="rsyncDestination.username.$dirty && rsyncDestination.username.$error.required">
+                            <span class="glyphicon glyphicon-exclamation-sign"></span>
+                            <span class="validation-message">[% locale.maketext('You must enter a username.') %]</span>
+                        </li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+        <div class="form-group">
+            <div class="row">
+                <div class="col-xs-12 col-sm-6">
+                    <label>[% locale.maketext('Authentication Type') %]</label>
+                    <span class="info-block">[% locale.maketext('The authentication type the system will use to connect to the remote server.') %] [% locale.maketext('For enhanced security, we recommend that you use key authentication.') %]</span>
+                </div>
+            </div>
+            <div class="row">
+                <div class="col-xs-12 col-sm-6">
+                    <label class="radio-inline">
+                        <input type="radio" name="authtype" id="key_auth_type_yes" class="dependent" ng-model="destinationState.destination.rsync.authtype" value="key" /> [% locale.maketext('Key Authentication') %]
+                    </label>
+                    <label class="radio-inline">
+                        <input type="radio" name="authtype" id="password_auth_type_yes" class="dependent" ng-model="destinationState.destination.rsync.authtype" value="password" /> [% locale.maketext('Password Authentication') %]
+                    </label>
+                </div>
+            </div>
+        </div>
+        <div id="key_auth_type_options" ng-class="{'collapsed inactive': destinationState.destination.rsync.authtype}" class="advanced-options-container password_auth_type_options-alternate" ng-show="destinationState.destination.rsync.authtype === 'key'">
+            <h5 class="section-header">[% locale.maketext('Key Authentication Options') %]</h5>
+            <div class="form-group">
+                <div class="row">
+                    <div class="col-xs-12 col-sm-6">
+                        <label for="privatekey">[% locale.maketext('Private Key') %]</label>
+                        <span class="info-block">[% locale.maketext('The full path of the private key on this server.') %] [% locale.maketext('Click the button below to generate a new key.') %]</span>
+                    </div>
+                </div>
+                <div class="row">
+                    <div class="col-xs-12 col-sm-6">
+                        <input
+                            type="text"
+                            name="privatekey"
+                            id="private_key"
+                            full-path
+                            class="form-control" ng-model="destinationState.destination.rsync.privatekey"
+                            ng-required="destinationState.destination.rsync.authtype === 'key' && destinationState.newMode" />
+                    </div>
+                    <div class="col-xs-12 col-md-6">
+                        <ul validation-container field-name="privatekey">
+                            <validation-item
+                                field-name="privatekey"
+                                validation-name="required">[% locale.maketext('You must enter a valid path.') %]
+                            </validation-item>
+                        </ul>
+                    </div>
+                </div>
+                <div class="row">
+                    <div class="col-xs-12 col-sm-6">
+                        <div class="panel panel-default">
+                            <div class="panel-heading">
+                                <h3 class="panel-title">[% locale.maketext('Private Keys') %]</h3>
+                            </div>
+                            <div cp-loading-panel class="loading_panel" id="ssh_key_list_loading_panel" ng-if="!destinationState.sshKeyListLoaded">
+                                [% locale.maketext("Loading …") %]
+                            </div>
+                            <ul class="list-group" ng-show="destinationState.sshKeyListLoaded">
+                                <li ng-repeat="key in destinationState.sshKeyList track by $index" class="list-group-item sshKey" ng-click="setPrivateKey(key)">{{ key }}</li>
+                            </ul>
+                        </div>
+                    </div>
+                </div>
+                <div class="row">
+                    <div class="col-xs-12 col-sm-6">
+                        <button type="button" title="[% locale.maketext('Generate a New Key') %]" id="show_save_key" class="btn btn-default" ng-click="toggleKeyGenerationForm()">
+                            [% locale.maketext('Generate a New Key') %]
+                        </button>
+                    </div>
+                </div>
+            </div>
+            <div class="form-group">
+                <div class="row">
+                    <div class="col-xs-12 col-sm-6">
+                        <label for="passphrase">[% locale.maketext('Passphrase') %]</label>
+                        <span class="info-block">[% locale.maketext('The private key’s passphrase.') %] [% locale.maketext('For security reasons, you will not see the passphrase.') %] [% locale.maketext('Only enter the passphrase when you create this destination, or when you change the passphrase.') %]</span>
+                    </div>
+                </div>
+                <div class="row">
+                    <div class="col-xs-12 col-sm-6">
+                        <input ng-model="destinationState.destination.rsync.passphrase" type="password" name="passphrase" id="passphrase" class="form-control advanced-option" minlength="5" maxlength="128" ng-disabled="destinationState.destination.rsync.authtype && !destinationState.destination.rsync.privatekey" />
+                    </div>
+                    <div class="col-xs-12 col-md-6">
+                        <ul class="validation-container" ng-show="rsyncDestination.passphrase.$dirty && (rsyncDestination.passphrase.$error.minlength || rsyncDestination.passphrase.$error.maxlength)">
+                            <li class="validation validation-error">
+                                <span class="glyphicon glyphicon-exclamation-sign"></span>
+                                <span class="validation-message">[% locale.maketext('You must enter a passphrase between [numf,5] and [numf,128] characters.') %]</span>
+                            </li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div id="password_auth_type_options" ng-class="{'collapsed inactive': destinationState.destination.rsync.privatekey && !destinationState.destination.rsync.authtype}" class="advanced-options-container key_auth_type_options-alternate" ng-show="destinationState.destination.rsync.authtype === 'password'">
+            <h5 class="section-header">[% locale.maketext('Password Authentication Options') %]</h5>
+            <div class="form-group">
+                <div class="row">
+                    <div class="col-xs-12 col-sm-6">
+                        <label for="password">[% locale.maketext('Remote Password') %]</label>
+                        <span class="info-block">[% locale.maketext('The password of the account on the remote server.') %] [% locale.maketext('For security reasons, you will not see the password.') %] [% locale.maketext('Only enter the password when you create this destination, or when you change the password.') %]</span>
+                    </div>
+                </div>
+                <div class="row">
+                    <div class="col-xs-12 col-sm-6">
+                        <input type="password" name="password" id="rsync_password" ng-required="destinationState.destination.rsync.authtype === 'password' && !destinationState.editMode" class="form-control advanced-option" ng-model="destinationState.destination.rsync.password" />
+                    </div>
+                    <div class="col-xs-12 col-md-6">
+                        <ul class="validation-container" ng-show="rsyncDestination.password.$dirty && rsyncDestination.password.$error.required">
+                            <li class="validation validation-error">
+                                <span class="glyphicon glyphicon-exclamation-sign"></span>
+                                <span class="validation-message">[% locale.maketext('You must enter a password.') %]</span>
+                            </li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="form-group">
+            <div class="row">
+                <div class="col-xs-12 col-sm-6">
+                    <label for="rsync_timeout">[% locale.maketext('Timeout') %]</label>
+                    <span class="info-block">[% locale.maketext('The number of seconds that the system will wait for a response from the remote server.') %]</span>
+                </div>
+            </div>
+            <div class="row">
+                <div class="col-xs-12 col-sm-6">
+                    <input
+                        type="number"
+                        name="timeout"
+                        id="rsync_timeout"
+                        class="form-control"
+                        min="30"
+                        max="300"
+                        positive-integer
+                        ng-keydown="noDecimalPoints($event)"
+                        ng-paste="onlyNumbers($event)"
+                        ng-model="destinationState.destination.rsync.timeout" />
+                </div>
+                <div class="col-xs-12 col-md-6">
+                    <ul class="validation-container" ng-show="rsyncDestination.timeout.$dirty && (rsyncDestination.timeout.$error.min || rsyncDestination.timeout.$error.max || rysncDestination.timeout.$error.number)">
+                        <li class="validation validation-error">
+                            <span class="glyphicon glyphicon-exclamation-sign"></span>
+                            <span class="validation-message">[% locale.maketext('You must enter a timeout value between [numf,30] and [numf,300] seconds.') %]</span>
+                        </li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+        <div class="form-group">
+            <div class="row">
+                <div class="col-xs-12">
+                    <div id="save_config">
+                        <button type="submit" id="save_destination_button" cp-action="saveDestination(destinationState.destination)" ng-disabled="rsyncDestination.$pristine || rsyncDestination.$invalid || destinationState.savingDestination || destinationState.validatingDestination">[% locale.maketext('Save Destination') %]</button>
+                        <button type="button" id="save_and_validate_destination_button" button-class="btn-default" cp-action="saveAndValidateDestination(destinationState.destination)" ng-disabled="rsyncDestination.$pristine || rsyncDestination.$invalid || destinationState.savingDestination || destinationState.validatingDestination">[% locale.maketext('Save and Validate Destination') %]</button>
+                        <button type="button" class="btn btn-link" id="cancel_destination_button" ng-click="cancelDestination()" ng-disabled="destinationState.savingDestination || destinationState.validatingDestination">[% locale.maketext('Cancel') %]</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </form>
+    <ng-include ng-show="destinationState.showKeyGenerationForm" src="'views/SSHKeyGen.ptt'"></ng-include>
+</div>

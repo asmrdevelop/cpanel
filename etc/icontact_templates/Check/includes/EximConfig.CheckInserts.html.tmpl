@@ -1,0 +1,46 @@
+[%#
+Variables passed in:
+
+whm_login_url           - the url for WHM logins
+docs_url                - the URL of the documentation describing
+cpanel_version          - the cPanel version that was/is being installed.
+exim_backup_path        - the path to the saved config backup
+log_preview             - an arrayref of file previews
+previous_config_version - The previously installed configuration version
+current_config_version  - The currently installed configuration version
+new_config_version      - The new configuration version
+is_whm                  - True if this message is being displayed in WHM
+cf_and_replacecf_paths  - an arrayref of paths to cf and replacecf
+-%]
+
+<p>
+  [% CPANEL.locale.maketext("Your configuration insert blocks may need updating. An outdated configuration may impact some functionality with this version of [asis,cPanel].") %]
+  [% CPANEL.locale.maketext("This version of [asis,cPanel] has a critical update, and you must install it for your mail server to function.") %]
+  [%
+    CPANEL.locale.maketext(
+      "For more information, read our [output,url,_1,documentation,target,_2].",
+      NOTICE.docs_url,
+      '_blank',
+    );
+  %]
+</p>
+<p>
+    [%
+        CPANEL.locale.maketext(
+            "To avoid introducing configuration changes that may cause mail downtime, we have not replaced any “[_1]” settings in the “[_2]”.",
+            'Advanced Editor',  # Not translated
+            CPANEL.locale.maketext('Exim Configuration Manager'),
+        );
+    %]
+</p>
+<p>
+  [% CPANEL.locale.maketext("If you determine that updating your customizations is required, perform the following steps:"); %]
+  <ul>
+    [% IF !NOTICE.is_whm %]
+      [% PROCESS "Check/includes/EximConfig.WHMLoginSteps.html.tmpl" %]
+    [% END %]
+    <li>
+      [% CPANEL.locale.maketext("Use the “[_1]” to update your previous configuration with the new configuration settings.", 'Advanced Editor') # Not translated %]
+    </li>
+  </ul>
+</p>

@@ -1,0 +1,75 @@
+[% USE CPSort -%]
+[% USE Net -%]
+
+<style type="text/css">
+#delip_info ul {
+   max-height: 200px;
+   overflow: auto;
+}
+#iplist td {
+    padding: 6px;
+}
+.actionsCell {
+    text-align: center;
+}
+.btn-small {
+    font-size: 11px;
+    height: 21px;
+    min-width: 80px;
+    padding: 3px;
+}
+.deletePrompt {
+    padding-left: 5px;
+    font-weight: bold;
+    padding-top: 10px;
+}
+
+#iplist th {
+    font-weight: bold;
+    text-align: left;
+}
+
+#iplist th.actionsCell {
+    text-align: center;
+}
+
+html[dir=rtl] #iplist th {
+    text-align: right;
+}
+
+html[dir=rtl] th.actionsCell {
+    text-align: center;
+}
+
+</style>
+<div id="iplisttbl">
+<table class="sortable" id="iplist">
+<thead>
+<tr>
+    <th>[% locale.maketext('Interface') %]</th>
+    <th>[% IF data.is_nat -%][% locale.maketext('Local IP') -%][% ELSE -%][% locale.maketext('IP') -%][% END -%]</th>
+    [% IF data.is_nat -%]<th>[% locale.maketext('Public IP') -%]</th>[% END -%]
+    <th>[% locale.maketext('Notes') -%]</th>
+    <th class="actionsCell">[% locale.maketext('Actions') -%]</th>
+</tr>
+</thead>
+<tbody>
+[% FOR ipinfo = data.table_data.cpsort({
+    'field' => 'interface',
+    'code' => \Net.inet_aton,
+    'num' => 1
+}) -%]
+<tr sorttable_customkey="[% Net.inet_aton(ipinfo.local_ip) %]" class="[% loop.index % 2 ? 'tdshade2' : 'tdshade1' %]">
+    <td>[% ipinfo.interface %]</td>
+    <td>[%- ipinfo.local_ip -%]</td>
+    [% IF data.is_nat -%]<td>[%- ipinfo.public_ip -%]</td>[% END -%]
+    <td class="notesCell">[% ipinfo.notes %]</td>
+    <td class="actionsCell">[% IF ipinfo.removable %]
+            <a class="action delete" title="[% locale.maketext('Remove “[_1]”[comment,used as hover text on a Remove button]', ipinfo.local_ip) %]" onClick="confirm_delip( '[% ipinfo.local_ip -%]', '[% ipinfo.interface -%]' );">[% locale.maketext('Remove') -%]</a>
+        [% END %]
+    </td>
+</tr>
+[% END -%]
+</tbody>
+</table>
+</div>

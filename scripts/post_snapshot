@@ -1,0 +1,102 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/post_snapshot                   Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::post_snapshot;
+
+use cPstrict;
+use Cpanel::Imports;
+use Cpanel::ImagePrep             ();
+use Cpanel::ImagePrep::Common     ();
+use Cpanel::ImagePrep::Output     ();
+use Cpanel::Systemd::Notify::Boot ();
+
+use base 'Cpanel::HelpfulScript';
+use constant _OPTIONS => ( 'yes', 'systemd' );
+
+=head1 NAME
+
+scripts/post_snapshot
+
+=head1 SYNOPSIS
+
+/usr/local/cpanel/scripts/post_snapshot [--systemd]
+
+B<WARNING>: This is a destructive action. If you run this script on a production
+server, data loss will occur. Pass the --yes option to acknowledge that you
+understand this warning. If any cPanel users are detected, further confirmation
+will be required.
+
+Updates the running system with changes needed after it starts from a snapshot,
+presumably to be a different IP address and hostname.
+
+This script will abort and exit non-zero if one or more operations attempted
+during post_snapshot fail.
+
+If this script exits nonzero when used according to the documentation, you
+should consider the server potentially damaged and unusable.
+
+=cut
+
+exit __PACKAGE__->new(@ARGV)->run unless caller;
+
+sub run {
+    my ($self) = @_;
+
+    if ( $self->getopt('systemd') ) {
+        sdnotify()->enable();
+    }
+
+    return $self->_run();
+}
+
+sub _run {    # returns exit code, not boolean
+    my ($self) = @_;
+
+    my $common = Cpanel::ImagePrep::Common->new();
+
+    if ( !$self->getopt('yes') ) {
+        die $self->help('Please read the warning in the usage output before using this script.');
+    }
+
+    local $| = 1;    # helps the test suite stream_cmd method
+
+    sdnotify()->ready_and_wait_for_boot_to_finish(
+        {
+            # logs 'Waiting for the system to finish booting...', if a boot wait occurs.
+            'waiting_callback' => sub ($msg) { return Cpanel::ImagePrep::common()->regular_logmsg($msg); },
+        }
+    );
+    Cpanel::ImagePrep::delete_post_service();
+
+    my ( $table, $cb ) = Cpanel::ImagePrep::Output->get_status_output_callback();
+    my ( $ok, $reason );
+    sdnotify()->disable_for_cr(
+        sub {
+            # When running as post_snapshot.service, some tasks and/or service
+            # restarts may trigger unexpected notifications to systemd. This
+            # doesn't cause failures but systemd logs warnings when this
+            # occurs. Wrapping this in sdnotify->disable_for_cr silences the
+            # spurious notifications.
+            ( $ok, $reason ) = Cpanel::ImagePrep::post_snapshot(
+                output_callback => $cb,
+            );
+        }
+    );
+    $common->raw_logmsg( $table->draw );
+    $common->regular_logmsg($reason);
+
+    if ( !$ok ) {
+        $common->regular_logmsg('See the output before the summary table for more detail about the failure(s).');
+    }
+    return $ok ? 0 : 1;
+}
+
+sub sdnotify {
+    return Cpanel::Systemd::Notify::Boot->get_instance( 'service' => 'post_snapshot' );
+}
+
+1;

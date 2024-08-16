@@ -1,0 +1,187 @@
+#!/bin/bash
+eval 'if [ -x /usr/local/cpanel/3rdparty/bin/perl ]; then exec /usr/local/cpanel/3rdparty/bin/perl -x -- $0 ${1+"$@"}; else exec /usr/bin/perl -x $0 ${1+"$@"}; fi;'
+  if 0;
+
+#!/usr/bin/perl
+# cpanel - scripts/unpkgacct                         Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cpanel license. Unauthorized copying is prohibited
+
+# NOTE: This script is designed to run on other systems during a transfer, usually as /usr/bin/perl.
+
+package scripts::unpkgacct;
+
+BEGIN {
+    unshift @INC, '/usr/local/cpanel';
+    my %seen_inc;
+    @INC = grep { !/(?:^\.|\.\.|\/\.+)/ && !$seen_inc{$_}++ } @INC;
+    undef %seen_inc;
+}
+
+require 5.006;
+
+use Errno;
+
+our $VERSION = '1.0';
+
+run(@ARGV) if !caller;
+
+sub run {
+    my (@argv) = @_;
+
+    local $| = 1;
+
+    if ( grep { m{version} } @argv ) {
+        print "unpkgacct VERSION $VERSION\n";
+        return;
+    }
+
+    my ( $user, $mntpoint ) = @argv;
+
+    if ( !_is_sane_username($user) && !enXim($user) ) {
+        die "$0: invalid account “$user”\n";
+    }
+
+    #die() is for sanity
+    $mntpoint ||= getmntpoint() || die 'Failed to find mountpoint!';
+
+    my @paths_to_check = (
+        "$mntpoint/cpmove-${user}",
+        "$mntpoint/cpmove-${user}-split",
+        "$mntpoint/cpmove-${user}.tar.gz",
+        "$mntpoint/cpmove-${user}.tar",
+    );
+
+    my @paths_to_remove;
+    for my $path (@paths_to_check) {
+        next if -l $path;
+
+        my $err = $!;
+
+        if ( -e _ ) {
+
+            #Exists and is not a symlink -> delete
+            print "Found archive: $path\n";
+            push @paths_to_remove, $path;
+        }
+        elsif ( $err != Errno::ENOENT ) {
+
+            #lstat() shouldn’t fail except for ENOENT.
+            warn "lstat($path): $err";
+        }
+    }
+
+    if ( !( -d '/usr/local/cpanel' ) && $! ) {
+        if ( $!{'ENOENT'} ) {
+            push @paths_to_remove, '/etc/trueuserdomains';
+        }
+        else {
+            warn "stat(/usr/local/cpanel): $!";
+        }
+    }
+
+    if (@paths_to_remove) {
+        exec( '/bin/rm', '--recursive', '--force', '--', @paths_to_remove ) or die "exec(rm): $!";
+    }
+
+    print "The mountpoint “$mntpoint” does not contain any archives for “$user”.\n";
+
+    return;
+}
+
+## case 34397 deprecation: use Cpanel::Filesys::Home::get_homematch_with_most_free_space
+sub getmntpoint {
+
+    my ($homedir);
+    my ($homematch);
+
+    open( CONF, "/etc/wwwacct.conf" );
+    while (<CONF>) {
+        $_ =~ s/\n//g;
+        if ( $_ !~ /^;/ ) {
+            if ( $_ =~ /HOMEDIR/ ) {
+                ( undef, $homedir ) = split( / /, $_ );
+            }
+            if ( $_ =~ /HOMEMATCH/ ) {
+                ( undef, $homematch ) = split( / /, $_ );
+            }
+        }
+    }
+    close(CONF);
+    $homedir =~ s/\/$//g;
+
+    ## case 34397: mark for deprecation
+    my $disk = `df`;
+
+    my $max     = 0;
+    my $mnt     = "/";
+    my (@DISK)  = split( /\n/, $disk );
+    my $addline = '';
+    foreach my $line (@DISK) {
+        if ( $line !~ /[\s|\t]+/ ) {
+            $addline = $line;
+            $addline =~ s/\n//g;
+            next;
+        }
+        if ( $line =~ /^\/dev/ || $addline ne "" ) {
+            $line =~ s/\n//g;
+
+            $line =~ /\s(\d*)\s*\d*\%\s*(\S+)$/;
+            my $free  = $1;
+            my $mount = $2;
+
+            my $assess = 1;
+            if ( ( $mount eq "/" ) && ( $homedir eq 0 ) ) {
+                $assess = 0;
+            }
+            $free = int($free);
+            $max  = int($max);
+
+            if ( ( $max < $free ) && ( $assess eq 1 ) && ( $mount =~ /$homematch/ || $mount eq "/" ) ) {
+                $max = $free;
+                if ( $mount eq "/" ) {
+                    $mount = $homedir;
+                }
+                $mnt = $mount;
+            }
+        }
+    }
+
+    if ( $mnt eq "" || $mnt eq "/" ) { $mnt = '/home'; }
+
+    return ($mnt);
+}
+
+sub enXim {
+    my ($enxim_user) = @_;
+
+    return $enxim_user if $enxim_user =~ /site\d+/;
+
+    my $found = 0;
+    opendir( VH, "/home/virtual" );
+    my @FILES = grep( /^site/, readdir(VH) );
+    closedir(VH);
+    foreach my $xsite (@FILES) {
+        my $ul;
+        my $sitedir = '/home/virtual/' . $xsite . "/fst";
+        open( DNS, "$sitedir/etc/passwd" );
+        chomp( $ul = <DNS> );
+        my $muser = ( split /:/, $ul )[0];
+        close(DNS);
+
+        if ( $muser eq $enxim_user ) { $found = 1; last }
+    }
+    return $found;
+}
+
+sub _is_sane_username {
+    my ($name) = @_;
+
+    return 0 if $name =~ tr</><>;
+    return 0 if $name eq '.' || $name eq '..';
+
+    return 1;
+}
+
+1;

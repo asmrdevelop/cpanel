@@ -1,0 +1,61 @@
+[%
+    USE Encoder;
+
+    IF ! end;
+        PROCESS 'master_templates/_defheader.tmpl'
+            theme="yui"
+            breadcrumburl = '/scripts2/setupresolvconf'
+            extrahtml = '<h3>Step 3</h3>'
+            status = 'Setting up resolvers'
+            statusapp = 'Resolver Setup'
+            app_key='resolver_configuration'
+        ;
+    ELSE; #end
+        PROCESS '_setstatusdone.tmpl';
+-%]
+
+[% IF data.status -%]
+[% SET nameservers = data.messages.slice(1) -%]
+<div class="okmsg">
+Your resolvers have been successfully configured.
+</div>
+
+<div class="statusmsg">
+Listed in order, they are:<br />
+<ol>
+[% '<li>' _ nameservers.join('</li><li>') _ '</li>' %]
+</ol>
+</div>
+
+[% ELSE -%]
+<div class="errormsg">
+[% Encoder.safe_html_encode_str(data.statusmsg) %]
+</div>
+
+
+<div id="msgs">
+[% FOR msg IN data.messages %]
+<div class="statusmsg">[% Encoder.safe_html_encode_str(msg) %]</div>
+[% END %]
+</div>
+
+<div id="warns">
+[% FOR msg IN data.warnings %]
+<div class="warningmsg">[% Encoder.safe_html_encode_str(msg) %]</div>
+[% END %]
+</div>
+[% END -%]
+
+[% IF data.redirect %]
+<META HTTP-EQUIV=Refresh CONTENT="10; URL=[% cp_security_token %]/">
+<form action="[% cp_security_token %]/"><table width="100%">
+<tr>
+<td>
+</td>
+<td align="right">
+<input type="submit" class="btn-primary" value="Continue">
+</td>
+</table></form>
+[% END %]
+[% PROCESS 'master_templates/_deffooter.tmpl' theme="yui" -%]
+[% END -%]

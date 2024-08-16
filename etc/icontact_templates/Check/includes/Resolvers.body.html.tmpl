@@ -1,0 +1,78 @@
+[%-
+    PROCESS "include/colors.tmpl";
+    PROCESS "include/icons.tmpl";
+    PROCESS "include/styles.tmpl";
+    PROCESS "include/zebra_table.tmpl";
+    PROCESS "include/code_standout.tmpl";
+
+    SET icon_success = CPANEL.get_icon('success');
+    SET icon_failed = CPANEL.get_icon('failed');
+
+    #Assembling these is a bit much for happening in a template,
+    #but doing it here does allow more customization of the text.
+    SET summary_table_items = [];
+    SET detail_table_items = [];
+
+    FOREACH resolver IN NOTICE.resolver_state;
+        SET resolver_ip = resolver.key;
+        SET resolver_status = resolver.value.status;
+
+        IF resolver_status.is_ok();
+            SET status_txt = CPANEL.locale.maketext("Normal");
+        ELSIF resolver_status.error_is('failed');
+            SET status_txt = CPANEL.locale.maketext("Failed");
+        ELSIF resolver_status.error_is('unreliable');
+            SET status_txt = CPANEL.locale.maketext("Unreliable");
+        ELSIF resolver_status.error_is('slow');
+            SET status_txt = CPANEL.locale.maketext("Slow");
+        ELSE;
+            SET status_txt = CPANEL.locale.maketext("Unknown Status: “[_1]”", resolver_status);
+        END;
+
+        summary_table_items.push( [ resolver_ip, status_txt ] );
+
+        FOREACH resolver_test IN resolver.value.tests;
+            SET test_host = resolver_test.key;
+            SET responded_icon = resolver_test.value.responded ? icon_success : icon_failed;
+            SET responded_duration = resolver_test.value.responded ? resolver_test.value.duration : CPANEL.locale.maketext('Timeout');
+
+            detail_table_items.push([
+                resolver_ip,
+                test_host,
+                responded_icon,
+                responded_duration
+            ]);
+        END;
+    END;
+-%]
+
+[% IF NOTICE.overall_state.error_is('missing')  %]
+    <p>
+        [% CPANEL.locale.maketext('There are no [asis,DNS] resolvers configured on the system.') %]
+    </p>
+[% ELSE %]
+    [% zebra_table(
+        titles = [
+            CPANEL.locale.maketext("Resolver"),
+            CPANEL.locale.maketext("State"),
+        ],
+        items = summary_table_items,
+    ); %]
+[% END %]
+
+    <p>
+        [% CPANEL.locale.maketext('Use the “[_1]” interface ([_2]) to investigate or update the system’s [asis,DNS] resolvers.', CPANEL.locale.maketext('Resolver Configuration'), NOTICE.whm_setup_resolvers_url.html()); %]
+    </p>
+
+[% IF !NOTICE.overall_state.error_is('missing')  %]
+    <h4>[% CPANEL.locale.maketext('Detailed Report:'); %]</h4>
+    [% zebra_table(
+        titles = [
+            CPANEL.locale.maketext("Resolver"),
+            CPANEL.locale.maketext("Test Host"),
+            CPANEL.locale.maketext("Responded?"),
+            CPANEL.locale.maketext("Response Time"),
+        ],
+        items = detail_table_items,
+    ); %]
+[% END %]

@@ -1,0 +1,97 @@
+
+# cpanel - Cpanel/Validate/EmailLocalPart.pod      Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+=head1 NAME
+
+Cpanel::Validate::EmailLocalPart - Utilities for validating the local part of cPanel email addresses.
+
+
+=head1 SYNOPSIS
+
+    use Cpanel::Validate::EmailLocalPart;
+
+    if ( !Cpanel::Validate::EmailLocalPart::is_valid( $user ) ) {
+        die "Not a valid email local name!\n";
+    }
+
+
+=head1 DESCRIPTION
+
+Consolidate the code for validating and cleaning user names.
+
+=head1 INTERFACE
+
+=head2 is_valid( $user )
+
+Return true if C<$user> is a valid local part of an email address (before the
+@). This definition is somewhat different than the definition from the
+relevant RFCs.
+
+All characters from RFC 5322 (also 2822 and 822) are supported except for the
+following:
+
+=over 4
+
+=item *
+
+the four separator characters [+:%@]
+
+=item *
+
+the '/', because it interfers with creating directory names
+
+=item *
+
+dangerous shell metacharacters [&'*|`]
+
+=back
+
+We do not support the quoted string format, however.
+
+=head2 normalize( $user )
+
+Trims spaces from either end of a potentially valid username, lowercases the
+string and removes embedded '\0' characters. Does not try to force a given
+string to be valid.  Returns the normalized string.
+
+=head2 scrub( $user )
+
+Tries to convert supplied user string into a valid user name by scrubbing it of
+all invalid characters and collapsing multiple dots into singles. Returns
+either a valid user name, or C<undef> if there were no legal characters.
+
+=head2 is_reserved( $name )
+
+Returns true if the supplied local part is a reserved name.
+
+=head2 list_reserved_localparts()
+
+Returns a list of local parts that are reserved and cannot be used for an email
+address.
+
+=head1 CONFIGURATION AND ENVIRONMENT
+
+C<Cpanel::Validate::EmailLocalPart> requires no configuration.
+
+=head1 DEPENDENCIES
+
+L<Cpanel::StringFunc::Case> and L<Cpanel::StringFunc::Trim>.
+
+=head1 INCOMPATIBILITIES
+
+None reported.
+
+=head1 BUGS AND LIMITATIONS
+
+No bugs have been reported.
+
+=head1 AUTHOR
+
+G. Wade Johnson  C<< wade@cpanel.net >>
+
+=head1 LICENSE AND COPYRIGHT
+
+Copyright (c) 2009, cPanel, Inc. All rights reserved.

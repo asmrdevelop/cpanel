@@ -1,0 +1,53 @@
+[%#
+Variables passed in:
+
+user            - The user in conflict with the hostname
+hostname        - The hostname of the server
+
+For more information about how to customize notification templates, read our documentation at https://go.cpanel.net/notificationtemplates
+
+-%]
+
+[%
+    PROCESS "include/colors.tmpl";
+    PROCESS "include/styles.tmpl";
+    PROCESS "include/code_block.tmpl";
+
+    WRAPPER 'wrapper/main.html.tmpl';
+
+    NOTICE.email_reason = CPANEL.locale.maketext('The server’s hostname conflicts with domain ownership for the user “[_1]”.', NOTICE.user);
+
+%]
+
+<p>
+    [% CPANEL.locale.maketext('The server’s hostname “[_1]” is currently owned by the user “[_2]”.', NOTICE.host_server NOTICE.user); %]
+    [% CPANEL.locale.maketext('A user should not own the hostname because this will compromise the integrity and security of the system.'); %]
+</p>
+<p>
+  [% CPANEL.locale.maketext('You can resolve this conflict by doing one of the following:') %]
+  <ul>
+    <li>
+      [% CPANEL.locale.maketext('Set a new hostname for the server at [output,url,_1,target,_2].', NOTICE.whm_change_hostname_url,'_blank') %]
+    </li>
+    <li>
+      [% CPANEL.locale.maketext('Set a new hostname for the server with the following command: ” .','/usr/local/cpanel/bin/set_hostname YOUR.NEW-HOSTNAME.tld') %]
+    </li>
+    <li>
+      [% CPANEL.locale.maketext('Remove the domain “[_1]” from the user “[_2]”.', NOTICE.host_server, NOTICE.user); %]
+      <ul>
+         <li>
+          [% CPANEL.locale.maketext('Log in to [asis,cPanel] at [output,url,_1,_1,target,_2].', NOTICE.cpanel_login_url,'_blank') %]
+        </li>
+        <li>
+          [% CPANEL.locale.maketext('Remove the domain from all areas in the “[_1]” section.', CPANEL.locale.maketext('Domains')) %]
+        </li>
+      </ul>
+    </li>
+  </ul>
+</p>
+<p>
+          [% CPANEL.locale.maketext('If you do not change your server’s hostname, your server may experience problems with mail, internal [asis,cPanel] scripts, and other important services.') %]
+</p>
+
+
+[% END %]

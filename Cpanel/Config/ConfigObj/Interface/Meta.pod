@@ -1,0 +1,335 @@
+
+=encoding utf-8
+
+=head1 NAME
+
+Cpanel::Config::ConfigObj::Interface::Meta - Interface class which can digest
+driver meta data and be used by the ConfigObj system
+
+=head1 VERSION
+
+1.0
+
+=head1 SYNOPSIS
+
+use Cpanel::Config::ConfigObj                         ();
+
+use Cpanel::Config::ConfigObj::Driver::MyDriver       ();
+
+use Cpanel::Config::ConfigObj::Driver::MyDriver::Meta ();
+
+use Cpanel::Config::ConfigObj::Interface::Meta        ();
+
+my $meta_obj   = Cpanel::Config::ConfigObj::Interface::Meta->new();
+
+# under the hood: digest data provided by functions in MyDriver::Meta
+
+my $driver_obj = Cpanel::Config::ConfigObj::Driver::MyDriver->init();
+$driver->{'meta'} = $meta_obj->load_driver_meta_content($driver_obj);
+
+# Implementation
+
+my $config_obj = Cpanel::Config::ConfigObj->new();
+# now config_obj has imported Interface::Meta, MyDriver and MyDriver::Meta
+
+my $driver = $config_obj->get_driver('mydriver');
+
+# the driver object has a convenience method (provid by Interface::Config::v1)
+#  to get the Meta obj
+
+my $meta_obj = $driver->meta(); # ISA Cpanel::Config::ConfigObj::Interface::Meta
+
+# now when can use interface methods to extract info about driver
+
+my $vender = $meta_obj->vender() || 'Unknown';
+
+my $published_since = $meta_obj->since() || '';
+
+# etc,etc.
+
+=head1 DESCRIPTION
+
+=head2 Summary
+
+The Meta interface class is a recyclible object for use by a ConfigObj and it's
+drivers.
+
+=head2 Pattern of Instantiation and Access
+
+Since drivers are instantiated with a reference to the calling ConfigObj, the
+Meta object can be instantiated at any time by the ConfigObj or an individual
+driver.
+
+The v1 driver specification provides a convenience method, I<meta>,
+which will retrieve the Meta obj from the current driver's ConfigObj reference
+and inject the respective drivers meta data module ($driver::META).
+
+Therefore, when creating a driver, should be at least two modules:
+
+=over
+
+=item Driver Module: I<Cpanel::Config::ConfigObj::Driver::MyDriver>
+
+This should live in the C<Cpanel/Config/ConfigObj/Driver/> directory.  This
+module should implement C<Cpanel::Config::ConfigObj::Interface::Driver>, or
+more appropriately a driver specification like
+C<Cpanel::Config::ConfigObj::Interface::Config::v1>.  If the driver does not
+implement a cPanel provided driver specification, a C<meta> method will need
+to be defined which will return a Meta object.
+
+=item Driver Meta Module: I<Cpanel::Config::ConfigObj::Driver::MyDriver::META>
+
+This is a simple module which should provide a few specific functions, such
+that the Meta object can source the respective information about the driver.
+See L</CREATING DRIVER META MODULES> below.
+
+=back
+
+=head1 METHODS
+
+=head2 Public Interface for Driver Meta Information
+
+This are the methods used by callers which are working with the drivers. I.e.,
+code which wish to render or act against some driver's meta content.
+
+=over
+
+=item C<content>
+
+Returns the driver metadata content information as a hashref
+
+=item C<vendor>
+
+Returns the driver's vendor
+
+=item C<url>
+
+Returns the driver's url
+
+=item C<name>
+
+Returns the driver's name.  By default, the 'short', human readable name will
+be returned.  Options include the following:
+
+=over
+
+=item I<short>
+
+Short, human readable name.
+
+=item I<long>
+
+Long, human readable name.
+
+=item I<driver>
+
+Driver key name used by code and limited input UIs
+
+=back
+
+=item C<since>
+
+Returns the first occurance of the driver within cPanel/WHM; a cPanel/WHM
+version for human consumption.  I<NOTE:> While this is intended for human
+consumption, it is recommended that the full, three segment cPanel/WHM version
+string exists within it, bookended with whitespace.
+
+=item C<version>
+
+Returns the driver module version.  I.e., C<$MyDriver::VERSION>
+
+=item C<abstract>
+
+Returns the driver's abstract text.
+
+=item C<showcase>
+
+Returns the driver metadata showcase information as a hashref.  If the driver
+META module does not implement the C<showcase> method, this will return C<undef>.
+
+=item C<is_recommended>
+
+Returns a boolean representing if cPanel recommends performing the 'enable'
+action of the driver.  If the driver does not implement the C<showcase> method,
+this will return false.
+
+=item C<is_spotlight_feature>
+
+Returns a boolean representing if cPanel provides special distinction for the
+driver's feature. aka, something of particular interest but not explicit
+recommendation on cPanel's part.  If the driver does not implement the
+C<showcase> method, this will return false.
+
+=back
+
+=head2 Public Interface for ConfigObj or Driver Specification Implementations
+
+=over
+
+=item C<new>
+
+Constructor method. The method takes two optional arguments
+
+=over
+
+=item I<$class_defaults>
+
+hashref of properties to set.  Valid keys are I<consumer>, I<content>, and
+I<showcase>.  This provides a means of injecting driver meta data at
+instantiation.  It is HIGHLY recommended that you use the public method
+I<set_meta_content_from_driver($driver_obj)> instead.
+
+=item I<$consumer_obj>
+
+A ConfigObj to inject.
+
+I<NOTE:> While this is an optional value, not providing one will likely be an
+issue if the caller neglects to define one (ala C<set_consumer>).  That said,
+it is optional such that the caller can inject the ConfigObj when is most
+appropriate.
+
+=back
+
+=item C<load_driver_meta_content>
+
+Provide a driver object as the first argument.
+
+Digest the respective META module for the driver and return a hashref of
+metadata.
+
+=item C<set_meta_content_from_driver>
+
+Provide a driver object as the first argument.
+
+This method will run C<load_driver_meta_content> and store the returned,
+aggregated META content:
+
+=over
+
+=item I<in the driver>
+
+By storing the data in the driver, future invocations can use that reference
+and not have to perform C<load_driver_meta_content>
+
+=item I<as internal properties>
+
+By storing the data internally, Meta can provide interface methods that extract
+the data cleanly. See L</Public Interface for Driver Meta Information> above for
+said interface methods.
+
+=back
+
+=item C<set_consumer>
+
+Store a ConfigObj reference.
+
+=item C<set_locale_handle>
+
+Store a reference to a C<Cpanel::Locale> object for use by drivers
+
+=back
+
+=head1 CREATING DRIVER META MODULES
+
+When creating a driver, you must create a C<::META> module.  This module will
+live in a directory adjacent to the driver.  For example, if the driver is
+"MyDriver", the C<::META> module file would be
+C<Cpanel/Config/ConfigObj/Driver/MyDriver/META.pm>.
+
+=head2 Required Functions
+
+=over
+
+=item C<meta_version>
+
+Return the Meta specification version string. cPanel currently only has one
+Meta specification version: "1".
+
+=item C<get_driver_name>
+
+Return the driver key name.  This should be simple value that is portable,
+human comprehensible and can be used programmatically.
+
+Examples:
+  I<LITERAL DRIVER MODULE NAME>   I<VALID DRIVER KEY NAME SUGGESTIONS>
+   MyDriver                      my_driver, mydriver
+   HTTPRequestMunger             http_request_munger, request_munger
+   ThreeNetwork                  three_network, 3_network, 3net
+
+
+=item C<content>
+
+Return a hashref which follows the example structure below
+
+   {
+        'vendor' => 'Your Company',
+        'url'    => 'www.domain.tld',
+        'name'   => {
+            'short'  => 'Example Driver',
+            'long'   => 'Example Driver for Developer Usage',
+            'driver' => get_driver_name(), # this could be hard coded
+        },
+        'since'    => 'cPanel® 11.32.x', # optional reference to cPanel/WHM version
+        'abstract' => "An example driver for developers to emulate.",
+        'version'  => $Cpanel::Config::ConfigObj::Driver::ExampleDriver::VERSION,
+           # version element should match the Perl module version of the driver
+           #  itself.  It may be hard coded.
+    }
+
+The C<content> function will be passed a Cpanel::Locale object.  This allows the
+developer to potentially provide translations for their I<abstract> or other
+content.
+
+=back
+
+=head2 Optional Functions
+
+=over
+
+=item C<showcase>
+
+Return a hashref with meta data pertinent to a Feature Showcase implementation,
+L</Cpanel::FeatureShowcase>.
+
+Supported element key/values:
+
+=over
+
+=item I<is_recommended>
+
+Boolean value to indicate if the cPanel recommends performing the 'enable'
+action of the driver.
+
+=item I<is_spotlight_feature>
+
+Boolean value to indicate if cPanel provides special distinction for the
+driver's feature.  This is very similar to I<is_recommended>; provides the
+implementing interface with a secondary field when making visual and behavior
+distinctions.
+
+=item I<valid_interfaces>
+
+Array reference containing 'display interface types' that are valid targets for
+the driver.  It is recommended to use C<$Cpanel::FeatureShowcase::Display::*>
+global variables for consistency.
+
+=back
+
+=back
+
+=head1 SEE ALSO
+
+L<Cpanel::Config::ConfigObj>,
+L<Cpanel::Config::ConfigObj::Interface::Meta>,
+L<Cpanel::Config::ConfigObj::Filter>,
+L<Cpanel::Config::ConfigObj::FilterList>
+
+=head1 AUTHOR
+
+David Neimeyer - L<david.neimeyer@cpanel.net>
+
+=head1 COPYRIGHT AND LICENSE
+
+Copyright (c) 2012, cPanel, Inc. All rights reserved.
+This code is subject to the cPanel license. Unauthorized copying is prohibited.
+

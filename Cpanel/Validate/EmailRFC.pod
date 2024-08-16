@@ -1,0 +1,85 @@
+
+# cpanel - Cpanel/Validate/EmailRFC.pod            Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+=head1 NAME
+
+Cpanel::Validate::EmailRFC - Utilities for validating external email addresses.
+
+=head1 SYNOPSIS
+
+    use Cpanel::Validate::EmailRFC;
+
+    if ( !Cpanel::Validate::EmailRFC::is_valid( $user ) ) {
+        die "Not a valid email address!\n";
+    }
+
+
+=head1 DESCRIPTION
+
+Consolidate the code for validating and cleaning email addresses against RFC 5322.
+
+=head1 INTERFACE
+
+=head2 is_valid( $user )
+
+Return true if C<$user> is a valid email address as defined by the allowed
+characters in RFC 5322 (as well as 2822 and 822).
+
+The local part and domain of an email address can only be separated by '@'.
+All characters from RFC 5322 (also 2822 and 822) are supported.  We do not
+support the quoted string format, however. The domain part of the email address
+is as described in RFC 1035 and 5321, except the parts of the domain name can
+begin and end with digits. This matches actual usage.
+
+=head2 normalize( $user )
+
+Trims spaces from either end of a potentially valid email username and
+lowercases any letters in the domain portion. Also removes '\0' characters.
+Does not try to force a given string to be valid. Returns the normalized
+string.
+
+=head2 scrub( $user )
+
+Tries to convert supplied user string into a valid user name by scrubbing it of
+all invalid characters and normalizing it. Returns either a valid user name, or
+C<undef> if there were no legal characters or if the domain or local part were
+missing.
+
+=head2 get_name_and_domain( $address )
+
+Takes a (potentially valid) email address and separates it unto local part and
+domain by separating on the '@' character.
+
+The return is a list of the local part and the domain. If the local part is
+undefined, the C<$address> cannot be split into the requisite parts.
+
+=head2 has_email_separator( $address )
+
+Tests the supplied string to see if it contains the defined email separator.
+
+=head1 CONFIGURATION AND ENVIRONMENT
+
+C<Cpanel::Validate::EmailRFC> requires no configuration.
+
+=head1 DEPENDENCIES
+
+L<Cpanel::StringFunc::Case> and L<Cpanel::StringFunc::Trim>.
+
+=head1 INCOMPATIBILITIES
+
+None reported.
+
+=head1 BUGS AND LIMITATIONS
+
+No bugs have been reported.
+
+=head1 AUTHOR
+
+G. Wade Johnson  C<< wade@cpanel.net >>
+
+=head1 LICENSE AND COPYRIGHT
+
+Copyright (c) 2009, cPanel, Inc. All rights reserved.

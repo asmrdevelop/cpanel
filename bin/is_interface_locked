@@ -1,0 +1,152 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - bin/is_interface_locked                 Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::is_interface_locked;
+
+use v5.14;
+
+use strict;
+
+use Getopt::Long                ();
+use Cpanel::InterfaceLock::Tiny ();
+
+# Constants
+our $VERSION = '01.01';
+
+# Application state
+my $opts = {};
+
+exit _main(@ARGV) unless caller;
+
+sub _main {
+    my (@args) = @_;
+
+    my $show_version;
+    my $show_help;
+    my $verbose = 0;
+    my $name;
+    my $user;
+
+    Getopt::Long::GetOptionsFromArray(
+        \@args,
+        'version'  => \$show_version,
+        'help'     => \$show_help,
+        'verbose!' => \$verbose,
+        'name=s'   => \$name,
+        'user=s'   => \$user,
+    );
+
+    if ($show_help) {
+        print_help();
+        return 0;
+    }
+
+    if ($show_version) {
+        print_version();
+        return 0;
+    }
+
+    if ( !$name ) {
+        print STDERR "You did not provide a lock name. Aborting run…\n";
+        print_help();
+        return 254;
+    }
+
+    $opts = {
+        'verbose' => $verbose,
+        'name'    => $name,
+        'user'    => $user,
+    };
+
+    return check_interface($opts) ? 0 : 1;
+}
+
+sub check_interface {
+    my ($opts) = @_;
+    my $ret;
+    my $name = $opts->{name};
+
+    if ( $opts->{user} ) {
+        my $user = $opts->{user};
+        $ret = Cpanel::InterfaceLock::Tiny::lock_exists( $name, { user => $user } );
+        report( $ret, $opts );
+    }
+    else {
+
+        $ret = Cpanel::InterfaceLock::Tiny::lock_exists($name);
+        report( $ret, $opts );
+    }
+
+    return $ret;
+}
+
+sub report {
+    my ( $ret, $opts ) = @_;
+    my $name = $opts->{name};
+    my $user = $opts->{user};
+
+    if ( $opts->{verbose} ) {
+        if ($user) {
+            if ($ret) {
+                print "$name is locked.\n";
+            }
+            else {
+                print "$name is not locked.\n";
+            }
+        }
+        else {
+            if ($ret) {
+                print "$name is locked for $user.\n";
+            }
+            else {
+                print "$name is not locked for $user.\n";
+            }
+        }
+    }
+    else {
+        if ($ret) {
+            print "Locked\n";
+        }
+        else {
+            print "Not Locked\n";
+        }
+    }
+    return;
+}
+
+sub print_version {
+    print <<VERSION_HELP;
+    is_interface_locked $VERSION
+VERSION_HELP
+    return;
+}
+
+sub print_help {
+    print <<EO_USAGE;
+Usage: is_interface_locked [options]
+
+  This program checks if a specific interface lock exists. If no user is provided then name
+  applies to global lock. If a user is provided, it applies to a user lock.
+
+Options:
+
+  --help           This help information.
+  --version        Display the script version.
+  --name           Name of the lock.
+  --user           Use user name locks with the provided user.
+
+Exit Codes:
+
+    0 - Means the lock is present.
+    1 - Means the lock is not present.
+    ? - Others values are various error codes.
+
+EO_USAGE
+    return;
+}
+
+1;

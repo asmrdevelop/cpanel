@@ -1,0 +1,437 @@
+<section id="{{ idPrefix }}_stepContainer" role="main" aria-live="polite">
+    <!-- STEP CONTAINER -->
+    <div class="row">
+        <div class="col-xs-12">
+            <h2 class="view-heading">
+                <span ng-bind-html="::stepTitle" id="wizard-step-title" tabindex="-1"></span>
+            </h2>
+            <!-- PHP Filter tags -->
+            <div class="row" ng-show="extensions.showPhpFilterTags()">
+                <div class="col-xs-12">
+                    <ul class="nav nav-pills quick-filters">
+                        <li><span class="quick-filter-label">[% locale.maketext("Filter by PHP Version") %]</span></li>
+                        <li ng-repeat="verInfo in phpVersions track by verInfo.version">
+                            <label class="checkbox-label">
+                                <input id="filter_{{ ::verInfo.version }}" type="checkbox"
+                                ng-model="verInfo.selected"
+                                ng-change="extensions.filterPHPExtensions()">
+                                {{ verInfo.name }}
+                            </label>
+                        </li>
+                    </ul>
+                </div>
+            </div>
+            <div class="row search-page-container" ng-show="showSearchPageSection()">
+                <!-- Search/Filter -->
+                <div class="col-xs-12 col-md-6" ng-show="showSearch">
+                    <search id="{{ ::stepName }}" ng-model="metaData.filterValue"
+                        ng-change="applyMetaData()">
+                    </search>
+                </div>
+                <!-- Pagination -->
+                <div class="col-xs-12 col-md-6" ng-show="showPagination">
+                    <div class="pagination-container">
+                        <page-size id="pageSize_{{ ::stepName }}"
+                            allowed-sizes="metaData.pageSizes"
+                            total-items="metaData.totalItems"
+                            ng-model="metaData.pageSize"
+                            show-all="true"
+                            ng-show="metaData.showPager"
+                            ng-change="applyMetaData()">
+                        </page-size>
+                        <uib-pagination id="paginateItems_{{ ::stepName }}"
+                            total-items="metaData.totalItems"
+                            ng-model="metaData.currentPage"
+                            max-size="0"
+                            boundary-links="true"
+                            rotate="false"
+                            previous-text="<"
+                            next-text=">"
+                            first-text="<<"
+                            last-text=">>"
+                            items-per-page="metaData.pageSize"
+                            ng-show="metaData.showPager"
+                            ng-change="applyMetaData()">
+                        </uib-pagination>
+                    </div>
+                </div>
+            </div>
+            <!-- Page Stats -->
+            <div class="row" ng-show="showPagination && metaData.showPager">
+                <div class="col-xs-12">
+                    <div class="page-stats pull-right" ng-bind-html="getShowingText()"></div>
+                </div>
+            </div>
+            <!-- Empty message -->
+            <div id="emptyListMsg_{{ ::stepName }}"
+                class="alert alert-info col-xs-12"
+                role="alert"
+                ng-show="showEmptyMessage()">
+                <span>
+                    [% locale.maketext("There are no packages to display.") %]
+                </span>
+            </div>
+
+            <!-- No PHP Message -->
+            <div id="noPHPMsg_{{ ::stepName }}" ng-show="extensions.noPHPSelected"
+                class="alert alert-info col-xs-12" role="alert">
+                [% locale.maketext("You must select a [output,url,_1,PHP version] to view the available extensions.", "php") %]
+            </div>
+
+            <!-- Package listing -->
+            <div class="row"
+                ng-hide="metaData.isEmptyList">
+                <div class="col-xs-12">
+                    <!-- TODO: This needs to align with search box above -->
+                    <ul id="pkgList_{{ ::stepName }}"
+                        class="list-unstyled PackageList col-xs-12"
+                        role="region"
+                        aria-labelledby="step-title">
+                        <li id="pkg_{{ pkg | qaSafeID }}"
+                            ng-repeat="(pkg, pkgData) in metaData.filterList track by $index"
+                            ng-class="packageClass(pkgData)">
+                            <!-- Display Package data -->
+                            <div class="row">
+                                <div class="col-xs-12">
+                                    <div class="row">
+                                        <div class="col-xs-12 col-md-5">
+                                            <p id="pkgState_{{ pkg | qaSafeID }}">
+                                                <strong>
+                                                    {{ pkgData.displayName }}
+                                                </strong>
+                                                <span class="label label-success"
+                                                    ng-show="pkgData.state === 'installed'">
+                                                    [% locale.maketext("Installed") %]
+                                                </span>
+                                                <span class="label label-info"
+                                                    ng-show="pkgData.state === 'updatable'">
+                                                    [% locale.maketext("Updatable") %]
+                                                </span>
+                                            </p>
+                                        </div>
+                                        <div class="col-xs-12 col-md-4">
+                                            <p id="pkgVersions_{{ pkg | qaSafeID }}" class="StatusBlock">
+                                                <span class="text text-success"
+                                                    ng-show="pkgData.version_installed && pkgData.version_latest">
+                                                    <strong>
+                                                        {{ pkgData.version_latest }}
+                                                    </strong>
+                                                </span>
+                                                <span class="text text-info"
+                                                    ng-show="!pkgData.version_installed && pkgData.version_latest">
+                                                    <strong>
+                                                        {{ pkgData.version_latest }}
+                                                    </strong>
+                                                </span>
+                                            </p>
+                                        </div>
+                                        <div class="col-xs-12 col-md-3">
+                                            <toggle-switch id="switch_{{ pkg | qaSafeID }}"
+                                                class="toggle-switch-{{ $index }}"
+                                                ng-model="pkgData.selectedPackage"
+                                                on-toggle="initializeSelection(pkgData)"
+                                                enabled-label ="{{ toggleLabel(pkgData) }}"
+                                                disabled-label="{{ toggleLabel(pkgData) }}"
+                                                aria-label="{{ pkgData.displayName }}"
+                                                ng-show="showToggleSwitch(pkgData)">
+                                            </toggle-switch>
+                                        </div>
+                                    </div>
+                                    <div class="row">
+                                        <div class="col-xs-12">
+                                            <p id="pkgDesc_{{ pkg | qaSafeID }}" class="help-block animate-hide"
+                                                ng-show="!pkgData.hideDescription">
+                                                {{ pkgData.short_description }}
+                                            </p>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            <!-- Vhosts exist callout -->
+                            <div class="row">
+                                <div class="col-xs-12"
+                                    ng-show="pkgData.vhostWarning.exist">
+                                    <div class="alert alert-warning" role="alert">
+                                        <p class="text-danger">
+                                            <span ng-bind-html="pkgData.vhostWarning.text"></span>
+                                        </p>
+                                        <p>
+                                            <label>[% locale.maketext("Fix:") %]</label>
+                                            [% SET localized_text = locale.maketext("[asis,MultiPHP] Manager");
+                                            locale.maketext("Open the [comment][output,url,_1,_2,target,_3][comment,Please do not use this url title as part of sentences] in a new window. Move those virtual hosts to another PHP version to ensure that they continue to function. Return to this window and click Continue.",
+                                                cp_security_token _ "/scripts7/multiphp-manager/user",
+                                                localized_text _ " <span class='fas fa-external-link-alt fa-md'></span>",
+                                                "_blank") %]
+                                        </p>
+                                        <hr />
+                                        <p class="text-warning">
+                                            [% locale.maketext("Make certain that your virtual hosts have a functional PHP version before you click Continue.") %]
+                                        </p>
+                                        <button id="btnContinueVhosts_{{ pkg | qaSafeID }}"
+                                            class="btn btn-primary"
+                                            ng-click="php.continueCheckDependency(pkgData)">
+                                            [% locale.maketext("Continue") %]
+                                        </button>
+                                        <a id="cancelVhosts_{{ pkg | qaSafeID }}"
+                                            href="javascript:void(0)"
+                                            ng-click="php.resetVhostWarning(pkgData)"
+                                            class="btn btn-link">
+                                            [% locale.maketext("Cancel") %]
+                                        </a>
+                                    </div>
+                                </div>
+                            </div>
+                            <!-- Auto-select PHP Extensions callout -->
+                            <div class="row" ng-show="pkgData.autoSelectExt.show">
+                                <div class="col-xs-12">
+                                    <div class="alert" role="alert" ng-class="{ 'alert-info' : !pkgData.autoSelectExt.showError, 'alert-danger' : pkgData.autoSelectExt.showError  }">
+                                        <section id="autoSelectExtInfo_{{ pkg | qaSafeID }}" ng-hide="pkgData.autoSelectExt.showError">
+                                            <div class="text-info">
+                                                <p ng-bind-html="pkgData.autoSelectExt.text"></p>
+                                            </div>
+                                            <div class="php-extensions-list" ng-show="pkgData.autoSelectExt.showCommonExtensions">
+                                                <h4><strong>[% locale.maketext("Common Extensions") %]</strong></h4>
+                                                <p>[% locale.maketext("Remove any extensions here that you do not want to install.") %]</p>
+                                                <ul id="othersPkgList" class="list-unstyled list-inline">
+                                                    <li ng-repeat="extension in pkgData.autoSelectExt.list" class="col-xs-4">
+                                                        <label class="res-pkg-item">
+                                                            <input id="commonExtensions_{{ extension.displayName | qaSafeID }}"
+                                                                type="checkbox"
+                                                                ng-model="extension.isSelected">
+                                                            {{ extension.displayName }}
+                                                        </label>
+                                                    </li>
+                                                </ul>
+                                                <div class="clearfix"></div>
+                                            </div>
+                                            <hr class="ea-prompt-hr" />
+                                            <button id="btnOkAutoSelect_{{ pkg | qaSafeID }}"
+                                                class="btn btn-primary"
+                                                title="[% locale.maketext('Install the [asis,PHP] version and extensions.') %]"
+                                                ng-click="php.performAutoSelect(pkgData)">
+                                                {{ pkgData.autoSelectExt.okText }}
+                                            </button>
+                                            <button id="cancelAutoSelect_{{ pkg | qaSafeID }}"
+                                                class="btn btn-default"
+                                                title="[% locale.maketext('Install only [asis,PHP] version.') %]"
+                                                ng-click="php.resetAutoSelectExtensions(pkgData)"
+                                                class="btn btn-link">
+                                                {{ pkgData.autoSelectExt.cancelText }}
+                                            </button>
+                                            <a id="editAutoSelect_{{ pkg | qaSafeID }}"
+                                                href="javascript:void(0)"
+                                                title="[% locale.maketext('View and edit extensions.') %]"
+                                                class="btn btn-link"
+                                                ng-click="pkgData.autoSelectExt.showCommonExtensions = !pkgData.autoSelectExt.showCommonExtensions">
+                                                [% locale.maketext("Edit") %]
+                                            </a>
+                                        </section>
+                                        <section id="autoSelectExtError_{{ pkg | qaSafeID }}" ng-show="pkgData.autoSelectExt.showError">
+                                            <div class="row">
+                                                <div class="col-xs-12">
+                                                    <p class="text-danger">
+                                                        [% locale.maketext("The following extensions could not be selected due to unresolved conflicts:") %]
+                                                    </p>
+                                                </div>
+                                                <div class="col-xs-12">
+                                                    <ul id="autoSelectErrorList_{{ pkg | qaSafeID }}" class="list-unstyled list-inline res-pkg-item">
+                                                        <li ng-repeat="error in pkgData.autoSelectExt.errorList track by $index" class="col-xs-4">
+                                                            {{ error }}
+                                                        </li>
+                                                    </ul>
+                                                </div>
+                                                <div class="col-xs-12">
+                                                    <p class="text-danger p-under-list">
+                                                        [% locale.maketext("You may select them manually in PHP Extensions step.") %]
+                                                    </p>
+                                                </div>
+                                            </div>
+                                            <hr class="ea-prompt-hr" />
+                                            <button id="closeAutoSelect_{{ pkg | qaSafeID }}"
+                                                class="btn btn-primary"
+                                                ng-click="php.resetAutoSelectExtensions(pkgData)">
+                                                [% locale.maketext("Close") %]
+                                            </button>
+                                        </section>
+                                    </div>
+                                </div>
+                            </div>
+                            <!-- Conflict/Requirement callout -->
+                            <div class="row">
+                                <div class="col-xs-12"
+                                    ng-show="pkgData.actions.actionNeeded">
+                                    <div class="alert alert-warning">
+                                        <div class="pkg-actions-group" ng-show="pkgData.actions.removeList.length">
+                                            <p class="text-danger">
+                                                [% locale.maketext("The following conflicts are installed on this machine. They will be removed as part of this package selection:") %]
+                                            </p>
+                                            <ul class="list-unstyled text-danger">
+                                                <li class="res-pkg-item" ng-repeat="remPkg in pkgData.actions.removeList track by $index">
+                                                    {{ remPkg }}
+                                                </li>
+                                            </ul>
+                                        </div>
+                                        <div class="pkg-actions-group" ng-show="pkgData.actions.addList.length">
+                                            <p class="text-info">
+                                                [% locale.maketext("The following requirements are not installed on this machine. They will be added as part of this package selection:") %]
+                                            </p>
+                                            <ul class="list-unstyled text-info">
+                                                <li class="res-pkg-item" ng-repeat="addPkg in pkgData.actions.addList track by $index">
+                                                    {{ addPkg }}
+                                                </li>
+                                            </ul>
+                                        </div>
+                                        <!-- Recommendation container -->
+                                        <section id="recommendationsContainer_{{ pkg | qaSafeID }}" ng-show="pkgData.showRecommendations">
+                                            <hr ng-show="pkgData.actions.removeList.length">
+                                            <div id="recoItem_{{ $index }}"
+                                                class="reco-item"
+                                                ng-repeat="reco in pkgData.recommendations track by $index"
+                                                ng-show="reco.show">
+                                                <label>{{reco.displayName}} *</label>
+                                                <p>
+                                                    <span ng-class="{'text-danger': reco.level == 'danger'}" ng-bind-html="reco.desc"></span>
+                                                    <a href="{{ reco.url }}" target="_blank" ng-show="reco.url">
+                                                        [% locale.maketext("Learn More") %]
+                                                    </a>
+                                                </p>
+                                                <ul class="fa-ul">
+                                                    <li ng-repeat="option in reco.options track by $index"
+                                                        class="bullet"
+                                                        ng-show="option.show">
+                                                        <span class="fa-stack" title="{{option.title}}" ng-class="{'text-success': option.recommended}">
+                                                            <i class="fa-li fas fa-certificate fa-stack-1x"></i>
+                                                            <i class="fa-li fas fa-ban fa-stack-2x text-danger"
+                                                                ng-show="option.recommended == false"></i>
+                                                        </span>
+                                                        <span class="bullet-item" ng-class="{'text-danger': option.level == 'danger'}" ng-bind-html="option.text">
+                                                        </span>
+                                                        <a href="{{ option.url }}" target="_blank" ng-show="option.url">
+                                                            [% locale.maketext("Learn More") %]
+                                                        </a>
+                                                        <ul>
+                                                            <li id="recoOptionItem_{{ item }}" class="res-pkg-item reco-option-list-item" ng-repeat="item in option.items track by $index" ng-bind-html="item">
+                                                            </li>
+                                                        </ul>
+                                                    </li>
+                                                </ul>
+                                                <div class="foot-note"
+                                                    ng-show="reco.showFootnote">
+                                                    * [% locale.maketext("You must make any recommended changes manually.") %]
+                                                </div>
+                                            </div>
+                                        </section>
+                                        <hr>
+                                        <p class="text-warning">
+                                            [% locale.maketext("Do you want to proceed with this selection?") %]
+                                        </p>
+                                        <button id="btnContinueDeps_{{ pkg | qaSafeID }}" class="btn btn-primary"
+                                            ng-click="finalizeSelection(pkgData)">
+                                            [% locale.maketext("Yes") %]
+                                        </button>
+                                        <button  id="btnCancelDeps_{{ pkg | qaSafeID }}" class="btn btn-default"
+                                            ng-click="resetSelection(pkgData)">
+                                            [% locale.maketext("No") %]
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                            <!-- MPM module requirement callout -->
+                            <div class="row">
+                                <div class="col-xs-12"
+                                    ng-show="pkgData.mpmMissing">
+                                    <div class="alert alert-warning" role="alert">
+                                        {{ pkgData.mpmMissingMsg }}
+                                        <hr>
+                                        <button id="btnMpmMissingContinue_{{ pkg | qaSafeID }}"
+                                            class="btn btn-primary"
+                                            ng-click="finalizeSelection(pkgData); proceed('mpm')">
+                                            [% locale.maketext("Continue") %]
+                                        </button>
+                                        <a id="linkMpmMissingCancel_{{ pkg | qaSafeID }}"
+                                            href="javascript:void(0)"
+                                            ng-click="resetSelection(pkgData)"
+                                            class="btn btn-link">
+                                            [% locale.maketext("Cancel") %]
+                                        </a>
+                                    </div>
+                                </div>
+                            </div>
+                            <!-- Multi Requirement callout -->
+                            <div class="row">
+                                <div class="col-xs-12"
+                                    ng-show="pkgData.multiRequirements.exist">
+                                    <div class="alert alert-info" role="alert">
+                                        [% locale.maketext("While resolving the dependencies, we have identified the following breakpoint. Please select one to continue with the process:") %]
+                                        <div ng-repeat="orPkgData in pkgData.multiRequirements.orList track by $index">
+                                            <div class="radio">
+                                                <label>
+                                                    <input id="multiReqPkg_{{ orPkgData.package }}"
+                                                        type="radio"
+                                                        name="optionsRadios"
+                                                        ng-model="pkgData.multiRequirements.chosenPackage"
+                                                        ng-value="orPkgData.package">
+                                                    <span>
+                                                        {{orPkgData.displayName}}
+                                                    </span>
+                                                </label>
+                                            </div>
+                                        </div>
+                                        <hr>
+                                        <button id="btnMultiReqContinue_{{ pkg | qaSafeID }}"
+                                            class="btn btn-primary"
+                                            ng-disabled="pkgData.multiRequirements.chosenPackage == ''"
+                                            ng-click="continueProcess(pkgData)">
+                                            [% locale.maketext("Continue") %]
+                                        </button>
+                                        <a id="cancelMultiReq_{{ pkg | qaSafeID }}"
+                                            href="javascript:void(0)"
+                                            ng-click="resetSelection(pkgData)"
+                                            class="btn btn-link">
+                                            [% locale.maketext("Cancel") %]
+                                        </a>
+                                    </div>
+                                </div>
+                            </div>
+                        </li>
+                    </ul>
+                </div>
+            </div>
+            <!-- Page Stats -->
+            <div class="row" ng-show="showPagination && metaData.showPager">
+                <div class="col-xs-12">
+                    <div class="page-stats pull-right" ng-bind-html="getShowingText()"></div>
+                </div>
+            </div>
+            <div class="row search-page-container">
+                <!-- Pagination -->
+                <div class="col-xs-12 pull-right" ng-show="showPagination">
+                    <div class="pagination-container">
+                        <page-size id="pageSize_bottom_{{ ::stepName }}"
+                            allowed-sizes="metaData.pageSizes"
+                            total-items="metaData.totalItems"
+                            ng-model="metaData.pageSize"
+                            show-all="true"
+                            ng-show="metaData.showPager"
+                            ng-change="applyMetaData()">
+                        </page-size>
+                        <uib-pagination id="paginateItems_bottom_{{ ::stepName }}"
+                            total-items="metaData.totalItems"
+                            ng-model="metaData.currentPage"
+                            max-size="0"
+                            boundary-links="true"
+                            rotate="false"
+                            previous-text="<"
+                            next-text=">"
+                            first-text="<<"
+                            last-text=">>"
+                            items-per-page="metaData.pageSize"
+                            ng-show="metaData.showPager"
+                            ng-change="applyMetaData()">
+                        </uib-pagination>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>

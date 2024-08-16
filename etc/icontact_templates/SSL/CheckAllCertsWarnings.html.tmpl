@@ -1,0 +1,26 @@
+[%#
+Variables passed in:
+
+origin      - The origin of this warning.
+warnings    - The warnings generated during the ssl check.
+
+For more information about how to customize notification templates, read our documentation at https://go.cpanel.net/notificationtemplates
+
+-%]
+
+[%
+    PROCESS "include/colors.tmpl";
+    PROCESS "include/styles.tmpl";
+    PROCESS "include/zebra_table.tmpl";
+    WRAPPER 'wrapper/main.html.tmpl';
+%]
+
+<p>[% CPANEL.locale.maketext('The following [asis,cPanel] [numerate,_1,service,services] generated warnings from the checkallsslcerts script.', NOTICE.warnings.list('values').size) %]</p>
+[% FOREACH service IN NOTICE.warnings.list('keys') %]
+    [%
+        SET title_text = CPANEL.get_icon('warn') _ " " _ service;
+        zebra_table(items=NOTICE.warnings.$service.list('values'), titles=title_text);
+    %]
+[% END %]
+
+[% END #wrapper %]

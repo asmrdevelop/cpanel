@@ -1,0 +1,68 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - bin/build_userdata_cache                Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package bin::build_userdata_cache;
+#
+#
+
+use strict;
+use warnings;
+
+use Cpanel::Config::userdata::UpdateCache ();
+use Cpanel::Logger                        ();
+my $logger = Cpanel::Logger->new();
+
+__PACKAGE__->script() unless caller();
+
+sub script {
+    my $update_needed = 0;
+
+    # TODO: This modulino needs to have its core functionality moved to
+    # a module and have its test coverage improved.  Once done the
+    # install/* scripts should call the module directly instead of
+    # loading this modulino.
+    my ( $cache_size, $cache_mtime ) = ( stat $Cpanel::Config::userdata::Cache::CACHE_FILE )[ 7, 9 ];
+
+    if ( !-e _ ) {
+        $logger->info('Userdata cache file not found');
+        $update_needed = 1;
+    }
+    elsif ( -z _ ) {
+        $logger->info('Userdata cache file is empty');
+        $update_needed = 1;
+    }
+    else {
+        $update_needed = userdatacache_is_in_outdated_format($Cpanel::Config::userdata::Cache::CACHE_FILE);
+    }
+
+    if ($update_needed) {
+        $logger->info("Rebuilding userdata cache...");
+        Cpanel::Config::userdata::UpdateCache::update_all_users( { force => 1 } );
+    }
+
+    return;
+}
+
+sub userdatacache_is_in_outdated_format {
+    my ($file) = @_;
+
+    # Sniff the first few lines of the file to see if the format has changed.
+    open( my $cache, '<', $file ) || die "Failed to open userdata cache";
+    my $try_lines = 20;
+    while ( defined( my $line = <$cache> ) ) {
+        next if $line =~ /^\s*\#/;
+        last unless --$try_lines > 0;
+        unless ( Cpanel::Config::userdata::UpdateCache::match_format($line) ) {
+
+            $logger->info('Userdata cache file format has changed');
+            return 1;
+        }
+    }
+    return 0;
+}
+
+1;

@@ -1,0 +1,167 @@
+[% SET is_rtl = locale.get_html_dir_attr() == 'rtl' %]
+<div class="ng-hide" ng-show="email_selection_vm.ui.is_loading">
+    <div class="alert alert-info">
+        <div class="alert-message">
+            <i id="loadingSpinner" class="fas fa-spinner fa-spin"></i>
+            [% locale.maketext('Loading …') %]
+        </div>
+    </div>
+</div>
+<div class="ng-hide" ng-show="!email_selection_vm.ui.is_loading && !email_selection_vm.ui.domain_exists">
+    <div class="alert alert-danger">
+        <span class="glyphicon glyphicon-remove-sign"></span>
+        <div class="alert-message">
+            [% locale.maketext('The system could not find the addon domain “[_1]”.', '{{ email_selection_vm.domain_name }}') %]
+            [% locale.maketext('[output,url,_1,Go back,_2].', 'main', { 'id' => 'backToMainView' }) %]
+        </div>
+    </div>
+</div>
+<div ng-hide="email_selection_vm.ui.is_loading || !email_selection_vm.ui.domain_exists">
+<form class="layout-medium">
+    <div class="row">
+        <div class="col-xs-12">
+            <div class="panel panel-default">
+                <div class="panel-heading">
+                    <span class="panel-title">[% locale.maketext('Email for “[_1]”', '{{email_selection_vm.domain_name}}') %]</span>
+                </div>
+                <div class="panel-body">
+                    <div class="callout callout-info callout-top">
+                        [% locale.maketext("The conversion process moves the following items even if you do not copy any email data:") %]
+                        <ul>
+                            <li>[% locale.maketext("Mailing Lists") %]</li>
+                            <li>[% locale.maketext("[asis,Roundcube] webmail data") %]</li>
+                        </ul>
+                        [% locale.maketext("The addon domain’s new account will inherit the mailbox storage format of its original parent account.") %]
+                    </div>
+                    <div class="checkbox-row">
+                        <div class="alert-icon alert-icon__absolute">
+                            <i class="fas fa-exclamation-triangle ng-hide"
+                                 ng-show="email_selection_vm.this_domain.details.number_of_email_accounts == 0"
+                                 uib-tooltip="{{ email_selection_vm.noEmailAccountsTooltip }}"
+                                 [% IF is_rtl %]
+                                 tooltip-placement="left"
+                                 [% ELSE %]
+                                 tooltip-placement="right"
+                                 [% END %]
+                                 tooltip-append-to-body="true">
+                            </i>
+                        </div>
+                        <div class="checkbox">
+                            <label>
+                                <input type="checkbox"
+                                    id="moveEmailAccounts"
+                                    name="moveEmailAccounts"
+                                    ng-model="email_selection_vm.email_accounts"
+                                    ng-disabled="email_selection_vm.this_domain.details.number_of_email_accounts == 0">
+                                <span>[% locale.maketext("Copy email accounts") %]</span>
+                            </label>
+                        </div>
+                    </div>
+                    <div class="checkbox-row">
+                        <ul>
+                            <li>{{ email_selection_vm.stats.accounts }}</li>
+                        </ul>
+                    </div>
+                    <div class="checkbox-row">
+                        <div class="alert-icon alert-icon__absolute">
+                            <i class="fas fa-exclamation-triangle ng-hide"
+                                 ng-show="email_selection_vm.total_forwarders == 0"
+                                 uib-tooltip="{{ email_selection_vm.noForwardersTooltip }}"
+                                 [% IF is_rtl %]
+                                 tooltip-placement="left"
+                                 [% ELSE %]
+                                 tooltip-placement="right"
+                                 [% END %]
+                                 tooltip-append-to-body="true">
+                            </i>
+                        </div>
+                        <div class="checkbox">
+                            <label>
+                                <input type="checkbox"
+                                    id="moveEmailForwarders"
+                                    name="moveEmailForwarders"
+                                    ng-model="email_selection_vm.email_forwarders"
+                                    ng-disabled="email_selection_vm.total_forwarders == 0">
+                                <span>[% locale.maketext("Move email forwarders") %]</span>
+                            </label>
+                        </div>
+                    </div>
+                    <div class="checkbox-row">
+                        <ul>
+                            <li>{{ email_selection_vm.stats.emailForwarders }}</li>
+                            <li>{{ email_selection_vm.stats.domainForwarders }}</li>
+                        </ul>
+                    </div>
+                    <div class="checkbox-row">
+                        <div class="alert-icon alert-icon__absolute">
+                            <i class="fas fa-exclamation-triangle ng-hide"
+                                 ng-show="email_selection_vm.this_domain.details.number_of_autoresponders == 0"
+                                 uib-tooltip="{{ email_selection_vm.noAutorespondersTooltip }}"
+                                 [% IF is_rtl %]
+                                 tooltip-placement="left"
+                                 [% ELSE %]
+                                 tooltip-placement="right"
+                                 [% END %]
+                                 tooltip-append-to-body="true">
+                            </i>
+                        </div>
+                        <div class="checkbox">
+                            <label>
+                                <input type="checkbox"
+                                    id="moveAutoresponders"
+                                    name="moveAutoresponders"
+                                    ng-model="email_selection_vm.autoresponders"
+                                    ng-disabled="email_selection_vm.this_domain.details.number_of_autoresponders == 0">
+                                <span>[% locale.maketext("Copy autoresponders") %]</span>
+                            </label>
+                        </div>
+                    </div>
+                    <div class="checkbox-row">
+                        <ul>
+                            <li>{{ email_selection_vm.stats.autoresponders}}</li>
+                        </ul>
+                    </div>
+                    <div class="checkbox-row">
+                        <div class="alert-icon alert-icon__absolute">
+                            <i class="fas fa-exclamation-triangle ng-hide"
+                                 ng-show="email_selection_vm.this_domain.details.number_of_email_accounts == 0"
+                                 uib-tooltip="{{ email_selection_vm.noEmailAccountsTooltip }}"
+                                 [% IF is_rtl %]
+                                 tooltip-placement="left"
+                                 [% ELSE %]
+                                 tooltip-placement="right"
+                                 [% END %]
+                                 tooltip-append-to-body="true">
+                            </i>
+                        </div>
+                        <div class="checkbox">
+                            <label>
+                                <input type="checkbox"
+                                    id="moveWebmailData"
+                                    name="moveWebmailData"
+                                    ng-model="email_selection_vm.webmail_data"
+                                    ng-disabled="email_selection_vm.this_domain.details.number_of_email_accounts == 0">
+                                <span>[% locale.maketext("Copy webmail data ([list_and,_1])", ["Horde"]) %]</span>
+                            </label>
+                            <span class="help-block">[% locale.maketext("The webmail data includes information such as address books, calendars, and signatures.") %]</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="form-group action-group">
+                <button type="button"
+                    id="save_options"
+                    name="save_options"
+                    class="btn btn-primary"
+                    ng-click="email_selection_vm.saveOptions()">[% locale.maketext("Save Selections") %]</button>
+                <button type="button"
+                    id="go_back"
+                    name="go_back"
+                    ng-click="email_selection_vm.goBack()"
+                    class="btn btn-link">[% locale.maketext('Cancel') %]</button>
+            </div>
+        </div>
+    </div>
+</form>
+</div>

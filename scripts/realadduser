@@ -1,0 +1,227 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/realadduser                     Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+BEGIN {
+    $ENV{'LANG'} = 'C';
+}
+
+use strict;
+use Fcntl                       ();
+use Cpanel::Finally             ();
+use AcctLock                    ();
+use Cpanel::Logger              ();
+use Cpanel::LoginDefs           ();
+use Cpanel::PwCache             ();
+use Cpanel::SysAccounts         ();
+use Whostmgr::Accounts::IdTrack ();
+
+my $logger = Cpanel::Logger->new();
+
+my $mailgid = ( Cpanel::PwCache::getpwnam('mail') )[3];
+
+my $nochecks          = 0;
+my $shell             = 0;
+my $debug             = 0;
+my $is_system_account = 0;
+
+if (@ARGV) {
+    while ( my $arg = shift @ARGV ) {
+        last if !$arg;
+        if ( $arg =~ m/^-+(\S+)/ ) {
+            my $flag = $1;
+            if ( $flag eq 'nochecks' ) {
+                $nochecks = 1;
+            }
+            elsif ( $flag =~ m/^(no)?shell$/ ) {
+                if ($1) {
+                    $shell = 'noshell';
+                }
+                else {
+                    $shell = shift @ARGV;
+                }
+            }
+            elsif ( $flag =~ m/debug/i ) {
+                $debug = 1;
+            }
+            elsif ( $flag eq 'r' || $flag eq 'system' ) {
+                $is_system_account = 1;
+            }
+        }
+        else {
+            unshift @ARGV, $arg;
+            last;
+        }
+    }
+}
+
+my $username = $ARGV[0];
+my $homeroot = $ARGV[1];
+my $pass     = $ARGV[2];
+my $myuid    = $ARGV[3];
+my $mygid    = $ARGV[4];
+
+if ( !$ARGV[0] ) {
+    my $up;
+    chomp( $up = <STDIN> );
+    my @UP = split( / /, $up );
+    $username = $UP[0];
+    $homeroot = $UP[1];
+    $pass     = $UP[2];
+}
+
+if ( !$username ) {
+    Cpanel::Logger::logger(
+        {
+            'message'   => "Syntax: adduser <username> <homeroot> <password>",
+            'level'     => 'die',
+            'service'   => 'realadduser',
+            'output'    => 2,
+            'backtrace' => 0,
+        }
+    );
+}
+if ( !$homeroot ) {
+    Cpanel::Logger::logger(
+        {
+            'message'   => "Syntax: adduser <username> <homeroot> <password>",
+            'level'     => 'die',
+            'service'   => 'realadduser',
+            'output'    => 2,
+            'backtrace' => 0,
+        }
+    );
+}
+
+if ( !-e '/etc/allowstupidstuff' ) {
+    if ( $username =~ /^\d+/ ) {
+        Cpanel::Logger::logger(
+            {
+                'message'   => "Invalid username $username. Usernames must not begin with a number.",
+                'level'     => 'die',
+                'service'   => 'realadduser',
+                'output'    => 2,
+                'backtrace' => 0,
+            }
+        );
+    }
+}
+
+if ( !$shell ) {
+    if ( -x '/bin/rstsh' ) {
+        $shell = '/bin/rstsh';
+    }
+    elsif ( -x '/bin/bash' ) {
+        $shell = '/bin/bash';
+    }
+    elsif ( -x '/usr/local/bin/bash' ) {
+        $shell = '/usr/local/bin/bash';
+    }
+    elsif ( -x '/bin/sh' ) {
+        $shell = '/bin/sh';
+    }
+    else {
+        Cpanel::Logger::logger(
+            {
+                'message'   => "No valid shell found. Using /bin/false",
+                'level'     => 'warn',
+                'service'   => 'realadduser',
+                'output'    => 2,
+                'backtrace' => 0,
+            }
+        );
+        $shell = '/bin/false';
+    }
+}
+elsif ( $shell eq 'noshell' ) {
+    if ( -x '/usr/local/cpanel/bin/noshell' ) {
+        $shell = '/usr/local/cpanel/bin/noshell';
+    }
+    else {
+        $shell = '/bin/false';
+    }
+}
+
+if ($debug) {
+    Cpanel::Logger::logger(
+        {
+            'message'   => "User: $username Home: $homeroot Shell: $shell Checks: $nochecks",
+            'level'     => 'debug',
+            'service'   => 'realadduser',
+            'output'    => 1,
+            'backtrace' => 0,
+        }
+    );
+    exit;
+}
+
+my $home = $homeroot;
+if ( !-e $home ) {
+    mkdir( $home, 0755 );
+}
+
+if ( $pass eq '' ) {
+    Cpanel::Logger::logger(
+        {
+            'message'   => "No password specified for $username",
+            'level'     => 'info',
+            'service'   => 'realadduser',
+            'output'    => 1,
+            'backtrace' => 0,
+        }
+    );
+}
+
+my ( $minuid, $mingid, $maxuid, $maxgid );
+
+if ($is_system_account) {
+    $minuid = Cpanel::LoginDefs::get_sys_uid_min();
+    $mingid = Cpanel::LoginDefs::get_sys_gid_min();
+    $maxuid = Cpanel::LoginDefs::get_sys_uid_max();
+    $maxgid = Cpanel::LoginDefs::get_sys_gid_max();
+}
+else {
+    $minuid = Cpanel::LoginDefs::get_uid_min();
+    $mingid = Cpanel::LoginDefs::get_gid_min();
+    $maxuid = Cpanel::LoginDefs::get_uid_max();
+    $maxgid = Cpanel::LoginDefs::get_gid_max();
+}
+
+my $username_nodash = $username;
+if ( !$nochecks ) {
+    $username_nodash =~ s/-//g;
+}
+
+my @UIDS;
+my @GIDS;
+
+AcctLock::acctlock();
+my $unlock = Cpanel::Finally->new( sub { AcctLock::acctunlock(); } );
+
+my ( $idalloc_status, $idalloc_statusmsg, $idalloc_uid, $idalloc_gid ) = Whostmgr::Accounts::IdTrack::allocate( { 'minuid' => $minuid, 'mingid' => $mingid } );
+
+if ( !$idalloc_status ) {
+    die $idalloc_statusmsg;
+}
+
+Cpanel::SysAccounts::add_system_user(
+    $username,
+    'pass'    => $pass,
+    'uid'     => $idalloc_uid,
+    'gid'     => $idalloc_gid,
+    'homedir' => "$home/$username",
+    'shell'   => $shell,
+);
+
+Cpanel::Logger::logger(
+    {
+        'message'   => "User $username added",
+        'level'     => 'info',
+        'service'   => 'realadduser',
+        'output'    => 1,
+        'backtrace' => 0,
+    }
+);

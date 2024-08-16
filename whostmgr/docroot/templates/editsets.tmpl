@@ -1,0 +1,298 @@
+[%
+USE Whostmgr;
+
+    stylesheets = [
+    Whostmgr.find_file_url('css/tweaksettings_optimized.css'),
+    Whostmgr.find_file_url('yui/tabview/assets/skins/sam/tabview.css'),
+    Whostmgr.find_file_url('css/_gentweakpage.css')
+    ]
+    scripts = [
+    Whostmgr.find_file_url('yui/tabview/tabview.js')
+    ];
+
+    SET rs_nameservers_set = 0;
+    FOREACH ns IN data.reseller_nameservers;
+        IF ns;
+            rs_nameservers_set = 1;
+        END;
+    END;
+
+#set nameserver_prefix first
+VIEW nameserver_table;
+    BLOCK text;
+        item;
+    END;
+    BLOCK list;
+%]
+<div id="[% nameserver_prefix %]_nameServerActions" class="nameservers actions" [% table_styles %] >
+    <table style class="inline-table" border="0" class="nrmtxt">
+        [% FOR cur_nameserver IN item -%]
+        [% SET formkey = nameserver_prefix _ ( loop.index ? loop.index + 1 : '' ) -%]
+        <tr>
+            <td>Nameserver [% loop.index + 1 %]:</td>
+            <td><input type="text" name="[% formkey %]" id="input[% formkey %]" value="[% cur_nameserver || '' %]" /></td>
+
+            [% IF Whostmgr.hasroot() %]
+                <td><input type="button" id="button-input[% formkey %]" class="btn-secondary" onclick="addns(this.form.[% formkey %]);" value="Configure Address Records" /></td>
+            [% END %]
+        </tr>
+        [% END %]
+    </table>
+</div>
+[%
+    END;
+END;
+
+WRAPPER 'master_templates/master.tmpl' theme="yui"
+app_key='basic_webhost_manager_setup'
+;
+-%]
+
+<form method="post" action="[% cp_security_token %]/scripts/saveedits" id="fmain" name="fmain">
+
+[% IF data.wwwacct;
+    PROCESS '_gentweakpage.tmpl'
+        tweakmodule = 'Basic'
+        tweakcfg = { display_name => 1, always_show_help => 1, }
+        conf = data.wwwacct
+        ts_conf = data.ts_conf
+        ts_texts = data.ts_texts
+    ;
+END;
+-%]
+
+<h3>Nameservers</h3>
+[% SET nameservers_html = [] -%]
+
+[% IF data.reseller_nameservers -%]
+[% BLOCK inherit_toggles %]
+<div>
+    <div style="margin-left:20px;margin-bottom:10px;">
+        <label for="inheritFromRootYes">
+            <input type="radio" id="inheritFromRootYes" name="inheritFromRoot" value="1" style="margin-left:-20px;" [% rs_nameservers_set ? '' : 'checked' %] />
+            [% locale.maketext('Inherit Nameservers from [asis,root]') %]
+        </label><br />
+        [% FOREACH ns IN data.suggested_nameservers %]
+            <div style="color:#737373;font-size:13px;">
+                [% IF ns %]
+                    [% locale.maketext("Nameserver [_1]: “[_2]”", loop.index + 1, ns) %]
+                [% END %]
+            </div>
+        [% END %]
+    </div>
+    <div style="margin-left:20px;margin-bottom:10px;">
+        <label for="inheritFromRootNo">
+            <input type="radio" id="inheritFromRootNo" name="inheritFromRoot" value="0"  style="margin-left:-20px;" [% rs_nameservers_set ? 'checked' : '' %] />
+            [% locale.maketext('Explicitly Set the Nameservers') %]
+        </label><br />
+        <span style="color:#737373;font-size:13px;">[% locale.maketext('Nameservers that you explicitly set will transfer with the user to the new servers upon migration.') %]</span>
+    </div>
+</div>
+[% END %]
+[% inherit_root_toggles = PROCESS inherit_toggles %]
+[% SET nameserver_prefix = 'reseller_NS' -%]
+[% SET table_styles = rs_nameservers_set ? '' : 'style="display:none"' %]
+[% nameservers_html.push(
+    '<p class="description">Your account’s default nameservers used when you create an account.</p>'
+    _ inherit_root_toggles
+    _ nameserver_table.print(data.reseller_nameservers)
+) -%]
+[% END -%]
+
+[% IF data.root_nameservers %]
+[% SET nameserver_prefix = 'NS' -%]
+[% SET table_styles = '' %]
+[% nameservers_html.push(
+    '<p class="description">The root account’s default nameservers used when root creates an account.</p>'
+    _ nameserver_table.print(data.root_nameservers)
+) -%]
+[% END -%]
+
+[% nameservers_html.join('<br />') -%]
+
+<br />
+<br />
+
+<div class="alert alert-warning acl-warning" id="warning-ns">
+    <div class="alert-message acl-warning-message">
+        <span class="fa fa-exclamation-triangle"></span>
+        [% locale.maketext("Default nameservers of the type [asis,_1] are not compatible with [asis,_2] domain registrations.", "<code>.cprapid.com</code>", "<code>.com</code>") %]
+        <a
+            href="https://go.cpanel.net/PrivateNameservers"
+            target="nameserversDocumentation"
+            rel="noopener noreferrer"
+            id="nameservers-warning-link"
+        >
+            [% locale.maketext("Learn More") %]
+            <i class="ri-external-link-line"></i>
+        </a>
+    </div>
+</div>
+<div>
+    <input type="submit" class="btn-primary" value="Save Changes" id="btnSaveChanges" />
+</div>
+<br />
+<br />
+
+</form><!-- end fmain -->
+
+<script type="text/javascript" src="[% MagicRevision('/js/popupbox.js') %]"></script>
+<script type="text/javascript">
+//<![CDATA[
+var addns = function(forme) {
+    var nameserver = forme.value;
+    do_quick_popupbox({
+        title:'Configure Address Records',
+        url:'[% cp_security_token %]/scripts2/addaforns',
+        showloading:1,
+        iframe:1,
+        height: 375},'nameserver',nameserver);
+};
+//]]>
+
+var unconfigurable_ns_domain_re = [% data.unconfigurable_ns_domain_re.json() %]; // '\.cprapid\.com$' -> 'reason'
+var suggested_nameservers = [% data.suggested_nameservers.json() or "[]" %];
+
+(function() {
+    var suggested_nameservers_are_unconfigurable = suggested_nameservers.filter(_ => !!_).some(unconfigurable);
+    var warningNS = document.getElementById('warning-ns');
+    var inheritFromRoot = false;
+    var inheritFromRootYes = document.getElementById("inheritFromRootYes");
+    var showWarning = {};
+
+    function unconfigurable(value) {
+        return Object.keys(unconfigurable_ns_domain_re).some((domain_re) => value.match(new RegExp(domain_re)))
+    }
+
+    function updateWarning() {
+        var show = Object.values(showWarning).some(_ => _);
+        show ? warningNS.classList.remove('hidden') : warningNS.classList.add('hidden')
+    }
+
+    function registerNS(selector) {
+        var nsValues = {}
+        var nsInputs = document.querySelectorAll(selector);
+        if (!nsInputs.length) { return; }
+
+        nsInputs.forEach(function(el) {
+            nsValues[el.id] = el.value;
+            el.addEventListener('input', function(event) {
+                var target = event.target;
+                nsValues[target.id] = target.value;
+                showWarning[selector] = Object.values(nsValues).some(unconfigurable)
+                showWarning['suggested'] = showWarning[selector]
+                updateWarning();
+            })
+        })
+        showWarning[selector] = Object.values(nsValues).some(unconfigurable)
+    }
+
+    function _inhertiFromRootListener() {
+        inheritFromRoot = inheritFromRootYes.checked;
+        var suggested_warning;
+
+        if (showWarning['input[name^="NS"][type="text"]'] == undefined) {
+            suggested_warning = suggested_nameservers_are_unconfigurable;
+        }
+
+        if (inheritFromRoot) {
+            showWarning['suggested'] = suggested_warning;
+            showWarning['input[name^=reseller_NS]'] = false;
+        } else {
+            registerNS('input[name^=reseller_NS]');
+            showWarning['suggested'] = false;
+        }
+        updateWarning();
+    }
+
+    if (inheritFromRootYes) {
+        _inhertiFromRootListener();
+
+        inheritFromRootYes.addEventListener('change', _inhertiFromRootListener);
+        inheritFromRootNo.addEventListener('change', _inhertiFromRootListener);
+    }
+
+    registerNS('input[name^="NS"][type="text"]');
+
+    updateWarning();
+
+}())
+/*
+ * For the "Configure Address Records" buttons near the bottom.
+ */
+var _updateButtonDisablement = function(eventOrId) {
+    var id        = eventOrId instanceof InputEvent ? eventOrId.target.id : eventOrId;
+    var textNS    = document.getElementById(id);
+    var buttonNS  = document.getElementById('button-' + id);
+    if (!buttonNS) { return; }
+
+    var disableReason;
+    for (domain_re in unconfigurable_ns_domain_re) {
+        if ( textNS.value.match( new RegExp(domain_re) ) ){
+            disableReason = unconfigurable_ns_domain_re[domain_re];
+        }
+    }
+
+    if (disableReason) {
+        buttonNS.disabled = true;
+        buttonNS.title    = disableReason;
+    } else {
+        buttonNS.disabled = false;
+        buttonNS.removeAttribute('title');
+    }
+};
+
+var addNSTextListener = function(type, n) {
+    var name = type + ( n ? n + 1 : '' ); // same as 'formkey' in TT above
+
+    var textNS = document.getElementById('input' + name);
+    if (!textNS) { return; }
+    textNS.addEventListener('input', _updateButtonDisablement);
+    _updateButtonDisablement('input' + name);
+};
+
+var root_nameservers            = [% data.root_nameservers.json() or  "[]" %];
+for (var n = 0; n < root_nameservers.length; n++) {
+    addNSTextListener('NS', n);
+}
+
+[% IF data.reseller_nameservers -%]
+var reseller_nameservers        = [% data.reseller_nameservers.json() %];
+for (var n = 0; n < reseller_nameservers.length; n++) {
+    addNSTextListener('reseller_NS', n);
+}
+[% END %]
+
+</script>
+
+[% IF data.reseller_nameservers -%]
+<script type="text/javascript">
+       (function(){
+            // Gather Pieces
+            var fmain = document.getElementById("fmain");
+                nameserverActions = document.getElementById("reseller_NS_nameServerActions"),
+                inheritFromRootYes = document.getElementById("inheritFromRootYes"),
+                inheritFromRootNo = document.getElementById("inheritFromRootNo"),
+                nameserverFields = [],
+                nameserversSet = false;
+
+            for (var i = 0; i < fmain.length; i++) {
+                if(fmain.elements[i].name.match(/^reseller_NS/)){
+                    nameserverFields.push(fmain.elements[i]);
+                }
+            }
+
+            // Watch for updates
+            function _updateInheritRadio(){
+                if(inheritFromRootYes.checked){
+                    nameserverActions.style.display = "none";
+                }else{
+                    nameserverActions.style.display = "block";
+                }
+            }
+            inheritFromRootYes.addEventListener("change",_updateInheritRadio);
+            inheritFromRootNo.addEventListener("change",_updateInheritRadio);
+        })();
+</script>
+[% END -%]
+[% END -%]

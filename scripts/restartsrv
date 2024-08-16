@@ -1,0 +1,130 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/restartsrv                      Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package Scripts::restartsrv;
+
+use strict;
+use warnings;
+
+#Names that are aliases of each other are on the same line
+use constant KNOWN_SERVICES => (
+    'apache', 'httpd',
+    'apache_php_fpm',
+    'bind',
+    'chkservd',
+    'clamd',
+    'cpanel_css',
+    'cpanel_php_fpm',
+    'cpanel_dovecot_solr',
+    'cpanel',
+    'cpanellogd',
+    'cpdavd',
+    'cpipv6',
+    'cpgreylistd',
+    'cphulkd',
+    'cpsrvd',
+    'crond',
+    'dovecot',
+    'dnsadmin',
+    'exim',
+    'ftp', 'ftpd', 'ftpmagic', 'ftpserver',
+    'imap',
+    'ipaliases',
+    'mailman',
+    'mysql', 'mysqld',
+    'named',
+    'nginx',
+    'nscd',
+    'openssh',
+    'p0f',
+    'lmtp',
+    'pdns', 'powerdns',
+    'pop',
+    'postgres', 'postgresql',
+    'proftpd',
+    'pureftpd',
+    'queueprocd',
+    'spamd',
+    'sshd',
+    'tailwatchd',
+    'rsyslog', 'rsyslogd',
+);
+
+exit main(@ARGV) unless caller;
+
+sub main {
+    my ( $service, @args ) = handle_service(@_);
+    my $cmd;
+
+    # known service
+    if ($service) {
+
+        # this is required for ftpd & ftpserver, which are specials
+        if ( -e "/usr/local/cpanel/scripts/restartsrv_$service" ) {
+            $cmd = "/usr/local/cpanel/scripts/restartsrv_$service";
+
+            if ( !-x _ ) {
+                warn "“$cmd” is not executable ($!); falling back\n";
+            }
+        }
+
+        if ( !$cmd ) {
+            $cmd = '/usr/local/cpanel/scripts/restartsrv_unknown';
+            unshift @args, $service;
+        }
+    }
+    else {
+        # Pass the call on to restartsrv_base as it already
+        # has logic to handle "unknown" services that might
+        # be controlled via sysmted/initd, etc.
+        $cmd = '/usr/local/cpanel/scripts/restartsrv_unknown';
+        unshift @args, @_;
+    }
+    return _exec( $cmd, @args );
+}
+
+# For testing
+sub _exec {
+    my ( $cmd, @args ) = @_;
+    exec {$cmd} $cmd, @args or die "exec($cmd, @args): $!";
+}
+
+sub handle_service {
+    my (@args) = @_;
+
+    my ( $service, @call_with );
+
+    foreach my $arg (@args) {
+        my $arg_lc = ( $arg =~ tr<A-Z><a-z>r );
+
+        $arg_lc =~ tr{-}{_};    # cpanel-dovecot-solr -> cpanel_dovecot_solr
+
+        if ( grep { $arg_lc eq $_ } KNOWN_SERVICES() ) {
+            $service = $arg_lc;
+            next;
+        }
+
+        # preserve any other argument
+        push @call_with, $arg;
+    }
+
+    return undef unless defined $service;
+
+    # some services use alias or legacy names #
+    $service = 'ftpserver'  if $service eq 'ftp' || $service eq 'ftpmagic';
+    $service = 'imap'       if $service eq 'pop';
+    $service = 'imap'       if $service eq 'pop3';
+    $service = 'tailwatchd' if $service eq 'chkservd';
+    $service = 'cpsrvd'     if $service eq 'cpanel';
+    $service = 'mysql'      if $service eq 'mysqld';
+    $service = 'sshd'       if $service eq 'openssh';
+    $service = 'pdns'       if $service eq 'powerdns';
+
+    return ( $service, @call_with );
+}
+
+1;

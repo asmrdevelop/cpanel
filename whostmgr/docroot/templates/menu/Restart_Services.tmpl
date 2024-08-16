@@ -1,0 +1,109 @@
+[%# This file is generated automatically.
+Do not edit it manually; instead, edit the /usr/local/cpanel/whostmgr/docroot/themes/x/dynamicui.conf file. -%]
+[% WRAPPER 'master_templates/master.tmpl'
+    theme="bootstrap"
+    app_key="restart_services"
+ -%]
+[% USE Whostmgr -%]
+[% USE JSON -%]
+[% USE EasyApache -%]
+[% USE VarCache -%]
+[% USE ServerRoles -%]
+[% USE Services -%]
+[% USE CPOS -%]
+
+[% varcache.set('checkacl_all',Whostmgr.checkacl('all')); %]
+[% varcache.set('dnsonly',Whostmgr.dnsonly()); %]
+
+                <div id="iconSea" class="panel-body icon-container-body">
+[% IF (varcache.checkacl_all || Whostmgr.checkacl('restart')) && (Whostmgr.check_flag('mysql_enabled')) && Services.is_service_provided('mysql') -%]
+    [% varcache.set('locale_str',locale.makevar("Database Server")) %]<div class="item" data-page-type="feature">
+        <a class="item-link" href="[% cp_security_token %]/scripts/resmysql" target="" title='[% varcache.locale_str -%]'>
+            <img class="itemImageWrapper" src="[% Whostmgr.get_icon_url('icons/sql_server_mysql.svg') %]" alt="[% varcache.locale_str -%]" />
+            <span class="itemTextWrapper">[% varcache.locale_str -%]</span>
+        </a>
+    </div>
+[% END %]
+
+[% IF (varcache.checkacl_all || Whostmgr.checkacl('restart')) && (Whostmgr.check_flag('dns_enabled')) && ServerRoles.is_role_enabled('DNS') -%]
+    [% varcache.set('locale_str',locale.makevar("DNS Server")) %]<div class="item" data-page-type="feature">
+        <a class="item-link" href="[% cp_security_token %]/scripts/resbind" target="" title='[% varcache.locale_str -%]'>
+            <img class="itemImageWrapper" src="[% Whostmgr.get_icon_url('icons/dns_server.svg') %]" alt="[% varcache.locale_str -%]" />
+            <span class="itemTextWrapper">[% varcache.locale_str -%]</span>
+        </a>
+    </div>
+[% END %]
+
+[% IF (varcache.checkacl_all || Whostmgr.checkacl('restart')) && (Whostmgr.check_flag('ftp_enabled')) && !varcache.dnsonly && Services.is_service_provided('ftp') -%]
+    [% varcache.set('locale_str',locale.makevar("FTP Server (ProFTPD/Pure-FTPd)")) %]<div class="item" data-page-type="feature">
+        <a class="item-link" href="[% cp_security_token %]/scripts/resproftpd" target="" title='[% varcache.locale_str -%]'>
+            <img class="itemImageWrapper" src="[% Whostmgr.get_icon_url('icons/ftp_server_proftpd_pureftpd.svg') %]" alt="[% varcache.locale_str -%]" />
+            <span class="itemTextWrapper">[% varcache.locale_str -%]</span>
+        </a>
+    </div>
+[% END %]
+
+[% IF (varcache.checkacl_all || Whostmgr.checkacl('restart')) && (Whostmgr.check_flag('httpd_enabled')) && !varcache.dnsonly && ServerRoles.is_role_enabled('WebServer') -%]
+    [% varcache.set('locale_str',locale.makevar("HTTP Server (Apache)")) %]<div class="item" data-page-type="feature">
+        <a class="item-link" href="[% cp_security_token %]/scripts/reshttpd" target="" title='[% varcache.locale_str -%]'>
+            <img class="itemImageWrapper" src="[% Whostmgr.get_icon_url('icons/http_server_apache.svg') %]" alt="[% varcache.locale_str -%]" />
+            <span class="itemTextWrapper">[% varcache.locale_str -%]</span>
+        </a>
+    </div>
+[% END %]
+
+[% IF (varcache.checkacl_all || Whostmgr.checkacl('restart')) && (Whostmgr.check_flag('imap_enabled')) && !varcache.dnsonly && ServerRoles.is_role_enabled('MailReceive') -%]
+    [% varcache.set('locale_str',locale.makevar("IMAP Server")) %]<div class="item" data-page-type="feature">
+        <a class="item-link" href="[% cp_security_token %]/scripts/resimap" target="" title='[% varcache.locale_str -%]'>
+            <img class="itemImageWrapper" src="[% Whostmgr.get_icon_url('icons/imap_server.svg') %]" alt="[% varcache.locale_str -%]" />
+            <span class="itemTextWrapper">[% varcache.locale_str -%]</span>
+        </a>
+    </div>
+[% END %]
+
+[% IF (varcache.checkacl_all || Whostmgr.checkacl('restart')) && (Whostmgr.check_flag('exim_enabled')) && !varcache.dnsonly && (ServerRoles.is_role_enabled('MailSend') || ServerRoles.is_role_enabled('MailLocal')) -%]
+    [% varcache.set('locale_str',locale.makevar("Mail Server (Exim)")) %]<div class="item" data-page-type="feature">
+        <a class="item-link" href="[% cp_security_token %]/scripts/resexim" target="" title='[% varcache.locale_str -%]'>
+            <img class="itemImageWrapper" src="[% Whostmgr.get_icon_url('icons/mail_server_exim.svg') %]" alt="[% varcache.locale_str -%]" />
+            <span class="itemTextWrapper">[% varcache.locale_str -%]</span>
+        </a>
+    </div>
+[% END %]
+
+[% IF (varcache.checkacl_all || Whostmgr.checkacl('restart')) && !varcache.dnsonly && ServerRoles.is_role_enabled('MailReceive') -%]
+    [% varcache.set('locale_str',locale.makevar("Mailing List Manager ([asis,Mailman])[comment,title]")) %]<div class="item" data-page-type="feature">
+        <a class="item-link" href="[% cp_security_token %]/scripts/restart_mailman" target="" title='[% varcache.locale_str -%]'>
+            <img class="itemImageWrapper" src="[% Whostmgr.get_icon_url('icons/mailing_list_manager_mailman.svg') %]" alt="[% varcache.locale_str -%]" />
+            <span class="itemTextWrapper">[% varcache.locale_str -%]</span>
+        </a>
+    </div>
+[% END %]
+
+[% IF (varcache.checkacl_all || Whostmgr.checkacl('restart')) && (Whostmgr.check_flag('httpd_fpm_enabled')) && !varcache.dnsonly && ServerRoles.is_role_enabled('WebServer') -%]
+    [% varcache.set('locale_str',locale.makevar("PHP-FPM service for Apache")) %]<div class="item" data-page-type="feature">
+        <a class="item-link" href="[% cp_security_token %]/scripts/resphpfpm" target="" title='[% varcache.locale_str -%]'>
+            <img class="itemImageWrapper" src="[% Whostmgr.get_icon_url('icons/php_fpm_service_for_apache.svg') %]" alt="[% varcache.locale_str -%]" />
+            <span class="itemTextWrapper">[% varcache.locale_str -%]</span>
+        </a>
+    </div>
+[% END %]
+
+[% IF (varcache.checkacl_all || Whostmgr.checkacl('restart')) && (Whostmgr.check_flag('postgres_enabled')) && !varcache.dnsonly && Services.is_service_provided('postgresql') -%]
+    [% varcache.set('locale_str',locale.makevar("SQL Server (PgSQL)")) %]<div class="item" data-page-type="feature">
+        <a class="item-link" href="[% cp_security_token %]/scripts/respostgres" target="" title='[% varcache.locale_str -%]'>
+            <img class="itemImageWrapper" src="[% Whostmgr.get_icon_url('icons/sql_server_pgsql.svg') %]" alt="[% varcache.locale_str -%]" />
+            <span class="itemTextWrapper">[% varcache.locale_str -%]</span>
+        </a>
+    </div>
+[% END %]
+
+[% IF (varcache.checkacl_all || Whostmgr.checkacl('restart')) && (Whostmgr.check_flag('sshd_enabled')) -%]
+    [% varcache.set('locale_str',locale.makevar("SSH Server (OpenSSH)")) %]<div class="item" data-page-type="feature">
+        <a class="item-link" href="[% cp_security_token %]/scripts/ressshd" target="" title='[% varcache.locale_str -%]'>
+            <img class="itemImageWrapper" src="[% Whostmgr.get_icon_url('icons/ssh_server_openssh.svg') %]" alt="[% varcache.locale_str -%]" />
+            <span class="itemTextWrapper">[% varcache.locale_str -%]</span>
+        </a>
+    </div>
+[% END %]
+</div>
+[% END -%]

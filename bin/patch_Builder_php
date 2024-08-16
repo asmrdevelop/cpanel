@@ -1,0 +1,40 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - bin/patch_Builder_php                   Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use Cpanel::SafeFile ();
+use Cpanel::Logger   ();
+
+my $logger = Cpanel::Logger->new();
+
+my @php_dirs = ( '/usr/lib/php', '/usr/local/lib/php' );
+my $search   = qq{"/var/tmp};
+my $replace  = qq{(getenv('TMPDIR') ? getenv('TMPDIR') : '/var/tmp') . "};
+
+foreach my $php_dir (@php_dirs) {
+    my $file = $php_dir . '/PEAR/Builder.php';
+    if ( !-e $file ) {
+        $logger->warn("Could not find $file");
+        next;
+    }
+    my $block = Cpanel::SafeFile::safeopen( \*BL, '+<', $file );
+    if ( !$block ) {
+        $logger->warn("Could not edit $file");
+        next;
+    }
+    my @FC = <BL>;
+    seek( BL, 0, 0 );
+    my $line = 0;
+    foreach (@FC) {
+        $line++;
+        if (s/\Q$search\E/$replace/go) {
+            print "Patched $file (line $line)\n";
+        }
+        print BL;
+    }
+    truncate( BL, tell(BL) );
+    Cpanel::SafeFile::safeclose( \*BL, $block );
+}

@@ -1,0 +1,2605 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - bin/backup                              Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package bin::backup;
+
+use strict;
+## no critic qw(TestingAndDebugging::RequireUseWarnings)
+#
+use Cwd ();
+use Try::Tiny;
+
+my $_logger;
+
+BEGIN {
+    require Cpanel::TaskQueue::Loader;
+    require Cpanel::LoggerAdapter;
+    $_logger = Cpanel::LoggerAdapter->new();
+    Cpanel::TaskQueue::Loader::load_taskqueue_modules($_logger);
+    require Cpanel::TaskQueue::PluginManager;
+}
+
+use Cpanel::AcctUtils::Suspended       ();
+use Cpanel::Autodie                    ();
+use Cpanel::LoadFile                   ();
+use Cpanel::Logger                     ();
+use Cpanel::Context                    ();
+use Cpanel::Backup::Sync               ();
+use Cpanel::Update::InProgress         ();
+use Cpanel::Backup::Transport::Session ();
+use Cpanel::BackupMount                ();
+use Cpanel::Hostname                   ();
+use Cpanel::Exception                  ();
+use Cpanel::OSSys                      ();
+use Cpanel::OSSys::Capabilities        ();
+use Cpanel::FileUtils                  ();
+use Cpanel::FileUtils::TouchFile       ();
+use Cpanel::FileUtils::Write           ();
+use Cpanel::Filesys                    ();
+use Cpanel::Backup::Config             ();
+use Cpanel::Backup::SystemResources    ();
+use Cpanel::Backup::Utility            ();
+use Cpanel::Backup::BackupSetUtil      ();
+use Cpanel::Backup::Metadata           ();
+use Cpanel::Backup::Transport::History ();
+use Cpanel::Config::LoadCpConf         ();
+use Cpanel::Config::LoadCpUserFile     ();
+use Cpanel::Config::Users              ();
+use Cpanel::MysqlUtils::Dir            ();
+use Cpanel::MysqlUtils::MyCnf::Basic   ();
+use Cpanel::POSIX::Tiny                ();
+use Cpanel::SafeRun                    ();
+use Cpanel::SafeRun::Simple            ();
+use Cpanel::SafeRun::Errors            ();
+use Cpanel::SimpleSync                 ();
+use Cpanel::IONice                     ();
+use Cpanel::Usage                      ();
+use Cpanel::MD5                        ();
+use Cpanel::Time::Split                ();
+use MIME::Base64                       ();
+use Cpanel::Hooks                      ();
+use Cpanel::Daemonizer                 ();
+use Cpanel::Daemonizer::Tiny           ();
+use File::Spec                         ();
+use File::Path                         ();
+use File::Find                         ();
+use File::Glob                         ();
+use Cpanel::Locale                     ();
+use Cpanel::JSON                       ();
+use Cpanel::LoadModule                 ();
+use Cpanel::TimeHiRes                  ();
+
+use Try::Tiny;
+
+#
+# These constants identify the backup type
+# which is running and to name the pid file
+# We'll be passing this to the set of common functions
+# used by the old and new backup systems to avoid collisions
+#
+use constant BACKUP_ID       => Cpanel::Backup::Sync::BACKUP_TYPE_NEW;
+use constant BACKUP_ID_OTHER => Cpanel::Backup::Sync::BACKUP_TYPE_OLD;
+
+our $VERSION = 2.0;
+
+# Variables to be used globally throughout the file
+my $cpconf_ref;
+my $conf_ref;
+my $now = time;
+my $utility;
+my $logger;
+our $queue;
+our $session_id;
+our $no_transport;
+our $any_transports_enabled;
+my $transport_system_backups;
+my $error_aggregator_file;
+my $serialized_error_aggregator_file;
+my $locale;
+
+our $run_daily;
+our $run_weekly;
+our $run_monthly;
+
+our $logdir     = '/usr/local/cpanel/logs/cpbackup';
+our $start_time = time();
+
+my @ERRORS_TO_REPORT;
+
+my $NOTIFICATION_SENT;
+
+# Modulino
+unless ( caller() ) {
+
+    set_cp_conf( Cpanel::Config::LoadCpConf::loadcpconf() );
+    set_conf( Cpanel::Backup::Config::load() );
+    unless ( __PACKAGE__->run(@ARGV) ) {
+
+        # We've removed all the 'exit 1' statements
+        # (except the one below) and
+        # replaced them to return false from run to facilitate
+        # unit testing
+        exit 1;
+    }
+}
+
+# Used to set package global data for unit testing
+
+sub set_now {
+    $now = shift;
+    return;
+}
+
+sub set_conf {
+    ($conf_ref) = @_;
+
+    $utility = Cpanel::Backup::Utility->new($conf_ref);
+    $utility->set_env_variables();
+    return;
+}
+
+sub set_cp_conf {
+    ( %{$cpconf_ref} ) = @_;    # Cpanel::Config::LoadCpConf::loadcpconf() returns based on wantarray()
+    return;
+}
+
+sub get_utility {
+    return $utility;
+}
+
+my $mainprocessid;
+my $host;
+
+sub run {    ## no critic qw(Subroutines::ProhibitExcessComplexity)
+    my ( $class, @argv ) = @_;
+
+    $host = Cpanel::Hostname::gethostname();
+
+    $logger = Cpanel::Logger->new( { 'timestamp_prefix' => 1 } );
+
+    # Ensure that the configurations have been set/loadad
+    if ( !$cpconf_ref || !$conf_ref ) {
+        $logger->die("The configurations have not been set/loaded!");
+    }
+
+    $ENV{'PATH'} .= ":/sbin";
+
+    my $force          = 0;
+    my $debug          = 0;
+    my $allow_override = 0;
+    $session_id = time;
+
+    my %opts = (
+        'force'          => \$force,
+        'debug'          => \$debug,
+        'allow-override' => \$allow_override,
+        'no-transport'   => \$no_transport,
+    );
+
+    Cpanel::Usage::wrap_options( \@argv, \&usage, \%opts );
+
+    return 0 unless backup_enabled($force);
+
+    if ($allow_override) {
+        $utility->allow_pkgacct_override();
+    }
+
+    $locale ||= Cpanel::Locale->get_handle();
+
+    if ( Cpanel::Update::InProgress->is_on() ) {
+        require Cpanel::Notify;
+        Cpanel::Notify::notification_class(
+            'class'            => 'Backup::Failure',
+            'application'      => 'Backup::Failure',
+            'constructor_args' => [
+                'origin'     => 'cPanel Backup System',
+                'start_time' => $start_time,
+                'end_time'   => time(),
+                'reason'     => $locale->maketext('An update is in progress. Backups are disabled at this time.')
+            ]
+        );
+        $logger->die("Unable start backup script");
+    }
+
+    #
+    # Handle the case where another instance of the script
+    # is already running
+    #
+    Cpanel::Backup::Sync::handle_already_running( BACKUP_ID, $logdir, $logger ) or return 0;
+
+    #
+    # Make sure the metadata is not being vacuumed
+    # If it is, we won't be able to create any more metadata
+    #
+    if ( !Cpanel::Backup::Metadata::metadata_disabled_check_scalar() ) {
+        if ( Cpanel::Backup::Metadata::is_vacuum_running() ) {
+            $logger->warn('The system is currently vacuuming the backup metadata.');
+            return 0;
+        }
+    }
+
+    #
+    # If the other backup type is running wait for it to finish,
+    # then flag that we are running so the other backup type can not
+    # start
+    #
+    my $rc = Cpanel::Backup::Sync::set_backup_as_running_after_other_finishes( BACKUP_ID, BACKUP_ID_OTHER, time(), $logger );
+
+    if ( $rc == Cpanel::Backup::Sync::OTHER_TYPE_RUNNING ) {
+        require Cpanel::Notify;
+        Cpanel::Notify::notification_class(
+            'class'            => 'Backup::Failure',
+            'application'      => 'Backup::Failure',
+            'constructor_args' => [
+                'origin'     => 'cPanel Backup System',
+                'start_time' => $start_time,
+                'end_time'   => time(),
+                'reason'     => $locale->maketext('The system could not complete the backup because legacy and current backup processes may not run concurrently, and the first backup process has not finished.')
+            ]
+        );
+        $logger->die("Unable start backup script");
+    }
+
+    if ( $rc != Cpanel::Backup::Sync::SUCCESS ) {
+        require Cpanel::Notify;
+        Cpanel::Notify::notification_class(
+            'class'            => 'Backup::Failure',
+            'application'      => 'Backup::Failure',
+            'constructor_args' => [
+                'origin'     => 'cPanel Backup System',
+                'start_time' => $start_time,
+                'end_time'   => time(),
+                'reason'     => $locale->maketext( 'The system could not complete the backup because a test of “[_1]” resulted in an error.', '/usr/local/cpanel/bin/backup' )
+            ]
+        );
+        $logger->die("Unable start backup script");
+    }
+
+    #
+    # If stats are running, request that they pause
+    # Taken from WHM interface checkbox info: Prevent cpanellogd (Log Processing) and cpbackup (Backups) from running at same time.
+    # so if nocpbackuplogs == 1, backups will request that stats pause until backups are done, but can wait for as much as 8 hours on stats
+    # to respond that they have paused.
+
+    if ( $cpconf_ref->{'nocpbackuplogs'} ) {
+        Cpanel::Backup::Sync::pause_stats_if_needed($logger);
+    }
+
+    ###
+    # Pre-execution checks
+    ###
+    return 0 unless can_do_backup( $force, $host, $start_time );
+
+    # Set current working directory.
+    chdir('/') or $logger->die("Failed to chdir");
+
+    ###
+    # Create log dir and rotate log files
+    ###
+    setup_and_clean_logs( $logdir, $now );
+
+    my $log_file_path = Cpanel::Backup::Sync::log_file_path( $logdir, $now );
+
+    my $at_perl_end;
+    my $ended_ok;
+
+    my $send_message_coderef = sub {
+        my ($signal) = @_;
+        return if $debug;
+        parse_log_and_notify(
+            {
+                class      => $ended_ok ? "Backup::Success" : "Backup::Failure",
+                start_time => $start_time,
+                host       => $host,
+                logdir     => $logdir,
+                signal     => $signal,
+            }
+        );
+    };
+
+    # fork and redirect stderr & stdout
+    if ( !$debug ) {
+        ( my $signal_manager, $at_perl_end ) = Cpanel::Backup::Sync::fork_and_redirect_output( BACKUP_ID, $logdir, $now, $logger, $send_message_coderef );
+        $utility->set_signal_manager($signal_manager);
+    }
+
+    $ENV{'CPBACKUP_LOGFILE'} = $log_file_path;
+
+    # Redirect the log output to the logfile where we expect it to go.
+    $logger = Cpanel::Logger->new( { 'timestamp_prefix' => 1, alternate_logfile => $ENV{'CPBACKUP_LOGFILE'} } );
+
+    $utility->set_logger($logger);
+
+    # Set a name for the error aggregator file to be used by the transport queue
+    $error_aggregator_file = "/var/cpanel/backups/queue/error_aggregator_$session_id.txt";
+    unlink $error_aggregator_file if ( -e $error_aggregator_file );
+
+    # Also include a aggregation file for serialized errors for notification purposes
+    $serialized_error_aggregator_file = "/var/cpanel/backups/queue/serialized_error_aggregator_$session_id.txt";
+    unlink $serialized_error_aggregator_file if ( -e $serialized_error_aggregator_file );
+
+    ###
+    # Set up task queue
+    ###
+    Cpanel::TaskQueue::PluginManager::load_plugin_by_name('Cpanel::Backup::Queue');
+    $queue = Cpanel::TaskQueue->new(    # PPI USE OK -- Already loaded by Cpanel::TaskQueue::Loader
+        {
+            'name'      => 'backups',
+            'cache_dir' => '/var/cpanel/backups/queue',
+            logger      => $_logger,
+        }
+    );
+
+    # Handle mounting the drive if it is not currently mounted but configured to be
+    # The $volume_was_mounted flag will get set if we actually mounted the volume
+    $Cpanel::BackupMount::VERBOSE = 1;
+    my $volume_was_mounted;
+    return 0 unless mount_backup_disk_if_needed( $conf_ref->{'BACKUPDIR'}, $host, \$volume_was_mounted, $logdir, $start_time );
+
+    # Set up our subdirectories
+    my ($paths_ref) = setup_backup_directories( $conf_ref->{'BACKUPDIR'} );
+
+    # Set to reduce impact on system performance, if possible
+
+    apply_nice_level_to_process($logger);
+
+    Cpanel::Hooks::hook(
+        {
+            'category' => 'System',
+            'event'    => 'Backup',
+            'stage'    => 'pre'
+        },
+        {
+            'session_id' => $session_id,
+        }
+    );
+
+    Cpanel::Backup::Metadata::remove_metadata_for_missing_backups();
+    _allow_deprecated_incrementals_to_be_pruned( $conf_ref->{'BACKUPDIR'}, $logger );
+
+    # Create backup metadata index
+    my $backup_date;
+    $backup_date = $paths_ref->{'basedir_daily_date'}   if ($run_daily);
+    $backup_date = $paths_ref->{'basedir_weekly_date'}  if ( !$run_daily && $run_weekly );
+    $backup_date = $paths_ref->{'basedir_monthly_date'} if ( !$run_daily && !$run_weekly && $run_monthly );
+
+    # prune the existing metadata if it already exists so that the metadata is
+    # correct
+    $logger->info("Pruning metadata for backup at $backup_date");
+    Cpanel::Backup::Metadata::prune_backup($backup_date);
+
+    $logger->info("Creating metadata index for backup at $backup_date");
+
+    my $backup_type = Cpanel::Backup::Metadata::translate_backup_type( $conf_ref->{'BACKUPTYPE'} );
+
+    Cpanel::Backup::Metadata::create_meta_master( $backup_date, $backup_type );
+
+    _process_backups($paths_ref);
+
+    # If backups failed for any reason at all, let's make sure to tag it that
+    # way!
+    my $this_backup_failed = check_for_failures( parse_log_and_aggregate_errors($logdir) );
+    if ($this_backup_failed) {
+        tag_backup_as_failed( $paths_ref, $conf_ref, $run_daily, $run_weekly, $run_monthly );
+    }
+
+    # Let stats resume now, if needed
+    unlink('/var/cpanel/backups_need_to_run');
+
+    # Prune the backups to keep disk space usage under control
+    my $backups_to_prune = _choose_backups_to_prune($this_backup_failed);
+    if ( !keys %$backups_to_prune ) {
+        $logger->warn("Pruning of backup files skipped due to errors.");
+    }
+    else {
+        foreach my $prune ( keys %$backups_to_prune ) {
+            prune_backup_dirs( $paths_ref->{ 'basedir_' . $prune }, $conf_ref->{ 'BACKUP_' . uc($prune) . '_RETENTION' } );
+            my $prune_dir = $prune eq 'daily' ? undef : $prune;
+            my ( $file_queue_status, $file_queue_error ) = prune_remote_files( $conf_ref->{ 'BACKUP_' . uc($prune) . '_RETENTION' }, $conf_ref->{'BACKUPTYPE'}, $session_id, $queue, $prune_dir );
+            if ( !$file_queue_status ) {
+                push @ERRORS_TO_REPORT, { 'type' => 'transport', 'backup_type' => $prune, 'system' => 'prune_backup_files', 'error' => "Unable to add remote $prune file pruning process to queue" };
+                $logger->warn("Unable to add remote $prune file pruning process to queue");
+            }
+        }
+    }
+
+    Cpanel::Hooks::hook(
+        {
+            'category' => 'System',
+            'event'    => 'Backup',
+            'stage'    => 'post'
+        },
+        {
+            'session_id' => $session_id,
+        }
+    );
+
+    if ( -e '/usr/local/cpanel/scripts/postcpbackup' && -x _ && ( !exists $conf_ref->{'POSTBACKUP'} || $conf_ref->{'POSTBACKUP'} ) ) {
+        $logger->info("Executing user defined post backup script (/usr/local/cpanel/scripts/postcpbackup).");
+        system '/usr/local/cpanel/scripts/postcpbackup';
+    }
+
+    # Queue removal of staging directory after post backup scripts have run but before volume is unmounted.
+    #!!!!! IMPORTANT !!!!! :: Make sure this call is the last thing queued for the backup transporter
+    # if( ! $conf_ref->{'KEEPLOCAL'} ) {
+    queue_staging_directory_removal( $paths_ref, $queue, $session_id );
+
+    # }
+
+    # unmount the disk if it was initially unmounted and we had mounted it
+    if ($volume_was_mounted) {
+        my ( $unmount_queue_status, $unmount_queue_error ) = queue_unmount_backup_volume( $conf_ref->{'BACKUPDIR'}, 'cpbackup', $session_id );
+        if ( !$unmount_queue_status ) {
+            push @ERRORS_TO_REPORT, { 'type' => 'important', 'error' => "Unable add “$conf_ref->{'BACKUPDIR'}” unmount process to queue: $unmount_queue_error" };
+            $logger->warn("Unable add “$conf_ref->{'BACKUPDIR'}” unmount process to queue: $unmount_queue_error");
+        }
+    }
+
+    # Schedule either a rebuild or vacuum of the database depending on its sanity
+    if ( !Cpanel::Backup::Metadata::metadata_disabled_check_scalar() ) {
+
+        # If all the users have valid metadata databases, just schedule a vacuum
+        my ( $dbs_valid, $broken_users_ar ) = Cpanel::Backup::Metadata::is_database_valid();
+        if ($dbs_valid) {
+
+            # Schedule task to compact any new metadata generated
+            $logger->info("Scheduling backup metadata vacuum");
+            Cpanel::SafeRun::Simple::saferun( '/usr/local/cpanel/scripts/backups_create_metadata', '--vacuum' );
+        }
+
+        # If any of the users have an invalid metadata database, rebuild them all
+        else {
+            # We use unshift to make this error appear at the top of the list of errors
+            unshift @ERRORS_TO_REPORT, { 'type' => 'important', 'error' => 'Some of the metadata database(s) appear corrupt. Scheduling a rebuild.' };
+            $logger->info("Found corrupted backup metadata, scheduling backup metadata rebuild");
+            Cpanel::SafeRun::Simple::saferun( '/usr/local/cpanel/scripts/backups_create_metadata', '--schedule_rebuild', '--fix_corrupt' );
+        }
+    }
+
+    #Vacuum the backup transport history
+    spawn_history_vacuum();
+
+    # Have the queueing mechanism report any errors it found
+    my ( $queue_status, $queue_error ) = queue_error_report_email( $queue, $session_id );
+    if ( !$queue_status ) {
+        push @ERRORS_TO_REPORT, { 'type' => 'important', 'error' => "Unable add error report email to queue: $queue_error" };
+        $logger->warn("Unable add error report email to queue: $queue_error");
+    }
+
+    Cpanel::Backup::Sync::clean_up_pid_files(BACKUP_ID);
+
+    my $complete_localtime = localtime();
+    $logger->info("Completed at $complete_localtime");
+
+    $ended_ok = 1;
+
+    return 1;
+}
+
+sub spawn_history_vacuum {
+    return Cpanel::Daemonizer::Tiny::run_as_daemon(
+        sub {
+            my $logger  = Cpanel::Logger->new();
+            my $history = Cpanel::Backup::Transport::History->new();
+            return $history->vacuum($logger);
+        },
+    );
+}
+
+# Set our "nice" level
+
+sub apply_nice_level_to_process {
+    my ($logger) = @_;
+
+    Cpanel::OSSys::nice(18);    # needs to be one higher for cpuwatch
+    my $CAPABILITIES = Cpanel::OSSys::Capabilities->load;
+    if ( $CAPABILITIES->capable_of('ionice') ) {
+        if ( Cpanel::IONice::ionice( 'best-effort', exists $cpconf_ref->{'ionice_cpbackup'} ? $cpconf_ref->{'ionice_cpbackup'} : 6 ) ) {
+            $logger->info( "Setting I/O priority to reduce system load: " . Cpanel::IONice::get_ionice() );
+        }
+    }
+    return;
+}
+
+sub set_backup_status_in_metadata {
+    my ( $backup_dir, $status ) = @_;
+
+    return if Cpanel::Backup::Metadata::metadata_disabled_check_scalar();
+    try {
+        Cpanel::Backup::Metadata::set_backup_status( $backup_dir, $status );
+    }
+    catch {
+        push @ERRORS_TO_REPORT, { 'type' => 'important', 'error' => "Error setting backup status:  $_" };
+    };
+
+    return;
+}
+
+# If we find errors in the backup logs, mark the backup as failed so we can decide later whether to prune or not
+
+sub tag_backup_as_failed {
+    my ( $paths_ref, $conf_ref, $run_daily, $run_weekly, $run_monthly ) = @_;
+
+    # pull this out in to a function
+    if ($run_daily) {
+        Cpanel::FileUtils::Write::overwrite( _failure_file_path( $paths_ref->{'basedir_daily_date'} ), get_day_string_dir(), 0600 );
+        set_backup_status_in_metadata( $paths_ref->{'basedir_daily_date'}, 0 );
+        my $local_path  = _failure_file_path( $paths_ref->{'basedir_daily_date'} );
+        my $remote_path = get_day_string_dir() . '/backup_incomplete';
+        my ( $queue_status, $queue_error ) = transport_file(
+            {
+                local_path  => $local_path,
+                remote_path => $remote_path,
+                user        => 'root',
+                keep_local  => $run_monthly || $run_weekly ? 1 : $conf_ref->{'KEEPLOCAL'},
+                session_id  => $session_id,
+                queue       => $queue,
+            }
+        );
+        if ( !$queue_status ) {
+            push @ERRORS_TO_REPORT, { 'type' => 'transport', 'backup_type' => 'daily', 'system' => 'root', 'error' => "Could not queue “$local_path” for transport to “$remote_path”: $queue_error." };
+            $logger->warn("Could not queue “$local_path” for transport to “$remote_path”: $queue_error.");
+        }
+    }
+    if ($run_weekly) {
+        Cpanel::FileUtils::Write::overwrite( _failure_file_path( $paths_ref->{'basedir_weekly_date'} ), get_day_string_dir(), 0600 );
+        set_backup_status_in_metadata( $paths_ref->{'basedir_weekly_date'}, 0 );
+        my $local_path  = _failure_file_path( $paths_ref->{'basedir_weekly_date'} );
+        my $remote_path = 'weekly/' . get_day_string_dir() . '/backup_incomplete';
+        my ( $queue_status, $queue_error ) = transport_file(
+            {
+                local_path  => $local_path,
+                remote_path => $remote_path,
+                user        => 'root',
+                keep_local  => $conf_ref->{'KEEPLOCAL'},
+                session_id  => $session_id,
+                queue       => $queue,
+            }
+        );
+        if ( !$queue_status ) {
+            push @ERRORS_TO_REPORT, { 'type' => 'transport', 'backup_type' => 'weekly', 'system' => 'root', 'error' => "Could not queue “$local_path” for transport to “$remote_path”: $queue_error." };
+            $logger->warn("Could not queue “$local_path” for transport to “$remote_path”: $queue_error.");
+        }
+    }
+    if ($run_monthly) {
+        Cpanel::FileUtils::Write::overwrite( _failure_file_path( $paths_ref->{'basedir_monthly_date'} ), get_day_string_dir(), 0600 );
+        set_backup_status_in_metadata( $paths_ref->{'basedir_monthly_date'}, 0 );
+        my $local_path  = _failure_file_path( $paths_ref->{'basedir_monthly_date'} );
+        my $remote_path = 'monthly/' . get_day_string_dir() . '/backup_incomplete';
+        my ( $queue_status, $queue_error ) = transport_file(
+            {
+                local_path  => $local_path,
+                remote_path => $remote_path,
+                user        => 'root',
+                keep_local  => $conf_ref->{'KEEPLOCAL'},
+                session_id  => $session_id,
+                queue       => $queue,
+            }
+        );
+        if ( !$queue_status ) {
+            push @ERRORS_TO_REPORT, { 'type' => 'transport', 'backup_type' => 'monthly', 'system' => 'root', 'error' => "Could not queue “$local_path” for transport to “$remote_path”: $queue_error." };
+            $logger->warn("Could not queue “$local_path” for transport to “$remote_path”: $queue_error.");
+        }
+    }
+    return;
+}
+
+# Look through backup log file and see if we find any known errors to highlight, email admin about backup completion regardless
+
+sub parse_log_and_aggregate_errors {
+    my ($logdir) = @_;
+
+    my %ERROR_PATTERNS = (
+        'important_errors' => [
+            qr/Unable to get user id/,
+            qr/Unable to load cPanel user data/,
+            qr/You cannot copy the root user/,
+            qr/pkgacct failed to copy daily backup/,
+            qr/Could not use daily backup/,
+            qr/Bailing out/,
+            qr/The REMOTE_PASSWORD variable is missing/,
+            qr/Unable to find domain name/,
+            qr/Exiting with error code/,
+            qr/Could not remove directory /,
+            qr/Hook denied execution of pkgacct/,
+            qr/Could not open/,
+            qr/Could not chmod/,
+            qr/Could not rename/,
+            qr/failed to create the working dir/,
+            qr/Unable to fork/,
+            qr/Unable to waitpid/,
+            qr/Unable to open/,
+            qr/Failure dumping/,
+            qr/Unable to read/,
+            qr/does not appear to be valid XML/,
+            qr/Could not create directory/,
+            qr/mysqldump: Got error/,
+            qr/mysqldump: Error/,
+            qr/mysqldump: Couldn't/,
+            qr/mysqldump failed/,
+            qr/“Mysql” failed with an error/,
+            qr/Failed to generate backup metadata/,
+        ],
+
+        'transport_errors' => [
+            qr/rsync: connection unexpectedly closed/,
+            qr/rsync:.*write error: Broken pipe/,
+        ]
+    );
+
+    # represents a backup that complete
+    my $partial_complete = 0;
+    my $reason;
+
+    my $log_file_path = Cpanel::Backup::Sync::log_file_path( $logdir, $now );
+
+    # Parse the log for known problems to highlight. Just take the first one due to space restraints in subject line.
+    # at the same time, build up a list of known fatal errors to highlight at the top
+    my %errors = (
+        'important_errors'  => [ map { _convert_process_error_to_string( $_->{'error'} ) } grep { $_->{'type'} eq 'important' } @ERRORS_TO_REPORT ],
+        'local_copy_errors' => [ map { [ $_->{'title'},  _convert_process_error_to_string( $_->{'error'} ) ] } grep { $_->{'type'} eq 'local_copy' } @ERRORS_TO_REPORT ],
+        'account_errors'    => [ map { [ $_->{'user'},   _convert_process_error_to_string( $_->{'error'} ) ] } grep { $_->{'type'} eq 'account' } @ERRORS_TO_REPORT ],
+        'transport_errors'  => [ map { [ $_->{'system'}, $_->{'backup_type'}, _convert_process_error_to_string( $_->{'error'} ) ] } grep { $_->{'type'} eq 'transport' } @ERRORS_TO_REPORT ]
+    );
+
+    if ( open( my $log_file, '<', $log_file_path ) ) {
+        while (<$log_file>) {
+            chomp;
+
+            # https://tools.ietf.org/html/rfc959 FTP error codes
+            if (m/<<<\s552\s(.*)/) {
+                $reason           = $locale->maketext("The backup destination server has exceeded storage allocation (for current directory or dataset).");
+                $partial_complete = 1;
+            }
+            elsif (m/<<<\s452\s(.*)/) {
+                $reason           = $locale->maketext("The backup destination server has insufficient storage space.");
+                $partial_complete = 1;
+            }
+            else {
+                foreach my $error_type ( keys %ERROR_PATTERNS ) {
+                    foreach my $pattern ( @{ $ERROR_PATTERNS{$error_type} } ) {
+                        if ( $_ =~ $pattern ) {
+                            push @{ $errors{$error_type} }, $_;
+                            last;
+                        }
+                    }
+                }
+            }
+        }
+        close($log_file);
+    }
+
+    return {
+        %errors,
+        'partial_complete' => $partial_complete,
+        'reason'           => $reason,
+        'log_file_path'    => $log_file_path,
+    };
+}
+
+sub check_for_failures {
+    my ($errors_ref) = @_;
+
+    if (   $errors_ref->{'partial_complete'}
+        or scalar @{ $errors_ref->{'important_errors'} }
+        or scalar @{ $errors_ref->{'local_copy_errors'} }
+        or scalar @{ $errors_ref->{'account_errors'} }
+        or scalar @{ $errors_ref->{'transport_errors'} } ) {
+        return 1;
+    }
+
+    return 0;
+}
+
+sub parse_log_and_notify {
+    my ($args_ref) = @_;
+    my $host       = $args_ref->{'host'};
+    my $logdir     = $args_ref->{'logdir'};
+    my $class      = $args_ref->{'class'};
+    my $start_time = $args_ref->{'start_time'};
+    my $signal     = $args_ref->{'signal'} || 0;
+
+    return if $NOTIFICATION_SENT;
+    $NOTIFICATION_SENT = 1;
+
+    my $errors_ref = parse_log_and_aggregate_errors($logdir);
+
+    if ( check_for_failures($errors_ref) ) {
+        $class = "Backup::PartialFailure";
+    }
+
+    $logger->info("Final state is $class ($signal)");
+    require Cpanel::Notify;
+    my $app = 'cPanel Backup System';
+    Cpanel::Notify::notification_class(
+        'class'            => $class,
+        'application'      => $app,
+        'interval'         => 1,        # Always notify
+        'status'           => '',
+        'constructor_args' => [
+            'origin'     => $app,
+            'reason'     => $errors_ref->{'reason'},
+            'start_time' => $start_time,
+            'end_time'   => time(),
+
+            'important_errors'  => $errors_ref->{'important_errors'},
+            'account_errors'    => $errors_ref->{'account_errors'},
+            'transport_errors'  => $errors_ref->{'transport_errors'},
+            'local_copy_errors' => $errors_ref->{'local_copy_errors'},
+            'transport_started' => 1,
+            'signal'            => $signal,
+            'attach_files'      => [ { "name" => "${now}.log.txt", "content" => Cpanel::LoadFile::loadfile_r( $errors_ref->{'log_file_path'} ), 'number_of_preview_lines' => 25 } ],
+            'log_file_path'     => $errors_ref->{'log_file_path'},
+        ],
+    );
+    $logger->info("Sent $class notification.");
+    return;
+}
+
+sub _get_incremental_backup_date {
+    my ( $incremental_base_dir, $logger ) = @_;
+
+    # an incremental can be written to many times some accounts may have been
+    # deleted but will still be present in the incrementals, so find the most
+    # recent date and call that the backup date.
+
+    my @backup_metadata_files = File::Glob::bsd_glob( $incremental_base_dir . "/accounts/*/backup_meta_data" );
+    my $most_recent_date;
+
+    foreach my $metadata_file (@backup_metadata_files) {
+        my $json_ref;
+        try {
+            $json_ref = Cpanel::JSON::SafeLoadFile($metadata_file);
+        }
+        catch {
+            my $err = $_;
+            $logger->warn("Unable to read metadata file $metadata_file:  $err");
+            $json_ref = undef;
+        };
+        if ( $json_ref
+            && exists $json_ref->{'BACKUP_DATE'} ) {
+            my $date = $json_ref->{'BACKUP_DATE'};
+            if ( !defined $most_recent_date || $date gt $most_recent_date ) {
+                $most_recent_date = $date;
+            }
+        }
+    }
+
+    return $most_recent_date;
+}
+
+sub _make_deprecated_incremental_prunable {
+    my ( $old_incremental_path, $backup_dir, $logger ) = @_;
+
+    if ( -e $old_incremental_path ) {
+
+        # get incremantal date
+        my $backup_date = _get_incremental_backup_date( $old_incremental_path, $logger );
+
+        if ( !defined $backup_date ) {
+            my $new_path = $old_incremental_path . ".corrupt." . time();
+            if ( Cpanel::FileUtils::safemv( '-f', $old_incremental_path, $new_path ) ) {
+                $logger->warn("Incremental Backup is corrupt and has been moved from :$old_incremental_path: to :$new_path:");
+            }
+            else {
+                $logger->warn("Incremental Backup is corrupt; and, unable to move :$old_incremental_path: to :$new_path:");
+            }
+            return 0;
+        }
+        else {
+            my $new_path = $backup_dir . "/" . $backup_date;
+            if ( -e $new_path ) {
+
+                # we will wait till next backup cycle, perhaps we can move it then
+                $logger->warn("Attempted to move :$old_incremental_path: to :$new_path: but it already exists, no action taken");
+                return 0;
+            }
+            else {
+                if ( Cpanel::FileUtils::safemv( '-f', $old_incremental_path, $new_path ) ) {
+                    $logger->info("Incremental Backup :$old_incremental_path: Moved to :$new_path:");
+                }
+                else {
+                    $logger->warn("Unable to move :$old_incremental_path: to :$new_path:, no action taken");
+                    return 0;
+                }
+            }
+        }
+    }
+    else {
+        return 0;
+    }
+
+    return 1;
+}
+
+sub _allow_deprecated_incrementals_to_be_pruned {
+    my ( $backup_dir, $logger ) = @_;
+
+    # CPANEL-12429
+    # We have deprecated the use of the 'incremental' directory for
+    # incrementals, now they just happen in a date dir and are easily
+    # pruned. We need to rename them so they are easily pruned.
+
+    # daily incrementals
+    _make_deprecated_incremental_prunable( $backup_dir . "/incremental", $backup_dir, $logger );
+
+    # weekly incrementals
+    _make_deprecated_incremental_prunable( $backup_dir . "/weekly/incremental", $backup_dir . "/weekly", $logger );
+
+    # monthly incrementals
+    _make_deprecated_incremental_prunable( $backup_dir . "/monthly/incremental", $backup_dir . "/monthly", $logger );
+
+    return;
+}
+
+sub _process_backups {
+    my ($paths_ref) = @_;
+
+    my $rsync_can_hardlink = $utility->get_app_value( 'rsync', 'has_link_dest' ) ? 1 : 0;
+    if ($rsync_can_hardlink) {
+        $logger->info("Hard Linking available in rsync for incremental backups (link-dest)");
+    }
+
+    # Check for hardlink support in the filesystem the configured backup directory is mounted on
+    my $can_hardlink_backup_dir = can_hardlink_dir( $conf_ref->{'BACKUPDIR'} );
+    if ($can_hardlink_backup_dir) {
+        $logger->info("Hard Linking available on \"$conf_ref->{'BACKUPDIR'}\"");
+    }
+
+    my ( $files_dir, $accounts_dir );
+
+    # always make a daily backup set if it is enabled, this will be the source for monthly backups if also enabled
+    if ($run_daily) {
+        $files_dir    = $paths_ref->{'basedir_daily_files'};
+        $accounts_dir = $paths_ref->{'basedir_daily_accounts'};
+    }
+
+    # if daily backups are not enabled, but weekly are, run those instead
+    elsif ($run_weekly) {
+        $files_dir    = $paths_ref->{'basedir_weekly_files'};
+        $accounts_dir = $paths_ref->{'basedir_weekly_accounts'};
+    }
+
+    # if daily backups are not enabled, and weekly backups are not enabled, but monthly are, run those instead
+    elsif ($run_monthly) {
+        $files_dir    = $paths_ref->{'basedir_monthly_files'};
+        $accounts_dir = $paths_ref->{'basedir_monthly_accounts'};
+    }
+    else {
+        return;
+    }
+
+    my @todo_queue = (
+        [ 'important', sub { backup_all_mysql_databases($files_dir) } ],
+        [ 'important', sub { backup_system_files($files_dir) } ],
+        [ 'account',   sub { backup_accounts($accounts_dir) } ],
+    );
+
+    for my $todo_ar (@todo_queue) {
+        my ( $type, $todo_cr ) = @$todo_ar;
+
+        try {
+            $todo_cr->();
+        }
+        catch {
+            my $err = $_;
+
+            if ( !try { $err->isa('Cpanel::Exception') } ) {
+                $err = Cpanel::Exception->create_raw($_);
+            }
+
+            push @ERRORS_TO_REPORT, { type => $type, error => $err };
+        };
+    }
+
+    # If more than one backup is being run (daily/weekly/monthly)
+    # then allow file cleanup to happen before copying/linking to weekly/monthly
+    # This was done as a fix for FogBugz case 72257
+    # and, modded slightly to accomodate adding weekly backups into the mix
+    if ( ( $run_daily && $run_weekly ) || ( $run_daily && $run_monthly ) || ( $run_weekly && $run_monthly ) ) {
+
+        # Case 122909, becomes infinite loop if cptransport crashes
+        # Wait 2 days and 20 minutes (20 minutes to overcome the normal
+        # timeout of 2 days)
+        my $TTL = ( 2 * 86400 ) + 1200;
+
+        my $end_time = time + $TTL;
+
+        # Wait until files that need to be cleaned up have been cleaned
+        # up before making the copy to weekly or monthly
+        while ( !$conf_ref->{'KEEPLOCAL'} ) {
+            sleep(1);
+            my $path_to_check  = $run_weekly                                     ? $paths_ref->{'basedir_weekly_date'} : $paths_ref->{'basedir_daily_date'};
+            my $file_extension = ( $conf_ref->{'BACKUPTYPE'} eq 'uncompressed' ) ? '.tar'                              : '.tar.gz';
+            my @tar_files      = File::Glob::bsd_glob( $path_to_check . "/*/*.$file_extension" );
+            if (@tar_files) {
+                if ( time > $end_time ) {
+                    my $ttl_disp = Cpanel::Time::Split::seconds_to_locale($TTL);
+                    $logger->die("Waited over $ttl_disp for transport to complete; giving up!");
+                }
+            }
+            else {
+                last;
+            }
+        }
+    }
+
+    # Only create local weekly/monthly backup links when necessary.
+    if ( $conf_ref->{'KEEPLOCAL'} ) {
+        create_periodic_archives( $paths_ref, $can_hardlink_backup_dir );
+    }
+
+    return;
+}
+
+sub _failure_file_path {
+    my $filepath = shift;
+    return $filepath . '/backup_incomplete';
+}
+
+# Monthly and Weekly backups are just copies of the daily
+# so we need to recreate the metadata
+# $backup_dir = /backup/YYYY-MM-DD/
+
+sub _recreate_metadata {
+    my ( $backup_dir, $prefix ) = @_;
+
+    return if Cpanel::Backup::Metadata::metadata_disabled_check_scalar();
+
+    Cpanel::Backup::Metadata::create_metadata_for_backup( $backup_dir, $logger );
+
+    # Queue the transport for our master meta file
+    foreach my $metafile_item ($Cpanel::Backup::Metadata::master_meta_name) {    # Just one, for now
+
+        # We call queue_backup_transport_item() inside queue_metadata_transport, which inspects the caller here and expects it in a list context, hence @queue_meta
+        my @queue_meta = queue_metadata_transport(
+            {
+                local_path  => $backup_dir . '/accounts/' . $metafile_item,
+                remote_path => $prefix . get_day_string_dir() . '/accounts/' . $metafile_item,
+                local_files => $backup_dir . '/accounts/',
+                keep_local  => 1,
+                session_id  => $session_id,
+                type        => $conf_ref->{'BACKUPTYPE'},
+                queue       => $queue
+            },
+            $logger
+        );
+    }
+    return;
+}
+
+#
+# Create monthly/weekly backup copies/links.
+#
+sub create_periodic_archives {
+    my ( $paths_ref, $can_hardlink_backup_dir ) = @_;
+
+    if ($run_daily) {
+
+        # All permutations involving daily
+        # We'll do all our linking/copying from daily into weekly & monthly
+
+        if ($run_weekly) {
+
+            # if both weekly & daily, link/copy weekly from daily
+            copy_or_link_backups(
+                $paths_ref->{'basedir_daily_date'},
+                $paths_ref->{'basedir_weekly'},
+                $can_hardlink_backup_dir,
+            );
+
+            _recreate_metadata( $paths_ref->{'basedir_weekly_date'}, 'weekly/' );
+        }
+
+        if ($run_monthly) {
+
+            # if both monthly & daily, link/copy monthly from daily
+            copy_or_link_backups(
+                $paths_ref->{'basedir_daily_date'},
+                $paths_ref->{'basedir_monthly'},
+                $can_hardlink_backup_dir,
+            );
+
+            _recreate_metadata( $paths_ref->{'basedir_monthly_date'}, 'monthly/' );
+        }
+    }
+    elsif ( $run_weekly && $run_monthly ) {
+
+        # Weekly & monthly (but no daily) permutation
+        # So, copy/link weekly into monthly
+        copy_or_link_backups(
+            $paths_ref->{'basedir_weekly_date'},
+            $paths_ref->{'basedir_monthly'},
+            $can_hardlink_backup_dir,
+        );
+
+        _recreate_metadata( $paths_ref->{'basedir_monthly_date'}, 'monthly/' );
+    }
+
+    return;
+}
+
+#
+# Used to copy/link files into weekly/monthly
+#
+sub copy_or_link_backups {
+    my ( $src, $dest, $can_hardlink ) = @_;
+
+    if ($can_hardlink) {
+        $logger->info("Copying backup directory with hard links from $src to $dest");
+        my $output = Cpanel::SafeRun::Errors::saferunallerrors( '/bin/cp', '-afl', $src, $dest );
+        if ($output) {
+            $logger->warn("Errors found while hard link mirroring:\n $output\n");
+            $logger->info("Reverting to copy overwrite.");
+            push @ERRORS_TO_REPORT, { 'type' => 'local_copy', 'title' => "Errors found while hard link mirroring", 'error' => $output };
+            Cpanel::SafeRun::Errors::saferunallerrors( '/bin/cp', '-af', $src, $dest );
+        }
+    }
+    else {
+        $logger->info("Copying $src to $dest");
+        my $output = Cpanel::SafeRun::Errors::saferunallerrors( '/bin/cp', '-af', $src, $dest );
+        if ($output) {
+            push @ERRORS_TO_REPORT, { 'type' => 'local_copy', 'title' => "Errors found while mirroring", 'error' => $output };
+            $logger->warn("Errors found while mirroring: $output");
+        }
+    }
+
+    return;
+}
+
+sub backup_enabled {
+    my ($force) = @_;
+
+    if ( $conf_ref->{'BACKUPENABLE'} ne 'yes' && !$force ) {
+        $logger->warn("Backup Not Enabled (This can be adjusted in WHM => Backup => Backup Configuration)") if -t STDIN;
+        Cpanel::Backup::Sync::clean_up_pid_files(BACKUP_ID);
+        return 0;
+    }
+    return 1;
+}
+
+sub have_run_backups_today {
+    my ( $backup_dir, $today ) = @_;
+    return -d "$backup_dir/$today";
+}
+
+#
+# Performs some pre-execution checks to see if the backup may be performed
+#
+sub can_do_backup {    ## no critic(ProhibitExcessComplexity)  -- Refactoring this function is a project
+    my ( $force, $host, $start_time ) = @_;
+
+    return 0 unless backup_enabled($force);
+    if ( is_cpbackup_transporter_running() ) {
+        $logger->info('cpbackup_transporter is currently running, so we\'ll re-use it instead of starting a new one.');
+    }
+
+    # daily backup days are 0-6, sun-sat ( $wday ) whereas monthly days are actual dates, 1-31 ( $mday ).
+    if (   $conf_ref->{'BACKUP_DAILY_ENABLE'} eq 'yes'
+        or $conf_ref->{'BACKUP_WEEKLY_ENABLE'} eq 'yes'
+        or $conf_ref->{'BACKUP_MONTHLY_ENABLE'} eq 'yes' ) {
+
+        return 0
+          unless defined $conf_ref->{'BACKUPDIR'}
+          && enough_disk_space( $conf_ref->{'BACKUPDIR'} );
+
+        my @BACKUPDAYS           = split( /\,/, $conf_ref->{'BACKUPDAYS'} );
+        my @MONTHLY_BACKUP_DATES = split( /\,/, $conf_ref->{'BACKUP_MONTHLY_DATES'} );
+        my ( $sec, $min, $hour, $mday, $mon, $year, $wday, $yday, $isdst ) = localtime($now);
+        my $today = sprintf "%04d-%02d-%02d", $year + 1900, $mon + 1, $mday;
+
+        if ( $conf_ref->{'BACKUP_DAILY_ENABLE'} eq 'yes' ) {
+            foreach (@BACKUPDAYS) {
+                if ( $wday eq $_ ) {
+                    $run_daily = 1;
+                }
+            }
+        }
+
+        if ( $conf_ref->{'BACKUP_WEEKLY_ENABLE'} eq 'yes' ) {
+            if ( $conf_ref->{'BACKUP_WEEKLY_DAY'} == $wday ) {
+                $run_weekly = 1;
+            }
+        }
+
+        if ( $conf_ref->{'BACKUP_MONTHLY_ENABLE'} eq 'yes' ) {
+
+            # check for monthly as well so we can set the global $run_monthly
+            foreach (@MONTHLY_BACKUP_DATES) {
+                if ( $mday eq $_ ) {
+                    $run_monthly = 1;
+                }
+            }
+        }
+
+        # If we aren't configured for daily or monthly backups today and --force wasn't given, bail out
+        if ( !$run_daily && !$run_weekly && !$run_monthly && !$force ) {
+            $logger->info("Backups are not scheduled to run today. This can be adjusted in WHM => Backup => Backup Configuration or by calling bin/backup with the --force argument.");
+            Cpanel::Backup::Sync::clean_up_pid_files(BACKUP_ID);
+            return 0;
+        }
+        if ( have_run_backups_today( $conf_ref->{BACKUPDIR}, $today ) && !$force ) {
+            $logger->info("Backups have already run today.  Use the --force if you wish to run backups again.");
+            return 0;
+        }
+    }
+
+    # If --force was given, force just daily even if it is not enabled or configured to run today
+    if ($force) {
+        $run_daily = 1;
+    }
+
+    # Test if there are any backup destinations configured to receive system backups
+    my $bt_session = Cpanel::Backup::Transport::Session->new($now);
+    my $transports = $bt_session->get_transports();
+    $transport_system_backups = grep { $_->{'upload_system_backup'} } values %$transports;
+
+    # Clean up session data now that we've done our verifications
+    $bt_session->clear_all_session_info();
+
+    if (   $conf_ref->{'BACKUPACCTS'} eq 'yes'
+        && $conf_ref->{'BACKUPTYPE'} ne 'incremental'
+        && !$conf_ref->{'KEEPLOCAL'}
+        && !( scalar keys %$transports ) ) {
+        stderr_log_and_notify( 'The store local backup option is disabled and no active transports exist.  Please see "Backup Configuration" in WHM for more information', "Backups halted on $host", $logger, $start_time );
+        Cpanel::Backup::Sync::clean_up_pid_files(BACKUP_ID);
+        return 0;
+    }
+
+    if ( !$conf_ref->{'BACKUPDIR'} ) {
+        if ( !-t STDIN ) {
+            $locale ||= Cpanel::Locale->get_handle();
+            require Cpanel::Notify;
+            Cpanel::Notify::notification_class(
+                'class'            => 'Backup::Failure',
+                'application'      => 'Backup::Failure',
+                'constructor_args' => [
+                    'origin'     => 'cPanel Backup System',
+                    'start_time' => $start_time,
+                    'end_time'   => time(),
+                    'reason'     => $locale->maketext('The system could not complete the backup because the configuration does not specify the backup directory.')
+                ]
+            );
+            $NOTIFICATION_SENT = 1;
+        }
+        $logger->warn("Backup failed! Base directory for backups not set!");
+        push @ERRORS_TO_REPORT, { 'type' => 'important' => 'error' => "Backup failed! Base directory for backups not set!" };
+        return 0;
+    }
+    if ( !$run_daily && !$run_weekly && !$run_monthly && !$force ) {
+        $logger->info("Neither daily, weekly or monthly backups are enabled and --force option not used.");
+        return 0;
+    }
+    return 1;
+}
+
+#
+# Get information about the filesystem containing BACKUPDIR and make sure free
+# space is greater than the configured minimum.
+#
+sub enough_disk_space {
+
+    $locale ||= Cpanel::Locale->get_handle();
+
+    if ( $conf_ref->{'CHECK_MIN_FREE_SPACE'} ) {
+        my $free_space;
+        my $mount = Cpanel::Filesys::filesystem_info_from_file( $conf_ref->{'BACKUPDIR'} );
+
+        if (   $conf_ref->{'MIN_FREE_SPACE_UNIT'} eq 'percent'
+            && $conf_ref->{'MIN_FREE_SPACE'} > 99 ) {
+            require Cpanel::Notify;
+            Cpanel::Notify::notification_class(
+                'class'            => 'Backup::Failure',
+                'application'      => 'Backup::Failure',
+                'constructor_args' => [
+                    'origin'     => 'cPanel Backup System',
+                    'start_time' => $start_time,
+                    'end_time'   => time(),
+                    'reason'     => $locale->maketext('The MIN_FREE_SPACE_UNIT parameter in the backup configuration is set to “percent”, and the MIN_FREE_SPACE parameter is 100 or greater. You must change the disk free space settings or the system will not run backups.')
+                ]
+            );
+            $logger->warn("MIN_FREE_SPACE_UNIT in the backup configuration is 'percent' and MIN_FREE_SPACE is greater than 99. Backups will not run.");
+            $NOTIFICATION_SENT = 1;
+            return 0;
+        }
+
+        if ( $conf_ref->{'MIN_FREE_SPACE_UNIT'} eq 'MB' ) {
+            $free_space = $mount->{'blocks_free'} / 1024;
+        }
+        elsif ( $conf_ref->{'MIN_FREE_SPACE_UNIT'} eq 'percent' ) {
+            $free_space = 100 - $mount->{'percent_used'};
+        }
+        else {
+            require Cpanel::Notify;
+            Cpanel::Notify::notification_class(
+                'class'            => 'Backup::Failure',
+                'application'      => 'Backup::Failure',
+                'constructor_args' => [
+                    'origin'     => 'cPanel Backup System',
+                    'start_time' => $start_time,
+                    'end_time'   => time(),
+                    'reason'     => $locale->maketext('The MIN_FREE_SPACE_UNIT parameter in the backup configuration is not a valid unit. You must set it to “MB” or “percent”. Backups will not run.')
+                ]
+            );
+            $logger->warn("MIN_FREE_SPACE_UNIT in the backup configuration is not a valid unit. It must be 'MB' or 'percent'. Backups will not run.");
+            $NOTIFICATION_SENT = 1;
+            return 0;
+        }
+
+        if ( $free_space < $conf_ref->{'MIN_FREE_SPACE'} ) {
+            require Cpanel::Notify;
+            Cpanel::Notify::notification_class(
+                'class'            => 'Backup::Failure',
+                'application'      => 'Backup::Failure',
+                'constructor_args' => [
+                    'origin'     => 'cPanel Backup System',
+                    'start_time' => $start_time,
+                    'end_time'   => time(),
+                    'reason'     => $locale->maketext( "Available disk space ([_1] [_2]) is too low. Backups will not run.", $free_space, $conf_ref->{'MIN_FREE_SPACE_UNIT'} ),
+                ]
+            );
+            $logger->warn("Available disk space ($free_space $conf_ref->{'MIN_FREE_SPACE_UNIT'}) is too low. Backups will not run.");
+            $NOTIFICATION_SENT = 1;
+            return 0;
+        }
+    }
+    return 1;
+}
+
+#
+# Make sure all the backup subdirectories are created and have appropriate permissions
+# And return the pertinant directories, base, system, & accounts
+#
+sub setup_backup_directories {
+    my ($basedir) = @_;
+
+    my $day_string_dir = get_day_string_dir();
+
+    my @paths = ( basedir => [] );
+
+    # Only create dated subdirectory structures if we are running the relevant type of backup
+
+    if ($run_daily) {
+        push @paths, (
+            basedir_daily          => [],
+            basedir_daily_date     => [$day_string_dir],    # /backup/YYYY-MM-DD/
+            basedir_daily_files    => [ $day_string_dir, 'system' ],
+            basedir_daily_accounts => [ $day_string_dir, 'accounts' ],
+        );
+    }
+    if ($run_weekly) {
+        push @paths, (
+            'basedir_weekly'          => ['weekly'],
+            'basedir_weekly_date'     => [ 'weekly', $day_string_dir ],    # /backup/weekly/YYYY-MM-DD/
+            'basedir_weekly_files'    => [ 'weekly', $day_string_dir, 'system' ],
+            'basedir_weekly_accounts' => [ 'weekly', $day_string_dir, 'accounts' ],
+        );
+    }
+    if ($run_monthly) {
+        push @paths, (
+            'basedir_monthly'          => ['monthly'],
+            'basedir_monthly_date'     => [ 'monthly', $day_string_dir ],    # /backup/monthly/YYYY-MM-DD/
+            'basedir_monthly_files'    => [ 'monthly', $day_string_dir, 'system' ],
+            'basedir_monthly_accounts' => [ 'monthly', $day_string_dir, 'accounts' ],
+        );
+    }
+
+    my %paths_hash;
+
+    while ( my ( $key, $path_ar ) = splice( @paths, 0, 2 ) ) {
+        $paths_hash{$key} = File::Spec->catdir( $basedir, @$path_ar );
+
+        _mkdir_set_mode( $paths_hash{$key}, 0711 );
+    }
+
+    # return the paths
+    return ( \%paths_hash );
+}
+
+sub _mkdir_set_mode {
+    my ( $path, $mode ) = @_;
+
+    # Do not use Cpanel::Autodie here, or this will break on NFS.
+    mkdir( $path, $mode ) or chmod( $mode, $path );
+
+    return;
+}
+
+#
+# Backup all the mysql databases into the system backup
+#
+sub backup_all_mysql_databases {
+    my ($basedir_files) = @_;
+
+    # Backups must be configured to backup the whole mysql directory
+    # whether exclusively or in addition to backing up mysql with the individual accounts
+    return 0 unless ( $conf_ref->{'MYSQLBACKUP'} eq "both" || $conf_ref->{'MYSQLBACKUP'} eq 'dir' );
+
+    if ( Cpanel::MysqlUtils::MyCnf::Basic::is_remote_mysql() ) {
+        $logger->warn("Unable to backup MySQL directory for a remote MySQL server.");
+        push @ERRORS_TO_REPORT, { 'type' => 'important', 'error' => "Unable to backup MySQL directory for a remote MySQL server." };
+        return 0;
+    }
+
+    my $mysqldatadir = Cpanel::MysqlUtils::Dir::getmysqldir() or do {
+        die 'Unable to determine MySQL data directory!';
+    };
+
+    my $rawdir = $mysqldatadir;
+    $rawdir =~ s/\//_/g;
+
+    my @EXCLUDES = Cpanel::Backup::SystemResources::get_excludes_args_by_path($mysqldatadir);
+
+    my $error;
+    try {
+        Cpanel::Autodie::mkdir_if_not_exists("$basedir_files/dirs");
+    }
+    catch {
+        my $error           = $_;
+        my $error_as_string = Cpanel::Exception::get_string($error);
+        $logger->warn("Failed to create “$basedir_files/dirs”: $error_as_string");
+        push @ERRORS_TO_REPORT, { 'type' => 'important', 'error' => $error };
+    };
+    return 0 if $error;
+
+    my $full_rawdir = "$basedir_files/dirs/$rawdir";
+
+    # Added exclude for /proc for chroot bind setups to prevent error messages
+    if ( $conf_ref->{'BACKUPTYPE'} eq "incremental" ) {
+        $logger->info("Starting incremental MySQL database backups");
+        if ( 0 != $utility->cpusystem( 'rsync', $utility->get_config('rsync'), @EXCLUDES, '--delete', "$mysqldatadir/", $full_rawdir ) ) {
+            $logger->warn("Failed to perform incremental MySQL database backup.");
+            push @ERRORS_TO_REPORT, { 'type' => 'local_copy', 'title' => "Failed to perform incremental MySQL database backup.", 'error' => $utility->cpusystem_error() };
+            return 0;
+        }
+    }
+    else {
+        $logger->info("Starting full MySQL database backups");
+
+        my $tarball_path = "$full_rawdir.tar.gz";
+
+        if ( 0 == $utility->cpusystem( 'tar', '--use-compress-program=/usr/local/cpanel/bin/gzip-wrapper', '--create', '--preserve-permissions', '--file', $tarball_path, @EXCLUDES, $mysqldatadir ) ) {
+            chmod( 0600, $tarball_path ) or do {
+                push @ERRORS_TO_REPORT, { 'type' => 'important' => 'error' => "Failed to chmod($tarball_path): $!" };
+                $logger->warn("Failed to chmod($tarball_path): $!");
+            };
+        }
+        else {
+            $logger->warn("Failed to perform full MySQL database backup.");
+            push @ERRORS_TO_REPORT, { 'type' => 'local_copy', 'title' => "Failed to perform full MySQL database backup.", 'error' => $utility->cpusystem_error() };
+            return 0;
+        }
+    }
+
+    return 1;
+}
+
+#
+# Backup the system files
+#
+sub backup_system_files {
+    my ($target_files) = @_;
+    my $rc = 1;
+
+    #TODO: Why is this here? Replace it with something that
+    #reports errors better.
+    Cpanel::FileUtils::TouchFile::touchfile($target_files);
+
+    return 0 unless ( $conf_ref->{'BACKUPFILES'} eq 'yes' );
+
+    $logger->info("Running dir & file backup with target : $target_files");
+    _mkdir_set_mode( "$target_files/files", 0700 );
+    _mkdir_set_mode( "$target_files/dirs",  0700 );
+
+    my ( $syncstatus, $syncmessage );
+
+    my $system_paths = Cpanel::Backup::SystemResources::get_resource_paths();
+
+    foreach my $file ( @{ $system_paths->{'files'} } ) {
+        next if ( !-e $file );
+        my $rawfile = $file;
+        $rawfile =~ s/\//_/g;
+        if ( $conf_ref->{'BACKUPTYPE'} eq "incremental" ) {
+            ( $syncstatus, $syncmessage ) = Cpanel::SimpleSync::syncfile( $file, "$target_files/files/$rawfile", 0, 1 );
+        }
+        else {
+            ( $syncstatus, $syncmessage ) = Cpanel::SimpleSync::syncfile( $file, "$target_files/files/$rawfile", 0, 1 );
+
+            if ( $syncstatus != 0 ) {
+                if ( $utility->cpusystem( 'gzip', "-f", "$target_files/files/$rawfile" ) != 0 ) {
+                    push @ERRORS_TO_REPORT, { 'type' => 'local_copy', 'title' => "Failed to compress file “$target_files/files/$rawfile”.", 'error' => $utility->cpusystem_error() };
+                    $rc = 0;
+                    $logger->warn("Failed to compress file “$target_files/files/$rawfile”.");
+                }
+            }
+        }
+        if ( $syncstatus == 0 ) {
+            $rc = 0;
+            push @ERRORS_TO_REPORT, { 'type' => 'local_copy', 'title' => "Failed to backup “$file”", 'error' => $syncmessage };
+            $logger->warn( "Failed to backup “$file”: " . ( $syncmessage // '' ) );
+        }
+    }
+
+    foreach my $dir ( @{ $system_paths->{'dirs'} } ) {
+        next if ( !-e $dir );
+        my $rawdir = $dir;
+        $rawdir =~ s/\//_/g;
+
+        my @EXCLUDES = Cpanel::Backup::SystemResources::get_excludes_args_by_path($dir);
+
+        # Added exclude for /proc for chroot bind setups to prevent error messages
+        if ( $conf_ref->{'BACKUPTYPE'} eq "incremental" ) {
+            if ( $utility->cpusystem( 'rsync', $utility->get_config('rsync'), @EXCLUDES, '--delete', "$dir/", "$target_files/dirs/$rawdir" ) != 0 ) {
+                push @ERRORS_TO_REPORT, { 'type' => 'local_copy', 'title' => "Failed to perform incremental backup of “$dir/” to “$target_files/dirs/$rawdir”.", 'error' => $utility->cpusystem_error() };
+                $rc = 0;
+                $logger->warn("Failed to perform incremental backup of “$dir/” to “$target_files/dirs/$rawdir”.");
+            }
+        }
+        else {
+            if ( $utility->cpusystem( 'tar', '--use-compress-program=/usr/local/cpanel/bin/gzip-wrapper', '--create', '--preserve-permissions', '--file', "$target_files/dirs/$rawdir.tar.gz", @EXCLUDES, $dir ) == 0 ) {
+                chmod( 0600, "$target_files/dirs/$rawdir.tar.gz" );
+            }
+            else {
+                push @ERRORS_TO_REPORT, { 'type' => 'local_copy', 'title' => "Failed to perform full backup of “$dir/” to “$target_files/dirs/$rawdir.tar.gz”.", 'error' => $utility->cpusystem_error() };
+                $rc = 0;
+                $logger->warn("Failed to perform full backup of “$dir/” to “$target_files/dirs/$rawdir.tar.gz”.");
+            }
+        }
+    }
+
+    # We are done unless a transport has been configured to receive system backups
+    # This flag is set when at least one transport has been configured thusly
+    if ( !$transport_system_backups ) {
+        $logger->info("System backups will not be uploaded to any remote destinations.");
+        return $rc;
+    }
+
+    my $archive_basename      = 'system_files.tar';
+    my $system_backup_archive = Cwd::abs_path("$target_files/../$archive_basename");
+    if ( $utility->cpusystem( 'tar', 'cfp', $system_backup_archive, $target_files ) == 0 ) {
+        chmod( 0600, $system_backup_archive );
+    }
+    else {
+        push @ERRORS_TO_REPORT, { 'type' => 'local_copy', 'title' => "Failed to tar “$target_files” to “$system_backup_archive”.", 'error' => $utility->cpusystem_error() };
+        $rc = 0;
+        $logger->warn("Failed to tar “$target_files” to “$system_backup_archive”.");
+    }
+
+    if ($run_daily) {
+
+        my $system_backup_archive_remote = get_day_string_dir() . "/system/$archive_basename";
+
+        my ( $queue_status, $queue_error ) = transport_system_backup_file(
+            {
+                local_path  => $system_backup_archive,
+                remote_path => $system_backup_archive_remote,
+                local_files => $target_files,
+                keep_local  => $run_monthly || $run_weekly ? 1 : $conf_ref->{'KEEPLOCAL'},
+                session_id  => $session_id,
+                queue       => $queue
+            }
+        );
+        if ( !$queue_status ) {
+            push @ERRORS_TO_REPORT, { 'type' => 'transport', 'backup_type' => 'daily', 'system' => 'sys_files.tar', 'error' => "Could not queue “$system_backup_archive” for transport to “$system_backup_archive_remote”: $queue_error." };
+            $rc = 0;
+            $logger->warn("Could not queue “$system_backup_archive” for transport to “$system_backup_archive_remote”: $queue_error.");
+        }
+    }
+
+    if ($run_weekly) {
+
+        my $system_backup_archive_remote = 'weekly/' . get_day_string_dir() . "/system/$archive_basename";
+        my ( $queue_status, $queue_error ) = transport_system_backup_file(
+            {
+                local_path  => $system_backup_archive,
+                remote_path => $system_backup_archive_remote,
+                local_files => $target_files,
+                keep_local  => $run_monthly ? 1 : $conf_ref->{'KEEPLOCAL'},
+                session_id  => $session_id,
+                queue       => $queue
+            }
+        );
+        if ( !$queue_status ) {
+            push @ERRORS_TO_REPORT, { 'type' => 'transport', 'backup_type' => 'weekly', 'system' => 'sys_files.tar', 'error' => "Could not queue “$system_backup_archive” for transport to “$system_backup_archive_remote”: $queue_error." };
+            $rc = 0;
+            $logger->warn("Could not queue “$system_backup_archive” for transport to “$system_backup_archive_remote”: $queue_error.");
+        }
+    }
+
+    if ($run_monthly) {
+
+        my $system_backup_archive_remote = 'monthly/' . get_day_string_dir() . "/system/$archive_basename";
+        my ( $queue_status, $queue_error ) = transport_system_backup_file(
+            {
+                local_path  => $system_backup_archive,
+                remote_path => $system_backup_archive_remote,
+                local_files => $target_files,
+                keep_local  => $conf_ref->{'KEEPLOCAL'},
+                session_id  => $session_id,
+                queue       => $queue
+            }
+        );
+        if ( !$queue_status ) {
+            push @ERRORS_TO_REPORT, { 'type' => 'transport', 'backup_type' => 'monthly', 'system' => 'sys_files.tar', 'error' => "Could not queue “$system_backup_archive” for transport to “$system_backup_archive_remote”: $queue_error." };
+            $rc = 0;
+            $logger->warn("Could not queue “$system_backup_archive“ for transport to “$system_backup_archive_remote”: $queue_error.");
+        }
+    }
+
+    # Make sure our temporary tar file gets deleted after it is copied
+    my ( $queue_status, $queue_error ) = queue_remove_system_backup_tar_file(
+        {
+            local_path => $system_backup_archive,
+            session_id => $session_id,
+            queue      => $queue
+        }
+    );
+    if ( !$queue_status ) {
+        push @ERRORS_TO_REPORT, { 'type' => 'transport', 'backup_type' => 'temp', 'system' => 'sys_files.tar', 'error' => "Could not queue deletion of “$system_backup_archive”: $queue_error." };
+        $rc = 0;
+        $logger->warn("Could not queue deletion of “$system_backup_archive”: $queue_error.");
+    }
+
+    return $rc;
+}
+
+sub backup_accounts {    ## no critic qw( Subroutines::ProhibitExcessComplexity ) # I refactored some stuff out to bring it down a bit, but any more will take too much time for little gain. Some things are just "complex"
+    my ($target_accounts) = @_;
+    my $rc = 1;
+
+    if ( $conf_ref->{'BACKUPACCTS'} eq 'no' ) {
+        $logger->info("BACKUPACCTS disabled.");
+        return 0;
+    }
+
+    Cpanel::FileUtils::TouchFile::touchfile($target_accounts);
+
+    $logger->info("Running account backup with target : $target_accounts");
+
+    $ENV{'pkgacct-logs'}       = ( $conf_ref->{'BACKUPLOGS'} eq "yes"      ? 1 : 0 );
+    $ENV{'pkgacct-mysql'}      = ( ( $conf_ref->{'MYSQLBACKUP'} eq "dir" ) ? 0 : 1 );
+    $ENV{'pkgacct-psql'}       = ( $conf_ref->{'PSQLBACKUP'} eq "no"       ? 0 : 1 );
+    $ENV{'pkgacct-bwdata'}     = ( $conf_ref->{'BACKUPBWDATA'} eq "no"     ? 0 : 1 );
+    $ENV{'pkgacct-localzones'} = ( $conf_ref->{'LOCALZONESONLY'} eq 'no'   ? 0 : 1 );
+    $ENV{'pkgacct-backup'}     = 1;
+
+    my $day_string_dir = get_day_string_dir();
+
+    my $no_backup_for_suspended_accounts = exists $conf_ref->{'BACKUPSUSPENDEDACCTS'} && $conf_ref->{'BACKUPSUSPENDEDACCTS'} eq 'no' ? 1 : 0;
+
+    my $is_incremental = $conf_ref->{'BACKUPTYPE'} eq 'incremental';
+
+    my ( $mday, $mon, $year ) = ( localtime( time() ) )[ 3, 4, 5 ];
+    $year += 1900;
+    $mon++;
+
+    my $today = sprintf( "%04d-%02d-%02d", $year, $mon, $mday );
+
+    my $backup_dir = $conf_ref->{'BACKUPDIR'};
+
+    my $backup_date_dir = $target_accounts;
+
+    # We could use this, but it makes mocking for testing more difficult
+    # my $backup_date_dir = $backup_dir . '/' . $today;
+    $backup_date_dir =~ s/^(.*)\/accounts+$/$1/;
+
+  USER_LOOP:
+    foreach my $user ( Cpanel::Config::Users::getcpusers() ) {
+        $logger->info("checking backup for $user");
+        if ( $no_backup_for_suspended_accounts && is_user_suspended($user) ) {
+            $logger->info("Skipping suspended account “$user”.");
+            next;
+        }
+
+        my $user_conf = Cpanel::Config::LoadCpUserFile::load($user);
+        $user_conf->{'BACKUP'} = 0 if !exists $user_conf->{'BACKUP'};
+
+        if ( $user_conf->{'BACKUP'} ) {
+            $logger->info("Backups ARE enabled for $user");
+        }
+        else {
+            $logger->info("Backups ARE NOT enabled for $user");
+            next;
+        }
+
+        if ( $conf_ref->{'BACKUPTYPE'} eq 'incremental' ) {
+            my $last_update_time = time();
+            utime( $last_update_time, $last_update_time, "$target_accounts/$user" );
+        }
+
+        # look for youngest backup dir for this user
+        my %backups;
+
+        if ($is_incremental) {
+
+            $logger->info("Backup type is incremental..");
+
+            # when we do incremental backups, we want to use hard links as
+            # much as possible from a previous incremental to the new
+            # incremental.  To do this we find the most recent incremental for
+            # this user and pass it to pkgacct as the "link_dest" that is used
+            # in the rsync command for doing hardlinks.
+
+            my $incremental_dir  = $backup_dir . "/incremental/accounts/$user";
+            my $backup_meta_data = $incremental_dir . "/backup_meta_data";
+            if ( -e $backup_meta_data ) {
+                my $json_ref = Cpanel::JSON::SafeLoadFile($backup_meta_data);
+                if (   $json_ref
+                    && exists $json_ref->{'BACKUP_DATE'}
+                    && $json_ref->{'BACKUP_DATE'} ne $today ) {
+                    $backups{ $json_ref->{'BACKUP_DATE'} } = $incremental_dir;
+                }
+            }
+
+            foreach my $backup (
+                File::Glob::bsd_glob( $backup_dir . "/monthly/2*/accounts/$user" ),
+                File::Glob::bsd_glob( $backup_dir . "/weekly/2*/accounts/$user" ),
+                File::Glob::bsd_glob( $backup_dir . "/2*/accounts/$user" )
+            ) {
+                if ( $backup =~ m/\/([0-9-]+)\// ) {
+                    next if $1 eq $today;
+
+                    $backups{$1} = $backup;
+                }
+            }
+        }
+
+        # Do a disk space check before backing up the user to ensure that we
+        # respond with an appropriate failure notification if we are out of disk space
+        return 0 unless enough_disk_space( $conf_ref->{'BACKUPDIR'} );
+
+        $logger->info("Calling pkgacct under cpuwatch to backup user “$user”");
+
+        my @pkgacct_cmd;
+
+        push( @pkgacct_cmd, 'pkgacct' );
+
+        if ($is_incremental) {
+            my @dates = sort keys %backups;
+            if (@dates) {
+                my $backup = $backups{ $dates[-1] };
+                push( @pkgacct_cmd, "--link_dest=$backup" );
+            }
+        }
+
+        push( @pkgacct_cmd, ( $conf_ref->{'BACKUPTYPE'} eq 'uncompressed' ? '--nocompress'  : () ) );
+        push( @pkgacct_cmd, ( $conf_ref->{'BACKUPTYPE'} eq 'incremental'  ? '--incremental' : () ) );
+        push( @pkgacct_cmd, $user );
+        push( @pkgacct_cmd, $target_accounts );
+        push( @pkgacct_cmd, 'backup' );
+
+        my $pkgacct_run = $utility->cpusystem(@pkgacct_cmd);
+
+        if ( $pkgacct_run != 0 ) {
+            push @ERRORS_TO_REPORT, { 'type' => 'account', 'user' => $user, 'error' => $utility->cpusystem_error() };
+            $logger->warn("Failed to back up account “$user”.");
+            $rc = 0;
+            next USER_LOOP;
+        }
+        else {
+            $logger->info("Successfully backed up account “$user” to “$target_accounts”");
+        }
+
+        # Add user to the meta master
+        $logger->info("Adding metadata information for $user to backup at $backup_date_dir");
+        Cpanel::Backup::Metadata::append_users_to_meta_master(
+            $backup_date_dir,
+            [
+                {
+                    'user'        => $user,
+                    'backup_type' => Cpanel::Backup::Metadata::translate_backup_type( $conf_ref->{'BACKUPTYPE'} )
+                }
+            ]
+        );
+
+        # Do a disk space check after backing up the user to ensure that we
+        # respond with an appropriate failure notification if we are out of disk space
+        return 0 unless enough_disk_space( $conf_ref->{'BACKUPDIR'} );
+
+        # Incremental is no longer shunned from transport, so we add it to the queue with a "type" flag of "incremental" and set
+        # local_path to the local directory and remote_path to the remote directory. Any transport that can handle incremental directories
+        # will have a function available in it to do the dirty work, otherwise it will be skipped by single-file-only transports
+
+        my $target_file;
+        my $remote_path;
+        my $local_path;
+
+        if ( $conf_ref->{'BACKUPTYPE'} eq 'incremental' ) {
+
+            # The backup was both successful and incremental
+            $logger->info("Processing an incremental type backup for $user.. ");
+
+            Cpanel::Backup::BackupSetUtil::write_date_to_meta_file( "$target_accounts/$user", $now );
+            $local_path = $target_accounts . '/' . $user;
+        }
+        else {
+            $target_file = ( $conf_ref->{'BACKUPTYPE'} eq 'uncompressed' ? "$user.tar" : "$user.tar.gz" );
+            $local_path  = $target_accounts . '/' . $target_file;
+        }
+
+        if ( !Cpanel::Backup::Metadata::metadata_disabled_check_scalar() ) {
+
+            # Try to generate metadata for the user before transporting the backup since it could be deleted after transport
+            try {
+                Cpanel::Backup::Metadata::create_metadata_for_backup_user( $backup_date_dir, $user, $logger );
+            }
+            catch {
+                $logger->warn("Failed to generate backup metadata for $user: $_");
+            };
+        }
+
+        # If we want to have system backups transferred to backup destinations, we need to queue them in the code below, alongside the account backups
+
+        my $trans_msg;
+        $rc = queue_backups_for_transport(
+            {
+                'conf_ref'       => $conf_ref,
+                'remote_path'    => $remote_path,
+                'local_path'     => $local_path,
+                'day_string_dir' => $day_string_dir,
+                'user'           => $user,
+                'target_file'    => $target_file,
+                'session_id'     => $session_id,
+                'queue'          => $queue
+            }
+        );
+
+        if ( !$rc ) {
+            $logger->warn("Failed to queue remote backup transport for “$user” : $trans_msg");
+        }
+    }
+
+    #  We are done adding users to the meta master db, close it out and create the metadata for the backup as a whole
+    Cpanel::Backup::Metadata::complete_meta_master($target_accounts);
+
+    # Queue the transport for our master meta file and the sqldump
+    foreach my $metafile_item ($Cpanel::Backup::Metadata::master_meta_name) {    # Just one, for now
+
+        my $local_path  = $backup_date_dir . '/accounts/' . $metafile_item;
+        my $remote_path = get_day_string_dir() . '/accounts/' . $metafile_item;
+
+        if ( $local_path =~ m{/weekly/} ) {
+            $remote_path = 'weekly/' . $remote_path;
+        }
+        elsif ( $local_path =~ m{/monthly/} ) {
+            $remote_path = 'monthly/' . $remote_path;
+        }
+
+        # We call queue_backup_transport_item() inside queue_metadata_transport, which inspects the caller here and expects it in a list context, hence @queue_meta
+        my @queue_meta = queue_metadata_transport(
+            {
+                local_path  => $local_path,
+                remote_path => $remote_path,
+                local_files => $target_accounts,
+                keep_local  => $conf_ref->{'KEEPLOCAL'},
+                session_id  => $session_id,
+                type        => $conf_ref->{'BACKUPTYPE'},
+                queue       => $queue
+            },
+            $logger
+        );
+    }
+
+    return $rc;
+}
+
+sub queue_metadata_transport {
+    my ( $args_ref, $logger ) = @_;
+
+    foreach my $required (qw(local_path remote_path keep_local session_id)) {
+        die Cpanel::Exception::create( 'MissingParameter', [ 'name' => $required ] ) if !length $args_ref->{$required};
+    }
+
+    # If local_path is a directory for incrementals, disable MD5 sum check
+    my $md5 = 'inc';
+    if ( $args_ref->{'type'} ne 'incremental' ) {
+        $md5 = Cpanel::MD5::getmd5sum( $args_ref->{'local_path'} );
+    }
+
+    my $queue_entry = {
+        'cmd'         => 'copy_backup_metadata',
+        'user'        => 'root',
+        'md5'         => $md5,
+        'time'        => time,
+        'local_path'  => $args_ref->{'local_path'},
+        'remote_path' => $args_ref->{'remote_path'},
+        'local_files' => $args_ref->{'local_files'},
+        'keep_local'  => $args_ref->{'keep_local'},
+        'session_id'  => $args_ref->{'session_id'},
+        'type'        => $args_ref->{'type'}
+    };
+
+    $logger->info("Queuing transport of meta file: $args_ref->{'local_path'}");
+
+    return queue_backup_transport_item( $queue_entry, $args_ref->{'queue'} );
+}
+
+sub _transport_file {
+    my ($args_hr) = @_;
+
+    # args required
+    # conf_ref
+    # local_path
+    # day_string_dir
+    # user
+    # queue
+    # remote_path
+    # target_file
+    # session_id
+    # type (daily, weekly or monthly)
+
+    foreach my $arg (qw(local_path day_string_dir user queue target_file type conf_ref session_id)) {
+        if ( !exists $args_hr->{$arg} ) {
+            $logger->die("Missing argument : $arg");
+        }
+    }
+
+    my $conf_ref       = $args_hr->{'conf_ref'};
+    my $local_path     = $args_hr->{'local_path'};
+    my $day_string_dir = $args_hr->{'day_string_dir'};
+    my $user           = $args_hr->{'user'};
+    my $queue          = $args_hr->{'queue'};
+    my $target_file    = $args_hr->{'target_file'};
+    my $type           = $args_hr->{'type'};
+    my $session_id     = $args_hr->{'session_id'};
+    my $remote_path;
+
+    my $prefix = '';
+
+    $prefix = 'weekly/'  if $type eq 'weekly';
+    $prefix = 'monthly/' if $type eq 'monthly';
+
+    if ( $conf_ref->{'BACKUPTYPE'} eq 'incremental' ) {
+        $remote_path = $prefix . $day_string_dir . '/accounts/' . $user;
+    }
+    else {
+        $remote_path = $prefix . $day_string_dir . '/accounts/' . $target_file;
+    }
+
+    $logger->info("Queuing $type backup copy of “$user” for transport of “$local_path” to “$remote_path”");
+
+    my $keep_local;
+    if ( $type eq 'monthly' ) {
+        $keep_local = $conf_ref->{'KEEPLOCAL'};
+    }
+    elsif ( $type eq 'weekly' ) {
+        $keep_local = $run_monthly ? 1 : $conf_ref->{'KEEPLOCAL'};
+    }
+    else {
+        $keep_local = $run_monthly || $run_weekly ? 1 : $conf_ref->{'KEEPLOCAL'};
+    }
+
+    $logger->info("This particular transport will be queued with keep_local = $keep_local , based on the need to copy weekly ($run_weekly) and/or monthly ($run_monthly) copies as well.");
+
+    my $rc = 1;
+    my ( $queue_status, $queue_error ) = transport_file(
+        {
+            local_path  => $local_path,
+            remote_path => $remote_path,
+            user        => $user,
+            keep_local  => $keep_local,
+            session_id  => $session_id,
+            queue       => $queue,
+            type        => $conf_ref->{'BACKUPTYPE'}
+        }
+    );
+    if ( !$queue_status ) {
+        push @ERRORS_TO_REPORT, { 'type' => 'transport', 'backup_type' => $type, 'system' => $user, 'error' => "Could not queue “$local_path” for transport to “$remote_path”: $queue_error." };
+        $logger->warn("Could not queue “$local_path” for transport to “$remote_path”: $queue_error.");
+        $rc = 0;
+    }
+
+    return $rc;
+}
+
+sub queue_backups_for_transport {
+    my ($args_hr) = @_;
+    my @missing_args;
+    my $conf_ref       = $args_hr->{'conf_ref'}       || push( @missing_args, 'conf_ref' );
+    my $local_path     = $args_hr->{'local_path'}     || push( @missing_args, 'local_path' );
+    my $day_string_dir = $args_hr->{'day_string_dir'} || push( @missing_args, 'day_string_dir' );
+    my $user           = $args_hr->{'user'}           || push( @missing_args, 'user' );
+    my $session_id     = $args_hr->{'session_id'}     || push( @missing_args, 'session_id' );
+    my $queue          = $args_hr->{'queue'}          || push( @missing_args, 'queue' );
+    my $remote_path    = $args_hr->{'remote_path'};    # remote_path can be undef if path is relative ~ of remote account
+    my $target_file    = $args_hr->{'target_file'};    # target_file can be undef if incremental
+
+    if (@missing_args) {
+        $logger->die("Missing arguments : @missing_args");
+        return 0;
+    }
+
+    # Assume success!
+    my $rc = 1;
+
+    if ($run_daily) {
+        if (
+            !_transport_file(
+                {
+                    'conf_ref'       => $conf_ref,
+                    'local_path'     => $local_path,
+                    'day_string_dir' => $day_string_dir,
+                    'user'           => $user,
+                    'queue'          => $queue,
+                    'remote_path'    => $remote_path,
+                    'target_file'    => $target_file,
+                    'type'           => 'daily',
+                    'session_id'     => $session_id
+                }
+            )
+        ) {
+            $rc = 0;
+        }
+    }
+
+    if ($run_weekly) {
+        if (
+            !_transport_file(
+                {
+                    'conf_ref'       => $conf_ref,
+                    'local_path'     => $local_path,
+                    'day_string_dir' => $day_string_dir,
+                    'user'           => $user,
+                    'queue'          => $queue,
+                    'remote_path'    => $remote_path,
+                    'target_file'    => $target_file,
+                    'type'           => 'weekly',
+                    'session_id'     => $session_id
+                }
+            )
+        ) {
+            $rc = 0;
+        }
+    }
+
+    if ($run_monthly) {
+        if (
+            !_transport_file(
+                {
+                    'conf_ref'       => $conf_ref,
+                    'local_path'     => $local_path,
+                    'day_string_dir' => $day_string_dir,
+                    'user'           => $user,
+                    'queue'          => $queue,
+                    'remote_path'    => $remote_path,
+                    'target_file'    => $target_file,
+                    'type'           => 'monthly',
+                    'session_id'     => $session_id
+                }
+            )
+        ) {
+            $rc = 0;
+        }
+    }
+
+    return $rc;
+}
+
+sub is_user_suspended {
+    return unless defined $_[0];
+    return Cpanel::AcctUtils::Suspended::is_suspended( $_[0] );
+}
+
+#
+# Get a string of the format YYYY-MM-DD based on the date.
+# If we are doing incremental backups, return "incremental"
+#
+sub get_day_string_dir {
+
+    # We always want to store the backup in the same place if it is incremental
+    # So, we don't place it in a directory based on the date
+    #  return "incremental" if $conf_ref->{'BACKUPTYPE'} eq "incremental";
+
+    my ( $day, $month, $year ) = ( localtime($now) )[ 3, 4, 5 ];
+
+    return sprintf "%04d-%02d-%02d", $year + 1900, $month + 1, $day;
+}
+
+#
+# Prune all the backups of a given type (accounts, system)
+# based on if there are more than what is permitted via
+# the retention policy
+#
+sub prune_backup_dirs {
+    my ( $basedir, $num_to_retain ) = @_;
+
+    # A positive number to retain implies a finite number of backups to keep
+    if ( $num_to_retain > 0 ) {
+
+        # Get a list of paths to all our backup sets
+        my @backup_dirs = get_backup_directories($basedir);
+
+        # Find our newest good backup, and remove it from the array
+        my $backup_removed = 0;    # we might not actually *have* a good one
+      FIND_GOOD_BACKUP:
+        for ( my $i = @backup_dirs - 1; $i >= 0; $i-- ) {
+            next FIND_GOOD_BACKUP if ( -e _failure_file_path( $backup_dirs[$i] ) );    # Nope!
+            splice( @backup_dirs, $i, 1 );
+            $backup_removed++;
+            last FIND_GOOD_BACKUP;
+        }
+
+        # We have too many
+        while ( @backup_dirs > $num_to_retain - $backup_removed ) {
+
+            # The first will be the oldest
+            my $dir_to_remove = shift @backup_dirs;
+            $logger->info("Pruning backup directory: $dir_to_remove");
+
+            # Delete the whole backup file tree
+            File::Path::rmtree($dir_to_remove);
+
+            try {
+                Cpanel::Backup::Metadata::prune_backup($dir_to_remove);
+            }
+            catch {
+                push @ERRORS_TO_REPORT, { 'type' => 'important', 'error' => "Error pruning backup metadata:  $_" };
+            };
+        }
+    }
+    else {
+        $logger->info("No need to prune backups, no retention limit set.");
+    }
+    return;
+}
+
+#
+# Returns an ordered list, oldest to newest, of all the paths
+# to the backup directories.  Used for pruning.
+#
+sub get_backup_directories {
+    my ($basedir) = @_;
+
+    # Our result list of directories
+    my @backup_dirs = ();
+
+    my $dh;
+    unless ( opendir $dh, $basedir ) {
+        $logger->warn("Unable to open “$basedir”: $!");
+        push @ERRORS_TO_REPORT, { 'type' => 'important', 'error' => "Unable to open “$basedir”: $!" };
+        return ();
+    }
+
+    while ( my $dir_name = readdir $dh ) {
+
+        # Only get the ones formated YYYY-MM-DD
+        next unless $dir_name =~ /^[0-9]{4}-[0-9]{2}-[0-9]{2}\/?$/;
+
+        my $full_dir = File::Spec->catdir( $basedir, $dir_name );
+
+        if ( -d $full_dir ) {
+            push @backup_dirs, $full_dir;
+        }
+    }
+
+    closedir($dh);
+    @backup_dirs = sort @backup_dirs;
+    return @backup_dirs;
+}
+
+#
+# To prune the remote files, we need to place an item on the queue
+# to prune for the remote destinations.  It needs to be queued
+# so it will occur after all the copying has been completed
+#
+sub prune_remote_files {
+    my ( $num_to_retain, $backup_type, $session_id, $queue, $appended_path ) = @_;
+
+    # We only prune if there is a positive number of items to retain
+    return if ( $num_to_retain < 1 );
+
+    my $type_of_backup = 'daily';
+    if ( $appended_path eq 'monthly' ) {
+        $type_of_backup = 'monthly';
+    }
+    elsif ( $appended_path eq 'weekly' ) {
+        $type_of_backup = 'weekly';
+    }
+    $logger->info("Queuing prune operation for remote destination $type_of_backup backups");
+
+    my $queue_entry = {
+        'cmd'           => 'prune',
+        'num_to_retain' => $num_to_retain,
+        'time'          => time,
+        'session_id'    => $session_id,
+        'appended_path' => $appended_path,
+    };
+
+    return queue_backup_transport_item( $queue_entry, $queue );
+}
+
+#
+# Queue the unmount of the backup volume so that it happens after
+# all the files have been uploaded to their destinations
+#
+sub queue_unmount_backup_volume {
+    my ( $backup_volume, $mountkey, $session_id ) = @_;
+
+    $logger->info("Queuing $backup_volume to be unmounted");
+
+    my $queue_entry = {
+        'cmd'        => 'unmount',
+        'volume'     => $backup_volume,
+        'mountkey'   => $mountkey,
+        'time'       => time,
+        'session_id' => $session_id,
+    };
+
+    return queue_backup_transport_item( $queue_entry, $queue );
+}
+
+#
+# Queue the removal of the backup staging directory if KEEPLOCAL is disabled
+#
+sub queue_staging_directory_removal {
+    my ( $staging_dir_paths_ref, $queue, $session_id ) = @_;
+    return if $conf_ref->{'KEEPLOCAL'};
+
+    $logger->info("Queuing removal of staging directories since KEEPLOCAL is disabled.");
+
+    my $queue_entry = {
+        'cmd'         => 'removestaging',
+        'stagingdirs' => $staging_dir_paths_ref,
+        'time'        => time,
+        'session_id'  => $session_id,
+    };
+
+    my ( $queue_status, $queue_error ) = queue_backup_transport_item( $queue_entry, $queue );
+    return ( $queue_status, $queue_error );
+}
+
+sub transport_file {
+    my ($args_ref) = @_;
+
+    foreach my $required (qw(user local_path remote_path keep_local session_id)) {
+        die Cpanel::Exception::create( 'MissingParameter', [ 'name' => $required ] ) if !length $args_ref->{$required};
+    }
+
+    # If local_path is a directory for incrementals, disable MD5 sum check
+    my $md5 = 'inc';
+    if ( $args_ref->{'type'} ne 'incremental' ) {
+        $md5 = Cpanel::MD5::getmd5sum( $args_ref->{'local_path'} );
+    }
+    $logger->info("Queuing transport of file: $args_ref->{'local_path'}");
+    my $queue_entry = {
+        'cmd'         => 'copy',
+        'user'        => $args_ref->{'user'},
+        'md5'         => $md5,
+        'time'        => time,
+        'local_path'  => $args_ref->{'local_path'},
+        'remote_path' => $args_ref->{'remote_path'},
+        'keep_local'  => $args_ref->{'keep_local'},
+        'session_id'  => $args_ref->{'session_id'},
+        'type'        => $args_ref->{'type'},
+    };
+    return queue_backup_transport_item( $queue_entry, $args_ref->{'queue'} );
+}
+
+sub transport_system_backup_file {
+    my ($args_ref) = @_;
+
+    foreach my $required (qw(local_path remote_path local_files keep_local session_id)) {
+        die Cpanel::Exception::create( 'MissingParameter', [ 'name' => $required ] ) if !length $args_ref->{$required};
+    }
+
+    # System backups are (currently) always tarballs when transferred, not incremental
+    my $md5 = Cpanel::MD5::getmd5sum( $args_ref->{'local_path'} );
+
+    $logger->info("Queuing transport of file: $args_ref->{'local_path'}");
+    my $queue_entry = {
+        'cmd'         => 'copy_system_backup',
+        'md5'         => $md5,
+        'time'        => time,
+        'local_path'  => $args_ref->{'local_path'},
+        'remote_path' => $args_ref->{'remote_path'},
+        'local_files' => $args_ref->{'local_files'},
+        'keep_local'  => $args_ref->{'keep_local'},
+        'session_id'  => $args_ref->{'session_id'},
+    };
+
+    return queue_backup_transport_item( $queue_entry, $args_ref->{'queue'} );
+}
+
+#
+# Since we may be copying the system backup archive tar
+# to monthly & daily & weekly locations, we can only delete it
+# when it is done with both.  We need to queue the deletion
+# to happen after both copies.
+#
+sub queue_remove_system_backup_tar_file {
+    my ($args_ref) = @_;
+
+    foreach my $required (qw(local_path session_id)) {
+        die Cpanel::Exception::create( 'MissingParameter', [ 'name' => $required ] ) if !length $args_ref->{$required};
+    }
+
+    $logger->info("Queuing deletion of file: $args_ref->{'local_path'}");
+    my $queue_entry = {
+        'cmd'        => 'remove_system_backup_tar_file',
+        'time'       => time,
+        'local_path' => $args_ref->{'local_path'},
+        'session_id' => $args_ref->{'session_id'}
+    };
+
+    return queue_backup_transport_item( $queue_entry, $args_ref->{'queue'} );
+}
+
+#
+# After the backup transport queue has finished processing everything
+# generated by this backup, it needs to email any error messages
+# that it collected to the system admin
+#
+sub queue_error_report_email {
+    my ( $queue, $session_id ) = @_;
+
+    $logger->info("Queuing transport reporter");
+    my $queue_entry = {
+        'cmd'        => 'report_any_errors',
+        'time'       => time,
+        'session_id' => $session_id,
+    };
+
+    return queue_backup_transport_item( $queue_entry, $queue );
+}
+
+sub queue_backup_transport_item {
+    my ( $queue_entry, $queue ) = @_;
+
+    Cpanel::Context::must_be_list();
+
+    # Add the error aggregator file to the queue entry
+    $queue_entry->{'error_aggregator_file'}            = $error_aggregator_file;
+    $queue_entry->{'serialized_error_aggregator_file'} = $serialized_error_aggregator_file;
+    my $encoded_queue_args = Cpanel::JSON::SafeDump($queue_entry);
+    if ( ref $queue ne 'Cpanel::TaskQueue' ) {
+        require Cpanel::Carp;
+        die Cpanel::Carp::safe_longmess( "queue_backup_transport_item requires a queue object: " . ( ref $queue ) );
+    }
+    my ( $queue_id, $err );
+    try {
+        $queue_id = $queue->queue_task( 'backup_transport ' . $encoded_queue_args );
+    }
+    catch {
+        $err = $_;
+    };
+    if ($err) {
+        my $error_as_string = Cpanel::Exception::get_string($err);
+        $logger->warn("Error queuing transport task: $error_as_string");
+        return ( 0, "Error queuing transport task: $error_as_string" );
+    }
+    $logger->info( "no_transport = $no_transport .. and queueid = " . ( $queue_id // 'unknown' ) );
+
+    # Don't start the transporter if the debug option has been given to not do that
+    return 1 if $no_transport;
+
+    # If the transporter is not running, start it.
+    start_cpbackup_transporter();
+
+    # Make sure we don't accumulate a large number of zombies by waiting on any
+    # earlier cpbackup_transporter processes that may have exited. (Case 72693)
+    1 while waitpid( -1, Cpanel::POSIX::Tiny::WNOHANG() ) > 0;
+
+    $logger->info("leaving queue_backup_transport_item");
+    return 1;
+}
+
+sub is_cpbackup_transporter_running {
+
+    return ( scalar Cpanel::Daemonizer::get_running_pids('cpbackup_transporter') ) ? 1 : 0;
+}
+
+sub start_cpbackup_transporter {
+
+    # If already running, then nothing to do
+    return if ( is_cpbackup_transporter_running() );
+
+    #
+    # As soon as SafeRun::bgrun returns, is_cpbackup_transporter_running() will
+    # always return true if it is running.  Previously there was a race condition
+    # in Cpanel::Daemonizer where is_cpbackup_transporter_running() would return
+    # false if it was checked right after the child had been fork()ed off and
+    # $0 was not yet set.
+    #
+    # This means we no longer have to wait for cpbackup_transporter to startup
+    # since its ready to go right away now.
+    #
+    Cpanel::SafeRun::bgrun('/usr/local/cpanel/bin/cpbackup_transporter');
+
+    # Wait about 10 seconds confirmation that it is running
+    # This will prevent us from scheduling instances of the script
+    # if it is starting up already (if this has been called multiple times)
+    foreach ( 1 .. 100 ) {
+
+        return if ( is_cpbackup_transporter_running() );
+
+        Cpanel::TimeHiRes::sleep(0.1);
+    }
+
+    # If it hasn't started up, it very well may have exited before we had a chance to exit for it
+    return;
+}
+
+sub setup_and_clean_logs {
+    my ( $logdir, $now ) = @_;
+
+    if ( -d $logdir ) {
+        chmod 0700, $logdir;
+    }
+    else {
+
+        # Protect against obvious shenanigans
+        if ( $logdir =~ m/^\/etc\// ) {
+            $logger->die("logdir set to a non-directory in /etc ( $logdir ), aborting backup.");
+        }
+        else {
+            unlink $logdir;
+            mkdir $logdir, 0700;
+        }
+    }
+
+    if ( opendir my $logdir_dh, $logdir ) {
+        while ( my $file = readdir($logdir_dh) ) {
+
+            # Pruning logs older than 10 days
+            if ( -f "$logdir/$file" && ( stat(_) )[9] < ( $now - ( 86400 * 10 ) ) ) {
+                unlink "$logdir/$file" or do {
+                    $logger->info("Failed to unlink($logdir/$file): $!");
+                };
+            }
+        }
+        closedir $logdir_dh;
+    }
+    else {
+        $logger->die("Failed to open directory $logdir: $!");
+    }
+    return;
+}
+
+# Check to be sure the backup staging dir is in /etc/fstab, otherwise it will fail attempting to mount something that isn't there
+sub is_backupdir_in_etc_fstab {
+    my $backupdir_in_fstab = 0;
+    if ( open( my $fstab_fh, '<', '/etc/fstab' ) ) {
+        while ( my $line = <$fstab_fh> ) {
+            chomp($line);
+            next if $line =~ m/^#/;
+            if ( $line =~ m/^.*\s+$conf_ref->{'BACKUPDIR'}\s+.+$/ ) {
+                $logger->info("Detected “$conf_ref->{'BACKUPDIR'}” in /etc/fstab");
+                $backupdir_in_fstab = 1;
+            }
+        }
+        close($fstab_fh);
+    }
+    return $backupdir_in_fstab;
+}
+
+sub mount_backup_disk_if_needed {
+    my ( $basemount, $host, $mounted_ref, $logdir, $start_time ) = @_;
+    $$mounted_ref = 0;
+
+    # Nothing to do if we are not configured to mount
+    return 1 unless $conf_ref->{'BACKUPMOUNT'} eq 'yes';
+
+    # If we got here, the backupmount option is enabled, but there is no known backupdir, so we skip trying to mount it
+    # as we know it would fail
+    if ( !is_backupdir_in_etc_fstab() ) {
+        my $error_message = "
+*********** ERROR ***********
+
+You have enabled BACKUPMOUNT in the /var/cpanel/backups/config file,
+but there is no mount point that matches $conf_ref->{'BACKUPDIR'} in the /etc/fstab file.
+
+Until you resolve this issue, backups will not run. To resolve this issue, you may either:
+
+1. Disable the \"Mount Backup Drive as Needed\" option in the \"Backup Configuration\" feature of WHM.
+
+ Choose this option if:
+  - Your backup partition is always mounted.
+  - You do not use a special backup partition or mount to store backups.
+  - You have a special case where cPanel should trust that the backup directory is configured properly.
+
+or
+
+2. Configure the backup directory mount point $conf_ref->{'BACKUPDIR'} in the /etc/fstab file.
+
+ Choose this option if:
+  - You want your backup partition or mount to automatically mount and unmount before and after backups are complete.
+  - You have simply forgotten to set up the mount point in the /etc/fstab file.
+
+Please note that the BACKUPDIR must be the mount point, not a subdirectory of another mount.
+
+*********** ERROR ***********\n";
+
+        $logger->info($error_message);
+        die $error_message;
+    }
+
+    $$mounted_ref = !Cpanel::BackupMount::backup_disk_is_mounted($basemount);
+    if ($$mounted_ref) {
+        Cpanel::BackupMount::mount_backup_disk( $basemount, 'cpbackup', 86400 );
+    }
+
+    my ( $ismounted, $mountline ) = Cpanel::BackupMount::backup_disk_is_mounted($basemount);
+    if ( !$ismounted ) {
+        if ( !-t STDIN ) {
+            $locale ||= Cpanel::Locale->get_handle();
+            require Cpanel::Notify;
+            Cpanel::Notify::notification_class(
+                'class'            => 'Backup::Failure',
+                'application'      => 'Backup::Failure',
+                'constructor_args' => [
+                    'origin'     => 'cPanel Backup System',
+                    'start_time' => $start_time,
+                    'end_time'   => time(),
+                    'reason'     => $locale->maketext( 'The system could not complete the backup because it could not mount “[_1]”.', $basemount )
+                ]
+            );
+            $NOTIFICATION_SENT = 1;
+        }
+        $logger->warn("Backup failed: $basemount is not mounted!");
+        return 0;
+    }
+    else {
+        $mountline = '' unless defined $mountline;
+        $logger->info("Mount found: $mountline");
+    }
+
+    return 1;
+}
+
+sub stderr_log_and_notify {
+    my ( $status, $subject, $logger, $start_time ) = @_;
+    unlink('/var/cpanel/backups_need_to_run');
+    $logger->info($status);
+
+    require Cpanel::Notify;
+    Cpanel::Notify::notification_class(
+        'class'            => 'Backup::Failure',
+        'application'      => 'cPanel Backup System',
+        'interval'         => 1,                        # always notify
+        'priority'         => 2,
+        'status'           => $status,
+        'constructor_args' => [
+            'origin'     => 'cPanel Backup System',
+            'start_time' => $start_time,
+            'end_time'   => time(),
+            'reason'     => $status,
+        ],
+    );
+    return;
+}
+
+sub can_hardlink_dir {
+    my $basedir    = shift;
+    my $tmp_file   = $basedir . '/tmp_fil1_' . time . '_' . $$;              # sufficiently unique for our purposes
+    my $tmp_file_2 = $basedir . '/tmp_fil2_' . time . '_' . $$ . '_link';    # sufficiently unique for our purposes
+
+    my $can_hard_link;
+
+    try {
+        Cpanel::Autodie::open( my $fh, '>>', $tmp_file );
+        my ( $inode, $hlink_cnt_orig ) = ( Cpanel::Autodie::stat($fh) )[ 1, 3 ];
+
+        my $linked;
+        try {
+            Cpanel::Autodie::link( $tmp_file, $tmp_file_2 );
+            $linked = 1;
+        }
+        catch {
+            $logger->info( "Hard linking is apparently unsupported: " . $_->to_string() );
+        };
+
+        if ($linked) {
+            my ( $linked_inode, $hlink_cnt ) = ( Cpanel::Autodie::lstat($tmp_file_2) )[ 1, 3 ];
+            if ( $linked_inode == $inode || $hlink_cnt == ( $hlink_cnt_orig + 1 ) ) {
+                $can_hard_link = 1;
+            }
+            else {
+                $logger->warn('Hard link reported success but doesn’t seem to have worked!');
+            }
+        }
+    }
+    catch {
+        $logger->warn( "Could not determine file system’s ability to hard link: " . Cpanel::Exception::get_string($_) );
+        push @ERRORS_TO_REPORT, { 'type' => 'important', 'error' => "Could not determine file system’s ability to hard link: " . Cpanel::Exception::get_string($_) };
+    }
+    finally {
+        Cpanel::Autodie::unlink_if_exists($_) for ( $tmp_file, $tmp_file_2 );
+    };
+
+    return $can_hard_link;
+}
+
+sub usage {
+    my $prog = $0;
+    $prog =~ s{^.+/(.+)$}{$1};
+    print <<EOF;
+$prog [options]
+
+This script will launch the cpanel daily backup process.
+
+Modifiers Flags:
+
+    --force - will update the file without checking any conditions
+    --debug - do not fork before launching ( dev mode )
+    --allow-override
+    --help - display this help message and exit
+EOF
+    exit;
+}
+
+sub _convert_process_error_to_string {
+    my ($err) = @_;
+    my $str = Cpanel::Exception::get_string($err);
+    if ( try { $err->isa('Cpanel::Exception::ProcessFailed::Error') } ) {
+        my $prog = $err->get('process_name');
+        $prog =~ s<.*/><>;
+        if ($prog) {
+            if ( $prog eq 'gtar' || $prog eq 'gnutar' ) {
+                $prog = 'tar';
+            }
+            elsif ( $prog eq 'pigz' ) {
+                $prog = 'gzip';
+            }
+
+            my $module = $utility->get_app_value( $prog, 'ExitValues_module' );
+            if ($module) {
+                substr( $module, 0, 0, "Cpanel::ExitValues::" );
+                Cpanel::LoadModule::load_perl_module($module);
+                $str .= sprintf(
+                    " (%s)",
+                    $module->number_to_string( $err->get('error_code') ),
+                );
+            }
+        }
+    }
+    return $str;
+}
+
+# Decide which backups are eligible for pruning on this run
+#
+sub _choose_backups_to_prune {
+    my $backup_failed = shift;
+    my $backups_to_prune;
+    foreach my $backup_type ( 'daily', 'weekly', 'monthly' ) {
+        my $control_vars = _get_control_vars($backup_type);
+        if ( $control_vars->{'run'} && ( !$backup_failed || $control_vars->{'force'} ) ) {
+            $backups_to_prune->{$backup_type} = 1;
+        }
+    }
+    return $backups_to_prune;
+}
+
+# This is kind of a stub, at the moment, but it might be useful for other things
+# where daily/weekly/monthly iterations are needed.
+sub _get_control_vars {
+
+    my $backup_type = shift;
+    my $control_vars;
+
+    if ( $backup_type eq 'daily' ) {
+        $control_vars->{'run'} = $run_daily;
+    }
+    if ( $backup_type eq 'weekly' ) {
+        $control_vars->{'run'} = $run_weekly;
+    }
+    if ( $backup_type eq 'monthly' ) {
+        $control_vars->{'run'} = $run_monthly;
+    }
+    if ( exists $conf_ref->{ 'FORCE_PRUNE_' . uc($backup_type) } ) {
+        $control_vars->{'force'} = $conf_ref->{ 'FORCE_PRUNE_' . uc($backup_type) };
+    }
+
+    return $control_vars;
+}
+
+# for testing
+sub _clear_error_reports {
+    @ERRORS_TO_REPORT = ();
+    return;
+}
+
+1;

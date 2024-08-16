@@ -1,0 +1,39 @@
+[% USE Whostmgr %]
+[% WRAPPER 'master_templates/master.tmpl'
+    theme = 'bootstrap',
+    stylesheets = ['/templates/apache/edit_apache_reserved_ips.min.css']
+ -%]
+<p class="description">IPs that are greyed out are not currently up on the server's main interface. To reserve new IPs not found in this list, please <a href="../scripts2/addipform">add the IP</a> to the server and return to this page.</p>
+<br />
+<div>
+    <form action="[% data.action %]" method="post">
+        <table class="table table-hover">
+            <tr class="tblheader0">
+                <th>[%~ locale.maketext('IP') ~%]</th>
+                [% IF data.is_nat %]
+                <th>[%~ locale.maketext('Public IP') ~%]</th>
+                [% END %]
+                <th>[%~ locale.maketext('Status') ~%]</th>
+            </tr>
+            [% FOREACH ipdata IN data.all_ips %]
+            <tr>
+                <td class="[% ipdata.class %]">[% ipdata.local_ip %]</td>
+                [% IF data.is_nat %]
+                <td class="[% ipdata.class %]">[% ipdata.public_ip %]</td>
+                [% END %]
+                <td class="[% ipdata.class %]">
+                    <div class="checkbox">
+                        <label for="[% ipdata.local_ip %]">
+                            <input type="checkbox" name="[% ipdata.local_ip %]" value="1" [% ipdata.reserved_check %]>
+                            [%~ locale.maketext('Reserved') ~%]
+                        </label>
+                    </div>
+                </td>
+            </tr>
+            [% END %]
+        </table>
+        <input type="hidden" name="rewrite" value="1">
+        <input type="submit" value="[%~ locale.maketext('Save') ~%]" class="btn btn-primary" />
+    </form>
+</div>
+[% END %]

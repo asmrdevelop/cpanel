@@ -1,0 +1,67 @@
+[%#
+Variables passed in:
+name        - The name of the app
+service     - The name of the app the service runs under (ie cpaneld)
+user        - The system user that the app runs as
+acls        - A list of acls that are required for the app to run (any of them will allow appconfig to continue)
+features    - A list of features that are required for the app to run (any of them will allow appconfig to continue)
+url         - A url or list of urls that the app runs at
+phpConfig   - the php.ini for cpsrvd to use for the app
+displayname - How the app is displayed in WHM
+entryurl    - The url to be displayed in WHM
+
+get_appconfig_application_list_url - The url to get the appconfig application list from WHM.
+
+-%]
+
+[%
+    PROCESS "include/colors.tmpl";
+    PROCESS "include/styles.tmpl";
+    PROCESS "include/zebra_table.tmpl";
+
+    NOTICE.email_reason = CPANEL.locale.maketext('The application “[_1]” has registered with [asis,AppConfig] for the service: [_2]', NOTICE.name, NOTICE.service);
+
+    # Create the titles
+    NOTICE.table_titles =[]
+    NOTICE.table_items = [
+          [ CPANEL.locale.maketext('Name:'), NOTICE.name ],
+          [ CPANEL.locale.maketext('Service:'), NOTICE.service ],
+          [ CPANEL.locale.maketext('Server:'), NOTICE.host_server ],
+    ];
+
+    IF NOTICE.acls;
+         NOTICE.table_items.push( [CPANEL.locale.maketext('[asis,ACL]s required:'), CPANEL.locale.list_or(NOTICE.acls)] );
+    END;
+    IF NOTICE.features;
+         NOTICE.table_items.push( [CPANEL.locale.maketext('Features Required:'), CPANEL.locale.list_or(NOTICE.features)] );
+    END;
+    IF NOTICE.user;
+         NOTICE.table_items.push( [CPANEL.locale.maketext('System User:'), NOTICE.user] );
+    END;
+    IF NOTICE.url;
+         NOTICE.table_items.push( [ CPANEL.locale.maketext('[numerate,_1,URL,URLs]:', NOTICE.url.size), CPANEL.locale.list_and(NOTICE.url) ] );
+    END;
+    IF NOTICE.phpConfig;
+         NOTICE.table_items.push( ['phpConfig:', NOTICE.phpConfig] );
+    END;
+    IF NOTICE.displayname;
+         NOTICE.table_items.push( [CPANEL.locale.maketext('Display Name:'), NOTICE.displayname] );
+    END;
+    IF NOTICE.entryurl;
+         NOTICE.table_items.push( [CPANEL.locale.maketext('Entry [output,abbr,URL,Uniform Resource Locator]:'), NOTICE.entryurl] );
+    END;
+
+
+    WRAPPER 'wrapper/main.html.tmpl';
+%]
+
+<p style="text-align:center">
+    [% zebra_table(titles=NOTICE.table_titles, items=NOTICE.table_items, boldfirst=1)%]
+</p>
+
+<p>
+  [% CPANEL.locale.maketext('You can view all current registered applications here' ) %]:<br>
+  <a href="[% NOTICE.get_appconfig_application_list_url %]">[% NOTICE.get_appconfig_application_list_url %]</a>
+</p>
+
+[% END %]

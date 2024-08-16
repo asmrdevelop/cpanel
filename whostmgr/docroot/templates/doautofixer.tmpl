@@ -1,0 +1,33 @@
+[% IF start -%]
+[% PROCESS 'master_templates/_defheader.tmpl'
+    header = locale.maketext('[asis,AutoFixer] Execution')
+    theme = "yui"
+-%]
+   [% IF ! data.valid_script -%]
+<p class="error">Invalid script name!</p>
+   [% PROCESS 'master_templates/_deffooter.tmpl' theme="yui" %]
+[% ELSE -%]
+<p>Requesting script ...</p>
+   [% IF data.no_script -%]
+<p>Problem downloading script [% data.script %]! Please verify the script's name.</p>
+   [% PROCESS 'master_templates/_deffooter.tmpl' theme="yui" %]
+   [% END -%]
+[% END -%]
+[% ELSIF mid -%]
+<p>Done.</p>
+<br />
+<p>Executing script ...</p>
+<br />
+<pre>
+[% ELSIF request_error -%]
+<p class="error">Failed to retrieve script!</p>
+<pre>
+[% data.error.html() %]
+</pre>
+<br />
+[% ELSE #end -%]
+</pre>
+<br />
+<p>Done.</p>
+[% PROCESS 'master_templates/_deffooter.tmpl'  theme="yui" -%]
+[% END -%]

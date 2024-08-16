@@ -1,0 +1,61 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/resetmailmanurls                Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+use warnings;
+
+use Cpanel::Hostname              ();
+use Cpanel::Config::LoadCpConf    ();
+use Cpanel::ApacheConf            ();
+use Cpanel::Config::Httpd::IpPort ();
+use Cpanel::Mailman::Filesys      ();
+
+my @LISTS;
+my $hostname = Cpanel::Hostname::gethostname();
+my %CPCONF   = Cpanel::Config::LoadCpConf::loadcpconf();
+
+my $from_upcp = ( @ARGV && grep( /^--from-upcp$/, @ARGV ) ) ? 1 : 0;
+if ($from_upcp) {
+    my $apc = Cpanel::ApacheConf::loadhttpdconf();
+    if ( exists $apc->{$hostname} ) {
+        if ( exists $apc->{$hostname}->{'address'} ) {
+            my $ssl_port = Cpanel::Config::Httpd::IpPort::get_ssl_httpd_port();
+            foreach my $addyref ( @{ $apc->{$hostname}->{'address'} } ) {
+                if ( $addyref->{'ip'} eq '*' || $addyref->{'port'} eq $ssl_port ) {
+                    next;
+                }
+                print 'Hostname Virtual Host is already setup' . "\n";
+                exit;
+            }
+        }
+    }
+}
+
+my $lists_dir = Cpanel::Mailman::Filesys::MAILING_LISTS_DIR();
+
+# May not exist on a fresh install; that's okay.
+if ( opendir my $list_dh, $lists_dir ) {
+    @LISTS = readdir $list_dh;
+    closedir $list_dh or warn "closedir($lists_dir) failed: $!";
+    @LISTS = grep( /^[^_]+_/, @LISTS );
+    my @args;
+    foreach my $llist (@LISTS) {
+        my @LLIST = split /_/, $llist;
+        my $dns   = pop @LLIST;
+        my $list  = join '_', @LLIST;
+
+        push @args, $dns, $list;
+    }
+    if (@args) {
+        if ( $CPCONF{'usemailformailmanurl'} eq "1" ) {
+            system( "/usr/local/cpanel/bin/cp_mailman_mail2", @args );
+        }
+        else {
+            system( "/usr/local/cpanel/bin/cp_mailman2", @args );
+        }
+    }
+}

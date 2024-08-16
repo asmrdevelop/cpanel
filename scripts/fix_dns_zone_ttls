@@ -1,0 +1,62 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/fix_dns_zone_ttls               Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::fix_dns_zone_ttls;
+
+use cPstrict;
+
+=encoding utf-8
+
+=head1 USAGE
+
+    fix_dns_zone_ttls [--fix]
+
+=head1 DESCRIPTION
+
+This utility fixes problems with TTLs in DNS zone files.
+
+By default this script will only I<find> TTL problems. Pass the C<--fix>
+parameter to have the script fix the problems as well.
+
+=cut
+
+#----------------------------------------------------------------------
+
+use Try::Tiny;
+
+use parent 'Cpanel::HelpfulScript';
+
+use Cpanel::DnsUtils::FixTTLs ();
+
+use constant _OPTIONS => (
+    'fix',
+);
+
+__PACKAGE__->new(@ARGV)->run() if !caller;
+
+#----------------------------------------------------------------------
+
+sub run ($self) {
+    local $ENV{'REMOTE_USER'} = getpwuid $>;
+
+    my $output_obj = $self->get_output_object();
+
+    my $funcname;
+
+    if ( $self->getopt('fix') ) {
+        $funcname = 'report_and_fix_problems';
+    }
+    else {
+        $funcname = 'report_problems';
+    }
+
+    Cpanel::DnsUtils::FixTTLs->can($funcname)->($output_obj);
+
+    return;
+}
+
+1;

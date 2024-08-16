@@ -1,0 +1,259 @@
+[% WRAPPER 'master_templates/master.tmpl'
+    theme="bootstrap"
+    header = locale.maketext('Graceful Server Reboot')
+    breadcrumburl = '/scripts/graceful_reboot_landing'
+    app_key = 'graceful_server_reboot'
+    extrastyle = '
+       .dialog-content {
+            color: #333333;
+        }
+       .dialog-submit {
+            margin-top: 20px;
+            text-align: right;
+        }
+        .dialog-box {
+            background-color: #F3F3F3;
+            border: 1px solid #DCDFE3;
+            margin: 10px 0 10px 0;
+            padding: 10px;
+        }
+        .cjt-pagenotice-container {
+            display:none;
+        }
+        .hide {
+            display: none!important;
+        }
+        .show {
+            display: block;
+        }
+        .callout a.btn.no-margin-top {
+            margin-top:0;
+        }
+'
+%]
+
+    <div class="row">
+        <div class="col-xs-12 col-md-8">
+            <div id="initialMessage" class="dialog-box">
+                <div>
+                    <h4>[% locale.maketext("Warning: This will reboot your system!") %]</h4>
+                    <div class="dialog-submit">
+                        <input id="proceedBtn" type="submit" class="btn btn-primary" value="[% locale.maketext('Proceed') %] &gt;&gt;">
+                    </div>
+                </div>
+            </div>
+            <div id="doneRebooting" class="dialog-box hide">
+                <h4>[% locale.maketext("The system has been rebooted.") %]</h4>
+            </div>
+            <div id="rebootInitiated" class="dialog-box hide">
+                <h4>[% locale.maketext("A reboot has been initiated but the system status could not be determined.") %]</h4>
+            </div>
+            <div id="unableToReachServer" class="dialog-box hide">
+                <h4>[% locale.maketext("Unable to initiate a reboot. Please access the server directly to reboot it.") %]</h4>
+            </div>
+            <div id="actionMsg" class="callout callout-warning callout-top hide" role="alert">
+                <h4>
+                    <i class="fas fa-spinner fa-spin" aria-hidden="true"></i>
+                    [% locale.maketext("A reboot is now in progress …") %]
+                </h4>
+            </div>
+            [% IF data.kernelcare_suggestion %]
+            <div class="callout callout-info callout-top"  role="alert">
+                <h4>[% data.kernelcare_suggestion.title %]</h4>
+                <p>
+                    [% data.kernelcare_suggestion.details %]
+                    <div>
+                        <a
+                            class="btn btn-link no-margin-top"
+                            href="[% data.kernelcare_suggestion.link.url %]"
+                            title="[% data.kernelcare_suggestion.link.label %]"
+                            target="[% data.kernelcare_suggestion.link.target %]">
+                                [% data.kernelcare_suggestion.link.label %]
+                                <i class="fas fa-external-link-alt" aria-hidden="true"></i>
+                        </a>
+                    </div>
+                </p>
+                [% IF data.kernelcare_suggestion.note %]
+                    <p><strong>[% locale.maketext('Note:') %]</strong> <em>[% data.kernelcare_suggestion.note %]</em></p>
+                [% END %]
+            </div>
+            [% END %]
+        </div>
+    </div>
+
+    <script>
+      ;(() => {
+        'use strict';
+
+        // ======================================== UI ======================================== //
+
+        // UI elements
+        const domElements = {
+          proceedBtnEl: document.getElementById("proceedBtn"),
+          actionMsgEl: document.getElementById("actionMsg"),
+          initialMessageEl: document.getElementById("initialMessage"),
+          doneRebootingEl: document.getElementById("doneRebooting"),
+          rebootInitiatedEl: document.getElementById("rebootInitiated"),
+          unableToReachServerEl: document.getElementById("unableToReachServer"),
+        };
+
+        // UI utility functions
+        function disableButton(buttonEl){
+          buttonEl.setAttribute("disabled", true);
+        }
+
+        function showElement(element) {
+          element.classList.remove("hide");
+        }
+
+        function hideElement(element) {
+          element.classList.add("hide");
+        }
+
+        // UI functions
+        function uiShowsRebootInProgress() {
+          const { proceedBtnEl, actionMsgEl, initialMessageEl } = domElements;
+
+          disableButton(proceedBtnEl);
+          showElement(actionMsgEl);
+          hideElement(initialMessageEl);
+        }
+
+        function uiShowsRebootIsDone() {
+          const { actionMsgEl, doneRebootingEl } = domElements;
+
+          hideElement(actionMsgEl);
+          showElement(doneRebootingEl);
+        }
+
+        function uiShowsRebootInitiated() {
+            const { actionMsgEl, rebootInitiatedEl } = domElements;
+
+            hideElement(actionMsgEl);
+            showElement(rebootInitiatedEl);
+        }
+
+        function uiShowsUnableToReachServer() {
+          const { actionMsgEl, unableToReachServerEl } = domElements;
+
+          hideElement(actionMsgEl);
+          showElement(unableToReachServerEl);
+        }
+
+        // ======================================== Fetch ======================================== //
+
+        // Fetch utility functions
+        function sendError(fetchArguments, issue) {
+          const customError = new Error();
+          const initiatingReboot = !!fetchArguments.waitingOnRebootTime;
+          const issueIsAnError = issue instanceof Error;
+
+          if (initiatingReboot && issueIsAnError) {
+            customError.name = "fetchErrorCantReboot";
+            customError.message = `Received an error when trying to reach the server endpoint at ${fetchArguments.endpointUrl}. ${issue}`;
+          } else {
+            customError.name = "unexpectedIssue";
+            customError.message = "Encountered an unexpected issue.";
+          }
+
+          throw customError;
+        }
+
+        async function handleResponse(response, fetchArguments) {
+          const { lastrebooted } = await response.json();
+          const initiatingReboot = !!fetchArguments.waitingOnRebootTime;
+          const rebootTimeChanged = fetchArguments.rebootTime !== lastrebooted;
+
+          if (initiatingReboot || rebootTimeChanged) {
+            return lastrebooted;
+          } else {
+            return fetchArguments.additionalTries > 0 ? tryFetchingAgain(fetchArguments) : sendError(fetchArguments);
+          };
+        }
+
+        // Fetch functions
+        function tryFetchingAgain(fetchArguments) {
+            fetchArguments.additionalTries--;
+
+            return new Promise((resolve) => {
+              setTimeout(() => {
+                resolve(fetchData(fetchArguments));
+              }, fetchArguments.timeUntilNextTry);
+            });
+        }
+
+        function fetchData(fetchArguments) {
+          return fetch(fetchArguments.endpointUrl)
+            .catch((fetchError) => {
+              return fetchArguments.additionalTries > 0 ? tryFetchingAgain(fetchArguments) : sendError(fetchArguments, fetchError);
+            })
+            .then(response => {
+              const responseAfterFetchRetry = typeof response === 'string' || response === null || response === true;
+
+              if (response?.ok) {
+                return handleResponse(response, fetchArguments);
+              } else if (responseAfterFetchRetry) {
+                return response;
+              } else {
+                return fetchArguments.additionalTries > 0 ? tryFetchingAgain(fetchArguments) : sendError(fetchArguments);
+              }
+            });
+        }
+
+        // ======================================== Main ======================================== //
+
+        // Utility function for endpoint-request setup
+        function calculateAdditionalTries(totalMinutesToContinueRetrying, timeUntilNextTry) {
+          const secondsPerMinute = 60;
+          const millisecondsPerSecond = 1_000;
+          // additional tries = (minutes) * (60 seconds/minute) * (1000 milliseconds/second) / milliseconds
+          return (totalMinutesToContinueRetrying * secondsPerMinute * millisecondsPerSecond) / timeUntilNextTry;
+        }
+
+        // Endpoint-request setup functions
+        function checkIfServerHasRebooted(rebootTimeReportedByServer) {
+          // We're binding to the window so that we can override the value with something shorter during testing
+          window.checkFn_totalMinutesToContinueRetrying = window.checkFn_totalMinutesToContinueRetrying || 15;
+          window.checkFn_timeUntilNextTry = window.checkFn_timeUntilNextTry || 15_000;
+
+          const fetchArguments = {
+            endpointUrl: "[% cp_security_token %]/scripts/get_btime",
+            timeUntilNextTry: window.checkFn_timeUntilNextTry,
+            additionalTries: calculateAdditionalTries(window.checkFn_totalMinutesToContinueRetrying, window.rebootFn_timeUntilNextTry),
+            rebootTime: rebootTimeReportedByServer,
+          }
+
+          return fetchData(fetchArguments);
+        }
+
+        function rebootServer() {
+          // We're binding to the window so that we can override the value with something shorter during testing
+          window.rebootFn_totalMinutesToContinueRetrying = window.rebootFn_totalMinutesToContinueRetrying || 5;
+          window.rebootFn_timeUntilNextTry = window.rebootFn_timeUntilNextTry || 10_000;
+
+          const fetchArguments = {
+            endpointUrl: "[% cp_security_token %]/scripts/reboot_and_get_btime",
+            timeUntilNextTry: window.rebootFn_timeUntilNextTry,
+            additionalTries: calculateAdditionalTries(window.rebootFn_totalMinutesToContinueRetrying, window.rebootFn_timeUntilNextTry),
+            waitingOnRebootTime: true,
+          }
+
+          return fetchData(fetchArguments);
+        }
+
+        // Main function
+        function rebootWithPolling() {
+          uiShowsRebootInProgress();
+          rebootServer()
+            .then(checkIfServerHasRebooted)
+            .then(uiShowsRebootIsDone)
+            .catch((error) => {
+              if (error.name === "fetchErrorCantReboot") uiShowsUnableToReachServer();
+              else uiShowsRebootInitiated();
+            });
+        }
+
+        domElements.proceedBtnEl.addEventListener('click', rebootWithPolling);
+      })();
+    </script>
+[% END -%]

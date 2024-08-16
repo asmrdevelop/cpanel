@@ -1,0 +1,358 @@
+<div id="loadingView" class="alert alert-info ng-hide" ng-show="edit.loading">
+    <i id="loadingSpinner" class="fas fa-spinner fa-spin" aria-hidden="true"></i>
+    [% locale.maketext('Loading …') %]
+</div>
+<div id="notAllowedWarning" class="alert alert-danger ng-hide" ng-show="!edit.loading && edit.loadingError">
+    <span class="glyphicon glyphicon-remove-sign"></span>
+    <div class="alert-message">
+        <p ng-bind-html="edit.loadingErrorMessage"></p>
+        <a href="javascript:void(0)" ng-click="edit.goHome()">[% locale.maketext('Go Back') %]</a>
+    </div>
+</div>
+<div id="viewContainer" ng-hide="edit.loading || edit.loadingError">
+<div class="row">
+    <div class="col-xs-12 col-sm-7 col-md-8">
+        <h2 ng-hide="edit.editingToken">[% locale.maketext("Generate [asis,API] Token") %]</h2>
+        <h2 class="ng-hide" ng-show="edit.editingToken">[% locale.maketext('Edit [asis,API] Token: [_1]', '{{ edit.newToken.originalName }}') %]</h2>
+    </div>
+</div>
+<div class="row item-added-notice animated ng-hide" ng-show="edit.tokenAdded" id="tokenAdded_container">
+    <div class="col-xs-12">
+        <div class="callout callout-success top-item-added">
+            <p>[% locale.maketext('You successfully created the [asis,API] token “[_1]”.', '{{ edit.newToken.name }}') %]</p>
+            <p>[% locale.maketext('Copy the following token to a safe place:') %]
+            <code ng-bind="edit.newToken.token"></code>
+            </p>
+            <p>
+                <span ng-if="edit.newToken.tokenExpires" ng-bind="edit.newTokenExpiresMessage(edit.newToken)"></span>
+                <span ng-if="edit.newToken.tokenExpires" >[% locale.maketext("When this [asis,API] token expires, the system will [output,strong,not] delete it. You [output,strong,must] delete this [asis,API] token.") %]</span>
+            </p>
+            <p>[% locale.maketext('For more information about how to use this token to make [asis,API] calls, read our [output,url,_1,Developer Documentation].', 'https://go.cpanel.net/APITokensinWHM') %]
+            </p>
+            <button id="confirm_added_token"
+                type="button"
+                class="btn btn-primary"
+                ng-click="edit.goHome()">[% locale.maketext('Yes, I saved my token') %]</button>
+        </div>
+    </div>
+</div>
+<div class="row" ng-hide="edit.tokenAdded" id="token_form_container">
+    <div class="col-xs-12">
+        <form id="token_form" name="token_form" novalidate>
+            <div class="form-group">
+                <div class="row">
+                    <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                        <label id="token_name_label" for="token_name">
+                            [% locale.maketext('Name') %]
+                        </label>
+                    </div>
+                </div>
+                <div class="row">
+                    <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                        <input id="token_name"
+                            name="token_name"
+                            type="text"
+                            class="form-control"
+                            auto-focus
+                            required
+                            ng-pattern="/^[A-Za-z0-9-_]{1,50}$/"
+                            ng-model="edit.newToken.name">
+                    </div>
+                    <div id="token_name_errors"
+                        class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                        <ul validation-container field-name="token_name">
+                            <li validation-item field-name="token_name" validation-name="required">
+                                [% locale.maketext("You must complete this field.") %]
+                            </li>
+                            <li validation-item field-name="token_name" validation-name="pattern">
+                                [% locale.maketext("You cannot create an [asis,API] token with a name that is longer than 50 characters, and the name may only contain the following characters: [join, ,_1]", [ 'a-z', 'A-Z', '0-9', '_', '-']) %]
+                            </li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+
+            <div class="form-group" ng-if="edit.editingToken && edit.newToken.expiresAt">
+                <div class="row">
+                    <div class="col-xs-12">
+                        <label id="lblEmail" for="lblExpiresAt">
+                            <span ng-if="!edit.newToken.expired && !edit.newToken.expiresSoon">
+                                [% locale.maketext('Expires') %]
+                            </span>
+                            <span ng-if="edit.newToken.expired" class="text-danger">
+                                <i class="fas fa-exclamation-triangle" aria-hidden="true"></i>
+                                [% locale.maketext('This [asis,API] token has expired.') %]
+                            </span>
+                            <span ng-if="edit.newToken.expiresSoon" class="text-warning">
+                                <i class="fas fa-exclamation-triangle" aria-hidden="true"></i>
+                                [% locale.maketext('This [asis,API] token will expire soon.') %]
+                            </span>
+                        </label>
+                    </div>
+                    <div class="col-xs-12">
+                        <span id="lblExpiresAt" ng-bind="edit.newToken.expiresAtFriendly"></span>
+                    </div>
+                </div>
+            </div>
+
+
+            <!-- should the token expire -->
+            <div class="form-group">
+                <div class="row">
+                    <div class="col-xs-12">
+                        <toggle-label-info
+                            for="tokenExpires"
+                            label-text="[% locale.maketext("Should the [asis,API] Token Expire?") %]"
+                            label-id="lbl_tokenExpires"
+                            info-icon-id="icon_tokenExpiresInfo"
+                            info-block-id="infoBlk_tokenExpires"
+                            show-info-block="{{showAllHelp}}">
+                                [% locale.maketext("Specify whether the [asis,API] token will expire on a specific date.") %]
+                        </toggle-label-info>
+                    </div>
+                </div>
+                <div>
+                    <div class="radio">
+                        <label for="tokenExpires_noExpiry">
+                            <input type="radio" name="tokenExpires" id="tokenExpires_noExpiry" ng-value="false" checked ng-model="edit.newToken.tokenExpires">
+                            <span>[% locale.maketext('The [asis,API] Token will not expire.') %]</span>
+                        </label>
+                    </div>
+                    <div class="radio">
+                        <label for="tokenExpires_expiry">
+                            <input type="radio" name="tokenExpires" id="tokenExpires_expiry" ng-value="true" checked ng-model="edit.newToken.tokenExpires" ng-change="edit.resetDate()">
+                            <span>[% locale.maketext('Specify an expiration date.') %]</span>
+                        </label>
+                    </div>
+                </div>
+            </div>
+            <!-- / should the token expire -->
+
+            <!-- set expiry date -->
+            <div ng-if="edit.newToken.tokenExpires" class="form-group" ng-class="{'has-error': token_form.expiresAt.$dirty && token_form.expiresAt.$invalid}">
+                <div class="row">
+                    <div class="col-xs-12">
+                        <toggle-label-info
+                            for="expiresAt"
+                            label-text="[% locale.maketext("[asis,API] Token Expiration Date") %]"
+                            label-id="lbl_expiresAt"
+                            info-icon-id="icon_expiresAtInfo"
+                            info-block-id="infoBlk_expiresAt"
+                            show-info-block="{{showAllHelp}}">
+                                [% locale.maketext("The expiration date of the [asis,API] token.") %]
+                                [% locale.maketext("Enter a future date on which you want the [asis,API] token to expire.") %]
+                        </toggle-label-info>
+                    </div>
+                </div>
+                <div>
+                    <div style="display:flex;align-items:center">
+                        <div>
+                            <date-picker
+                                id="expiresDate"
+                                ng-model="edit.newToken.expiresAt"
+                                options="edit.datePickerOptions"
+                                ng-change="edit.dateValidator(token_form.expiresAt)"
+                                name="expiresAt"
+                                required
+                                 >
+                            </date-picker>
+                        </div>
+                        <div id="token_expires_errors">
+                            <ul validation-container field-name="expiresAt" id="expiresAtErrorPanel">
+                                <li validation-item field-name="expiresAt" validation-name="required">
+                                    [% locale.maketext('You must complete this field.') %]
+                                </li>
+                                <li validation-item field-name="expiresAt" name="expiresAt">
+                                    [% locale.maketext('The expiration date must be set in the future.') %]
+                                </li>
+                            </ul>
+                        </div>
+                        <!--div>
+                            <time-picker ng-model="edit.newToken.expiresAt" options="edit.timePickerOptions"></time-picker>
+                        </div-->
+                    </div>
+                </div>
+            </div>
+            <!-- / set expiry date -->
+
+            <!-- set ip address whitelist -->
+            <div class="form-group" ng-class="{'has-error': token_form.whitelistIps.$dirty && token_form.whitelistIps.$invalid}">
+                <div class="row">
+                    <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                        <toggle-label-info
+                            for="whitelistIps"
+                            label-text="[% locale.maketext("Whitelisted [asis,IPs]") %]"
+                            label-id="lbl_whitelistIps"
+                            info-icon-id="icon_whitelistIpsInfo"
+                            info-block-id="infoBlk_whitelistIps"
+                            show-info-block="{{showAllHelp}}"
+                            on-toggle="edit.onToggleHelp(show)">
+                                [% locale.maketext("The list of [asis,IP] addresses or [asis,IP] address prefixes allowed to use this token. You can separate these items with commas, new lines, or any whitespace character. Leave this blank to allow any caller IP to use the token.") %]
+                        </toggle-label-info>
+                    </div>
+                </div>
+                <div class="row">
+                    <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                        <textarea id="whitelistIps"
+                                  name="whitelistIps"
+                                  class="form-control"
+                                  ipv4-or-cidr4-list
+                                  ng-model-options="{ updateOn: 'default blur paste', debounce: { default: 250, blur: 0, paste: 0 } }"
+                                  ng-model="edit.newToken.whitelistIps"
+                                  rows="{{ edit.mimimumIpRows }}" ></textarea>
+                        <span class="help-block" ng-if="edit.showExtraHelp">
+                            <div class="ip-cidr-examples-title">
+                                <strong>[% locale.maketext("Examples:") %]</strong>
+                            </div>
+                            <table class="table table-condensed ip-cidr-examples">
+                                <tr>
+                                    <td>[% locale.maketext("[asis,IPv4] Address") %] </td>
+                                    <td>1.1.1.1</td>
+                                </tr>
+                                <tr>
+                                    <td>[% locale.maketext("[asis,IPv4] Address Prefix") %]</td>
+                                    <td>1.1.1.2/31</td>
+                                </tr>
+                                <tr>
+                                    <td>[% locale.maketext("[asis,IPv6] Address") %]</td>
+                                    <td>12AB:0:0:CD30:123:4567:89AB:CDEF</td>
+                                </tr>
+                                <tr>
+                                    <td>[% locale.maketext("[asis,IPv6] Address Prefix") %]</td>
+                                    <td>12AB:0:0:CD30::/60</td>
+                                </tr>
+                            </table>
+                        </span>
+                    </div>
+                    <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                        <div id="token_expires_errors">
+                            <ul validation-container field-name="whitelistIps" id="whitelistIpsErrorPanel" manual>
+                                <validation-item
+                                    field-name="whitelistIps"
+                                    validation-name="ipv4OrCidr4">
+                                    There are one or more problems with the IP addresses selected.
+                                </validation-item>
+                                <validation-item
+                                    field-name="whitelistIps"
+                                    validation-name="ipv6"
+                                    no-icon prefix-class="bullet">
+                                </validation-item>
+                                <validation-item
+                                    field-name="whitelistIps"
+                                    validation-name="ipv4"
+                                    no-icon prefix-class="bullet">
+                                </validation-item>
+                                <validation-item
+                                    field-name="whitelistIps"
+                                    validation-name="cidr"
+                                    no-icon prefix-class="bullet">
+                                </validation-item>
+                                <validation-item
+                                    field-name="whitelistIps"
+                                    validation-name="cidr-details"
+                                    no-icon prefix-class="bullet">
+                                </validation-item>
+                                <validation-item
+                                    field-name="whitelistIps"
+                                    validation-name="size-exceeded"
+                                    no-icon prefix-class="bullet">
+                                </validation-item>
+                            </ul>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <!-- / set ip address whitelist -->
+
+            <div class="form-group">
+                <div class="row">
+                    <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                        <label>[% locale.maketext('Privileges') %]</label>
+                    </div>
+                </div>
+                <div class="row" ng-show="!edit.hasPrivs">
+                    <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                        <div class="alert alert-info">
+                            [% locale.maketext('No privileges available.') %]
+                        </div>
+                    </div>
+                </div>
+
+                <div class="row" ng-show="edit.hasPrivs">
+                    <div class="col-xs-12 col-sm-9">
+                        <ul class="list-group">
+                            <li class="list-group-item" ng-repeat="subcategory in edit.aclsToEdit track by $index">
+                                <div class="checkbox" >
+                                    <label>
+                                        <tri-state-checkbox
+                                            id="acl-subcategory-{{ subcategory.name }}-checkbox"
+                                            checkboxes="subcategory.acls"
+                                            ng-change="edit.updateAclsToSend(subcategory)"></tri-state-checkbox>
+                                        <strong><span ng-bind-html="subcategory.title"></span></strong>
+                                    </label>
+                                    <span class="label label-{{subcategory.categoryName}} flip pull-right"
+                                        ng-bind="subcategory.categoryTitle"></span>
+                                    <div class="checkbox" ng-repeat="priv in subcategory.acls track by $index">
+                                        <label>
+                                            <input type="checkbox"
+                                                id="acl-checkbox-{{priv.name}}"
+                                                ng-model="priv.selected"
+                                                ng-change="edit.toggleAcl(priv)">
+                                            <span ng-bind-html="priv.title"></span>
+                                            <span><code ng-bind="priv.name"></code></span>
+                                        </label>
+                                        <span class="fas fa-exclamation-triangle fa-lg acl-warning-icon"
+                                                role="button"
+                                                tabindex="0"
+                                                aria-controls="acl-warning-{{priv.name}}"
+                                                aria-expanded="{{ edit.aclWarningVisible(priv).toString() }}"
+                                                ng-show="priv.description && priv.description_is_warning && priv.name != 'all'"
+                                                ng-click="edit.toggleAclWarning(priv)"
+                                                ng-keypress="edit.handleWarningIconKey(priv, $event)"></span>
+                                        <span class="help-block ng-hide"
+                                            ng-show="priv.description && !priv.description_is_warning"
+                                            ng-bind-html="priv.description"></span>
+                                        <div class="alert alert-warning ng-hide acl-warning"
+                                            ng-show="priv.description && priv.description_is_warning && edit.aclWarningVisible(priv)"
+                                            id="acl-warning-{{priv.name}}">
+                                            <span class="glyphicon glyphicon-exclamation-sign"></span>
+                                            <div class="alert-message acl-warning-message"
+                                                ng-bind-html="priv.description">
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </li>
+                        </ul>
+                    </div>
+                </div>
+
+                <div class="row ng-hide" ng-show="edit.hasPrivs">
+                    <div id="atLeastOneACLError" class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                        <ul class="validation-container ng-hide" ng-show="!edit.hasSelectedPrivs()">
+                            <li class="validation validation-error">
+                                <span class="glyphicon glyphicon-exclamation-sign"></span>
+                                <span class="validation-message">[% locale.maketext('You must specify at least one [asis,ACL] for this token.') %]</span>
+                            </li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+            <div class="form-group">
+                <button id="save_button"
+                    type="submit"
+                    cp-action="edit.saveToken(token_form)"
+                    ng-disabled="edit.disableSave(token_form)">
+                    [% locale.maketext("Save") %]
+                </button>
+                <button id="cancel_generate_button"
+                    type="button"
+                    class="btn btn-link"
+                    ng-click="edit.goHome()">
+                    [% locale.maketext("Cancel") %]
+                </button>
+            </div>
+        </form>
+    </div>
+</div>
+</div>

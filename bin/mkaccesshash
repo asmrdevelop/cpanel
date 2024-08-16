@@ -1,0 +1,63 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - bin/mkaccesshash                        Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+## no critic qw(TestingAndDebugging::RequireUseWarnings) -- use warnings not enabled in this module to preserve original behava[ior before refactoring
+
+package mkaccesshash;
+use strict;
+
+use Cpanel::AccessIds::ReducedPrivileges ();
+use Digest::MD5                          ();
+use Cpanel::PwCache                      ();
+use Fcntl;
+
+if ( not caller() ) {
+    print "We deprecated this script and plan to remove it in a future release. We strongly suggest that you use the api_token_create API call.\n";
+    run(@ARGV);
+}
+
+sub run {
+    my ($user) = @_;
+
+    my $reduce;
+
+    # Requests from WHM should use REMOTE_USER.
+    # From the command line should honor command-line arguments.
+    # If none were provided, we should use the EUID.
+    $user = $ENV{'REMOTE_USER'} if defined $ENV{'REMOTE_USER'};
+    if ( $user && $user ne 'root' && Cpanel::PwCache::getusername() ne $user ) {
+        $reduce = Cpanel::AccessIds::ReducedPrivileges->new($user);
+    }
+
+    my $homedir = Cpanel::PwCache::gethomedir($>);
+    my $hash    = new_hash();
+
+    # open safely, and if creating, will set the right perms
+    sysopen( my $hash_fh, "$homedir/.accesshash", O_WRONLY | O_CREAT | O_NOFOLLOW, 0600 )
+      or die "Error obtaining safe filehandle for $homedir/.accesshash";
+
+    # just in case there was a previous hash
+    chmod 0600, $hash_fh;
+    print {$hash_fh} $hash;
+    close($hash_fh);
+    return 1;
+}
+
+sub new_hash {
+    open my $urand, '<', "/dev/urandom"
+      or die "Unable to open /dev/urandom for reading";
+    my $hash = '';
+    my $random;
+    for ( 1 .. 30 ) {
+        read( $urand, $random, 16 );
+        $hash .= Digest::MD5::md5_hex($random) . "\n";
+    }
+    close $urand;
+    return $hash;
+}
+
+1;

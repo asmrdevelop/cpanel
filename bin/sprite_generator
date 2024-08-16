@@ -1,0 +1,404 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - bin/sprite_generator                    Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package Cpanel::Bin::SpriteGenerator;
+use strict;
+use warnings;
+
+use CSS::SpriteMaker             ();
+use Cpanel::Autodie              ();
+use Cpanel::Config::Constants    ();
+use Cpanel::Themes::Serializer   ();
+use Cpanel::FileUtils::Read      ();
+use Getopt::Long                 ();
+use Cpanel::LoadFile             ();
+use Cpanel::Themes::Fallback     ();
+use Cpanel::AcctUtils::Owner     ();
+use Cpanel::PwCache              ();
+use Digest::SHA                  ();
+use File::Spec                   ();
+use File::Basename               ();
+use Pod::Usage                   ();
+use Cpanel::SafeRun::Simple      ();
+use Cpanel::Binaries             ();
+use Cpanel::SVG::SpriteGenerator ();
+
+use Whostmgr::Theme ();
+
+use Cpanel::Branding::Lite::Config ();
+
+# set up our command line options
+our %opts = (
+    all                => 0,
+    verbose            => 0,
+    help               => 0,
+    man                => 0,
+    no_stylesheet      => 0,
+    application        => "",
+    theme              => "",
+    class_prefix       => "",
+    target_directory   => 0,
+    source_directories => [],
+);
+
+our $VERSION = '4.0';
+
+my $current_user;
+
+# cPanel root directory for the theme
+my $theme_root;
+
+sub bail_out {
+    my ($msg) = @_;
+    print STDERR "ERROR: $msg\n\n";
+    Pod::Usage::pod2usage(2);
+
+    # using pod2usage to exit with an exit value of 2 to indicate an error
+    return;
+}
+
+run(@ARGV) unless caller;
+
+sub run {
+    my (@args) = @_;
+    my @source_directories;
+
+    Getopt::Long::GetOptionsFromArray(
+        \@args,
+        'application=s'         => \$opts{application},
+        'theme=s'               => \$opts{theme},
+        'class-prefix:s'        => \$opts{class_prefix},
+        'verbose'               => \$opts{verbose},
+        'no-stylesheet|nostyle' => \$opts{no_stylesheet},
+        'source-directory=s'    => \@source_directories,
+        'target-directory=s'    => \$opts{target_directory},
+        'help|?'                => \$opts{help},
+        'man'                   => \$opts{man},
+
+        # No-op, but provided for backward compatibility.
+        'all' => \$opts{all},
+    ) or bail_out("incorrect syntax for command line arguments");
+
+    # make sure that we support multiple instances of source-directory
+    push @{ $opts{source_directories} }, @source_directories;
+
+    # set my default values
+    $opts{application} ||= 'cpanel';
+
+    if ( $opts{application} eq 'whm' ) {
+        $opts{theme} ||= $Whostmgr::Theme::DEFAULT_THEME;
+        $theme_root = $Whostmgr::Theme::THEME_BASE . '/' . $opts{theme};
+    }
+    else {
+        $opts{theme} ||= $Cpanel::Config::Constants::DEFAULT_CPANEL_THEME;
+        $theme_root = Cpanel::Themes::Fallback::get_default_directory( $opts{theme} );
+    }
+
+    $opts{class_prefix} ||= 'icon-';
+
+    Pod::Usage::pod2usage(1)                              if $opts{help};
+    Pod::Usage::pod2usage( -exitval => 0, -verbose => 2 ) if $opts{man};
+
+    unless ( -d $theme_root ) {
+        bail_out("specified theme does not exist: $theme_root");
+    }
+    unless ( -e File::Spec->catfile( $theme_root, "config.json" ) ) {
+        bail_out("the theme must have a config.json to use this script.");
+    }
+
+    $current_user = ( Cpanel::PwCache::getpwuid($>) )[0];
+    if ( $opts{application} eq 'whm' && $current_user ne 'root' ) {
+        bail_out("only root can create sprite sheets for WHM");
+    }
+
+    if ( $opts{application} eq 'whm' ) {
+        my $source_directories = [
+            $Whostmgr::Theme::DEFAULT_FALLBACK_DIR . '/addon_plugins',
+            $theme_root . '/icons'
+        ];
+
+        my $nodes = _parse_source_directories($source_directories);
+
+        # Run with specific directories and target
+        _generate_sprite( $theme_root, [ values %{$nodes} ], \%opts );
+    }
+    elsif ( $opts{target_directory} && scalar( $opts{source_directories} ) > 0 ) {
+        my $nodes = _parse_source_directories( $opts{source_directories} );
+
+        # Run with specific directories and target
+        _generate_sprite( $opts{target_directory}, [ values %{$nodes} ], \%opts );
+    }
+    else {
+        my $source_directory = my $target_directory = $theme_root . '/assets/application_icons';
+        my $nodes            = _parse_source_directories( [$source_directory] );
+        _generate_sprite( $target_directory, [ values %{$nodes} ], \%opts );
+        return;
+    }
+
+    return;
+}
+
+sub _parse_source_directories {
+    my ($source_directories) = @_;
+
+    my %nodes;
+    foreach my $dir ( @{$source_directories} ) {
+        Cpanel::FileUtils::Read::for_each_directory_node(
+            $dir,
+            sub {
+                my $current_node = $_;
+                if ( _supported_file($current_node) ) {
+                    my ($extensionless_filename) = File::Basename::fileparse( $current_node, qr/\.[^.]*/ );
+                    $nodes{$extensionless_filename} = "$dir/$current_node";
+                }
+                return;
+            },
+        );
+    }
+
+    return ( \%nodes );
+}
+
+sub _generate_sprite {
+    my ( $style_root, $icon_files_ar, $params_hr ) = @_;
+
+    $params_hr ||= {};
+
+    $params_hr->{'class_prefix'} //= q<>;
+
+    unless ( -d $style_root ) {
+        bail_out("the following target directory does not exist: ${style_root}.");
+    }
+
+    unless ( -d File::Spec->catdir( $style_root, "sprites" ) ) {
+        mkdir File::Spec->catdir( $style_root, "sprites" );
+    }
+
+    ##Parsing the JSON to resize the image
+    my $theme_config_file = File::Spec->catfile( $theme_root, "config.json" );
+    my $json_config       = Cpanel::Branding::Lite::Config::load_theme_config_from_file($theme_config_file);
+
+    my @svg_icon_files;
+    my @no_svg_icon_files;
+    foreach my $icon_file (@$icon_files_ar) {
+        my $svg_icon_file = $icon_file;
+        $svg_icon_file =~ s/\.[^\.]+$/\.svg/;
+        if ( -e $svg_icon_file ) {
+            push @svg_icon_files, $svg_icon_file;
+        }
+        elsif ( -e $icon_file ) {
+            push @no_svg_icon_files, $icon_file;
+        }
+        else {
+            warn "Skipping icon: “$svg_icon_file” and “$icon_file” are both missing";
+        }
+    }
+
+    # order files by filename as the full path is going to be lost in the css file
+    my %basenames = map { $_ => File::Basename::basename($_) } @no_svg_icon_files, @svg_icon_files;
+
+    my ( $sprite_maker, $dest );
+    my @hashes;
+    if (@no_svg_icon_files) {
+        my @sprites = sort { $basenames{$a} cmp $basenames{$b} || $a cmp $b } @no_svg_icon_files;
+
+        # generate my sprites
+        $sprite_maker = CSS::SpriteMaker->new(
+            'verbose'                  => $params_hr->{verbose},
+            'rc_filename_to_classname' => sub { _generate_css_class_name_from_filename(@_) },
+            'rc_override_classname'    => sub { my $class_name = shift; return $params_hr->{class_prefix} . $class_name; },
+        );
+
+        $dest = File::Spec->catfile( $style_root, "sprites", "icon_spritemap.png" );
+
+        $sprite_maker->make_sprite(
+            'source_images'     => \@sprites,
+            'target_file'       => $dest . ".build",
+            'add_extra_padding' => 5,
+        );
+
+        push @hashes, canonicalize_file( $dest . ".build" );
+    }
+
+    my ( $bgwidth, $bgheight, $svg_images, $svg_dest );
+    if (@svg_icon_files) {
+        my @sprites = sort { $basenames{$a} cmp $basenames{$b} || $a cmp $b } @svg_icon_files;
+        $svg_dest = File::Spec->catfile( $style_root, "sprites", "icon_spritemap.svg" );
+        my $svg_prefix = $params_hr->{class_prefix};
+        $svg_prefix =~ s/-$//;
+
+        #Adding the JSON data argument to Sprite Generator for resizing image
+        my $ref = Cpanel::SVG::SpriteGenerator::make_svg_sprite(
+            'source_images'     => \@sprites,
+            'prefix'            => $svg_prefix,
+            'target_file'       => $svg_dest . '.build',
+            'add_extra_padding' => 5,
+            'theme'             => $params_hr->{'theme'},
+            'json_config'       => $json_config,
+        );
+        $bgwidth    = $ref->{'w'};
+        $bgheight   = $ref->{'h'};
+        $svg_images = $ref->{'images'};
+        push @hashes, hash_file( $svg_dest . ".build" );
+    }
+
+    unless ( $params_hr->{no_stylesheet} ) {
+        my $hash             = Digest::SHA::sha256_hex( join( ':', @hashes ) );
+        my $my_cache_busting = $hash . '_' . $VERSION;
+
+        # as we are adding an extension to the file we need to unlink it
+        my $css_filename    = File::Spec->catfile( $style_root, "sprites", "icon_spritemap.css" );
+        my $css_gz_filename = $css_filename . ".gz";
+
+        open( my $fh, '>', $css_filename . '.build' ) or die "Failed to open $css_filename: $!";
+        if ($sprite_maker) {
+            $sprite_maker->print_css(
+                filehandle        => $fh,
+                'sprite_filename' => "./icon_spritemap.png?$my_cache_busting",
+            );
+        }
+        if ($svg_images) {
+            my $add_css = join( ',', map { ".icon-$_" } sort keys %$svg_images ) . " { background-image: url(icon_spritemap.svg?$my_cache_busting); background-repeat: no-repeat; }\n";
+
+            foreach my $name ( sort keys %$svg_images ) {
+                my $props = $svg_images->{$name};
+                my $w     = $props->{'w'};
+                my $h     = $props->{'h'};
+                my $x     = $props->{'x'};
+                $add_css .= ".icon-$name { background-size: ${bgwidth}px ${bgheight}px; background-position: -${x}px 0; width: ${w}px; height: ${h}px; }\n";
+            }
+
+            print {$fh} $add_css or die "Failed to write $css_filename.build: $!";
+        }
+        close($fh);
+        unlink($css_gz_filename);
+
+        if ( ( Cpanel::LoadFile::load_if_exists( $css_filename . '.build' ) || '' ) ne ( Cpanel::LoadFile::load_if_exists($css_filename) || '' ) ) {
+            ;
+            Cpanel::Autodie::rename( $css_filename . '.build', $css_filename );
+        }
+        else {
+            unlink( $css_filename . '.build' );    #file is unchanged, do not update mtime to avoid blowing away Cpanel::Themes::CacheBuster::cache_id
+        }
+    }
+
+    Cpanel::Autodie::rename( $dest . ".build",     $dest )     if $dest;
+    Cpanel::Autodie::rename( $svg_dest . ".build", $svg_dest ) if $svg_dest;
+
+    return 1;
+}
+
+# Remove timestamps from the file and generate a hash of it for cache-busting
+# purposes.  The hash will change iff the sprites themselves have changed.
+sub canonicalize_file {
+    my ($file) = @_;
+
+    my $bin = Cpanel::Binaries::path('mogrify');
+    -x $bin or die q[Cannot find mogrify binary, check if ImageMagick is installed];
+    Cpanel::SafeRun::Simple::saferun( $bin, '+set', 'png:tIME', '+set', 'date:create', '+set', 'date:modify', '-define', 'png:exclude-chunks=date,time', $file );
+
+    return hash_file($file);
+}
+
+sub hash_file {
+    my ($file) = @_;
+
+    # We use SHA-256 here to keep the cache buster short.
+    my $hash = Digest::SHA->new(256);
+    $hash->addfile($file);
+    return $hash->hexdigest;
+}
+
+####
+#
+# _generate_css_class_name_from_filename()
+#
+# Remove file extensions and special characters ( @ [] + ) from file names
+# to generate suitable css class names
+#
+# input: name of the file
+#
+# return: name of the file without extensions and special characters
+#
+####
+
+sub _generate_css_class_name_from_filename {
+    my $filename = shift;
+
+    # remove image extensions if any
+    $filename =~ s/[.](tif|tiff|gif|jpeg|jpg|jif|jfif|jp2|jpx|j2k|j2c|fpx|pcd|png|pdf)\Z//;
+
+    # remove @ [] +
+    $filename =~ s/[+@\]\[]//g;
+
+    return $filename;
+}
+
+sub _supported_file {
+    my $filename = shift;
+
+    return $filename =~ m/[.](?:tif|svg|tiff|gif|jpeg|jpg|jif|jfif|jp2|jpx|j2k|j2c|fpx|pcd|png|pdf)\Z/ ? 1 : 0;
+}
+
+1;
+
+__END__
+
+=head1 NAME
+
+sprite_generator - Create a sprite image and css file from a theme's icons directory
+
+=head1 USAGE
+
+sprite_generator [options]
+
+Options:
+
+    --application        whm vs cpanel (default: cpanel)
+    --theme              Theme to install the plugin to (default: jupiter).
+    --class-prefix       Specify the icon class prefix (default: icon-).
+    --verbose            Run in verbose mode.
+    --all                Runs for all themes.
+    --source-directory   Directory to search for icons/images.
+    --target-directory   Directory where you want the sprite image and css to be output.
+    --no-stylesheet      Does not create a CSS stylesheet for your sprite image.
+    --help               Print this synopsis.
+    --man                Print out the documentation for this script.
+
+=head1 DESCRIPTION
+
+This script generates sprites to be used by cPanel, webmail, and WHM.
+
+=head1 EXAMPLES
+
+=over
+
+=item Generate sprites for jupiter
+
+bin/sprite_generator --theme jupiter
+
+=item Generate sprites for jupiter with source and target directory
+
+bin/sprite_generator --theme jupiter --source-directory /usr/local/cpanel/base/frontend/jupiter/assets/application_icons --target-directory /usr/local/cpanel/base/frontend/jupiter/assets/application_icons
+
+These options are the defaults if none are given.
+
+=item Generate sprites for jupiter
+
+bin/sprite_generator --theme jupiter
+
+=item Generate a sprite in a specific directory and specify several source directories for icons
+
+bin/sprite_generator --target-directory ~/mydirectory --source-directory ~/myicons --source-directory ~/my_other_icons
+
+=item Verbose applies only for non-SVG files such as PNG files.
+
+bin/sprite_generator --theme jupiter --verbose
+
+=back
+
+=cut

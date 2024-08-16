@@ -1,0 +1,588 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - bin/ftpupdate                           Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package bin::ftpupdate;
+
+use strict;
+use warnings;
+
+use Cpanel::AdminBin::Serializer          ();
+use Cpanel::Config::LoadUserDomains::Tiny ();
+use Cpanel::ConfigFiles                   ();
+use Cpanel::Debug                         ();
+use Cpanel::FtpUtils::Server              ();
+use Cpanel::FtpUtils::Passwd              ();
+use Cpanel::FileUtils::Write              ();
+use Cpanel::PwCache                       ();
+use Cpanel::PwCache::Helpers              ();
+use Cpanel::PwCache::Build                ();
+use Cpanel::SafeFile                      ();
+use Cpanel::Signal                        ();
+use Whostmgr::Accounts::SuspensionData    ();
+
+use Try::Tiny;
+use Getopt::Long ();
+
+use constant CACHE_FORMAT_VERSION => 2;
+
+# Cache format v2 (passwd.vhosts.indexed.cache) follows this structure:
+#
+# {
+#   version => 2,
+#   file => [filename, device, inode, mtime ], for the passwd.vhosts file
+#   anon_allowed => 0||1  the cache is invalid whenever this setting changes
+#   users => {
+#     <username> => {
+#       main_domain => <main domain>,
+#       user_pw     => [getpwname() with munged password/shell],
+#       domains     => [ arrayref of domains the account owns ],
+#       file        => [ filename, device, inode, mtime ],  for the user or user.suspended file
+#       pwentries   => "joined entries for the passwd.vhosts file",
+#     },
+#   },
+# }
+
+exit( script(@ARGV) ) unless caller();
+
+sub script {
+    my @argv = @_;
+    my ( $help, $updateuser, @purgeusers, $updatedomain, @purgedomains, $ip_to_delete, $skip_cache );
+
+    Getopt::Long::GetOptionsFromArray(
+        \@argv,
+        'help'           => \$help,
+        'user=s'         => \$updateuser,   'purgeuser=s'   => \@purgeusers,
+        'domain=s'       => \$updatedomain, 'purgedomain=s' => \@purgedomains,    # ignored...must remain since this script takes positional args
+        'ip_to_delete=s' => \$ip_to_delete,
+        'skip-cache'     => \$skip_cache,
+    );
+
+    if ($help) {
+        show_help();
+        exit;
+    }
+
+    if (@argv) {
+        ( $updateuser, $updatedomain, $ip_to_delete ) = @argv;
+    }
+
+    if ( !-e $Cpanel::ConfigFiles::FTP_PASSWD_DIR ) {
+        mkdir $Cpanel::ConfigFiles::FTP_PASSWD_DIR;
+    }
+
+    my $cache = prep_vhosts_cache($skip_cache);
+
+    print 'Updating FTP passwords ';
+    print "for $updateuser\n" if $updateuser;
+    print "for all users\n"   if !$updateuser;
+
+    # The various flags indicate which users to process.
+
+    # This script's caching can rapidly verify the state of all users,
+    # so specifying individual users, domains, and IPs is only meaningful
+    # when ftpupdate is expected to delete the data of removed/renamed
+    # users.
+
+    my $pwcache_hr = build_filtered_local_pwcache();
+
+    for my $purgeuser (@purgeusers) {
+        Cpanel::FtpUtils::Passwd::remove( $purgeuser, $ip_to_delete );
+    }
+
+    if ($updateuser) {
+        if ( $pwcache_hr->{$updateuser} ) {
+
+            # Force an uncached update for this user
+            delete $cache->{users}{$updateuser};
+        }
+        elsif ($ip_to_delete) {
+
+            # ftpupdate is expected to delete the account when it is passed a user, domain and IP
+            Cpanel::FtpUtils::Passwd::remove( $updateuser, $ip_to_delete );
+        }
+    }
+
+    # Clear all invalid users from the vhosts.passwd cache
+    foreach my $username ( keys %{ $cache->{users} } ) {
+        delete $cache->{users}{$username} unless defined $pwcache_hr->{$username};
+    }
+
+    # Validate all accounts using the cache
+    foreach my $pw_ref ( values %{$pwcache_hr} ) {
+        processuser( $pw_ref, $cache );
+    }
+
+    print "FTP password files updated.\n";
+
+    write_vhosts_and_cache( $Cpanel::ConfigFiles::FTP_PASSWD_DIR . '/' . 'passwd.vhosts', $cache );
+
+    signal_proftpd_if_needed();
+
+    return 0;
+}
+
+sub processuser {
+    my ( $entry, $cache ) = @_;
+
+    my $system_user = $entry->[0];
+    my $user_cache  = $cache->{users}{$system_user};
+    my $main_domain = trueuserdomain($system_user) or die "“$system_user” has no main domain!";
+    my $domains     = userdomains($system_user);
+
+    # munge the password file entry to match the cache data for validation
+    $entry->[6] = $entry->[0];    # set gecos data to username
+    my $demo_mode = ( is_demo_user($system_user) || substr( $entry->[8], -9 ) eq 'demoshell' );
+    if ($demo_mode) {
+        $entry->[1] = '*';
+    }
+    elsif ( substr( $entry->[8], -7 ) eq 'noshell' ) {
+        $entry->[8] = '/bin/ftpsh';
+    }
+
+    # Update the system_user password hash based on whether the account
+    # was suspended with the 'leave-ftp-accts-enabled' flag or not
+    $entry->[1] = _update_cpuser_pass_as_needed( $entry->[1], $system_user ) if not $demo_mode;
+
+    # check for a valid cache entry
+    return
+      if (    # cache is valid if...
+        $user_cache                                            # cache for this user exists
+        && $user_cache->{main_domain} eq $main_domain          # user's main domain has not changed
+        && arrays_match( $user_cache->{user_pw}, $entry )      # user's password entry has not changed
+        && arrays_match( $user_cache->{domains}, $domains )    # the old list of domains is identical to the current domain list
+        && file_stat_is_correct( $user_cache->{file} )         # The stat information in the cache is still correct
+      );
+
+    # cache is not valid. reload from scratch
+    delete $cache->{users}{$system_user};
+
+    # since there are two possible files, locking is...interesting...
+    my ( $filename, $fh, $suspended, $locks ) = Cpanel::FtpUtils::Passwd::open_storage_for_reading($system_user);
+
+    # Storage is missing. It is no longer created by default.
+    return unless ($filename);
+
+    my @dual_entries;             # Virtual account entries that are stored identically for both daemons
+    my @pureftpd_only_entries;    # Entries for system accounts writen to /etc/proftpd/$username
+    my @proftpd_only_entries;     # Entries that are only written to passwd.vhosts
+
+    try {
+        # used for validating virtual users
+        my %owned_domains = map { $_ => 1 } ( @{$domains}, $main_domain );
+
+        while ( my $line = readline($fh) ) {
+            my @PLINE = split( /:/, $line );
+
+            # Filter invalid and system entries
+            next
+              if (
+                $#PLINE != 6                                                                                       # corrupted entry
+                || !length( $PLINE[0] )                                                                            # No user field
+                || ( index( $PLINE[0], '+' ) > -1 )                                                                # pure-ftpd doesn't need the "+" form in the file. It shouldn't be here.
+                || $PLINE[0] =~ /\A(?:ftp|anonymous|\Q$system_user\E(?:_logs)?)(?:[@](?:\Q$main_domain\E)?)?\z/    # system accounts or virtual accounts that collide
+              );
+
+            # Filter or correct virtual accounts
+            my ( $vhost_user, $vhost_domain ) = split( /[@]/, $PLINE[0], 2 );
+            if ( !length $vhost_user ) {
+
+                # Invalid name
+                next;
+            }
+            elsif ( !length $vhost_domain ) {
+
+                # virtual accounts with no domain name became invalid with the user manager changes
+                # convert to a virtual account on the main domain
+                $vhost_domain = $main_domain;
+
+            }
+
+            chomp $PLINE[6];
+            $PLINE[6] .= "\n";
+            $PLINE[1] = _update_virt_ftp_crypted_pass( $PLINE[1], $demo_mode, $suspended, $owned_domains{$vhost_domain} );    # Update crypted pass as needed.
+            @PLINE[ 2, 3, 4 ] = @{$entry}[ 2, 3, 6 ];                                                                         # Set UID, GID and GECOS to match system account
+
+            if ( $owned_domains{$vhost_domain} ) {
+
+                # Virtual account on a domain this account owns.
+                push @dual_entries,         join( ':', $vhost_user . '@' . $vhost_domain, @PLINE[ 1 .. 6 ] );
+                push @proftpd_only_entries, join( ':', $vhost_user . '+' . $vhost_domain, @PLINE[ 1 .. 6 ] );
+            }
+            elsif ( $vhost_domain !~ tr/a-z0-9.-//c ) {
+
+                # Virtual account on a domain this account doesn't own.
+                # These are preserved in a suspended state to prevent ProFTPD
+                # from authenticating them on dedicated IPs.
+                push @pureftpd_only_entries, join( ':', $vhost_user . '@' . $vhost_domain, @PLINE[ 1 .. 6 ] );
+            }
+        }
+        close($fh);
+
+        if ( !$suspended && !$demo_mode && has_anon_ftp() ) {
+            my $anon_pw     = getpw_anon();
+            my $anon_fields = '::' . join( ':', $anon_pw->[2], $anon_pw->[3], $entry->[6], $entry->[7] . '/public_ftp', '/bin/ftpsh' ) . "\n";
+            push @pureftpd_only_entries, $anon_pw->[0] . $anon_fields;
+            push @proftpd_only_entries, (
+                $anon_pw->[0] . '@' . $main_domain . $anon_fields,
+                $anon_pw->[0] . '+' . $main_domain . $anon_fields,
+                'anonymous@' . $main_domain . $anon_fields    # + was omitted in the prior version
+            );
+        }
+
+        {
+            my $cpuser_fields = ':' . join( ':', @{$entry}[ 1 .. 3, 6 .. 8 ] ) . "\n";
+            unshift @dual_entries, $system_user . $cpuser_fields;
+            push @proftpd_only_entries, (
+                $system_user . '@' . $main_domain . $cpuser_fields,
+                $system_user . '+' . $main_domain . $cpuser_fields
+            );
+        }
+
+        {
+            my $logdir     = apache_logdir();
+            my $log_fields = ':' . join( ':', @{$entry}[ 1, 2, 3, 6 ], $logdir . '/' . $system_user, '/bin/ftpsh' ) . "\n";
+            push @dual_entries, $system_user . '_logs' . $log_fields;
+            push @proftpd_only_entries, (
+                $system_user . '_logs@' . $main_domain . $log_fields,
+                $system_user . '_logs+' . $main_domain . $log_fields
+            );
+        }
+
+        if ( !$suspended ) {
+
+            # rewrite the new pureftpd file
+            # the file is not changed when the account is suspeded
+            local $) = ftp_gid();
+            Cpanel::FileUtils::Write::overwrite( $filename, join( '', @dual_entries, @pureftpd_only_entries ), 0640 );
+
+        }
+
+        # collect the stat info for the cache
+        my @file_info = ( $filename, ( stat($filename) )[ 0, 1, 7, 9 ] );    # 0 -> dev, 1 -> inode, 7 -> size, 9 -> mtime
+
+        unless ( $file_info[1] ) {
+
+            # File disappeared during processing. Cache is still invalid
+            die "The file $filename disappeared during ftpupdate processing.";
+        }
+
+        # set the new cache entry
+        $cache->{users}{$system_user} = {
+            main_domain => $main_domain,
+            user_pw     => $entry,
+            domains     => $domains,
+            file        => \@file_info,
+            pwentries   => join( '', @dual_entries, @proftpd_only_entries ),
+        };
+
+    }
+    catch {
+        Cpanel::Debug::log_warn("Error encountered while processing $system_user: $_");
+    }
+    finally {
+        Cpanel::FtpUtils::Passwd::unlock_storage($locks);
+    };
+
+    return;
+}
+
+sub _update_virt_ftp_crypted_pass {
+    my ( $pass, $demo, $suspended, $validdomain ) = @_;
+
+    if ( $demo || $pass eq '*' ) {
+
+        # Account is demo or has been in a demo state in the past.
+        return '*';
+    }
+    elsif ( substr( $pass, 0, 2 ) eq '!!' ) {
+        if ( $suspended || !$validdomain ) {
+
+            # Virtual FTP account is in a suspended state already
+            # and should remain suspended.
+            return $pass;
+        }
+        else {
+            # Virtual FTP account was suspended in the past due
+            # to a missing domain that is now present. Unsuspend.
+            return substr( $pass, 2 );
+        }
+    }
+    elsif ( $suspended || !$validdomain ) {
+
+        # Virtual FTP account should now be suspended since
+        # the domain is missing or the cPanel account is suspended.
+        return '!!' . $pass;
+    }
+
+    # No modification necessary
+    return $pass;
+}
+
+sub _update_cpuser_pass_as_needed {
+    my ( $pass, $system_user ) = @_;
+
+    my $suspend_data = Whostmgr::Accounts::SuspensionData->get_info($system_user);
+    return $pass unless $suspend_data;
+
+    my $leave_ftp_enabled = $suspend_data->{'leave-ftp-accts-enabled'} ? 1 : 0;
+    return _update_virt_ftp_crypted_pass( $pass, 0, !$leave_ftp_enabled, 1 );
+}
+
+# TODO: Refactor to be generally useful? Or use preexisting logic?
+sub arrays_match {
+    my ( $left, $right ) = @_;
+    return 0 if $#{$left} != $#{$right};
+    for ( 0 .. $#{$left} ) {
+        return 0 if $left->[$_] ne $right->[$_];
+    }
+    return 1;
+}
+
+sub file_stat_is_correct {
+    my $file_validity_ref = shift;
+    my $filename          = $file_validity_ref->[0];
+    return 0 unless $filename && -e $filename;
+    return arrays_match( [ ( stat(_) )[ 0, 1, 7, 9 ] ], [ @{$file_validity_ref}[ 1 .. 4 ] ] );
+}
+
+sub write_vhosts_and_cache {
+    my ( $pwd_file, $cache ) = @_;
+
+    my $lock;
+    try {
+        $lock = Cpanel::SafeFile::safelock($pwd_file) or die;
+
+        # Remove old format of cache
+        unlink( $pwd_file . '.cache' );
+
+        # Write passwd.vhosts
+        {
+            local $) = ftp_gid();
+            Cpanel::FileUtils::Write::overwrite( $pwd_file, join( '', map { $cache->{users}{$_}{pwentries} } keys %{ $cache->{users} } ), 0640 );
+        }
+
+        # Update stat info in cache
+        $cache->{file} = [ $pwd_file, ( stat($pwd_file) )[ 0, 1, 7, 9 ] ];    # 0 -> dev, 1 -> inode, 7 -> size, 9 -> mtime
+
+        # Write cache
+        Cpanel::FileUtils::Write::overwrite( "${pwd_file}.indexed.cache", Cpanel::AdminBin::Serializer::Dump($cache), 0600 );
+
+        Cpanel::SafeFile::safeunlock($lock);
+
+        print "FTP vhost passwords synced\n";
+    }
+    catch {
+        Cpanel::Debug::log_warn("Could not write to ${pwd_file}");
+        if ($lock) {
+            eval { Cpanel::SafeFile::safeunlock($lock); };
+        }
+    };
+    return;
+}
+
+sub signal_proftpd_if_needed {
+
+    # proftpd must be signaled to reread passwd.vhosts
+    if ( Cpanel::FtpUtils::Server::using_proftpd() ) {
+        Cpanel::Signal::send_hup_proftpd();
+    }
+    return;
+}
+
+sub show_help {
+    print <<"EOM";
+$0: Command line tool to update ProFTPD account information
+
+Usage:
+    $0 [--user=<user>] [--purgeuser=<user>] [--ip_to_delete=<ip-address>] [--skip-cache]
+
+When used with no arguments or options, this script will synchronize the ProFTPD passwd.vhosts
+file by reprocessing any recently modified Pure-FTPd virtual account files.
+
+Options:
+    --user           A user to force an update on. Cached data for this user is ignored.
+
+    --purgeuser      A user to delete regardless of its presence in the /etc/passwd file.
+
+    --ip_to_delete   An IP address dedicated to the user's account. If the user's FTP
+                     storage is deleted, any IP mappings to that storage will also be
+                     removed. When an IP address is specified with this flag, the user's
+                     virtual FTP account file will be deleted if the user does not
+                     exist in /etc/passwd.
+
+    --skip-cache     Forces a full rebuild of the passwd.vhosts file ignoring all
+                     cached data.
+
+Legacy Usage:
+    $0 <user> [ <domain> [ <ip_to_delete> ] ]
+
+    Note:
+      The content of the domain argument is ignored, however, the ip_to_delete
+      argument has the special behavior described in the "Options" section.
+
+      If you supply ip_to_delete using postional arguments it must be the third argument.
+
+EOM
+    return;
+}
+
+sub prep_vhosts_cache {
+    my $skip_cache = shift;
+
+    my $loaded_cache;
+    if ( !$skip_cache && -e $Cpanel::ConfigFiles::FTP_PASSWD_DIR . '/' . 'passwd.vhosts.indexed.cache' ) {
+
+        # Try to load the indexed cache
+        $loaded_cache = eval {
+            my $cache = Cpanel::AdminBin::Serializer::LoadFile( $Cpanel::ConfigFiles::FTP_PASSWD_DIR . '/' . 'passwd.vhosts.indexed.cache' );
+
+            # The stat info on the main passwd.vhosts file isn't technically relevant to the cache validity
+            # but the passwd.vhosts file should never be changing without the cache updating
+            if (   $cache->{version} != CACHE_FORMAT_VERSION
+                || $cache->{anon_allowed} != has_anon_ftp()
+                || !file_stat_is_correct( $cache->{file} ) ) {
+                die;
+            }
+            $cache;
+        };
+    }
+
+    $loaded_cache //= { version => CACHE_FORMAT_VERSION, anon_allowed => has_anon_ftp(), users => {} };
+    return $loaded_cache;
+}
+
+# TODO: Refactor to be generally useful? Or use preexisting logic?
+sub build_filtered_local_pwcache {
+
+    # Initialize a local cache of the getpwent data.
+    #   A local copy is manditory for this code since any function calls ftpupdate makes might
+    #   accidentally reset the main pwcache memory...resetting the hash iterator and potentially
+    #   removing the crypted password hashes.
+    Cpanel::PwCache::Helpers::no_uid_cache();
+    Cpanel::PwCache::Build::init_pwcache();
+    my %local_pwcache;
+    my $external_ar = Cpanel::PwCache::Build::fetch_pwcache();
+    foreach my $pw_ar ( @{$external_ar} ) {
+        next if ( $pw_ar->[2] < 99 || !trueuserdomain( $pw_ar->[0] ) );
+        my @pw_copy = @{$pw_ar};
+        $local_pwcache{ $pw_copy[0] } = \@pw_copy;
+    }
+    return \%local_pwcache;
+}
+
+{
+    # Memoized
+    my $has_anon_ftp;
+
+    sub has_anon_ftp {
+        $has_anon_ftp //= ( -e '/var/cpanel/noanonftp' ? 0 : 1 );
+        return $has_anon_ftp;
+    }
+}
+
+{
+    # Memoized
+    my $apache_logdir;
+
+    sub apache_logdir {
+        return $apache_logdir if defined $apache_logdir;
+
+        require Cpanel::ConfigFiles::Apache;
+        require Cpanel::Path;
+
+        my $apacheconf = Cpanel::ConfigFiles::Apache->new();
+        $apache_logdir = $apacheconf->dir_domlogs();
+        if ( -l $apache_logdir ) {
+            $apache_logdir = readlink $apache_logdir;
+            $apache_logdir = Cpanel::Path::relative2abspath( $apache_logdir, $apacheconf->dir_domlogs() );
+        }
+        return $apache_logdir;
+    }
+}
+
+{
+    # Memoized
+    my $userdomains;
+
+    # Returns sorted arrayref of all domains for an account or empty list
+    sub userdomains {
+        $userdomains //= Cpanel::Config::LoadUserDomains::Tiny::loaduserdomains( undef, 0, 1 );
+        return [ sort @{ $userdomains->{ $_[0] } // [] } ];
+    }
+
+    sub _clear_userdomains {
+        $userdomains = undef;
+        return;
+    }
+}
+
+{
+    # Memoized
+    my $trueuserdomains;
+
+    # Returns main domain for an account or undef
+    sub trueuserdomain {
+        $trueuserdomains //= Cpanel::Config::LoadUserDomains::Tiny::loadtrueuserdomains( undef, 1 );
+        return $trueuserdomains->{ $_[0] };
+    }
+
+    sub _clear_trueuserdomains {
+        $trueuserdomains = undef;
+        return;
+    }
+}
+
+{
+    # Memoized
+    my $demousers;
+
+    sub is_demo_user {
+        my $user = shift;
+        if ( !defined $demousers ) {
+            $demousers = {};
+            if ( open( my $demousers_fh, '<', '/etc/demousers' ) ) {
+                while ( readline($demousers_fh) ) {
+                    chomp();
+                    if ($_) {
+                        $demousers->{$_} = 1;
+                    }
+                }
+                close($demousers_fh);
+            }
+        }
+        return $demousers->{$user};
+    }
+
+}
+
+{
+    # Memoized
+    my $FTP;
+
+    sub getpw_anon {
+        if ( !defined $FTP ) {
+            $FTP = [ Cpanel::PwCache::getpwnam_noshadow('ftp') ];
+            if ( !$FTP->[0] ) {
+                $FTP = [ 'ftp', 'x', '14', '50', '', '', '', '/var/ftp', '' ];
+            }
+        }
+        return $FTP;
+    }
+
+}
+
+{
+    # Memoized
+    my $_ftp_gid;
+
+    sub ftp_gid {
+        $_ftp_gid //= getgrnam('proftpd') // getgrnam('ftp') // 0;
+        return $_ftp_gid;
+    }
+}
+
+1;

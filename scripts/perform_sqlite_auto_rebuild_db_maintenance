@@ -1,0 +1,75 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/perform_sqlite_auto_rebuild_db_maintenance
+#                                                  Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::perform_sqlite_auto_rebuild_db_maintenance;
+
+use strict;
+use warnings;
+
+use parent qw( Cpanel::HelpfulScript );
+
+use constant _OPTIONS => ();
+
+use Try::Tiny;
+
+use Cpanel::Debug              ();
+use Cpanel::LoadModule         ();
+use Cpanel::Update::InProgress ();
+use Cpanel::Update::IsCron     ();
+
+=encoding utf-8
+
+=head1 NAME
+
+scripts::perform_sqlite_auto_rebuild_db_maintenance
+
+=head1 SYNOPSIS
+
+/scripts/perform_sqlite_auto_rebuild_db_maintenance
+
+=head1 DESCRIPTION
+
+This script is used by the maintenance script to automatically check and repair auto-rebuilt SQLite databases
+
+=cut
+
+__PACKAGE__->new(@ARGV)->run() if !caller();
+
+use constant DATABASE_PACKAGES => qw(
+  Cpanel::APNS::Mail::DB::Sqlite Cpanel::APNS::Mail::DB::Sqlite
+  Cpanel::Apache::TLS::Index Cpanel::Apache::TLS::Index::DB
+  Cpanel::BandwidthDB::RootCache Cpanel::BandwidthDB::RootCache
+  Cpanel::EximStats::DB::Sqlite Cpanel::EximStats::DB::Sqlite
+);
+
+sub run {
+    my ($self) = @_;
+
+    if ( Cpanel::Update::InProgress->is_on() && !Cpanel::Update::IsCron->is_on() ) {
+        $self->say_maketext('A manual update of [asis,cPanel amp() WHM] is in progress. This script will exit now.');
+        return;
+    }
+
+    my %packages = DATABASE_PACKAGES();
+
+    for my $package ( keys %packages ) {
+        try {
+            Cpanel::LoadModule::load_perl_module($package);
+
+            # Cpanel::Apache::TLS::Index uses Cpanel::Apache::TLS::Index::DB as its internal package for the database
+            my $dbh = $packages{$package}->new( full_integrity_check => 1 );
+        }
+        catch {
+            Cpanel::Debug::log_warn("There was an error attempting to do an integrity check on '$package': $_");
+        };
+    }
+
+    return;
+}
+
+1;

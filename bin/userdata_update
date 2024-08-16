@@ -1,0 +1,791 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - bin/userdata_update                     Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package bin::userdata_update;
+
+use strict;
+use warnings;
+
+use Cpanel::AcctUtils::Account            ();
+use Cpanel::PwCache::Build                ();
+use Cpanel::AcctUtils::Owner              ();
+use Cpanel::CPAN::Hash::Merge             ();
+use Cpanel::CachedDataStore               ();
+use Cpanel::Config::Users                 ();
+use Cpanel::Config::LoadConfig            ();
+use Cpanel::Config::CpUserGuard           ();
+use Cpanel::Config::Contact               ();
+use Cpanel::Config::Httpd::IpPort         ();
+use Cpanel::ApacheConf                    ();
+use Cpanel::Config::LoadCpUserFile        ();
+use Cpanel::Config::HasCpUserFile         ();
+use Cpanel::ConfigFiles::Apache           ();
+use Cpanel::Config::LoadCpConf            ();
+use Cpanel::Config::LoadWwwAcctConf       ();
+use Cpanel::Config::userdata::UpdateCache ();
+use Cpanel::DIp::MainIP                   ();
+use Cpanel::SafeDir::MK                   ();
+use Cpanel::Validate::Domain              ();
+use Cpanel::Hostname                      ();
+use Cpanel::IP::Parse                     ();
+use Cpanel::Logger                        ();
+use Cpanel::Notify                        ();
+use Cpanel::PHPFPM::Config                ();
+use Cpanel::PHPFPM::ConvertAll            ();
+use Cpanel::Proxy::Tiny                   ();
+use Cpanel::PwCache                       ();
+use Cpanel::PwCache::GID                  ();
+use Cpanel::WildcardDomain                ();
+use Cpanel::WildcardDomain::Tiny          ();
+
+use Cpanel::Usage;
+use Cpanel::SafeDir;
+
+my $apacheconf = Cpanel::ConfigFiles::Apache->new();
+
+*_get_cpusers = \&Cpanel::Config::Users::getcpusers;
+
+if ( !caller() ) {
+    run(@ARGV);
+
+    exit 0;
+}
+
+sub run {
+    my (@args) = @_;
+
+    my $update_obj = bin::userdata_update->new();
+    return $update_obj->script(@args);
+}
+
+sub new {
+    my ($class) = @_;
+
+    my $self = bless {}, $class;
+    return $self;
+}
+
+sub script {    ## no critic qw(Subroutines::ProhibitExcessComplexity)
+    my (@args) = @_;
+
+    my $help;
+    my $reset;
+    my $unpark_addons;
+    my %opts = (
+        'help'          => \$help,
+        'h'             => \$help,
+        'usage'         => \$help,
+        'reset'         => \$reset,
+        'unpark-addons' => \$unpark_addons
+    );
+    Cpanel::Usage::wrap_options( \@args, \&_display_usage, \%opts );
+
+    # additive
+    $reset = 1 if ($unpark_addons);
+
+    my $main_port                      = Cpanel::Config::Httpd::IpPort::get_main_httpd_port();
+    my $ssl_port                       = Cpanel::Config::Httpd::IpPort::get_ssl_httpd_port();
+    my $main_ip                        = Cpanel::DIp::MainIP::getmainip();
+    my $contact_email                  = Cpanel::Config::Contact::get_public_contact();
+    my $httpd_htdocs                   = $apacheconf->dir_docroot();
+    my $userdata_dir                   = $Cpanel::Config::userdata::Constants::USERDATA_DIR || '/var/cpanel/userdata';
+    my $appname                        = 'userdata_update';
+    my %APACHECONF                     = Cpanel::ApacheConf::loadhttpdconf(1);
+    my $cpconf                         = Cpanel::Config::LoadCpConf::loadcpconf();
+    my $wwwacct                        = Cpanel::Config::LoadWwwAcctConf::loadwwwacctconf();
+    my $main_hostname                  = exists $wwwacct->{'HOST'} && $wwwacct->{'HOST'} ? $wwwacct->{'HOST'} : Cpanel::Hostname::gethostname();
+    my $proxy_domains                  = Cpanel::Proxy::Tiny::get_known_proxy_subdomains( { force_autodiscover_support => 1 } );                   # force autodiscover just in case this runs after it turns off but before httpd.conf is rebuilt
+    my @proxy_subdomains_begin_matches = map { "$_." } sort keys %$proxy_domains;
+    my %storage;
+
+    my $gid_cache_ref = Cpanel::PwCache::GID::get_gid_cacheref();
+
+    Cpanel::PwCache::Build::init_passwdless_pwcache();
+
+    my %default_vhost = (
+        'servername'       => '',
+        'serveralias'      => [],
+        'documentroot'     => '',
+        'usecanonicalname' => 'Off',
+        'port'             => $main_port,
+        'ip'               => $main_ip,
+        'user'             => '',
+        'group'            => '',
+        'serveradmin'      => '',
+    );
+
+    my %phpopenbasedir;
+    if ( -e '/var/cpanel/phpopendomains' ) {
+        Cpanel::Config::LoadConfig::loadConfig( '/var/cpanel/phpopendomains', \%phpopenbasedir, '\s*[:]\s*', '^\s*[#]' );
+    }
+
+    my %userdirprotect;
+    if ( -e '/var/cpanel/moddirdomains' ) {
+        Cpanel::Config::LoadConfig::loadConfig( '/var/cpanel/moddirdomains', \%userdirprotect, '\s*[:]\s*', '^\s*[#]' );
+    }
+
+    # Add in "nobody" stub
+    $storage{'nobody'}{'main'} = {
+        'main_domain'    => $main_hostname,
+        'sub_domains'    => [],
+        'parked_domains' => [],
+        'addon_domains'  => {},
+    };
+
+    ## Hash ref (keys: resellers) of hash ref (keys: users) of array ref
+    ##   (list of domains that are incorrectly formed)
+    my %invalid_domains;
+
+    my @cpusers = _get_cpusers();
+    foreach my $user ( sort @cpusers ) {
+        my %missing_subdomain;
+        my $save_cpuser  = 0;
+        my $groupname    = _get_group_name( $user, $gid_cache_ref );
+        my $cpuser_guard = Cpanel::Config::CpUserGuard->new($user);
+        my $cpuser_data  = $cpuser_guard->{'data'};
+
+        if ( !$cpuser_data->{'DOMAIN'} ) {
+            print "Skipping cPanel user $user. Missing main domain.\n";
+            next;
+        }
+
+        if ( exists $cpuser_data->{'DOMAINS'} ) {
+            my @_domains = ( $cpuser_data->{'DOMAIN'}, @{ $cpuser_data->{'DOMAINS'} } );
+            my @invalids = grep { !Cpanel::Validate::Domain::valid_wild_domainname($_) } @_domains;
+            if ( scalar @invalids ) {
+                my $reseller = Cpanel::AcctUtils::Owner::getowner($user);
+                $invalid_domains{$reseller}->{$user} = \@invalids;
+            }
+        }
+
+        my %handled_domains = map { $_ => 0 } $cpuser_data->{'DOMAIN'}, @{ $cpuser_data->{'DOMAINS'} };
+        my $main_domain     = $cpuser_data->{'DOMAIN'};
+        if ( !exists $APACHECONF{$main_domain} ) {
+            print "Skipping cPanel user $user. No main domain located in Apache configuration.\n";
+            next;
+        }
+        $handled_domains{$main_domain} = 1;
+
+        my %sub_domains_hash = _get_sub_domains($cpuser_data);
+        my $owner            = $cpuser_data->{'OWNER'} || 'root';
+        $storage{$user}{'main'} = {
+            'main_domain'    => $main_domain,
+            'sub_domains'    => [],
+            'parked_domains' => [],
+            'addon_domains'  => {},
+        };
+
+        # Main domain
+        my %main_hash = %default_vhost;
+        $main_hash{'servername'}            = $main_domain;
+        $main_hash{'user'}                  = $user;
+        $main_hash{'group'}                 = $groupname;
+        $main_hash{'owner'}                 = $owner;
+        $main_hash{'homedir'}               = _get_home_dir($user);
+        $main_hash{'phpopenbasedirprotect'} = ( exists $phpopenbasedir{$main_domain} && $phpopenbasedir{$main_domain} eq '-1' ) ? 0                                    : 1;
+        $main_hash{'userdirprotect'}        = exists $userdirprotect{$main_domain}                                              ? $userdirprotect{$main_domain}        : '';
+        $main_hash{'documentroot'}          = $APACHECONF{$main_domain}{'docroot'} && -e $APACHECONF{$main_domain}{'docroot'}   ? $APACHECONF{$main_domain}{'docroot'} : _get_home_dir($user) . '/public_html';
+        $main_hash{'serveradmin'}           = _get_serveradmin( $main_domain, $cpuser_data );
+        $main_hash{'usecanonicalname'}      = $APACHECONF{$main_domain}{'usecanonicalname'} ? 'On' : 'Off';
+        $main_hash{'ip'}                    = $cpuser_data->{'IP'};
+
+        # Handles SSL as well
+        _set_ip_port( \%main_hash, $APACHECONF{$main_domain}{'address'}, $main_ip, $main_port, $ssl_port );
+
+        # Update missing HASCGI value
+        if ( !exists $cpuser_data->{'HASCGI'} ) {
+            $cpuser_data->{'HASCGI'} = 1;
+            $save_cpuser = 1;
+        }
+
+        if ( $APACHECONF{$main_domain}{'cgi'} || $cpuser_data->{'HASCGI'} ) {
+            if ( !$cpuser_data->{'HASCGI'} ) {
+                $cpuser_data->{'HASCGI'} = 1;
+                $save_cpuser = 1;
+            }
+        }
+
+        ## ServerAlias
+        $main_hash{'serveralias'} = [ 'www.' . $main_domain ];
+        my %main_domain_alias_tracker = map { $_ => 1 } @{ $APACHECONF{$main_domain}{'aliases'} }, $main_domain;
+        foreach my $alias ( @{ $APACHECONF{$main_domain}{'aliases'} } ) {
+
+            # Strip "www."
+            $alias =~ s/^www\.//i;
+
+            # Main Domain Added automatically
+            next if $alias eq $main_domain;
+
+            # This isn't a parked domain, but it should be on the main
+            # serveralias.
+            if ( $alias eq "ipv6.$main_domain" ) {
+                push @{ $main_hash{'serveralias'} }, "ipv6.$main_domain";
+                next;
+            }
+
+            # Is sub domain parked?
+            if ( exists $sub_domains_hash{$alias} && !exists $APACHECONF{$alias} ) {
+                delete $sub_domains_hash{$alias};
+            }
+
+            # Identify and store "parked" domains
+            if ( !$handled_domains{$alias} && !exists $APACHECONF{$alias} ) {
+
+                # We never ever import the service (formerly proxy) subdomains prefixes into the userdata
+                # even if the user manually created them and they are missing from userdata
+                # Its just far too risky to do so.
+                next if !exists $handled_domains{$alias} && grep { index( $alias, $_ ) == 0 } @proxy_subdomains_begin_matches;
+
+                # mail. domains that are aliases of a domain, but aren't also their own subdomain (or have its own userdata file)
+                # are automatically created and therefore should not be added as a 'real' domain.
+                if ( index( $alias, 'mail.' ) == 0 && $main_domain_alias_tracker{ substr( $alias, 5 ) } ) {
+
+                    # If the mail domain is in handled_domains (in CPUSER), but doesnt have it's own vhost
+                    # we'll add it as a parked domain below. That being the case skip this so we don't add 2
+                    push @{ $main_hash{'serveralias'} }, $alias if !exists $handled_domains{$alias};
+                }
+                else {
+                    $handled_domains{$alias} = 1;
+                    push @{ $main_hash{'serveralias'} }, 'www.' . $alias, $alias;
+                    push @{ $storage{$user}{'main'}{'parked_domains'} }, $alias;
+                    if ( !grep( /^\Q$alias\E$/, @{ $cpuser_data->{'DOMAINS'} } ) ) {
+                        push @{ $cpuser_data->{'DOMAINS'} }, $alias;
+                        $save_cpuser = 1;
+                    }
+                }
+            }
+        }
+
+        # Flatten serveralias
+        $main_hash{'serveralias'} = join ' ', @{ $main_hash{'serveralias'} };
+
+        # Create SSL store
+        if ( exists $main_hash{'ssl'} && $main_hash{'ssl'} ) {
+            %{ $storage{$user}{'vhosts'}{ $main_domain . '_SSL' } } = %main_hash;
+            $storage{$user}{'vhosts'}{ $main_domain . '_SSL' }{'port'} = $ssl_port;
+        }
+
+        # Clear handled domain
+        delete $APACHECONF{$main_domain};
+
+        # Save main domain
+        $storage{$user}{'vhosts'}{$main_domain} = \%main_hash;
+
+        # Sub Domains and Addon Domains
+        foreach my $sub ( keys %sub_domains_hash ) {
+            if ( !$handled_domains{$sub} && !exists $APACHECONF{$sub} ) {
+
+                $missing_subdomain{$sub} = 1;
+                print "Adding missing sub domain $sub for later lookup (Might be an addon domain).\n";
+            }
+            else {
+                $handled_domains{$sub} = 1;
+
+                # Strip from main domain??
+            }
+            my %sub_hash = %default_vhost;
+            $sub_hash{'servername'}            = $sub;
+            $sub_hash{'user'}                  = $user;
+            $sub_hash{'group'}                 = $groupname;
+            $sub_hash{'owner'}                 = $owner;
+            $sub_hash{'homedir'}               = _get_home_dir($user);
+            $sub_hash{'phpopenbasedirprotect'} = ( exists $phpopenbasedir{$sub} && $phpopenbasedir{$sub} eq '-1' ) ? 0 : 1;
+            $sub_hash{'userdirprotect'}        = exists $userdirprotect{$sub} ? $userdirprotect{$sub} : exists $userdirprotect{'DefaultHost'} ? $userdirprotect{'DefaultHost'} : '';
+            $sub_hash{'documentroot'}          = _get_or_guess_subdomain_docroot( user => $user, subdomain => $sub, appname => $appname, cpuser_data => $cpuser_data, apacheconf => \%APACHECONF );
+            $sub_hash{'serveradmin'}           = _get_serveradmin( $sub, $cpuser_data );
+            $sub_hash{'usecanonicalname'}      = $APACHECONF{$sub}{'usecanonicalname'} ? 'On' : 'Off';
+            $sub_hash{'ip'}                    = $cpuser_data->{'IP'};
+
+            # Handles SSL as well
+            _set_ip_port( \%sub_hash, $APACHECONF{$sub}{'address'}, $main_ip, $main_port, $ssl_port );
+
+            if ( $APACHECONF{$sub}{'cgi'} || $cpuser_data->{'HASCGI'} ) {
+                if ( !$cpuser_data->{'HASCGI'} ) {
+                    $cpuser_data->{'HASCGI'} = 1;
+                    $save_cpuser = 1;
+                }
+            }
+
+            $sub_hash{'serveralias'} = index( $sub, '*' ) == 0 ? [] : [ 'www.' . $sub ];
+            my %subdomain_alias_tracker = map { $_ => 1 } @{ $APACHECONF{$sub}{'aliases'} };
+            foreach my $alias ( @{ $APACHECONF{$sub}{'aliases'} } ) {
+
+                # Strip "www."
+                $alias =~ s/^www\.//i;
+                next if $alias eq $sub;
+
+                # # Prevent duplication
+                # if ( $handled_domains{$alias} && $unpark_addons ) {
+                #     next unless fix_parked( $alias, $storage{$user}{'main'}{'parked_domains'}, $storage{$user}{'vhosts'}{$main_domain}, $storage{$user}{'vhosts'}{ $main_domain . '_SSL' } );
+                #     $handled_domains{$alias} = 0;
+                # }
+                # elsif ( $handled_domains{$alias} ) {
+                #     next;
+                # }
+
+                # Identify and store "addon" domains
+                if ( $handled_domains{$alias} ) {
+                    next;
+                }
+                if ( !exists $APACHECONF{$alias} ) {
+
+                    # We never ever import the service (formerly proxy) subdomains prefixes into the userdata
+                    # even if the user manually created them and they are missing from userdata
+                    # Its just far too risky to do so.
+
+                    next if !exists $handled_domains{$alias} && grep { index( $alias, $_ ) == 0 } @proxy_subdomains_begin_matches;
+
+                    # mail. aliases that aren't also in $handled_domains are added by the system automatically like www.
+                    if ( index( $alias, 'mail.' ) == 0 && $subdomain_alias_tracker{ substr( $alias, 5 ) } ) {
+                        if ( exists $missing_subdomain{$alias} ) {
+                            print "Removing missing sub domain $alias (Auto mail alias).\n";
+                            delete $missing_subdomain{$alias};
+                        }
+
+                        push @{ $sub_hash{'serveralias'} }, $alias;
+                    }
+                    else {
+                        $sub_hash{'is_addon'}                            = 1;
+                        $storage{$user}{'main'}{'addon_domains'}{$alias} = $sub;
+                        $handled_domains{$alias}                         = 1;
+                        push @{ $sub_hash{'serveralias'} }, 'www.' . $alias, $alias;
+                        delete $sub_domains_hash{$alias};
+                        if ( !grep( /^\Q$alias\E$/, @{ $cpuser_data->{'DOMAINS'} } ) ) {
+                            push @{ $cpuser_data->{'DOMAINS'} }, $alias;
+                            $save_cpuser = 1;
+                        }
+                    }
+                }
+            }
+
+            # Clear handled vhost
+            delete $APACHECONF{$sub};
+
+            # Flatten serveralias
+            $sub_hash{'serveralias'} = join ' ', @{ $sub_hash{'serveralias'} };
+
+            if ( exists $sub_hash{'ssl'} && $sub_hash{'ssl'} ) {
+                %{ $storage{$user}{'vhosts'}{ $sub . '_SSL' } } = %sub_hash;
+                $storage{$user}{'vhosts'}{ $sub . '_SSL' }{'port'} = $ssl_port;
+            }
+            $storage{$user}{'vhosts'}{$sub} = \%sub_hash;
+        }
+
+        # Add any unhandled domains not in %missing_subdomain as parked domains
+        foreach my $domain ( keys %handled_domains ) {
+            $domain =~ s/^www\.//i;
+            if ( $handled_domains{$domain} ) {
+                if ( !$missing_subdomain{$domain} ) {
+                    next;
+                }
+                else {
+
+                    # Was handled as an addon
+                    delete $storage{$user}{'vhosts'}{$domain};
+                    next;
+
+                }
+            }
+
+            # unless that domain is in the missing_subdomain hash, those should probably be subdomains
+            next if $missing_subdomain{$domain};
+
+            push @{ $storage{$user}{'main'}{'parked_domains'} }, $domain;
+            $storage{$user}{'vhosts'}{$main_domain}{'serveralias'} .= ' ' . $domain . ' www.' . $domain;
+            delete $sub_domains_hash{$domain};
+        }
+
+        foreach my $missing_sub ( keys %missing_subdomain ) {
+            if ( $handled_domains{$missing_sub} ) {
+                delete $sub_domains_hash{$missing_sub};
+            }
+        }
+
+        my @subs = sort keys %sub_domains_hash;
+        $storage{$user}{'main'}{'sub_domains'} = \@subs;
+
+        if ($save_cpuser) {
+            $cpuser_guard->save();
+        }
+    }
+
+    if ( scalar keys %invalid_domains ) {
+        Cpanel::Notify::notification_class(
+            'class'            => 'Check::InvalidDomains',
+            'application'      => 'userdata_update',
+            'status'           => 'invalid domains',
+            'interval'         => 60 * 60,
+            'constructor_args' => [
+                'origin'          => 'userdata_update',
+                'invalid_domains' => \%invalid_domains,
+            ]
+        );
+    }
+
+    if ( scalar keys %APACHECONF ) {
+        foreach my $domain ( keys %APACHECONF ) {
+            next if ( $domain =~ m/^__/ );
+
+            # Must have a docroot
+            if ( !$APACHECONF{$domain}{'docroot'} ) {
+                print "Domain $domain is missing its document root. Skipping\n";
+                next;
+            }
+
+            # Check for default vhost
+            if ( !$APACHECONF{$domain}{'user'} || $APACHECONF{$domain}{'user'} eq 'nobody' ) {
+                my $user        = 'nobody';
+                my %nobody_hash = %default_vhost;
+                $nobody_hash{'servername'}       = $domain;
+                $nobody_hash{'user'}             = $user;
+                $nobody_hash{'group'}            = _get_group_name($user);
+                $nobody_hash{'documentroot'}     = $APACHECONF{$domain}{'docroot'} && -e $APACHECONF{$domain}{'docroot'} ? $APACHECONF{$domain}{'docroot'} : $httpd_htdocs;
+                $nobody_hash{'serveradmin'}      = $contact_email;
+                $nobody_hash{'usecanonicalname'} = $APACHECONF{$domain}{'usecanonicalname'} ? 'On' : 'Off';
+
+                # Handles SSL as well
+                _set_ip_port( \%nobody_hash, $APACHECONF{$domain}{'address'}, $main_ip, $main_port, $ssl_port );
+
+                $nobody_hash{'serveralias'} = [ 'www.' . $domain ];
+                foreach my $alias ( @{ $APACHECONF{$domain}{'aliases'} } ) {
+                    next if ( $alias eq $domain || $alias eq 'www.' . $domain );
+                    push @{ $nobody_hash{'serveralias'} }, $alias;
+                }
+                delete $APACHECONF{$domain};
+                $nobody_hash{'serveralias'}        = join ' ', @{ $nobody_hash{'serveralias'} };
+                $storage{$user}{'vhosts'}{$domain} = \%nobody_hash;
+                if ( $domain ne $main_hostname ) {
+                    push @{ $storage{$user}{'main'}{'sub_domains'} }, $domain;
+                }
+            }
+            elsif ( Cpanel::AcctUtils::Account::accountexists( $APACHECONF{$domain}{'user'} ) ) {
+                my $user = $APACHECONF{$domain}{'user'};
+
+                my $cpuser_data = {};
+                if ( Cpanel::Config::HasCpUserFile::has_cpuser_file($user) ) {
+                    $cpuser_data = Cpanel::Config::LoadCpUserFile::loadcpuserfile($user);
+                }
+                my $owner       = $cpuser_data->{'OWNER'} || 'root';
+                my %domain_hash = %default_vhost;
+                $domain_hash{'servername'}              = $domain;
+                $domain_hash{'user'}                    = $user;
+                $domain_hash{'group'}                   = _get_group_name($user);
+                $domain_hash{'owner'}                   = $owner;
+                $domain_hash{'homedir'}                 = _get_home_dir($user);
+                $domain_hash{'user_phpopenbasedirhome'} = ( exists $phpopenbasedir{$domain} && $phpopenbasedir{$domain} eq '-1' ) ? 0                               : 1;
+                $domain_hash{'documentroot'}            = $APACHECONF{$domain}{'docroot'} && -e $APACHECONF{$domain}{'docroot'}   ? $APACHECONF{$domain}{'docroot'} : _get_home_dir($user) . '/public_html';
+                $domain_hash{'serveradmin'}             = _get_serveradmin( $domain, $cpuser_data );
+                $domain_hash{'usecanonicalname'}        = $APACHECONF{$domain}{'usecanonicalname'} ? 'On' : 'Off';
+                $domain_hash{'ip'}                      = $cpuser_data->{'IP'};
+
+                # Handles SSL as well
+                _set_ip_port( \%domain_hash, $APACHECONF{$domain}{'address'}, $main_ip, $main_port, $ssl_port );
+
+                if ( $APACHECONF{$domain}{'cgi'} ) {
+                    $domain_hash{'options'} = 'ExecCGI Includes';
+                }
+                else {
+                    $domain_hash{'options'} = '-ExecCGI -Includes';
+                }
+                $domain_hash{'serveralias'} = [ 'www.' . $domain ];
+                foreach my $alias ( @{ $APACHECONF{$domain}{'aliases'} } ) {
+                    next if ( $alias eq $domain || $alias eq 'www.' . $domain );
+                    push @{ $domain_hash{'serveralias'} }, $alias;
+                }
+
+                # Clear handled domain
+                delete $APACHECONF{$domain};
+
+                # Flatten serveralias
+                $domain_hash{'serveralias'} = join ' ', @{ $domain_hash{'serveralias'} };
+
+                # Save SSL stores
+                if ( exists $domain_hash{'ssl'} && $domain_hash{'ssl'} ) {
+                    $storage{$user}{'vhosts'}{ $domain . '_SSL' } = \%domain_hash;
+                }
+
+                # Save domain
+                $storage{$user}{'vhosts'}{$domain} = \%domain_hash;
+            }
+            else {
+                print "Skipping virtual host entry for domain $domain\n";
+            }
+        }
+    }
+
+    # Store results
+    foreach my $user ( keys %storage ) {
+        Cpanel::SafeDir::MK::safemkdir( $userdata_dir . '/' . $user, '0750' );    # Will set permissions
+        if ( !-d $userdata_dir . '/' . $user ) {
+            Cpanel::Logger::cplog( "Failed to create user data directory $userdata_dir/$user", 'warn', $appname );
+            next;
+        }
+        else {
+            if ( $user eq 'nobody' ) {
+
+                # Userdata for 'nobody' should not be readable by 'nobody',
+                # as that would make it readable by any Apache process.
+                chown 0, 0, $userdata_dir . '/' . $user;
+            }
+            if ( opendir my $user_dh, $userdata_dir . '/' . $user ) {
+                while ( my $file = readdir $user_dh ) {
+                    next unless $reset;
+                    next if $file =~ m/^\./;
+                    next if $file =~ m/\.tmpl$/;
+                    next if $file =~ m/\.cache$/;
+                    next if !-f $file;
+                    next if -l $file;
+                    if ( !unlink( $userdata_dir . '/' . $user . '/' . $file ) ) {
+                        Cpanel::Logger::cplog( "Failed to cleanse data file $userdata_dir/$user/$file: $!", 'warn', $appname );
+                    }
+                }
+                closedir $user_dh;
+            }
+            else {
+                Cpanel::Logger::cplog( "Failed to open data directory $userdata_dir/$user: $!", 'warn', $appname );
+            }
+        }
+
+        my $defaults_to_fpm = Cpanel::PHPFPM::Config::get_default_accounts_to_fpm();
+
+        my $main = exists $storage{$user}{'main'} ? $storage{$user}{'main'} : {};
+        foreach my $domain ( keys %{ $storage{$user}{'vhosts'} } ) {
+
+            # Cpanel::Config::userdata::fix_parked_sub_duplicates_data( $storage{$user}{'vhosts'}{$domain}, $main );
+            if ( !$reset && -e $userdata_dir . '/' . $user . '/' . $domain ) {
+                my $old_vhost_hr = Cpanel::CachedDataStore::fetch_ref( $userdata_dir . '/' . $user . '/' . $domain );
+                $storage{$user}{'vhosts'}{$domain} = Cpanel::CPAN::Hash::Merge::merge( $storage{$user}{'vhosts'}{$domain}, $old_vhost_hr );
+            }
+            Cpanel::CachedDataStore::store_ref( $userdata_dir . '/' . $user . '/' . $domain, $storage{$user}{'vhosts'}{$domain} );
+
+            if ( $reset && $defaults_to_fpm ) {
+                Cpanel::PHPFPM::ConvertAll::queue_convert_domain($domain);
+            }
+        }
+
+        # Store main
+        if ( exists $storage{$user}{'main'} ) {
+            if ( !$reset && -e $userdata_dir . '/' . $user . '/main' ) {
+                my $old_main_hr = Cpanel::CachedDataStore::fetch_ref( $userdata_dir . '/' . $user . '/main' );
+                $storage{$user}{'main'} = Cpanel::CPAN::Hash::Merge::merge( $storage{$user}{'main'}, $old_main_hr );
+
+                # Only store unique array elements
+                foreach my $domain_cat ( keys %{ $storage{$user}{'main'} } ) {
+                    next unless ref $storage{$user}{'main'}{$domain_cat} eq 'ARRAY';
+                    my %seen = ();
+                    @{ $storage{$user}{'main'}{$domain_cat} } = grep( !$seen{$_}++, @{ $storage{$user}{'main'}{$domain_cat} } );
+                }
+                my @parked     = ref $storage{$user}{'main'}{'parked_domains'} ? @{ $storage{$user}{'main'}{'parked_domains'} } : ();
+                my @subdomains = ref $storage{$user}{'main'}{'sub_domains'}    ? @{ $storage{$user}{'main'}{'sub_domains'} }    : ();
+                foreach my $addon ( keys %{ $storage{$user}{'main'}{'addon_domains'} } ) {
+                    my $base_subdomain = $storage{$user}{'main'}{'addon_domains'}{$addon};
+                    if ( grep( /^\Q$base_subdomain\E$/i, @subdomains ) ) {
+
+                        # if it's a valid addon with referencing a valid subdomain, make sure it's not also listed as parked
+                        @parked = grep( !/^(?:\Q$addon\E|\Q$base_subdomain\E)$/i, @parked );
+                    }
+                    else {
+
+                        # otherwise, make it a parked domain
+                        delete $storage{$user}{'main'}{'addon_domains'}{$addon};
+                        if ( !grep( /^\Q$addon\E$/i, @parked ) ) {
+                            push @parked, $addon;
+                        }
+                    }
+                }
+                $storage{$user}{'main'}{'parked_domains'} = \@parked;
+            }
+            Cpanel::CachedDataStore::store_ref( $userdata_dir . '/' . $user . '/main', $storage{$user}{'main'} );
+        }
+
+        # The cache needs to be present in order for the php fpm yaml files to be regenerated
+        Cpanel::Config::userdata::UpdateCache::update($user);
+    }
+
+    system '/usr/local/cpanel/scripts/updateuserdomains';    #recache NOCGI
+    system '/usr/local/cpanel/bin/fix_userdata_perms';       # ensure perms are correct
+
+    return 1;
+}
+
+#
+#
+### Subs ######
+
+# Supports subdomain with "."
+sub _get_subdomain_part {
+    my ( $subdom, $u_ref, $appname ) = @_;
+    if ( !$subdom ) {
+        Cpanel::Logger::cplog( 'No subdomain specified, unable to determine suddomain directory', 'warn', $appname );
+        return;
+    }
+    my @dom_parts = split /\./, $subdom;
+    my $subd_part = pop @dom_parts;
+    return shift @dom_parts if !$u_ref->{'DOMAIN'};
+
+    my %domain_index = map { $_ => 1 } @{ $u_ref->{'DOMAINS'} }, $u_ref->{'DOMAIN'};
+
+    foreach my $part ( reverse @dom_parts ) {
+        if ( !$domain_index{$subd_part} ) {
+            $subd_part = $part . '.' . $subd_part;
+        }
+        else {
+            $subd_part = $part;
+            last;
+        }
+    }
+
+    return $subd_part;
+}
+
+sub _get_or_guess_subdomain_docroot {
+    my (%OPTS) = @_;
+
+    my ( $user, $subdomain, $appname, $cpuser_data, $apacheconf ) = @OPTS{qw( user subdomain appname cpuser_data apacheconf )};
+
+    if ( $apacheconf->{$subdomain}{'docroot'} && -e $apacheconf->{$subdomain}{'docroot'} ) {
+        return $apacheconf->{$subdomain}{'docroot'};
+    }
+
+    my $homedir  = _get_home_dir($user);
+    my $full_dir = "$homedir/public_html/$subdomain";
+    return $full_dir if -e $full_dir;
+
+    my $sub_part_dir = $homedir . '/public_html/' . _get_subdomain_part( $subdomain, $cpuser_data, $appname );
+    return $sub_part_dir if -e $sub_part_dir;
+
+    return "$homedir/public_html";
+}
+
+sub _get_sub_domains {
+    my $u_ref = shift;
+    my %subdomains;
+
+    my %domain_index = map { $_ => 1 } @{ $u_ref->{'DOMAINS'} }, $u_ref->{'DOMAIN'};
+    foreach my $domain ( @{ $u_ref->{'DOMAINS'} } ) {
+        my @dom_parts = split /\./, $domain;
+        shift @dom_parts;
+        if ( exists $domain_index{ join( '.', @dom_parts ) } ) {
+            $subdomains{$domain} = 1;
+        }
+        else {
+            my $count = 0;
+            shift @dom_parts;
+            while ( @dom_parts && $count < 100 ) {
+                if ( exists $domain_index{ join( '.', @dom_parts ) } ) {
+                    $subdomains{$domain} = 1;
+                    last;
+                }
+                shift @dom_parts;
+                $count++;    # Prevent infinite loop (not necessary)
+            }
+        }
+    }
+    return wantarray ? %subdomains : \%subdomains;
+}
+
+sub _set_ip_port {
+    my ( $storage, $addresses, $main_ip, $main_port, $ssl_port ) = @_;
+
+    foreach my $address ( @{$addresses} ) {
+        if ( $address->{'port'} eq $ssl_port || $address->{'port'} eq '443' ) {
+            $storage->{'ssl'} = 1;
+        }
+        elsif ( $address->{'port'} eq $main_port || $address->{'port'} eq '80' ) {
+            my ( $version, $ip, $port ) = Cpanel::IP::Parse::parse( $address->{'ip'}, undef, undef );
+
+            if ( $version == 4 ) {
+                $storage->{'ip'} = $ip;
+            }
+            elsif ( $version == 6 ) {
+                $storage->{'ipv6'} = { "$ip" => { 'dedicated' => 1 } };
+            }
+
+            $storage->{'port'} = $main_port;
+        }
+    }
+
+    if ( !$storage->{'ip'} ) {
+        $storage->{'ip'} = $main_ip;
+    }
+    if ( !$storage->{'port'} ) {
+        $storage->{'port'} = $main_port;
+    }
+}
+
+sub _get_group_name {
+    my ( $user, $gid_cache_ref ) = @_;
+    my $gid = ( Cpanel::PwCache::getpwnam($user) )[3];
+    return unless defined $gid;
+    return $gid_cache_ref->{$gid}->[0];
+}
+
+sub _get_home_dir {
+    my $user = shift;
+    return scalar( ( Cpanel::PwCache::getpwnam($user) )[7] );
+}
+
+sub _get_serveradmin {
+    my $servername  = shift;
+    my $cpuser_data = shift;
+
+    my $wildcard_stripped_servername = Cpanel::WildcardDomain::Tiny::is_wildcard_domain($servername) ? Cpanel::WildcardDomain::strip_wildcard($servername) : $servername;
+    my $serveradmin                  = 'webmaster@' . $wildcard_stripped_servername;
+    if ( exists $cpuser_data->{'SERVERADMIN'} && $cpuser_data->{'SERVERADMIN'} ) {
+        $serveradmin = $cpuser_data->{'SERVERADMIN'};
+    }
+    return $serveradmin;
+}
+
+sub fix_parked {
+    my $domain         = shift;
+    my $parked_ar      = shift;
+    my $main_domain_hr = shift;
+    my $ssl_domain_hr  = shift;
+    my %parked_hash;
+    %parked_hash = map { $_ => 1 } @{$parked_ar};
+    if ( exists $parked_hash{$domain} ) {
+        delete $parked_hash{$domain};
+        @{$parked_ar} = keys %parked_hash;
+        my %aliases_hash;
+        %aliases_hash = map { $_ => 1 } split /\\s/, $main_domain_hr->{'serveralias'};
+        delete $aliases_hash{$domain};
+        delete $aliases_hash{ 'www.' . $domain };
+        if ( keys %aliases_hash ) {
+            $main_domain_hr->{'serveralias'} = join ' ', keys %aliases_hash;
+            return 1 unless defined $ssl_domain_hr;
+            $ssl_domain_hr->{'serveralias'} = join ' ', keys %aliases_hash;
+        }
+        return 1;
+    }
+    return 0;
+}
+
+sub _display_usage {
+    my $p = $0;
+    $p =~ s@^.+/(.+)$@$1@;
+    print <<"EO_HELP";
+Usage: $p [--reset] [--unpark_addons] [--help | --usage]
+Options:
+--------------------------------
+--reset
+    IMPORTANT! Do not conserve existing userdata and regenerate new userdata files
+    based upon the current Apache configuration file. This should be used as a last resort.
+
+--unpark-addons
+    Fix instances where an addon domain is also listed as a parked domain. This flag will
+    result in a reset of all userdata files. See "--reset" warnings for more information.
+
+--help
+    Display usage information
+
+EO_HELP
+
+    exit;
+}
+
+1;

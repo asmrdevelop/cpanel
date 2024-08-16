@@ -1,0 +1,50 @@
+#!/bin/bash
+#
+# chkconfig: 345 95 10
+# description: This is the cpanel webserver and chat.
+# processname: cpaneld
+# pidfile: /var/run/cpanel.pid
+
+# Source function library.
+if [ -f /etc/init.d/functions ]; then
+  . /etc/init.d/functions
+else
+  echo "Could not find functions file, your system may be broken"
+  exit 1
+fi
+
+LANG=C
+RETVAL=0
+
+# See how we were called.
+case "$1" in
+  start)
+	umask 0022
+	echo -n "Starting cluster services: "
+	daemon /usr/local/cpanel/etc/init/startcpsrvd --no-verbose
+	echo
+    echo -n "Starting cPanel brute force detector services: "
+    daemon /usr/local/cpanel/etc/init/startcphulkd --no-verbose
+    echo
+    echo -n "Starting tailwatchd: "
+    daemon /usr/local/cpanel/etc/init/starttailwatchd --no-verbose
+    echo
+	;;
+  stop)
+    action "Stopping tailwatchd: " /usr/local/cpanel/etc/init/stoptailwatchd --no-verbose
+	action "Stopping Web Host Manager services: " /usr/local/cpanel/etc/init/stopcpsrvd --no-verbose
+    action "Stopping cPanel brute force detector services: " /usr/local/cpanel/etc/init/stopcphulkd --no-verbose
+    ;;
+  status)
+	status cpsrvd
+	;;
+  restart)
+ 	$0 stop
+	$0 start
+	;;
+  *)
+	echo "Usage: $0 {start|stop|status|restart}"
+	exit 1
+esac
+
+exit

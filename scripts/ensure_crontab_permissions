@@ -1,0 +1,44 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/ensure_crontab_permissions      Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+#
+
+package scripts::ensure_crontab_permissions;
+
+use strict;
+use Cpanel::Cron::Utils ();
+
+our $TIMEOUT = 300;
+
+sub script {
+    my ($self) = @_;
+
+    alarm($TIMEOUT);
+
+    #
+    # run_crontab fixes invalid permissions on the crontab
+    # binary in the event yum has updated crontab over
+    # our jail_safe_crontab
+    #
+    Cpanel::Cron::Utils::run_crontab( "args" => ["-l"] );
+
+    exit 0;
+}
+
+__PACKAGE__->script( \@ARGV ) unless caller;
+
+__END__
+
+=head1 NAME
+
+ensure_crontab_permissions - Autofix permission on crontab
+
+=head1 DESCRIPTION
+
+This script checks the permission on the system crontab binary
+provided by Cpanel::JailSafe::get_system_binary('crontab') and sets
+them to the proper value for all supported operating systems.

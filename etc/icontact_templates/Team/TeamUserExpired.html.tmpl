@@ -1,0 +1,28 @@
+[%#
+Variables passed in:
+
+team_user     - the name of the expiring Team User
+task_error    - capture error message in case of failure
+
+For more information about how to customize notification templates, read our documentation at https://go.cpanel.net/notificationtemplates
+
+-%]
+[%
+    PROCESS "include/colors.tmpl";
+    PROCESS "include/styles.tmpl";
+
+    WRAPPER 'wrapper/main.html.tmpl'
+        font_style          = font_style,
+        NOTICE.email_reason = CPANEL.locale.maketext('Team User “[_1]” Expire Status', NOTICE.team_user);
+%]
+
+<p>
+    [% IF NOTICE.task_error.defined and NOTICE.task_error.length %]
+        [% CPANEL.locale.maketext('Failed to expire team user “[_1]”.', NOTICE.team_user) %]
+        [% CPANEL.locale.maketext('For details, check this error log, or contact your hosting provider: /usr/local/cpanel/logs/error_log') %]
+    [% ELSE %]
+        [% CPANEL.locale.maketext('Team user “[_1]” has expired successfully.', NOTICE.team_user) %]
+    [% END %]
+</p>
+
+[% END %]

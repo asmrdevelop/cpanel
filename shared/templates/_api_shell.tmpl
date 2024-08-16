@@ -1,0 +1,305 @@
+[%
+USE API_Shell;
+
+#For now, hard-code these in the order in which we display them.
+#TODO: Get these from the APIs themselves.
+SET sort_types = [
+    'lexicographic',
+    'numeric',
+    'numeric_zero_as_max',
+    'ipv4',
+];
+
+SET filter_types = [
+    { value => 'contains', description => locale.maketext("Contains") }
+    { value => 'begins',   description => locale.maketext("Begins With") },
+    { value => 'eq',       description => locale.maketext("Equals") },
+    { value => 'gt',       description => locale.maketext("Greater Than (numeric)") },
+    { value => 'lt',       description => locale.maketext("Less Than (numeric)") },
+];
+
+PROCESS '_ajaxapp.tmpl';
+
+SET big_x = !CPANEL.ua_is_ie() || (CPANEL.ua_is_ie() > 8) ? '&#9747;' : 'X';
+
+SET THIS_IS_WHM = CPANEL.is_whm();
+SET api_calls = {};
+-%]
+
+[% VIEW function_select_combobox; BLOCK text; -%]
+    <div id="combobox_api_calls_[% item %]" class="cjt-combobox-wrapper">
+        <input id="api_shell_input_[% item%]" name="functionSelect" type="text" size="40" placeholder="[% locale.maketext("Choose an API call.") %]" dir="ltr"><a class="cjt-combobox-expander"></a>
+    </div>
+[% END; END -%]
+
+<link rel="stylesheet" type="text/css" href="/yui/assets/skins/sam/treeview.css" />
+<link rel="stylesheet" type="text/css" href="/yui/assets/skins/sam/tabview.css" />
+<link rel="stylesheet" type="text/css" href="/yui/assets/skins/sam/datatable.css" />
+<link rel="stylesheet" type="text/css" href="/yui/autocomplete/assets/skins/sam/autocomplete.css" />
+<link rel="stylesheet" type="text/css" href="/cjt/css/combobox-min.css" />
+
+<style>
+    [% INSERT 'sharedcss/api_shell.css' -%]
+</style>
+
+<p class="description">[% locale.maketext("Use this interface to run API calls interactively.") %]</p>
+
+<div id="cjt_pagenotice_container" class="cjt-pagenotice-container cjt-notice-container">
+    <div class="yui-module cjt-notice cjt-pagenotice cjt-notice-warn">
+        <div class="bd">
+            <div class="cjt-notice-content">
+                [% locale.maketext("[output,strong,WARNING:] This feature operates on the live system.") %]
+            </div>
+        </div>
+    </div>
+</div>
+
+<p class="description">
+
+[% locale.maketext("[output,strong,WARNING:] API function calls may change or delete data on your server, which can cause your server to fail. Read the function call’s documentation thoroughly before you use it in the API Shell, a script, or through any other method.") %]
+
+[% locale.maketext("If you wish to see an example of the output from a specific function call that uses test data, read the [output,em,Example] section for that function call in our API documentation.") %]
+</p>
+<div class="section">
+<form id="api_form" name="api_form" action="javascript:void(0)">
+    <div id="api_function_area">
+    [% IF THIS_IS_WHM -%]
+        [% SET v1_calls = API_Shell.whm1_functions() -%]
+        [% api_calls.1 = v1_calls -%]
+        [% locale.maketext("[asis,WHM] API version:") %]
+
+        <div class="vertical-radio-item">
+            <input type="radio" checked name="api_version" value="1" id="whm1_radio" class="apiRadio">
+            <label class="title" for="whm1_radio">v1</label>
+            [% function_select_combobox.print(1) -%]
+            (<a href="https://go.cpanel.net/whmapi1" target="_blank" title="[% locale.maketext("Browse [_1]’s documentation.", 'WHM API 1') %]">[% locale.maketext("[output,asis,WHM API 1] Documentation") %]</a>)
+        </div>
+
+        <div class="vertical-radio-item">
+            [% SET no_interact_blurb = locale.maketext("This interface does not interact with “[_1]”.", 'WHM API 0') -%]
+            <input type="radio" name="api_version" value="0" id="whm0_radio" class="apiRadio" disabled title="[% no_interact_blurb %]">
+            <label class="title disabled" for="whm0_radio" title="[% no_interact_blurb %]">0</label>
+        </div>
+    [% ELSE -%]
+        [% SET uapi_calls = API_Shell.uapi_functions() -%]
+        [% SET api2_calls = API_Shell.api2_functions() -%]
+        [% api_calls.2 = api2_calls; api_calls.3 = uapi_calls -%]
+        [% locale.maketext("[asis,cPanel] API version:") %]
+
+        <div class="vertical-radio-item">
+            <input type="radio" checked name="api_version" value="3" id="api_radio_3" class="apiRadio">
+            <label class="title" for="api_radio_3">[% locale.maketext("[output,acronym,UAPI,Universal API] ([output,asis,API 3])") %]</label>
+            [%# function_select.print( uapi_calls ) -%]
+            [% function_select_combobox.print(3) -%]
+            (<a href="https://go.cpanel.net/uapidocs" target="_blank" title="[% locale.maketext("Browse [_1]’s documentation.", 'UAPI') %]">[% locale.maketext("[output,asis,UAPI] Documentation") %]</a>)
+        </div>
+
+        <div class="vertical-radio-item">
+            <input type="radio" name="api_version" value="2" id="api_radio_2" class="apiRadio">
+            <label class="title" for="api_radio_2">API 2</label>
+            [%# function_select.print( api2_calls ) -%]
+            [% function_select_combobox.print(2) -%]
+            (<a href="https://go.cpanel.net/api2docs" target="_blank" title="[% locale.maketext("Browse [_1]’s documentation.", 'API 2') %]">[% locale.maketext("[output,asis,API 2] Documentation") %]</a>)
+        </div>
+
+        <div class="vertical-radio-item">
+            [% SET no_interact_blurb = locale.maketext("This interface does not interact with “[_1]”.", 'API 1') -%]
+            <input type="radio" name="api_version" value="1" id="api1_radio" class="apiRadio" disabled title="[% no_interact_blurb %]">
+            <label class="title disabled" for="api1_radio" title="[% no_interact_blurb %]">[% locale.maketext("[output,asis,API 1] (DEPRECATED)") %]</label>
+        </div>
+    [% END -%]
+    </div>
+
+    <div class="parm-container inputContainer">
+        <span class="title">[% locale.maketext("Variables") %]</span>
+            <a href="javascript:void(0)" id="addVariableButton">([% locale.maketext("Add") %])</a>
+        <div class="inputFields">
+            <div class="noneField">
+                [% locale.maketext("None") %]
+            </div>
+        </div>
+    </div>
+
+    <div class="form-part">
+        <a href="javascript:void(0)" id="metadataToggle">[% locale.maketext("Show Sort/Filter/Paginate Options") %]</a>
+    </div>
+
+    <div id="metadata" class="metadataContainer" style="display:none">
+        <div>
+            <label class="title" for="page_start">[% locale.maketext("Index of first result to show, zero-based") %]:</label>
+            <input id="page_start" class="number" name="page_start" type="number" min="0" value="0">
+        </div>
+        <p>
+            <label class="title" for="page_size">[% locale.maketext("Maximum # of results to show") %]:</label>
+            <input id="page_size" class="number" name="page_size" type="number" min="0" placeholder="[% locale.maketext("Unlimited") %]">
+        </p>
+        <p>
+            [% locale.maketext("A filter with the special field “*” will match any record with at least one field that matches the filter’s type and term.") %]
+        </p>
+        <div class="parm-container inputContainer">
+            <span class="title">[% locale.maketext("Filters") %]</span>
+            <a href="javascript:void(0)" id="addFilterButton">([% locale.maketext("Add") %])</a>
+            <div class="inputFields">
+                <div class="noneField">
+                    [% locale.maketext("None") %]
+                </div>
+            </div>
+        </div>
+
+        <div class="parm-container inputContainer">
+            <span class="title">[% locale.maketext("Sorts") %]</span>
+            <a href="javascript:void(0)" id="addSortButton">([% locale.maketext("Add") %])</a>
+            <div class="inputFields">
+                    <div class="noneField">
+                        [% locale.maketext("None") %]
+                    </div>
+            </div>
+        </div>
+
+        <div class="parm-container inputContainer">
+            <span class="title">[% locale.maketext("Columns") %]</span>
+            <a href="javascript:void(0)" id="addColumnButton">([% locale.maketext("Add") %])</a>
+            <div class="inputFields">
+                    <div class="noneField">
+                        [% locale.maketext("Select all columns") %]
+                    </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="form-part" id="submit-div">
+        <button type="submit" id="submit_button" disabled>[% locale.maketext("Submit") %]</button>
+    </div>
+
+</form>
+
+<div class="form-part">
+    <strong>[% locale.maketext("URL: [_1]",'<code id="url"></code>') %]</strong>
+</div>
+
+<div class="form-part">
+    <strong>[% locale.maketext("API call data structure:") %]</strong>
+    <div id="api_treeview" class="data-structure-display invalid-data"></div>
+</div>
+
+<hr>
+<h3>[% locale.maketext("API call response") %]</h3>
+
+<div id="views_container"></div>
+</div>
+
+<div id="raw_view_container">
+    [% SET bytes_html = ''; -%]
+    <label for="raw_response">
+        [% SET resp_length_span = '<span id="resp_length">' _ locale.format_bytes(0) _ '</span>' -%]
+        <h3>[% locale.maketext("Raw response ([_1]):", resp_length_span) %]</h3>
+    </label>
+    <textarea id="raw_response" readonly></textarea>
+    <h3>
+        [% locale.maketext("HTTP status: [_1]", '<span id="raw_status"></span>') %]
+    </h3>
+    <label for="raw_headers">
+        <h3>[% locale.maketext("Raw HTTP headers:") %]</h3>
+    </label>
+    <textarea id="raw_headers" readonly></textarea>
+</div>
+
+<div id="tree_view_container">
+    <div id="response_treeview"></div>
+</div>
+
+<div id="table_view_container">
+    <strong>
+        <span id="table_record_count">[% locale.maketext("[quant,_1,record,records]",0) %]</span>
+    </strong>
+    <div id="table_container"></div>
+</div>
+
+<!-- Templates -->
+
+<script id="variableRowTemplate" type="text/plain">
+    <div class="inputField">
+        <div class="closeLink">
+            <a title="[% locale.maketext("Delete") %]" class="delete-link" href="javascript:void(0)">
+                [% big_x %]
+            </a>
+        </div>
+        <div class="key_value">
+            <input type="text" name="variable_key_{index}" placeholder="[% locale.maketext("Key") %]" />
+            <span class="equals">=</span>
+            <textarea name="variable_value_{index}" placeholder="[% locale.maketext("Value") %]" rows="1" cols="15" /></textarea>
+        </div>
+    </div>
+</script>
+<script id="filterRowTemplate" type="text/plain">
+    <div class="inputField filterRow">
+        <div class="closeLink">
+            <a title="[% locale.maketext("Delete") %]" class="delete-link" href="javascript:void(0)">
+                [% big_x %]
+            </a>
+        </div>
+        <div>
+            <input tye="text" name="filter_column_{index}" placeholder="[% locale.maketext("Field") %]" />
+            <select name="filter_type_{index}">
+                [% FOR filter IN filter_types %]
+                <option value='[% filter.value %]'>[% filter.description %]</option>
+                [% END %]
+            </select>
+            <input type="text" name="filter_term_{index}" placeholder="[% locale.maketext("Term") %]" />
+        </div>
+    </div>
+</script>
+
+<script id="columnRowTemplate" type="text/plain">
+    <div class="inputField columnRow">
+        <div class="closeLink">
+            <a title="[% locale.maketext("Delete") %]" class="delete-link" href="javascript:void(0)">
+                [% big_x %]
+            </a>
+        </div>
+        <div>
+            <input tye="text" name="columns_{index}" placeholder="[% locale.maketext("Column") %]" />
+        </div>
+    </div>
+</script>
+
+<script id="sortRowTemplate" type="text/plain">
+    <div class="sortRow inputField">
+        <div class="closeLink">
+            <a title="[% locale.maketext("Delete") %]" class="delete-link" href="javascript:void(0)">
+                [% big_x %]
+            </a>
+        </div>
+        <div>
+            <input type="text" name="sort_column_{index}" placeholder="[% locale.maketext("Field") %]" />
+            <select name="sort_type_{index}">[% "<option value='${sort_type}'>${sort_type}</option>" FOR sort_type = sort_types %]</select>
+            <label>
+                <input type="checkbox" name="sort_reverse_{index}"/>[% locale.maketext("Reverse") %]
+            </label>
+        </div>
+    </div>
+</script>
+
+[%
+    FOR src=[
+        '/yui/dragdrop/dragdrop-min.js'
+        '/yui/tabview/tabview-min.js'
+        '/yui-gen/data/data.js'
+        '/cjt/datasource-min.js'
+        '/yui/autocomplete/autocomplete-min.js'
+        '/cjt/combobox-min.js'
+    ];
+        SET src = MagicRevision(src);
+        "<script src=\"$src\"></script>";
+    END;
+-%]
+<script>
+    window.PAGE = [% JSON.stringify( {
+        'api_calls' => api_calls,
+    } ) %];
+    [%
+        SET lex_path = CPANEL.get_js_lex_app_rel_path('sharedjs/api_shell.js');
+        INSERT $lex_path IF lex_path;
+        INSERT 'sharedjs/api_shell_optimized.js';
+    %]
+</script>

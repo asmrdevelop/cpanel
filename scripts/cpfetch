@@ -1,0 +1,61 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/cpfetch                         Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+
+use Cpanel::HttpRequest     ();
+use Cpanel::Config::Sources ();
+
+$| = 1;
+
+my @remaining_args;
+my $signed = 0;
+
+while (@ARGV) {
+    my $arg = shift @ARGV;
+
+    if ( $arg eq '--signed' ) {
+        $signed = 1;
+    }
+    else {
+        push @remaining_args, $arg;
+    }
+}
+
+my $url = $remaining_args[0];
+
+my $httpClient = Cpanel::HttpRequest->new(
+    'hideOutput' => 0,
+    'signed'     => $signed,
+);
+
+if ( !$url ) {
+    die 'No file specified';
+}
+elsif ( $url !~ /^http/ ) {
+    my $sources = Cpanel::Config::Sources::loadcpsources();
+    $url = 'http://' . $sources->{'HTTPUPDATE'} . '/' . $url;
+}
+
+my $file;
+if ( !defined $ARGV[1] || $ARGV[1] eq '' ) {
+    my @FILE = split( /\//, $url );
+    $file = pop(@FILE);
+}
+else {
+    $file = $ARGV[1];
+}
+
+if ( !-e $file ) {
+    $httpClient->download( $url, $file );
+}
+
+if ( !-e $file ) {
+    die "Unable to fetch file $file.";
+}
+
+exit 1;

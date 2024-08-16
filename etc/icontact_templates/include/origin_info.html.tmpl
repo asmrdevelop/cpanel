@@ -1,0 +1,99 @@
+[%
+    PROCESS "include/colors.tmpl";
+    PROCESS "include/styles.tmpl";
+
+    DEFAULT
+        content_txt_color   = med_dark_gray,
+        separator_color     = medium_gray,
+        reduced_spacing     = "padding:0 0 0 0; margin: 5px 0 0 0;";
+%]
+
+<div style="font-family:[% font_family %];border-top: 2px solid [% separator_color %]; padding-top:5px; margin-top: 5px; font-size:12px; color: [% content_txt_color %];">
+    [% IF NOTICE.ip_address.defined -%]
+    <p style="[% reduced_spacing %]">
+        [% IF NOTICE.env_remote_user %]
+          [% CPANEL.locale.maketext('This notice is the result of a request made by a computer with the [output,abbr,IP,Internet Protocol] address of “[_2]” through the “[_1]” service on the server while logged in as “[_3]”.', NOTICE.origin, NOTICE.ip_address, NOTICE.env_remote_user) %]
+        [% ELSE %]
+          [% CPANEL.locale.maketext('This notice is the result of a request made by a computer with the [output,abbr,IP,Internet Protocol] address of “[_2]” through the “[_1]” service on the server.', NOTICE.origin, NOTICE.ip_address) %]
+        [% END %]
+    </p>
+
+    [% IF NOTICE.ip_address_is_public -%]
+        [% IF NOTICE.reverse_dns_hostnames.size -%]
+            <p style="[% reduced_spacing %]">
+                [% CPANEL.locale.maketext('A reverse [output,abbr,DNS,Domain Name Service] lookup on the remote [output,abbr,IP,Internet Protocol] address returned the host [numerate,_1,name,names] [list_and_quoted,_2].', NOTICE.reverse_dns_hostnames.size, NOTICE.reverse_dns_hostnames) %]
+            </p>
+        [% END -%]
+        <p style="[% reduced_spacing %]">
+            [% IF NOTICE.country_name -%]
+                [% CPANEL.locale.maketext('The remote computer’s location appears to be: [_1] ([_2]).', NOTICE.country_name, NOTICE.country_code) %]
+            [% ELSIF NOTICE.country_lookup_error -%]
+                [% CPANEL.locale.maketext('The system failed to look up the remote [output,abbr,IP,Internet Protocol] address’s geographical origin because of an error: [_1]', NOTICE.country_lookup_error.html()) %]
+            [% END -%]
+        </p>
+        [% IF NOTICE.whois %]
+            [% IF NOTICE.whois.get('descr') %]
+                <p style="[% reduced_spacing %]">
+                  [% CPANEL.locale.maketext('The remote computer’s [output,abbr,IP,Internet Protocol] address is assigned to the provider: [list_and_quoted,_1]', NOTICE.whois.get('descr')) %]
+                </p>
+            [% END %]
+            [% IF NOTICE.whois.get('comments') || NOTICE.whois.get('remarks') %]
+                <p style="[% reduced_spacing %]">
+                  [% CPANEL.locale.maketext('The provider supplied the following remarks about the [output,abbr,IP,Internet Protocol] address allocation: [list_and_quoted,_1]', (NOTICE.whois.get('comments') || NOTICE.whois.get('remarks'))) %]
+                </p>
+            [% END %]
+
+         [% ELSIF NOTICE.whois_lookup_error %]
+            <p style="[% reduced_spacing %]">
+              [% CPANEL.locale.maketext('The system failed to look up the remote [output,abbr,IP,Internet Protocol] address’s [asis,WHOIS] information because of an error: [_1]', NOTICE.whois_lookup_error.html()) %]
+            </p>
+        [% END %]
+    [% END -%]
+    [% IF NOTICE.fingerprint -%]
+      [% IF NOTICE.fingerprint.get('http_name') -%]
+        <p style="[% reduced_spacing %]">
+          [% IF NOTICE.fingerprint.get('http_flavor') %]
+            [% CPANEL.locale.maketext('The [output,abbr,HTTP,Hypertext Transfer Protocol] client appears to be: “[_1]” with version “[_2]”.', NOTICE.fingerprint.get('http_name').html(), NOTICE.fingerprint.get('http_flavor').html()) %]
+          [% ELSE %]
+            [% CPANEL.locale.maketext('The [output,abbr,HTTP,Hypertext Transfer Protocol] client appears to be: “[_1]”.', NOTICE.fingerprint.get('http_name').html()) %]
+          [% END %]
+          [% IF NOTICE.fingerprint.http_client_is_forged() -%]
+            [% CPANEL.locale.maketext('The [output,abbr,HTTP,Hypertext Transfer Protocol] client appears to be forged.') %]
+          [% ELSIF NOTICE.fingerprint.http_client_is_proxied() -%]
+            [% CPANEL.locale.maketext('The [output,abbr,HTTP,Hypertext Transfer Protocol] client may be proxied.') %]
+          [% END -%]
+        </p>
+      [% END -%]
+      [% IF NOTICE.fingerprint.get('link_type') -%]
+        <p style="[% reduced_spacing %]">
+          [% CPANEL.locale.maketext('The remote computer’s network link type appears to be: “[_1]”.', NOTICE.fingerprint.get('link_type').html()) %]
+        </p>
+      [% END -%]
+      [% IF NOTICE.fingerprint.get('language') -%]
+        <p style="[% reduced_spacing %]">
+          [% CPANEL.locale.maketext('The remote computer’s browser language setting appears to be: “[_1]”.', NOTICE.fingerprint.get('language').html()) %]
+        </p>
+      [% END -%]
+      [% IF NOTICE.fingerprint.get('os_name') -%]
+        <p style="[% reduced_spacing %]">
+          [% IF NOTICE.fingerprint.get('os_flavor') %]
+            [% CPANEL.locale.maketext('The remote computer’s operating system appears to be: “[_1]” with version “[_2]”.', NOTICE.fingerprint.get('os_name').html(), NOTICE.fingerprint.get('os_flavor').html()) %]
+          [% ELSE %]
+            [% CPANEL.locale.maketext('The remote computer’s operating system appears to be: “[_1]”.', NOTICE.fingerprint.get('os_name').html()) %]
+          [% END %]
+        </p>
+      [% END -%]
+    [% ELSIF NOTICE.fingerprint_lookup_error %]
+      <p style="[% reduced_spacing %]">
+        [% CPANEL.locale.maketext('The system failed to look up the remote [output,abbr,IP,Internet Protocol] address’s fingerprint because of an error: [_1]', NOTICE.fingerprint_lookup_error.html()) %]
+      </p>
+    [% END %]
+[% ELSE -%]
+    [% IF NOTICE.origin %]
+        [% CPANEL.locale.maketext('This notice is the result of a request from “[_1]”.', NOTICE.origin) %]
+    [% END %]
+[% END -%]
+    <p style="[% reduced_spacing %]">
+        [% CPANEL.locale.maketext('The system generated this notice on [datetime,_1,date_format_full] at [datetime,_1,time_format_full].', CPANEL.now) %]
+    </p>
+</div>

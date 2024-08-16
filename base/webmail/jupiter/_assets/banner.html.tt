@@ -1,0 +1,28 @@
+[% USE Banner %]
+<!-- banner -->
+[%
+    SET webmail_theme = CPANEL.CPDATA.RS;
+    SET banner = Banner.get_banner_details(app_key, 'webmail', webmail_theme );
+
+    # Banner styles are not compatible with YUI based apps.
+    IF theme == 'yui';
+        hide_banner_ad = 1;
+    END;
+
+    IF hide_banner_ad;
+        # Do not show the banner ad
+    ELSIF banner.key.defined;
+        SET banners_dir = "/usr/local/cpanel/base/webmail/" _ webmail_theme _ "/banners";
+        IF banner.template.defined && template_exists("${banners_dir}/${banner.key}/${banner.template}");
+            INCLUDE "${banners_dir}/${banner.key}/${banner.template}";
+        ELSE;
+            INCLUDE "${banners_dir}/def_banner.ptt";
+        END;
+    ELSE;
+        SET custom_banner_dir = "/var/cpanel/customizations/webmail/" _ webmail_theme _ "/includes";
+        IF template_exists("${custom_banner_dir}/${app_key}_banner.html.tt");
+            INCLUDE "${custom_banner_dir}/${app_key}_banner.html.tt";
+        END;
+    END;
+%]
+<!-- banner -->

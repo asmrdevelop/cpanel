@@ -1,0 +1,24 @@
+mailman_virtual_transport:
+    driver = pipe
+    command = /usr/local/cpanel/3rdparty/mailman/mail/mailman \
+              '${if def:local_part_suffix \
+                    {${sg{$local_part_suffix}{-(\\w+)(\\+.*)?}{\$1}}} \
+                    {post}}' \
+              ${perl{untaint}{${lc:$local_part}_${lc:$domain}}}
+    current_directory = /usr/local/cpanel/3rdparty/mailman
+    home_directory = /usr/local/cpanel/3rdparty/mailman
+    user = mailman
+    group = mailman
+
+
+mailman_virtual_transport_nodns:
+    driver = pipe
+    command = /usr/local/cpanel/3rdparty/mailman/mail/mailman \
+              '${if def:local_part_suffix \
+                    {${sg{$local_part_suffix}{-(\\w+)(\\+.*)?}{\$1}}} \
+                    {post}}' \
+              ${perl{untaint}{${lc:$local_part}}}
+    current_directory = /usr/local/cpanel/3rdparty/mailman
+    home_directory = /usr/local/cpanel/3rdparty/mailman
+    user = mailman
+    group = mailman

@@ -1,0 +1,135 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/ipcheck                         Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+use warnings;
+
+use Text::Wrap;    # Perl core lib module
+
+use Cpanel::SafeRun::Errors ();
+use Cpanel::DIp::MainIP     ();
+use Cpanel::NAT             ();
+use Cpanel::Binaries        ();
+use Cpanel::Sys::Hostname   ();
+use Cpanel::Usage           ();
+use Cpanel::IP::Loopback    ();
+use Socket                  ();
+
+$Text::Wrap::columns = 68;
+
+sub usage {
+    die <<'EOM';
+ipcheck - Report on various error conditions relating to hostname / IP resolution
+
+ipcheck [options]
+
+    Options:
+      --help    Brief help message
+      --test    Test email formatting by generating an email with random simulated IP configuration errors
+                    (NOTE: The subject and body of the email will both clearly indicate that it is only a simulation.)
+    --verbose Even when no problems have been found, tells you so
+EOM
+}
+
+my $test_mode = 0;
+my $verbose   = 0;
+
+Cpanel::Usage::wrap_options(
+    {
+
+        # Notice we do not need preference "require_left", because this script
+        # takes option args *only*, so there is no need to force them to be to
+        # the left of non-option args. If any non-option args are found, we'll
+        # detect them and usage() out immediately below.
+
+        strict => 1,    # allow ONLY the opts specified in hash below
+        remove => 1,    # remove opts from cmd line after processing them
+
+        #     require_left => 1,
+    },
+    \@ARGV,
+    \&usage,
+    {
+        'test'    => \$test_mode,
+        'verbose' => \$verbose,
+    }
+);
+
+# ALL args to this script must be --xxx option args. If any
+# other args are left after we've eliminated those, we have a
+# problem.
+
+@ARGV && usage();
+
+my $rightip  = Cpanel::DIp::MainIP::getmainserverip();
+my $hostname = Cpanel::Sys::Hostname::gethostname();
+my @problems;
+my $wrongip;
+
+my $iaddr;
+if ( my $iaddr = gethostbyname($hostname) ) {
+    my $ip = Socket::inet_ntoa($iaddr);
+    if ( $ip ne $rightip && !Cpanel::IP::Loopback::is_loopback($ip) ) {
+        $wrongip = $ip;
+        push( @problems, 'resolved_to_wrong_ip_msg' );
+    }
+}
+else {
+    #not found by perl builtin
+    push( @problems, 'host_not_found_msg' );
+}
+
+my $host_bin = Cpanel::Binaries::path('host');
+if ( !-x $host_bin ) {
+    push( @problems, 'unable_resolve_no_host_binary_msg' );
+}
+else {
+    my $dnsres = Cpanel::SafeRun::Errors::saferunallerrors( $host_bin, $hostname );
+    if ( !$dnsres || $dnsres =~ /Host not found/i ) {
+
+        #not found by linux binary
+        push( @problems, 'host_not_found_msg' );
+    }
+    else {
+        my ($dns_resip) = $dnsres =~ /(\d+\.\d+\.\d+\.\d+)/;
+        if ( !$dns_resip ) {
+
+            #not found by linux binary
+            push( @problems, 'host_not_found_msg' );
+        }
+        elsif ( Cpanel::NAT::get_local_ip($dns_resip) ne $rightip && !Cpanel::IP::Loopback::is_loopback($dns_resip) ) {
+
+            # The check for localhost is for symmetry with first method, above
+            # (gethostbyname), where we likewise perform these two tests.
+
+            push( @problems, 'resolved_to_wrong_ip_msg' );
+            $wrongip = $dns_resip;
+        }
+    }
+}
+
+if (@problems) {
+    require Cpanel::iContact::Class::Check::IP;
+
+    print "[ipcheck] sent email!  Errors found\n";
+    require Cpanel::Notify;
+    Cpanel::Notify::notification_class(
+        'class'            => 'Check::IP',
+        'application'      => 'Check::IP',
+        'constructor_args' => [
+            'origin'   => $hostname,
+            'problems' => \@problems,
+            'right_ip' => $rightip,
+            'wrong_ip' => $wrongip
+        ]
+    );
+}
+else {
+    if ($verbose) {
+        print "$0: OK: No IP-related problems have been found.\n";
+    }
+}

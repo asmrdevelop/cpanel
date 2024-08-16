@@ -1,0 +1,51 @@
+#!/bin/bash
+# chkservd - System V init script for CentOS
+#
+# chkconfig: 2345 97 97
+# description: chkservd
+
+# Source function library.
+. /etc/init.d/cpfunctions
+
+NAME="chkservd"
+PROG="/usr/local/cpanel/libexec/$NAME"
+PIDFILE="/var/run/$NAME.pid"
+
+start()
+{
+    if [ -x "$PROG" ]; then
+		action "Starting $NAME:" $PROG
+	fi
+}
+
+stop()
+{
+    if [ -e $PIDFILE ]; then
+        rm -f $PIDFILE
+    fi
+
+    killall $NAME
+}
+
+
+case "$1" in
+
+start)
+    start
+	;;
+
+stop)
+	stop
+	;;
+restart)
+	stop
+	start
+	;;
+status)
+    status $PROG
+    ;;
+*)
+	echo "Usage: $NAME {start|stop|restart|status}"
+	;;
+
+esac

@@ -1,0 +1,53 @@
+# The main routers handle traffic to the lists themselves and the suffixed ones
+# handle mail to administrative aliases.  We have to use a two step process
+# because otherwise mail to a list such as foo-admin@example.tld will not be
+# handled properly.
+
+mailman_virtual_router:
+    driver = accept
+    domains = !$primary_hostname : +local_domains
+    local_parts = +path_safe_localparts
+    require_files = /usr/local/cpanel/3rdparty/mailman/lists/${lc::$local_part}_${lc::$domain}/config.pck : /usr/local/cpanel/3rdparty/mailman/mail/mailman
+    transport = mailman_virtual_transport
+
+mailman_virtual_router_suffixed:
+    driver = accept
+    require_files = /usr/local/cpanel/3rdparty/mailman/lists/${lc::$local_part}_${lc::$domain}/config.pck : /usr/local/cpanel/3rdparty/mailman/mail/mailman
+    domains = !$primary_hostname : +local_domains
+    local_parts = +path_safe_localparts
+    local_part_suffix = -admin     : \
+            -bounces   : -bounces+* : \
+                        -confirm   : -confirm+* : \
+            -join      : -leave     : \
+            -owner     : -request   : \
+            -subscribe : -unsubscribe
+    transport = mailman_virtual_transport
+
+mailman_virtual_router_nodns:
+    driver = accept
+    require_files = /usr/local/cpanel/3rdparty/mailman/lists/${lc::$local_part}/config.pck : /usr/local/cpanel/3rdparty/mailman/mail/mailman
+    condition    = \
+           ${if or {{match{$local_part}{.*_.*}} \
+                     {eq{$local_part}{mailman}}} \
+                {1}{0}}
+    domains = $primary_hostname
+    local_parts = +path_safe_localparts
+    transport = mailman_virtual_transport_nodns
+
+mailman_virtual_router_nodns_suffixed:
+    driver = accept
+    require_files = /usr/local/cpanel/3rdparty/mailman/lists/${lc::$local_part}/config.pck : /usr/local/cpanel/3rdparty/mailman/mail/mailman
+    condition    = \
+           ${if or {{match{$local_part}{.*_.*}} \
+                     {eq{$local_part}{mailman}}} \
+                {1}{0}}
+    local_part_suffix = -admin     : \
+            -bounces   : -bounces+* : \
+                        -confirm   : -confirm+* : \
+            -join      : -leave     : \
+            -owner     : -request   : \
+            -subscribe : -unsubscribe
+    domains = $primary_hostname
+    local_parts = +path_safe_localparts
+    transport = mailman_virtual_transport_nodns
+

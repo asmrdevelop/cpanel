@@ -1,0 +1,54 @@
+<div ng-if="main.PAGE.options.unrestricted === '1'">
+    <p ng-show="main.olderRemote && main.meta.is_cpanel" class="alert alert-warning">[% locale.maketext("The source server has a [asis,cPanel] version older than 55. Therefore, transferring system configurations is not available.") %]</p>
+    <p ng-show="!main.meta.is_cpanel" class="alert alert-warning">[% locale.maketext("The source server is using [_1]. Service Configuration transfer is only available when the source server is using [asis,cPanel amp() WHM].", '{{main.meta.panel_name}}') %]</p>
+    <div ng-show="!main.olderRemote">
+        <div class="alert alert-warning">
+            <span class="glyphicon glyphicon-exclamation-sign"></span>
+            <div class="alert-message">
+                [% locale.maketext("[output,strong,Warning]: When you select the Service Transfer Tool feature, the system will migrate [output,strong,all] configurations listed below and overwrite any existing configurations on the server. Do [output,strong,not] use this feature unless you wish to import configurations from another server.") %]
+            </div>
+        </div>
+        <table role="table" class="table table-striped service-configuration-table">
+            <thead>
+                <tr>
+                    <th nonsortable="true"></th>
+                    <th>[% locale.maketext('Configuration Name') %]</th>
+                    <th>[% locale.maketext('Analysis') %]</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr ng-repeat="module in main.configuration_modules | orderBy:'value.name'">
+                    <td><input bool-to-int ng-disabled="module.value.error || (module.value.name === 'Easy Apache' && main.PAGE.blockerExists)" type="checkbox" id="{{ module.key }}_enabled" ng-model="module.value.selected" ng-change="main.updateConfigurations()"></td>
+                    <td><label for="{{ module.key }}_enabled" ng-bind="module.value.name"></label></td>
+                    <td>
+                        <div>
+                            <span ng-repeat="analysis in module.value.analysis | orderBy:'analysisKey'">
+                                <span ng-if="analysis.analysisKey !== 'Blocker Data'">{{ analysis.analysisKey }}: {{ analysis.analysis }}<br></span>
+                                <span ng-if="analysis.analysisKey === 'Blocker Data'">
+                                    [% locale.maketext("Migration Health Check Information:") %]
+                                    <div class="panel panel-default" ng-repeat="resultSet in main.PAGE.EABlockers">
+                                        <div class="panel-heading">{{ resultSet.name }} ({{ resultSet.vendor_id }})</div>
+                                        <div class="panel-body">
+                                            <p>{{ resultSet.desc }}</p>
+                                            <ul class="list-unstyled">
+                                                <li ng-repeat="item in resultSet.items | orderBy:'status':true" class="alert" ng-class="{'alert-success': item.status === 0, 'alert-warning': item.status === 1, 'alert-danger': item.status === 2}">
+                                                    <span ng-show="item.status === 0"><strong>[% locale.maketext("Passed:") -%]</strong></span>
+                                                    <span ng-show="item.status === 1"><strong>[% locale.maketext("Warning:") -%]</strong></span>
+                                                    <span ng-show="item.status === 2"><strong>[% locale.maketext("Blocker:") -%]</strong></span>
+                                                    {{ item.msg }}
+                                                </li>
+                                                <li class="alert alert-success" ng-if="!resultSet.items">[% locale.maketext("Everything passed the pre-flight check.") -%]</li>
+                                            </ul>
+                                        </div>
+                                    </div>
+                                </span>
+                            </span>
+                        </div>
+                        <p class="text-warning" ng-show="module.value.warning">{{ module.value.warning }}</p>
+                        <p class="text-danger" ng-show="module.value.error">{{ module.value.error }}</p>
+                    </td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+</div>

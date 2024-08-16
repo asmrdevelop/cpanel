@@ -1,0 +1,448 @@
+[%
+USE JSON;
+PROCESS 'master_templates/_defheader.tmpl'
+    theme="yui"
+    app_key='host_access_control'
+    stylesheets=[
+        MagicRevision('/yui/autocomplete/assets/skins/sam/autocomplete.css'),
+        MagicRevision('../templates/host_access/hostaccess.css'),
+    ];
+
+PROCESS '_loadjs.tmpl' FOR src=[
+    '/yui/datasource/datasource.js',
+    '/yui/autocomplete/autocomplete.js',
+];
+-%]
+
+<p class="description">Host Access Control allows you to set up specific rules to allow or deny access to your server and services on it based on the IP address that is attempting to connect. It is general practice that denying all connections and only allowing connections that you wish to proceed is the most secure way to use Host Access Control.</p>
+
+<p class="description">To set up a rule, you will need to add the service you wish to create the rule for, the IP address(es) you wish to allow or deny, and then the action to be taken (allow or deny).</p>
+
+<p class="description">For example, you could set up the following rules to lock down your SSH service:</p>
+
+<table class="example">
+    <tr>
+        <th>Daemon</th>
+        <th>Access List</th>
+        <td>&nbsp;</td>
+        <th>Action</th>
+        <td>&nbsp;</td>
+        <th>Comment</th>
+    </tr>
+    <tr>
+        <td>sshd</td>
+        <td>192.168.0.0/255.255.255.0</td>
+        <td>&nbsp;</td>
+        <td>allow</td>
+        <td>&nbsp;</td>
+        <td>Allow local SSH access</td>
+    </tr>
+    <tr>
+        <td>sshd</td>
+        <td>198.66.254.254</td>
+        <td>&nbsp;</td>
+        <td>allow</td>
+        <td>&nbsp;</td>
+        <td>Allow SSH from my specific IP</td>
+    </tr>
+    <tr>
+        <td>sshd</td>
+        <td>ALL</td>
+        <td>&nbsp;</td>
+        <td>deny</td>
+        <td>&nbsp;</td>
+        <td>Deny access from all other IPs</td>
+    </tr>
+</table>
+
+<p class="description">Note that the rules have an order of precedence. You need to place your allow rules before your deny rules if you are choosing to use the allow from a few, then deny from all technique.</p>
+
+<p class="description">You can also use "ALL EXCEPT x.x.x.x" as an Access List which will allow all IP addresses except x.x.x.x (replace with a specific IP address).</p>
+
+<form action="[% data.action %]" name="mainform" method="POST">
+    <input type="hidden" id="eventlist_ctl" name="eventlist" value="" />
+    <table width="100%" id="accesstable">
+        <tr>
+            <th width="20" nowrap>&nbsp;</th>
+            <th width="20" nowrap>&nbsp;</th>
+            <th width="100" nowrap>Daemon</th>
+            <th width="150" nowrap>Access List</th>
+            <th width="100%">Action</th>
+            <th width="200" nowrap>Comment</th>
+        </tr>
+        <tbody>
+        [%
+            SET line_num = 0;
+            SET row_num = 0;
+            SET draglist = [];
+            SET emptyrules = [];
+            emptyrules.push(data.emptyrule) FOR i=[ 0 .. 9 ];
+            FOR rule = data.rules.merge(emptyrules);
+                line_num = line_num + 1;
+                NEXT IF rule.type == 'comment';
+                row_num = row_num + 1;
+                SET rowtype = (row_num % 2) ? 'oddrow' : 'evenrow';
+        -%]
+            <tr class="[% rowtype %]" id="[% line_num %]-move">
+                <td width="20">
+                    <div id="[% line_num %]-mover" class="handle" style="position: relative; overflow:hidden; height:100%; width:100%; overflow: hidden; min-height:40px;">&nbsp;<br />&nbsp;<br />&nbsp;<br />&nbsp;</div>
+                </td>
+                <td valign="middle" class="acltd" width="20">
+                    <img onClick="moveup([% line_num %]); this.src='/images/icon_arrow_up_disabled.gif';" id="[% line_num %]-moveup" src="/images/icon_arrow_up_disabled.gif" onmouseover="this.src='/images/icon_arrow_up.gif';" onmouseout="this.src='/images/icon_arrow_up_disabled.gif';" class="moveact"><br />
+                    <img onClick="movedown([% line_num %]); this.src='/images/icon_arrow_down_disabled.gif';" id="[% line_num %]-movedown" src="/images/icon_arrow_down_disabled.gif"  onmouseover="this.src='/images/icon_arrow_down.gif';" onmouseout="this.src='/images/icon_arrow_down_disabled.gif';" class="moveact">
+                </td>
+                <td valign="middle" class="acltd" width="100" nowrap>
+                    <div class="daemon_list autocautocomplete" id="[% line_num %]-daemon_list-box"><input autocomplete="off" onfocus="autocomplete_init(this,[% line_num %]);" class="autocinput" type="text" id="[% line_num %]-daemon_list-in" name="[% line_num %]-daemon_list" value="[% rule.daemon_list.join(',') FILTER html %]" />
+                        <div id="[% line_num %]-daemon_list-con" class="autoccontainer"></div>
+                    </div>
+                </td>
+                <td valign="middle" class="acltd" with="150" nowrap>
+                    <div class="client_list autocautocomplete" id="[% line_num %]-client_list-box"><input autocomplete="off" onfocus="autocomplete_init(this,[% line_num %]);" class="autocinput" type="text" id="[% line_num %]-client_list-in" name="[% line_num %]-client_list" value="[% rule.client_list.join(',') FILTER html %]" />
+                        <div id="[% line_num %]-client_list-con" class="autoccontainer"></div>
+                    </div>
+                </td>
+                <td valign="middle" class="acltd"  width="100%">
+                    <div class="action_maker" id="[% line_num %]-action_maker">
+                    [% FOR action = rule.action_list.merge(['']) -%]
+                        <div class="action autocautocomplete"
+                             id="[% line_num %]-action-box_[% loop.index %]">
+                            <input autocomplete="off" onfocus="autocomplete_init(this,[% line_num %],[% loop.index %]);" class="actioninput[% rowtype %]" type="text" id="[% line_num %]-action-in_[% loop.index %]" name="[% line_num %]-action_[% loop.index %]" value="[% action FILTER html %]" onblur="actionmkr(this.id)" onchange="actionmkr(this.id)" />
+                            <div id="[% line_num %]-action-con_[% loop.index %]" class="autoccontainer"></div>
+                        </div>
+                    [% END -%]
+                    </div>
+                </td>
+                <td valign="middle" class="acltd"  width="200" nowrap>
+                    <div class="comment autocautocomplete" id="[% line_num %]-comment-box"><input autocomplete="off" onfocus="autocomplete_init(this,[% line_num %]);" class="autocinput" type="text" id="[% line_num %]-comment-in" name="[% line_num %]-comment" value="[% rule.comment FILTER html %]" />
+                        <div id="[% line_num %]-comment-con" class="autoccontainer"></div>
+                    </div>
+                </td>
+            </tr>
+            [% draglist.push(line_num) -%]
+        [% END -%]
+        </tbody>
+    </table>
+
+    <div class="controls">
+        <input type="hidden" name="save_accesslist" value="1" />
+        <input type="submit" class="btn-primary" value="Save Host Access List" id="btn-save" />
+        <a href="[% data.action %]" id="btn-reload">[ Reload ]</a>
+    </div>
+
+</form>
+
+<script>
+var draglist = [% draglist.json() -%];
+var services_obj = [% data.services.json() || 'null' -%];
+var actions_obj = [% data.actions.json() || 'null' -%];
+var wildcards = [% data.wildcards.json() || 'null' -%];
+
+var services = CPANEL.util.keys(services_obj).map( function(k) { if ( k === 'mysql' ) { return; } return [k, services_obj[k]] } );
+var actions = CPANEL.util.keys(actions_obj).map( function(k) { return [k, actions_obj[k]] } );
+
+
+var init_list = new Object;
+var eventlist = new Array;
+var thisZ = 9000;
+
+var oSERVICES = new YAHOO.widget.DS_JSArray(services);
+var oACTIONS = new YAHOO.widget.DS_JSArray(actions);
+var oWILDCARDS = new YAHOO.widget.DS_JSArray(wildcards);
+
+/* this function is public domain */
+String.prototype.wordWrap = function(m, b, c){
+    var i, j, s, r = this.split("\n");
+    if(m > 0) for(i in r){
+        for(s = r[i], r[i] = ""; s.length > m;
+                j = c ? m : (j = s.substr(0, m).match(/\S*$/)).input.length - j[0].length
+                || m,
+                r[i] += s.substr(0, j) + ((s = s.substr(j)).length ? b : "")
+            );
+        r[i] += s;
+    }
+    return r.join("\n");
+};
+function openevent (oSelf) {
+    thisZ++;
+    if (this._oContainer) {this._oContainer.parentNode.style.zIndex = thisZ;}
+}
+function killevent (oSelf) {
+    thisZ--;
+    if (this.oContainer) {this._oContainer.parentNode.style.zIndex = 9000;}
+}
+
+function initac (iba,ibb,ilist,ishash) {
+    var oAC = new YAHOO.widget.AutoComplete(iba,ibb,ilist);
+    oAC.useIFrame = true;
+    oAC.containerExpandEvent.subscribe(openevent);
+    oAC.containerCollapseEvent.subscribe(killevent);
+    oAC.doBeforeExpandContainer = function(oTextbox, oContainer, sQuery, aResults) {
+        var pos = YAHOO.util.Dom.getXY(oTextbox);
+        pos[1] += YAHOO.util.Dom.get(oTextbox).offsetHeight;
+        YAHOO.util.Dom.setXY(oContainer,pos);
+        return true;
+    };
+    oAC.queryDelay=0;
+    oAC.minQueryLength=0;
+    oAC.typeAhead=false;
+    oAC.useShadow=true;
+    oAC.prehighlightClassName = "yui-ac-prehighlight";
+    if (ishash) {
+        oAC.formatResult = function(oResultItem, sQuery) {
+            var sMarkup = '<b>' + oResultItem[0] + "</b> (" + oResultItem[1] + ")";
+            return sMarkup.wordWrap((iba.match(/daemon/) ? 21 : 28),"<br />",false);
+        };
+    }
+}
+
+function actionmkr(ablockid) {
+    var ablock=ablockid.split('-');
+    var aid = ablock[0];
+    var actionconid = aid + '-action_maker';
+    var actioncon = document.getElementById(actionconid);
+    var actionlist = actioncon.children;
+    var blankcount = 0;
+    var usedcount = 0;
+    var actioncount = actionlist.length;
+    for(var i=0;i<actioncount;i++) {
+        var thisactionid = actionlist[i].id;
+        var thisactionblock = thisactionid.split('_');
+        var actionum = thisactionblock[1];
+        var actioninputid = aid + '-action-in_' + actionum;
+        var actioninput = document.getElementById(actioninputid);
+        if (actioninput.value == "") {
+            blankcount++;
+        } else {
+            usedcount++;
+        }
+    }
+    if (blankcount > 1) {
+        for(var i=1;i<actioncount; i++) {
+            var thisactionid = actionlist[i].id;
+            var thisactionblock = thisactionid.split('_');
+            var actionum = thisactionblock[1];
+            var actioninputid = aid + '-action-in_' + actionum;
+            var actioninput = document.getElementById(actioninputid);
+            if (actioninput.value == "") {
+                actioncon.removeChild(actionlist[i]);
+                blankcount--;
+            }
+            if (blankcount <= 1) { break; }
+        }
+        return;
+    }
+
+    if (blankcount < 1) {
+        var newact = usedcount;
+        var newdiv = document.createElement('div');
+        newdiv.id = aid + '-action-box_' + newact;
+        newdiv.className = "action autocautocomplete";
+        var nclass='actioninputevenrow';
+        if (aid % 2 != 0) { nclass='actioninputoddrow'; }
+        newdiv.innerHTML = '<input class="' + nclass + '" type="text" id="' + aid + '-action-in_' + newact + '" name="' + aid + '-action_' + newact + '" value="" onBlur="actionmkr(this.id);"; onChange="actionmkr(this.id);" /><div id="' + aid + '-action-con_' + newact + '" class="autoccontainer"></div>';
+        actioncon.appendChild(newdiv);
+        initac(aid + '-action-in_' + newact,aid + '-action-con_' + newact,oACTIONS,1);
+        var newInputField = document.getElementById(aid + '-action-in_' + newact);
+        if (newInputField) {
+            newInputField.focus();
+        }
+    }
+}
+
+function autocomplete_init(myele,linenum,az) {
+    if (myele.onfocus) myele.onfocus='';
+
+    if (az) {
+        initac(linenum + '-action-in_'+az,linenum + '-action-con_'+az,oACTIONS,1);
+    }
+    else {
+        if (init_list[linenum]) return;
+
+        init_list[linenum] = 1;
+        var daemon_ac = initac(linenum + '-daemon_list-in',linenum + '-daemon_list-con',oSERVICES,1);
+        var client_ac = initac(linenum + '-client_list-in',linenum + '-client_list-con',oWILDCARDS);
+        var action_ac = initac(linenum + '-action-in_0',linenum + '-action-con_0',oACTIONS,1);
+        actionmkr(linenum + '-action-in_0');
+    }
+
+    //re-focus so the autocomplete behavior will begin immediately
+    if ( 'dispatchEvent' in myele ) {
+        var focus_event = document.createEvent('UIEvents');
+        focus_event.initUIEvent('focus',false,false,window,1);
+        myele.dispatchEvent(focus_event);
+    }
+    else if ( 'fireEvent' in myele ) {  //IE <9
+        myele.fireEvent('onfocus');
+    }
+}
+
+function getScrollPos() {
+    return (typeof document.body.scrollTop != 'undefined') ?
+        document.body.scrollTop :
+        (typeof window.pageYOffset != 'undefined') ?
+        window.pageYOffset : 0;
+}
+
+function init_drag() {
+    YAHOO.util.DDM.mode = 0;
+    var directions = ['','r'];
+    for(var i=0;i<draglist.length;i++) {
+        for(var j=0;j<directions.length;j++) {
+        var dragid = draglist[i] + '-move' + directions[j];
+
+        var dd;
+        if (directions[j] == '') {
+            dd = new YAHOO.util.DDTarget(dragid);
+        } else {
+            dd = new YAHOO.util.DDProxy(dragid);
+            dd.setXConstraint(0, 0);
+        }
+        dd.onMouseUp = function (e,id) {
+            var draggedEl = this.getEl();
+            draggedEl.style.top=0+'px';
+            draggedEl.style.left=0+'px';
+            return true;
+        }
+        dd.onDragDrop=function (e, id) {
+            var draggedEl = this.getEl();
+            var targetedEl = document.getElementById(id);
+            removeDragClass(id);
+
+            var txy = YAHOO.util.Dom.getXY(targetedEl);
+            var pY = getScrollPos();
+            var ty = (e.clientY + pY);
+
+            var midpt = txy[1]+(targetedEl.offsetHeight/2);
+
+            var targetRowId=getrowidFromId(targetedEl.id);
+            var draggedRowId=getrowidFromId(draggedEl.id);
+
+            if (ty > midpt) {
+                    moverow(draggedRowId,findRowOffset(draggedRowId,targetRowId));
+            } else {
+                    moverow(draggedRowId,findRowOffset(draggedRowId,targetRowId)-1);
+            }
+            draggedEl.style.top=0+'px';
+            draggedEl.style.left=0+'px';
+            return true;
+
+        };
+        dd.onDragEnter=function (e, id) {
+            addDragClass(id);
+        };
+        dd.onDragOut=function (e, id) {
+            removeDragClass(id);
+        };
+        }
+    }
+}
+
+function getrowidFromId(id) {
+    var elist = id.split('-');
+    return elist[0];
+}
+
+function addDragClass(id) {
+    var tid = document.getElementById(getrowidFromId(id)+'-move');
+    var classes = classToArr(tid);
+    classes.push('dragin');
+    tid.className = classes.join(" ");
+}
+
+function removeDragClass(id) {
+    var tid = document.getElementById(getrowidFromId(id)+'-move');
+    var classes = classToArr(tid);
+    var newclasses = striparr(classes,'dragin');
+    tid.className = newclasses.join(" ");
+}
+
+function striparr(arr,ele) {
+    var newarr = new Array;
+    for(var i = 0;i < arr.length;i++) {
+        if (arr[i] != ele) {
+            newarr.push(arr[i]);
+        }
+    }
+    return newarr;
+}
+
+function classToArr(ele) {
+    var classes = ele.className.split(" ");
+    return classes;
+}
+
+function reordernodes(os,ns) {
+    var oldnodes = new Object;
+    for(var i=0;i<os.length;i++) {
+        var oele = document.getElementById(os[i]);
+        oldnodes[os[i]] = oele;
+        containerObj.removeChild(oele);
+    }
+
+    for(var i=0;i<ns.length;i++) {
+        var nele = oldnodes[ns[i]];
+        containerObj.appendChild(nele);
+    }
+}
+
+function moveup(tid) {
+        moverow(tid,-1);
+}
+function movedown(tid) {
+        moverow(tid,1);
+}
+
+function moverow(tid,offset) {
+    var accesstable = document.getElementById('accesstable');
+    var trlist = accesstable.getElementsByTagName('tr');
+    var lastid = null;
+    for(var i=1;i < trlist.length;i++) {
+        var thisid = getrowidFromId(trlist[i].id);
+
+        if (thisid == tid) {
+            var targetoffset = (i+parseInt(offset));
+            if (targetoffset > trlist.length || trlist[targetoffset] == null || (targetoffset) == 0) { return true; }
+            var thisParent = trlist[i].parentNode;
+            var tmpchld = trlist[i];
+            thisParent.removeChild(trlist[i]);
+            thisParent.insertBefore(tmpchld,trlist[targetoffset]);
+
+            eventlist.push(thisid + ',' + offset);
+            document.getElementById('eventlist_ctl').value=eventlist.join(':');
+            break;
+        }
+    }
+
+    var rc=0;
+    for(var i=1;i < trlist.length;i++) {
+        rc++;
+        if (rc % 2 == 0) {
+            trlist[i].className="evenrow";
+        }
+        else {
+            trlist[i].className="oddrow";
+        }
+    }
+}
+
+function findRowOffset (d,t) {
+    var accesstable = document.getElementById('accesstable');
+    var trlist = accesstable.getElementsByTagName('tr');
+    var doffset;
+    var toffset;
+    for(var i=1;i < trlist.length;i++) {
+        var thisid = getrowidFromId(trlist[i].id);
+        if (thisid == d) {
+            doffset=i;
+        } else if (thisid == t) {
+            toffset=i;
+        }
+        if (doffset && toffset) { break; }
+    }
+    return (toffset - doffset);
+}
+
+YAHOO.util.Event.addListener(window, "load", init_drag);
+</script>
+
+[% PROCESS 'master_templates/_deffooter.tmpl' theme="yui" %]

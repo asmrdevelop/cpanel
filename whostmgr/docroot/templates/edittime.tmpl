@@ -1,0 +1,36 @@
+[% USE Whostmgr %]
+[% WRAPPER 'master_templates/master.tmpl'
+    theme = "bootstrap"
+    app_key='server_time'
+-%]
+            <div class="alert alert-info">
+                <span class="glyphicon glyphicon-info-sign"></span>
+                <div class="alert-message">
+                    [% locale.maketext("To ensure consistency, we [output,strong,strongly recommend] that you reboot the server after you change the time zone.") %]
+                </div>
+            </div>
+            [% PROCESS '_brickstart.tmpl' bricktitle='Current Time' %]
+            [% data.ctime %]<br /><br />
+            [% PROCESS '_brickend.tmpl' %]
+            <br /><br />
+            [% PROCESS '_brickstart.tmpl' bricktitle='Configure Timezone' %]
+            <form action="[% cp_security_token %]/scripts2/settz">
+                <select name="tz">
+                [% FOR tz=data.tzs.sort %]
+                <option value="[% tz %]" [% tz == data.cur_tz ? 'selected="selected"' : '' %]>[% tz %]</option>
+                [% END %]
+                </select>
+                <input type="submit" class="btn btn-primary" value="Change TimeZone">
+            </form>
+            <form action="[% cp_security_token %]/scripts/synctime">
+               [% SET envtype = Whostmgr.template_vars.envtype %]
+               [% IF envtype == 'vzcontainer' || envtype == 'vzcontainer'%]
+               <div class="callout callout-info">
+                   Your system runs inside a Virtuozzo container. The system time is inherited from the Host, or Hardware, node. To change the system time you need to contact your hosting provider.
+               </div>
+               [% ELSE %]
+               <input type="submit" class="btn btn-primary" value="Sync Time with Time Server" />
+               [% END %]
+            </form>
+            [% PROCESS '_brickend.tmpl' %]
+[% END -%]

@@ -1,0 +1,89 @@
+[%
+    USE CPDate;
+    WRAPPER 'master_templates/master.tmpl' theme="yui"
+        app_key = 'list_suspended_accounts'
+        header = locale.maketext('Suspended Accounts')
+        scripts = ['/js/sorttable.js']
+        extrastyle = '
+td {
+    padding-left: 8px ! important;
+    padding-right: 8px ! important;
+}
+#retain-proxying-info {
+    cursor:help;
+}
+'
+    ;
+    PROCESS 'selscript.tmpl' xml='data.xml';
+-%]
+[% PROCESS '_ajaxapp_header.tmpl' -%]
+<table class="sortable" id="sus">
+    <tr class="cellheader">
+        <th class="scellheader" background="[% Whostmgr.getbggif() %]">Domain</th>
+        <th class="scellheader" background="[% Whostmgr.getbggif() %]">User</th>
+        <th class="scellheader" background="[% Whostmgr.getbggif() %]">Owner</th>
+        <th class="scellheader" background="[% Whostmgr.getbggif() %]">Date Suspended</th>
+        <th class="scellheader" background="[% Whostmgr.getbggif() %]">Reason</th>
+        <th class="scellheader" background="[% Whostmgr.getbggif() %]">Locked</th>
+        <th class="scellheader"></th>
+        <th class="scellheader"></th>
+    </tr>
+[%# data.domain_data.$domain => [user, owner, suspendtime, reason, bandwidth_limited, is_locked] -%]
+[% FOR suspend = data.suspend_data.sort('domain') %]
+                <tr class="[% loop.index % 2 ? 'tdshade1' : 'tdshade2' %]">
+                    <td class="tbcell">[% suspend.domain FILTER html %]</td>
+                    <td class="tbcell">[% suspend.user FILTER html %]</td>
+                    <td class="tbcell">[% suspend.owner FILTER html %]</td>
+                    <td class="tbcell">
+[% IF suspend.when -%]
+<div style="display: none">[% suspend.when FILTER html %]</div>
+[% CPDate.localtime(suspend.when) -%]
+[% ELSE -%]
+unknown
+[% END -%]
+</td>
+                    <td class="tbcell">[% suspend.why FILTER html %]</td>
+                    <td class="tbcell">[% IF suspend.is_locked %]Yes[% ELSE %]No[% END %]</td>
+                    <td>
+
+[% IF suspend.bandwidth_exceeded -%]
+                    <form action="../scripts2/limitbw" method="GET">
+                    <input type="hidden" name="domain" value="[% suspend.domain FILTER html %]">
+                    <input type="hidden" name="user" value="[% suspend.user FILTER html %]">
+                    <input type="submit" value="Modify Bandwidth" class="btn-primary">
+                    </form>
+[% ELSE -%]
+                    <form action="../scripts2/suspendacct">
+                    <input type="hidden" name="domain" value="[% suspend.domain FILTER html %]">
+                    <input type="hidden" name="user" value="[% suspend.user FILTER html %]">
+                    <input type="hidden" name="unsuspend-user" value="UnSuspend">
+                    <input type="submit" value="Unsuspend" class="btn-primary">
+                    [% IF suspend.user_is_proxied %]
+                        <br />
+                        <span class="checkbox" id="retain-proxying" >
+                            <label>
+                                <input type="checkbox" class="form-control" name="retain-proxying" value="1" />
+                                [% locale.maketext('Retain [output,url,_1,Service Proxying,target,serviceProxyingDocs]','https://go.cpanel.net/ServiceProxying') %]
+                            </label>
+                            <span
+                                id='retain-proxying-info'
+                                onclick='CPANEL.ajax.toggleToolTip(this,"[% locale.maketext('Retain Service Proxying') %]");'
+                                title='[% locale.maketext('Select this checkbox to keep the account’s current service proxying settings. If you do not select this checkbox, the system will disable service proxying by default.') %]'>
+                                    <span class='fas fa-question-circle fa-large' aria-hidden></span>
+                            </span>
+                        </span>
+                    [% END %]
+                    </form>
+[% END -%]
+                    </td>
+                    <td>
+                    <form action="../scripts4/multikillacct/[% suspend.user FILTER html %]">
+                    <input type="hidden" name="selectuser" value="[% suspend.user FILTER html %]">
+                    <input type="submit" value="Terminate" class="btn-secondary">
+                    </form>
+                    </td>
+                    </tr>
+[% END %]
+</table>
+[% PROCESS '_ajaxapp_footer.tmpl' -%]
+[% END #wrapper -%]

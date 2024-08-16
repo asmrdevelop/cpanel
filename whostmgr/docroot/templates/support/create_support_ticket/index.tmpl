@@ -1,0 +1,100 @@
+[%
+    USE Whostmgr;
+    USE JSON;
+
+    SET stylesheet_includes = [
+        Whostmgr.find_file_url('/templates/support/create_support_ticket/index.min.css')
+    ];
+
+    SET PAGE_BASE = '/scripts7/create_support_ticket/';
+    SET PAGE_NAME = Whostmgr.get_page_name_by_url(PAGE_BASE);
+
+    SET PAGE_DATA = {
+        MAIN_TITLE               => PAGE_NAME, # common parent of all views (untranslated)
+        access_id                => data.access_id,
+        main_ip                  => data.main_ip,
+        is_dns_only              => data.is_dns_only ? 1: 0,
+        is_tickets_authenticated => data.is_tickets_authenticated ? 1: 0,
+        tickets_hostname         => data.tickets_hostname,
+        new_ticket_urls          => data.new_ticket_urls,
+        oauth2                   => data.oauth2,
+        has_cloud_linux          => data.has_cloud_linux ? 1 : 0,
+        has_lite_speed           => data.has_lite_speed ? 1: 0,
+        is_cpanel_direct         => data.is_cpanel_direct ? 1: 0,
+        is_internal              => data.is_internal ? 1: 0,
+    };
+
+    WRAPPER 'master_templates/master.tmpl'
+        header         = locale.makevar(PAGE_NAME),
+        breadcrumburl  = PAGE_BASE,
+        base           = PAGE_BASE,
+        stylesheets    = stylesheet_includes,
+        CJT2_EXCLUSIVE = 1,
+        theme          = 'bootstrap',
+        app_key        = 'create_support_ticket';
+%]
+
+[% IF PAGE_DATA.is_cpanel_direct OR PAGE_DATA.is_internal %]
+<div ng-controller="applicationController" class="ng-cloak">
+    <div ng-controller="wizardController">
+        <div class="wizard panel panel-default">
+            <div class="panel-heading hidden-xs hidden-sm">
+                <div class="row">
+                    <div class="col-md-12">
+                        <span class="title">[% locale.maketext('Support Ticket Wizard') %]</span>
+                    </div>
+                </div>
+            </div>
+            <div class="panel-body">
+                <cp-alert-list inline></cp-alert-list>
+                <div id="content" class="ng-cloak" ng-cloak>
+                    <div class="animate-view" ng-view></div>
+                </div>
+            </div>
+            <div class="panel-footer" ng-show="wizard.footer" class="ng-hide">
+                <button class="btn btn-sm btn-default pull-left flip"
+                        ng-click="wizardApi.previous()"
+                        ng-attr-id="{{ wizard.previousButtonId }}"
+                        title="{{wizard.previousButtonTitle}}">{{wizard.previousButtonText}}</button>
+                <button class="btn btn-sm btn-primary pull-right flip"
+                        ng-click="wizardApi.next()"
+                        ng-disabled="wizard.nextButtonDisabled"
+                        ng-attr-id="{{ wizard.nextButtonId }}"
+                        title="{{wizard.nextButtonTitle}}">{{wizard.nextButtonText}}</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script type="text/javascript">
+    var PAGE = [% PAGE_DATA.json() %];
+</script>
+
+<script type="text/ng-template" id="support/create_support_ticket/views/startView.ptt">
+    [% PROCESS 'support/create_support_ticket/views/startView.ptt' %]
+</script>
+<script type="text/ng-template" id="support/create_support_ticket/views/termsofserviceView.ptt">
+    [% PROCESS 'support/create_support_ticket/views/termsofserviceView.ptt' %]
+</script>
+<script type="text/ng-template" id="support/create_support_ticket/views/authorizeCustomerPortalView.ptt">
+    [% PROCESS 'support/create_support_ticket/views/authorizeCustomerPortalView.ptt' %]
+</script>
+<script type="text/ng-template" id="support/create_support_ticket/views/grantView.ptt">
+    [% PROCESS 'support/create_support_ticket/views/grantView.ptt' %]
+</script>
+<script type="text/ng-template" id="support/create_support_ticket/views/processingView.ptt">
+    [% PROCESS 'support/create_support_ticket/views/processingView.ptt' %]
+</script>
+[% ELSE %]
+<div class="callout callout-warning" aria-label="warning">
+    <div class="callout-heading ng-binding" ng-show="hasHeading">[% locale.maketext('Restricted Feature') %]</div>
+    <div>
+        <p>[% locale.maketext('This feature is only available if you have purchased a license directly from [asis,cPanel].') %]</p>
+        <button class="btn btn-primary" onclick="window.location.href='https://support.cpanel.net';">[% locale.maketext('Learn More') %]</button>
+</div>
+[% END %]
+<script type="text/ng-template" id="support/create_support_ticket/views/supportInfoView.ptt">
+    [% PROCESS 'support/create_support_ticket/views/supportInfoView.ptt' %]
+</script>
+[% PROCESS 'master_templates/cjt2_header_include.tt' %]
+[% END %]

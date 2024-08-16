@@ -1,0 +1,146 @@
+[%#
+    Parameters We Are Expecting:
+    ============================
+
+    action:
+        The URL for the the 'action button', will implicitly append dir and file url params.
+
+    dirs_only:
+        Display the 'action button' only for directories or symlinks to directories.
+
+    files_only:
+        Display the 'action button' only for file items (the inverse of dirs_only).
+
+    content:
+        The HTML contents of the action button item (name and icon)
+
+%]
+
+[%
+SET dir = RAW_FORM.item('dir');
+SET homedir = CPANEL.homedir;
+SET homedir = homedir.replace('/$', '');
+
+# Normalize dir
+SET dir = '/' _ dir.split('/').grep('[^/\s]').join('/') _ '/';
+SET dir = dir.replace('//','/')
+%]
+
+[% PROCESS "_assets/mime_types_icon_classes.tt" #Get the MimeTypesIconClasses hash %]
+
+[%
+SET list_files_response = execute ("Fileman", "list_files", {
+      dir => dir,
+      include_mime => 1,
+      show_hidden => 1
+   });
+IF list_files_response.status != 0;
+    SET list_of_files = list_files_response.data;
+    SET up_one = dir.split('/').slice(0,-2).join('/');
+%]
+<div class="row">
+    <div class="col-xs-12 col-sm-4 col-md-3">
+        <a id="home" href="?dir=" class="btn btn-default btn-sm">
+            <i class="fas fa-home"></i>
+            [%locale.maketext('Home') %]
+        </a>
+        [% IF dir != '/' %]
+        <a id="up-one" href="?dir=[% up_one.uri() %]" class="btn btn-default btn-sm">
+            <i class="fas fa-level-up-alt"></i>
+            [%locale.maketext('Up One Level') %]
+        </a>
+        [% END %]
+    </div>
+    <div class="col-xs-12 col-sm-8 col-md-9 current-directory">
+        <strong>[% locale.maketext('Current Directory:') %]</strong>
+        <a href="?dir=/"><span class="fas fa-home fa-lg"></span>&nbsp;/</a>
+        [%
+        # Split up the sub dirs so we can link to each piece
+        SET target_dir = '';
+        FOREACH sub_dir IN dir.remove('^/').split('/');
+            SET target_dir = target_dir _ sub_dir _ '/'
+        %]
+        <a href="?dir=/[% target_dir.uri() %]">[% sub_dir.html() %]</a> /
+        [% END %]
+    </div>
+</div>
+<table id="files" class="table table-striped">
+    <thead>
+        <tr>
+            <th>
+                [% locale.maketext('Name') %]
+            </th>
+            <th>
+                [% locale.maketext('Size') %]
+            </th>
+            <th>
+                [% locale.maketext('Actions') %]
+            </th>
+        </tr>
+    </thead>
+    <tbody>
+
+        [% IF list_of_files.size > 0 %]
+        [%   FOREACH entry IN list_of_files %]
+        <tr>
+            [% IF entry.type == 'dir' || ( entry.type == 'link' and entry.rawmimename.match('directory') ) %]
+            <td>
+                [%# Deliberately removed whitespace to prevent annoying underlines in the wrong spot from a:hover css %]
+                <a href="?dir=[%dir.uri()%][%entry.file.uri()%]" class="dir"><i class="diricon [% MimeTypesIconClasses.${entry.mimename} %]" aria-hidden="true"></i>[%- IF entry.type == 'link' -%]<i class="fas fa-link fa-rotate-90" aria-hidden="true"></i>[%- END -%]<span>[%entry.file.html()%]</span></a>
+            </td>
+            <td></td>
+            <td>
+                [% UNLESS files_only %]
+                [% INCLUDE button %]
+                [% END %]
+            </td>
+            [% ELSE %]
+            <td align="left">
+                <i class="diricon [% MimeTypesIconClasses.${entry.mimename} %]" aria-hidden="true"></i>
+                <span>[%entry.file.html()%]</span>
+            </td>
+            <td>
+                [% entry.humansize.html() %]
+            </td>
+            <td>
+                [% UNLESS dirs_only %]
+                [% INCLUDE button %]
+                [% END %]
+            </td>
+            [% END %]
+        </tr>
+        [%   END %]
+        [% ELSE %]
+        <tr>
+            <td colspan="3">
+                [% locale.maketext('No files or folders are available.') %]
+            </td>
+        </tr>
+        [% END %]
+    </tbody>
+</table>
+[% ELSE %]
+    [% FOREACH message IN list_files_response.errors %]
+<div class="alert alert-danger" role="alert">
+    <span class="glyphicon glyphicon-remove-sign" aria-hidden="true"></span>
+    <div class="alert-message">
+        <strong class="alert-title">
+            [% locale.maketext('Error:') %]
+        </strong>
+        <span class="alert-body">
+            <span id="error-[% loop.index() %]">
+                [% message.html() %]
+            </span>
+        </span>
+    </div>
+</div>
+    [% END %]
+[% END %]
+
+[% BLOCK button %]
+<form action="[% action %]" method="get">
+    <input type="hidden" name="dir" value="[% homedir.html() _ dir.html()%]">
+    <input type="hidden" name="file" value="[%entry.file.html()%]">
+    <button id="action-[% entry.file.slugify() %]" class="btn btn-outline-primary btn-sm file-select-button">[% content %]</button>
+</form>
+[% END %]

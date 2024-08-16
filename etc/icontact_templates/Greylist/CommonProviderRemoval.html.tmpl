@@ -1,0 +1,39 @@
+[%#
+Variables passed in:
+
+provider_removed        - The name of the common mail provider that has been removed from the cPanel-maintained repository
+provider_ips            - a list of ip addresses associated with the common mail provider being removed
+sent_to_root            - A default boolean flag sent to all templates that indicates if the message was sent to 'root'
+
+For more information about how to customize notification templates, read our documentation at https://go.cpanel.net/notificationtemplates
+
+-%]
+
+[%
+    PROCESS "include/colors.tmpl";
+    PROCESS "include/styles.tmpl";
+
+    WRAPPER 'wrapper/main.html.tmpl';
+
+    NOTICE.email_reason = CPANEL.locale.maketext('The mail provider “[_1]” is no longer on the Common Mail Providers list.', NOTICE.provider_removed);
+-%]
+
+<p>
+    [% CPANEL.locale.maketext('[asis,cPanel] removed the mail provider “[_1]” from the Common Mail Providers list.', NOTICE.provider_removed ) %]
+    [% CPANEL.locale.maketext('Emails received from any [output,abbr,IP,Internet Protocol] addresses that are associated with this provider will no longer be exempt from [asis,Greylisting].') %]
+</p>
+
+<p>
+[% CPANEL.locale.maketext('If you want to continue to trust the [output,abbr,IP,Internet Protocol] addresses that are associated with this mail provider, you must add them to the Trusted Hosts list in [asis,WHM]’s [_1] interface at: [output,url,_2,_2,target,_3]', CPANEL.locale.maketext('Tweak Settings'), CPANEL.assemble_whm_url("scripts7/greylist/trusted"),'_blank') %]
+</p>
+
+<p>
+    [% CPANEL.locale.maketext('For your convenience, the following list contains the [output,abbr,IP,Internet Protocol] addresses that are associated with this provider:') %]
+<PRE>
+[% FOREACH ip IN NOTICE.provider_ips %]
+[% ip -%]
+[% END -%]
+</PRE>
+</p>
+
+[% END %]

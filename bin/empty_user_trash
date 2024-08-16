@@ -1,0 +1,121 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - bin/empty_user_trash                    Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package bin::empty_user_trash;
+
+use strict;
+use warnings;
+
+use Getopt::Long                ();
+use Pod::Usage                  ();
+use Cpanel::Config::CpConfGuard ();
+use Cpanel::Config::Users       ();
+use Cpanel::ServerTasks         ();
+
+run(@ARGV) unless caller();
+
+sub run {
+    my @args = @_;
+
+    my ( @users, $all, $help, $quiet );
+
+    # TODO: If you add any more arguments, please make this a hash.
+    parse_argv( \@args, \$help, \$all, \$quiet, \@users, );
+
+    return show_help($quiet) if defined $help || ( !defined $all && scalar @users == 0 );
+
+    my $cpanel_config = Cpanel::Config::CpConfGuard->new();
+    my $older_than    = $cpanel_config->{data}{empty_trash_days};
+
+    return show_disabled_notice($quiet) if $older_than eq 'disabled';
+
+    if ( ( scalar @users == 0 ) || defined $all ) {
+        print "Emptying trash for all users.\n" if !defined $quiet;
+        @users = Cpanel::Config::Users::getcpusers();
+    }
+
+    foreach my $user (@users) {
+        print "Emptying trash for: $user\n" if !defined $quiet;
+        Cpanel::ServerTasks::queue_task( ['FilemanTasks'], "empty_user_trash $user $older_than" );
+    }
+
+    return 1;
+}
+
+sub show_help {
+    return 1 if defined shift;
+    Pod::Usage::pod2usage(
+        '-exitval'   => 'NOEXIT',
+        '-verbose'   => 2,
+        '-noperldoc' => 1,
+    );
+    return 1;
+}
+
+sub show_disabled_notice {
+    return 1 if defined shift;
+    print <<EOM;
+Automatic trash emptying is disabled. You can enable it by changing the value
+for empty_trash_days in /var/cpanel/cpanel.config.
+EOM
+
+    return 1;
+}
+
+# The interface to Getopt::Long is magical enough that, after several hours,
+# I gave up trying to use it, and spent 3 minutes writing this.
+sub parse_argv {
+    my ( $args, $help, $all, $quiet, $users ) = @_;
+
+    foreach my $arg (@$args) {
+        if    ( ( $arg eq '--all' ) || ( $arg eq '-a' ) )   { $$all = 1 }
+        elsif ( ( $arg eq '--help' ) || ( $arg eq '-h' ) )  { $$help = 1 }
+        elsif ( ( $arg eq '--quiet' ) || ( $arg eq '-q' ) ) { $$quiet = 1 }
+        else                                                { push @$users, $arg }
+    }
+    return 1;
+}
+
+1;
+
+__END__
+
+=pod
+
+=encoding utf-8
+
+=head1 NAME
+
+empty_user_trash - Purge contents of File Manager trash folders older than a
+configured number of days.
+
+=head1 SYNOPSIS
+
+    empty_user_trash [-h|--help] [-q|--quiet] (-a|--all|<username>)
+
+    Options:
+
+        -q|--quiet
+            Suppress output.
+
+        -h|--help
+            Show this help output.
+
+        -a|--all
+            Purge .trash content for all users.
+
+        username
+            Only empty trash for the specified user.
+
+=head1 DESCRIPTION
+
+This utility checks the contents of ~/.trash for the specified user (or all
+users if --all is passed instead) and purges deleted files older than the
+number of days specified by the empty_trash_days configuration directive in
+/var/cpanel/cpanel.config.
+
+=cut

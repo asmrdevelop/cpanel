@@ -1,0 +1,97 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/rebuildinstalledssldb           Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::rebuildinstalledssldb;
+
+use strict;
+use warnings;
+
+=encoding utf-8
+
+=head1 NAME
+
+scripts/rebuildinstalledssldb
+
+=head1 USAGE
+
+    rebuildinstalledssldb [ --help ]
+
+=head1 DESCRIPTION
+
+This script rebuilds the Apache TLS index database according to the filesystem
+contents.
+
+If any index entries remain that do not correspond to the filesystem after the
+rebuild, the script will prompt for whether to delete the entries.
+
+=cut
+
+use parent qw( Cpanel::HelpfulScript );
+
+use Cpanel::Apache::TLS::Index        ();
+use Cpanel::Apache::TLS::RebuildIndex ();
+
+use constant _OPTIONS => ();
+
+__PACKAGE__->new(@ARGV)->run() if !caller;
+
+sub run {
+    my ($self) = @_;
+
+    #This will still recreate the schema if needed but won’t rebuild
+    #the data … because that’s what we’re about to do here, and more
+    #verbosely than the auto-rebuild logic does it.
+    my $atls_idx = Cpanel::Apache::TLS::Index->new_without_rebuild();
+
+    my %disk_vhosts_lookup;
+
+    my ($xaction) = Cpanel::Apache::TLS::RebuildIndex::rebuild_all(
+        $atls_idx,
+        before_each => sub {
+            $disk_vhosts_lookup{ shift() } = 1;
+        },
+        after_each => sub {
+            my $vhname = shift;
+            $self->say_maketext( 'The system recreated “[_1]”’s [asis,Apache TLS] entry.', $vhname );
+        },
+    );
+
+    my @extra_idx_remaining;
+
+    local $@;
+
+    #get_all_ar() is a bit inefficient for this since we don’t
+    #need the entire record, just the vhost names. If it’s useful
+    #in the future we could optimize for it.
+    for my $rec ( @{ $atls_idx->get_all_ar() } ) {
+        delete $disk_vhosts_lookup{ $rec->{'vhost_name'} } or do {
+            push @extra_idx_remaining, $rec->{'vhost_name'};
+        };
+    }
+
+    if (@extra_idx_remaining) {
+        $self->say(q<>);
+        $self->say_maketext( 'The following extra [numerate,_1,entry remains,entries remain] in [asis,Apache TLS]’s index:', 0 + @extra_idx_remaining );
+        $self->say("\t• $_") for @extra_idx_remaining;
+
+        $self->say(q<>);
+        my $proceed_yn = $self->prompt_yn_maketext( '[numerate,_1,This entry does,These entries do] not correspond to the filesystem and probably should not exist. Do you want to delete [numerate,_1,it,them]?', 0 + @extra_idx_remaining );
+
+        if ($proceed_yn) {
+            $atls_idx->unset($_) for @extra_idx_remaining;
+        }
+    }
+
+    $xaction->release();
+
+    $self->say(q<>);
+    $self->say_maketext('The system completed the rebuild of the [asis,Apache TLS] index.');
+
+    return;
+}
+
+1;

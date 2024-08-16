@@ -1,0 +1,45 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/fixrelayd                       Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+use warnings;
+use Cpanel::OS;
+
+# Don't let this run on Ubuntu servers where the rsyslog path is something like /etc/rsyslog.d/50-default.conf , we use their defaults
+if ( Cpanel::OS::maillog_path() ne '/var/log/maillog' ) {
+    print "This script is not meant for this distro, exiting..\n";
+    exit;
+}
+
+foreach my $file ( '/etc/syslog.conf', '/etc/rsyslog.conf' ) {
+    next if !-e $file;
+    my $logger = ( split /\//, $file )[-1];
+    my $script = ( split /\./, $logger )[0];
+
+    my $line_exists = 0;
+    if ( open my $read_fh, '<', $file ) {    # don't die because you want it to keep going
+        $line_exists = grep /local0\.notice\;local0\.debug\;mail\.\*\;mail\.none\;mail\.info\;local0\.info\s+\/var\/log\/maillog/, <$read_fh>;
+        close $read_fh;
+
+        if ( !$line_exists ) {
+            if ( open my $write_fh, '>>', $file ) {    # don't die because you want it to keep going
+                print {$write_fh} "local0.notice;local0.debug;mail.*;mail.none;mail.info;local0.info /var/log/maillog\n";
+                close $write_fh;
+            }
+            else {
+                print "Warn: could not add entry to $logger\n";
+            }
+        }
+        else {
+            print "Warn: duplicate entry in $logger $line_exists times\n" if $line_exists > 1;
+        }
+    }
+    else {
+        print "Could not check $logger\n";
+    }
+    system( "/etc/init.d/$script", 'restart' );
+}

@@ -1,0 +1,108 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/fixetchosts                     Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::fixetchosts;
+
+use strict;
+use Cpanel::SafeFile             ();
+use Cpanel::Validate::Hostname   ();
+use Cpanel::IP::Loopback         ();
+use Cpanel::DIp::MainIP          ();
+use Cpanel::Sys::Hostname::FQDN  ();
+use Cpanel::FileUtils::TouchFile ();
+use IO::Handle                   ();
+
+exit script(@ARGV) unless caller;
+
+sub script {
+    return run('/etc/hosts');
+}
+
+sub run {
+    my ($file)        = @_;
+    my $mainip        = Cpanel::DIp::MainIP::getmainserverip();
+    my $hostname      = Cpanel::Sys::Hostname::FQDN::get_fqdn_hostname();
+    my $shorthostname = Cpanel::Sys::Hostname::FQDN::get_short_hostname();
+
+    # CPANEL-36014: If the returned hostname ends with a trailing dot, strip it.
+    $hostname =~ s/\.$//;
+
+    Cpanel::FileUtils::TouchFile::touchfile($file);
+    die "The hostname $hostname is not valid.\n" unless Cpanel::Validate::Hostname::is_valid($hostname);
+
+    update( $file, $mainip, $hostname, $shorthostname );
+    return 0;
+}
+
+sub update {
+    my ( $file, $mainip, $hostname, $shorthostname ) = @_;
+
+    my $hosts_fh   = IO::Handle->new();
+    my $hosts_lock = Cpanel::SafeFile::safeopen( $hosts_fh, '+<', $file );
+    if ($hosts_lock) {
+        my %SEENIP;
+        my @ETCHOSTS;
+
+        while ( my $line = readline $hosts_fh ) {
+            chomp $line;
+            if ( $line =~ m/^\s*#/ || $line =~ m/^\s*$/ ) {
+                push @ETCHOSTS, { 'raw' => $line };
+            }
+            else {
+                my ( $ip, $hosts ) = split( /\s+/, $line, 2 );
+                my @line_hosts;
+                foreach my $host ( split( /\s+/, $hosts ) ) {
+                    next if ( $ip ne $mainip && $host eq $hostname );                                   # Drop mismatch hostnames for the main IP
+                    next if ( $ip eq $mainip && ( $host eq $hostname || $host eq $shorthostname ) );    # These will be re-added
+                    push @line_hosts, $host if ( !grep { $_ eq $host } @line_hosts );                   # Drop duplicates while preserving order
+                }
+
+                if ( !@line_hosts ) {                                                                   ## Drop empty lines
+                    next if $ip eq $mainip;                                                             # Prevent duplicate commented lines for the main IP
+                    push @ETCHOSTS, { 'raw' => '# ' . $line };                                          # Preserve lines that were commented out in full
+                }
+                else {                                                                                  ## Save valid entries
+                    push @ETCHOSTS, { 'ip' => $ip, 'hosts' => \@line_hosts };
+                    $SEENIP{$ip} = 1;
+                }
+            }
+        }
+        seek( $hosts_fh, 0, 0 );
+
+        my $added_hostname = 0;
+        foreach my $line_ref (@ETCHOSTS) {
+            if ( exists $line_ref->{'raw'} ) {
+                print {$hosts_fh} $line_ref->{'raw'} . "\n";
+            }
+            else {
+                my $ip        = $line_ref->{'ip'};
+                my $hosts_ref = $line_ref->{'hosts'};
+
+                if ( $ip eq $mainip && !$added_hostname ) {
+                    $added_hostname = 1;
+                    unshift @{$hosts_ref}, $hostname, $shorthostname;
+                }
+                elsif ( Cpanel::IP::Loopback::is_loopback($ip) ) {
+                    if ( !grep { $_ eq 'localhost' } @{$hosts_ref} ) {
+                        unshift @{$hosts_ref}, 'localhost';
+                    }
+                }
+                print {$hosts_fh} $ip . "\t\t" . join( ' ', @{$hosts_ref} ) . "\n";
+            }
+
+        }
+        if ( !exists $SEENIP{'127.0.0.1'} ) {
+            print {$hosts_fh} "127.0.0.1\t\tlocalhost\n";
+        }
+        if ( !exists $SEENIP{$mainip} ) {
+            print {$hosts_fh} $mainip . "\t\t" . $hostname . ' ' . $shorthostname . "\n";
+        }
+        truncate( $hosts_fh, tell($hosts_fh) );
+        Cpanel::SafeFile::safeclose( $hosts_fh, $hosts_lock );
+    }
+    return;
+}

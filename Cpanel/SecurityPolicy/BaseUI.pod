@@ -1,0 +1,193 @@
+
+# cpanel - Cpanel/SecurityPolicy/BaseUI.pod        Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+=head1 NAME
+
+Cpanel::SecurityPolicy::BaseUI - Interface for SecrutyPolicy plugin UI modules.
+
+
+=head1 SYNOPSIS
+
+    use ModName;
+
+=for author to fill in:
+    Brief code example(s) here showing commonest usage(s).
+    This section will be as far as many users bother reading
+    so make it as educational and exeplary as possible.
+
+
+=head1 DESCRIPTION
+
+=for author to fill in:
+    Write a full description of the module and its features here.
+    Use subsections (=head2, =head3) as appropriate.
+
+
+=head1 INTERFACE
+
+=head2 new( ... )
+
+=head2 process( $formref, $sec_ctxt, $cpconf )
+
+This method takes a set of parameters and provides the user interface needed to
+alert the user to the situation and potentially provide the ability for the user
+to resolve the issue. This method may be called again (depending on the resolution
+method) after a form submission to attempt to actually resolve the issue.
+
+The parameters to the method are as follows:
+
+=over 4
+
+=item C<$acctref>
+
+A reference to a hash of account information for the current user.
+
+=item C<$formref>
+
+A reference to a hash containing form parameters that may be used in resolving
+the security issue.
+
+=item C<$cpresult>
+
+A reference to a hash in which the method may place status or error messages, or
+other information that must be passed back to the calling code.
+
+=item C<$sec_ctxt>
+
+A reference to a hash of security-specific account information for the current
+user.
+
+=item C<$cpconf>
+
+A reference to the hash of Cpanel Configuration information.
+
+=back
+
+=head1 HASH PARAMETERS
+
+=head2 C<$formref>
+
+=head2 C<$sec_ctxt>
+
+The security context hash contains security-specific information about the user
+and request that is being evaluated. It is supplied to the C<process> method.
+
+The values included in this hash are:
+
+=over 4
+
+=item appname
+
+The name of the application that is testing the security policy. Valid values
+include I<whostmgr>, I<webmaild>, or C<cpaneld>.
+
+=item auth_by_accesshash
+
+Exists with a value of 1 if the user logged in with an accesshash instead of
+a password.
+
+=item cookies
+
+This is a reference to a hash of HTTP cookies.
+
+=item cptheme
+
+If the I<appname> is I<cpaneld>, this parameter will exist and has the value of
+the current user's theme.
+
+=item document
+
+A path containing the path portion of the URL requested.
+
+=item domain
+
+For a I<webmaild> application, this is the domain portion of the email address.
+
+=item homedir
+
+The home directory associated with the user that has been logged in.
+
+=item is_possessed
+
+This entry is true if a reseller or root account is masquerading as the user
+during this login session.
+
+=item pass_change_time
+
+This is the number of days since Jan. 1 1970 that the user last changed the
+password on this account.
+
+=item possessor
+
+If C<is_possessor> is a true value, this is the username of the user actually
+logging in to the account.
+
+=item possessor_homedir
+
+If C<is_possessor> is a true value, this is the home directory of the user
+actually logging in to the account.
+
+=item possessor_pass_change_time
+
+If C<is_possessor> is a true value, this is the number of days since Jan. 1,
+1970 that the user who is actually logging in to the account last changed the
+password on this account.
+
+=item pwstrength
+
+This is an integer between 1 and 100 specifying the required password strength.
+
+=item remoteip
+
+This is the IP address of the machine from which the user is attempting login.
+
+=item request_type
+
+The request type for this request: I<html>, I<xml>, I<json>, or I<dnsadmin>.
+
+=item system_user
+
+This is the username for the system account associated with the login. Except
+for the case of a webmail login, this value should be the same as I<user>.
+
+=item user
+
+The name of the user we are logged in as.
+
+=item virtualuser
+
+For the I<webmaild> application, this holds the local part of the email
+address.
+
+=item webmailowner
+
+For the I<webmaild> application, this holds the username of the system account
+that owns this webmail account.
+
+=back
+
+=head2 C<$cpconf>
+
+=head1 CONFIGURATION AND ENVIRONMENT
+
+ModName requires no configuration files or environment variables.
+
+=head1 INCOMPATIBILITIES
+
+None reported.
+
+=head1 BUGS AND LIMITATIONS
+
+No bugs have been reported.
+
+=head1 AUTHOR
+
+G. Wade Johnson  C<< wade@cpanel.net >>
+
+=head1 LICENSE AND COPYRIGHT
+
+Copyright (c) 2011, cPanel, Inc. All rights reserved.
+This code is subject to the cPanel license. Unauthorized copying is prohibited

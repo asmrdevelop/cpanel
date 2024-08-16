@@ -1,0 +1,26 @@
+[% PROCESS 'master_templates/_defheader.tmpl'
+    header = locale.maketext('Upgrade Database Version (Step [numf,_1] of [numf,_2])', 5, 5)
+    theme = 'bootstrap'
+    breadcrumburl = '/scripts/mysqlupgrade'
+    extrastyle = '
+        inline-block { display: inline-block }
+    ';
+-%]
+
+<div id="content">
+    [% BLOCK runner %]
+           [% failed_step = data.run_unattended_upgrade(data) %]
+    [% END %]
+    [% PROCESS mysqlupgrade/runner.tmpl attended=0 %]
+    [% IF !failed_step %]
+      [% PROCESS mysqlupgrade/runner_success.tmpl
+      message=locale.maketext('The upgrade process succeeded.')  %]
+    [% ELSE %]
+        [% PROCESS mysqlupgrade/runner_failed.tmpl
+        message=locale.maketext('The upgrade process failed. You should correct any errors listed in the output window and retry the upgrade process.')
+        step_number=failed_step.html()
+        button_text=locale.maketext('Retry') %]
+    [% END %]
+</div>
+
+[% PROCESS 'master_templates/_deffooter.tmpl' -%]

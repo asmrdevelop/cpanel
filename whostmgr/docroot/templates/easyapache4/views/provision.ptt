@@ -1,0 +1,88 @@
+<!-- Desc CONTAINER -->
+<div class="row">
+    <div class="col-xs-12 description">
+        [% locale.maketext("[asis,EasyApache] is software that installs, configures, updates, and validates your web server, PHP, and other components of your web server. [asis,EasyApache 4] allows for automatic updates and uses the system package manager to install and manage software.") %]
+    </div>
+</div>
+<!-- PROVISION CONTAINER -->
+<div class="row">
+    <div class="col-xs-12">
+        <h2 class="view-heading">[% locale.maketext("Provision") %]</h2>
+        <div class="row">
+            <div class="col-xs-12">
+                <h4>{{ selectedProfile.name }}</h4>
+                <span spinner
+                    id="provisionSpinner"
+                    class="addSpinner"
+                    title="[% locale.maketext('Provisioning …') %]">
+                </span>
+                <p id="resultText_top"
+                    class="alert"
+                    role="alert"
+                    ng-show="finished"
+                    ng-class="resultReady()">
+                    {{ resultSummary }}
+                </p>
+                <p id="logStatusText"
+                    class="text-info"
+                    role="alert"
+                    ng-show="provisionStarted">
+                    {{ logStatus }}
+                </p>
+                <!-- Realtime log is displayed in the 'pre' tag using
+                    tail functionality -->
+                <pre class="log" id="log" ng-show="provisionStarted" aria-live="polite">
+                    <span ng-bind-html="realTimeLogDisplay"></span>
+                    <a id="bottom"></a>
+                </pre>
+                <p id="resultText_bottom"
+                    class="alert"
+                    ng-show="finished"
+                    ng-class="resultReady()">
+                    {{ resultSummary }}
+                </p>
+                <!-- Save as profile directive -->
+                <div class="row">
+                    <div class="col-xs-12" ng-show="customize.saveProfilePopup.showBottom">
+                        <div class="pop-over bottom">
+                            <save-as-profile id-prefix="saveProfile"
+                                position="{{ customize.saveProfilePopup.position }}"
+                                packages="customize.selectedPkgs"
+                                show="{{ customize.saveProfilePopup.showTop || customize.saveProfilePopup.showBottom }}"
+                                on-cancel="customize.clearSaveProfilePopup(customize.saveProfilePopup.position)">
+                            </save-as-profile>
+                        </div>
+                    </div>
+                </div>
+                <!-- ACTION buttons (TODO:: Should they be enclosed in a container???) -->
+                <a id="doneButton"
+                    href="javascript:void(0)"
+                    ng-click="cancel()"
+                    class="btn btn-primary"
+                    ng-show="finished">
+                    [% locale.maketext("Done") %]
+                </a>
+                <button id="btnSaveAsProfileBottom"
+                    class="btn btn-default"
+                    ng-show="finished"
+                    ng-disabled="customize.saveProfilePopup.showTop || customize.saveProfilePopup.showBottom"
+                    ng-click="customize.showsaveProfilePopup('bottom')"
+                    type="button"
+                    data-toggle="collapse"
+                    data-target="#saveProfilePopup"
+                    aria-expanded="false"
+                    aria-controls="saveProfilePopup">
+                    <span class="far fa-save" aria-hidden="true"></span>
+                    [% locale.maketext("Save as profile[comment,button title]") %]
+                </button>
+                <button id="downloadLogButton"
+                    class="btn btn-link"
+                    ng-show="finished"
+                    ng-click="saveLog()">
+                    <span class="glyphicon glyphicon-save" aria-hidden="true"></span>
+                    [% locale.maketext("Download Log") %]
+                </button>
+            </div>
+        </div>
+    </div>
+</div>

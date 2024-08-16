@@ -1,0 +1,64 @@
+[%
+    USE Whostmgr;
+
+    SET back_url_query_arg = cp_security_token _ '/scripts2/listassignednsips';
+
+    WRAPPER 'master_templates/master.tmpl'
+        app_key = 'nameserver_record_report'
+        theme = 'bootstrap'
+        breadcrumburl = '/scripts2/listassignednsips'
+        scripts = '/js/sorttable.js';
+
+-%]
+<p class="description">
+    [% locale.maketext('This feature reports information about the nameservers used by zones on this server. The displayed data updates nightly or when you transfer an account.') %]
+</p>
+
+<table class="sortable table table-striped table-condensed" id="iplist">
+    <thead>
+    <tr>
+        <th>[% locale.maketext('Nameserver') %]</th>
+        <th class="sorttable_nosort">[% locale.maketext('[asis,IP] Addresses') %]</th>
+        <th>[% locale.maketext('Zones') %]</th>
+        <th class="sorttable_nosort actions-column">[% locale.maketext('Actions') %]</th>
+    </tr>
+    </thead>
+    <tbody>
+[% IF data.nsips.keys.size() %]
+    [% FOR ns = data.nsips.keys.sort() -%]
+        <tr>
+            <td>[% ns.html() %]</td>
+            <td>
+                <table class="table table-condensed table-inner">
+                    <tr>
+                        <td class="table-inner__cell table-inner__cell--small">IPv4</td>
+                        <td class="table-inner__cell">[% data.nsips.$ns.ipv4 ? data.nsips.$ns.ipv4 : 'None' %]</td>
+                    </tr>
+                    <tr>
+                        <td class="table-inner__cell table-inner__cell--small">IPv6</td>
+                        <td class="table-inner__cell">[% data.nsips.$ns.ipv6 ? data.nsips.$ns.ipv6 : 'None' %]</td>
+                    </tr>
+                </table>
+            </td>
+            <td>[% data.nscounts.$ns.html() %]</td>
+            <td>
+                <a href="[% cp_security_token %]/scripts7/zone_editor/?nameserver=[% ns.uri() %]"
+                    id="edit_[% loop.index %]"
+                    class="btn btn-link"
+                    title="[% locale.maketext('Select domains to edit on “[_1]”.', ns.html()) %]">
+                    <span class="glyphicon glyphicon-pencil"></span>
+                    [% locale.maketext('Edit Zones') %]</a>
+            </td>
+        </tr>
+    [% END -%]
+[% ELSE %]
+    <tr class="empty-row info" id="no-nameservers-message">
+        <td colspan="4">
+            [% locale.maketext('No nameservers configured.') %]
+        </td>
+    </tr>
+[% END -%]
+    </tbody>
+</table>
+
+[% END -%]

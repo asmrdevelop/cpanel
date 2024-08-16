@@ -1,0 +1,25 @@
+[%#
+Variables passed in:
+
+origin                  - the system component from which the notification was requested
+uid_gid                 - user id and group id of the files being cleaned
+attach_files            - an output log is attached to the email
+
+For more information about how to customize notification templates, read our documentation at https://go.cpanel.net/notificationtemplates
+
+-%]
+
+[%
+    PROCESS "include/colors.tmpl";
+    PROCESS "include/styles.tmpl";
+    PROCESS "include/code_block.tmpl";
+
+    WRAPPER 'wrapper/main.html.tmpl';
+          NOTICE.email_reason = CPANEL.locale.maketext('Results of post-terminate cleanup for “[_1]” on “[_2]”' , NOTICE.uid_gid , NOTICE.host_server);
+
+    SET log_content=NOTICE.log_preview.shift;
+%]
+
+[% code_block(formatted_code=log_content, title=CPANEL.locale.maketext("Review the attached Post Termination Log for further details.")) %]
+
+[% END %]

@@ -1,0 +1,47 @@
+[%
+    USE Whostmgr;
+    USE JSON;
+
+    SET styleSheets = [
+            Whostmgr.find_file_url('/templates/multiphp_ini_editor/index.min.css')
+        ];
+
+    SET locale_is_rtl = 0;
+
+    WRAPPER 'master_templates/master.tmpl'
+        app_key = 'multiphp_ini_editor'
+        header = locale.maketext('[asis,MultiPHP INI] Editor'),
+        breadcrumburl = '/scripts2/multiphp_ini_editor',
+        base = '/scripts2/multiphp_ini_editor/',
+        stylesheets = styleSheets,
+        theme='bootstrap',
+        CJT2_EXCLUSIVE = 1;
+%]
+
+<div id="content"
+    ng-cloak>
+    <!-- INI settings information -->
+    <div id="alertIniFiltering" class="row callout callout-info">
+        <div class="col-xs-12">
+            [%
+                locale.maketext("Note: This interface writes changes to the selected PHP version’s default [asis,INI] file. For more information, read our [output,url,_1,MultiPHP INI Editor documentation,target,_blank].", "https://go.cpanel.net/WHMMultiPHPINI")
+            -%]
+        </div>
+    </div>
+    <ul class="nav nav-tabs">
+        <li ng-class="{active: currentRoute === '/basic'}"><a href="basic">[% locale.maketext('Basic Mode') %]</a></li>
+        <li ng-class="{active: currentRoute === '/editor'}"><a href="editor">[% locale.maketext('Editor Mode') %]</a></li>
+    </ul>
+    <div class="tab-content" ng-view></div>
+</div>
+<div growl></div>
+
+<script type="text/javascript">
+    var PAGE = PAGE || {};
+    PAGE.php_versions = [% data.php_versions.json() %];
+    PAGE.locale_is_RTL = [% locale_is_rtl %];
+</script>
+
+[% PROCESS 'master_templates/cjt2_header_include.tt' %]
+
+[% END %]

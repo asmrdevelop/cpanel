@@ -1,0 +1,325 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/migrate-pdns-conf               Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::migrate_pdns_conf;
+
+use strict;
+use warnings;
+
+use Try::Tiny;
+
+use Pod::Usage               ();
+use Getopt::Long             ();
+use Cpanel::LoadFile         ();
+use Cpanel::Exception        ();
+use Cpanel::FileUtils::Write ();
+use Cpanel::Rand::Get        ();
+use Cpanel::PwCache          ();
+
+my $CONF_FILE = '/etc/pdns/pdns.conf';
+
+exit( __PACKAGE__->script( \@ARGV ) ) unless caller;
+
+sub script {
+    my ( $class, $argv ) = @_;
+
+    die Cpanel::Exception::create('RootRequired')->to_string_no_id() unless ( $> == 0 && $< == 0 );
+    my $self = bless { 'notify' => 1 }, $class;
+
+    my $help;
+    Getopt::Long::GetOptionsFromArray(
+        $argv,
+        'notify!'    => \$self->{'notify'},
+        'dry-run'    => \$self->{'dry-run'},
+        'man|help|h' => \$help,
+    ) or return Pod::Usage::pod2usage( -exitval => 'NOEXIT', -output => \*STDERR, -verbose => 99, -sections => [qw(NAME DESCRIPTION SYNOPSIS)] );
+
+    # -1 to get the right exit code
+    return Pod::Usage::pod2usage( -exitval => 'NOEXIT', -output => \*STDOUT, -verbose => 99, -sections => [qw(NAME DESCRIPTION SYNOPSIS)] ) - 1 if $help;
+
+    return _nofile() unless -e $CONF_FILE;
+
+    my $current_conf = Cpanel::LoadFile::loadfileasarrayref($CONF_FILE);
+    my $changes      = $self->migrate_conf($current_conf);
+    $changes->{enabled} = $self->enable_settings($current_conf);
+
+    return _nochanges() if !_has_changes($changes);
+
+    _print_changes($changes);
+    return 0 if $self->{'dry-run'};
+
+    if ( _overwrite_and_fix_ownership( $CONF_FILE, join( '', @{$current_conf} ) ) ) {
+        print "[+] Updated $CONF_FILE successfully\n";
+        $self->send_notification($changes)
+          if $self->{'notify'};
+    }
+    else {
+        print "[!] Failed to update $CONF_FILE: $!\n";
+        return 1;
+    }
+
+    return 0;
+}
+
+sub migrate_conf {
+    my ( $self, $current_conf ) = @_;
+
+    my $changes = {
+        'removed' => [],
+        'renamed' => [],
+        'manual'  => [],
+    };
+
+    my @to_remove = (
+        qw/
+          pipebackend-abi-version
+          strict-rfc-axfrs
+          send-root-referral
+          experimental-lua-policy-script
+          allow-recursion
+          recursive-cache-ttl
+          recursor
+          api-readonly
+          experimental-api-readonly
+          api-logfile
+          /
+    );
+
+    foreach my $line ( @{$current_conf} ) {
+        next if $line =~ m/^\s*(#|$)/;    # ignore comments and blank lines
+
+        if ( my @remove = grep { $line =~ m/^\s*$_\s*=/ } @to_remove ) {
+            push @{ $changes->{'removed'} }, @remove;
+            $line = '#' . $line;
+        }
+        elsif ( $line =~ m/^\s*local-ipv6\s*=::/ ) {    #No longer force pdns to bind to ::
+            push @{ $changes->{'removed'} }, 'local-ipv6=::';
+            $line = '#' . $line;
+        }
+        elsif ( $line =~ s/^\s*(experimental-json-interface)\s*=/api=/ ) {
+            push @{ $changes->{'renamed'} }, { 'experimental-json-interface' => 'api' };
+        }
+        elsif ( $line =~ m/^\s*(experimental-api-key|experimental-dname-processing|experimental-dnsupdate)\s*=(.*)$/ ) {
+            my $orig  = $1;
+            my $value = $2;
+            my $new   = $orig =~ s/experimental-//r;
+            push @{ $changes->{'renamed'} }, { $orig => $new };
+            $line = "$new=$value\n";
+        }
+        elsif ( $line =~ s/^\s*(allow-dns-update-from)\s*=/allow-dnsupdate-from=/ ) {
+            push @{ $changes->{'renamed'} }, { 'allow-dns-update-from' => 'allow-dnsupdate-from' };
+        }
+        elsif ( $line =~ s/^\s*(forward-dnsupdates)\s*=/forward-dnsupdate=/ ) {
+            push @{ $changes->{'renamed'} }, { 'forward-dnsupdates' => 'forward-dnsupdate' };
+        }
+        elsif ( $line =~ m/^\s*(default-ksk-algorithms|default-zsk-algorithms)\s*=(.*)$/ ) {
+            my $orig  = $1;
+            my $value = $2;
+            my $new   = $orig =~ s/s$//r;
+
+            # If these were configured with multiple values,
+            # then it'll require admin intervention as that is no longer supported.
+            if ( split( /,/, $value ) > 1 ) {
+                $line = '#' . $line;
+                push @{ $changes->{'manual'} }, $orig;
+            }
+            else {
+                push @{ $changes->{'renamed'} }, { $orig => $new };
+                $line = "$new=$value\n";
+            }
+        }
+        elsif ( $line =~ m/^\s*(local-ipv6-nonexist-fail)\s*=(.*)$/ ) {
+            my $orig  = $1;
+            my $value = $2;
+            my $new   = 'local-address-nonexist-fail';
+
+            push @{ $changes->{'renamed'} }, { $orig => $new };
+            $line = "$new=$value\n";
+
+        }
+    }
+
+    return $changes;
+}
+
+sub enable_settings {
+    my ( $self, $current_conf ) = @_;
+
+    my @changes;
+
+    my %to_enable = (
+        'webserver'                  => 'yes',
+        'api'                        => 'yes',
+        'webserver-address'          => '127.0.0.1',
+        'webserver-allow-from'       => '127.0.0.1,::1',
+        'webserver-port'             => '953',
+        'api-key'                    => undef,
+        'webserver-password'         => undef,
+        'bind-ignore-broken-records' => 'yes',
+        'upgrade-unknown-types'      => '1',
+    );
+
+    my %seen_settings;
+
+    foreach my $line ( @{$current_conf} ) {
+        next if $line =~ m/^\s*(#|$)/;
+
+        if ( $line =~ m{^\s*bind-dnssec-db\s*=\s*/etc/pdns/dnssec\.db\s*} ) {
+            $line = "bind-dnssec-db=/var/cpanel/pdns/dnssec.db\n";
+            push( @changes, { 'bind-dnssec-db' => '/var/cpanel/pdns/dnssec.db' } );
+            next;
+        }
+
+        my ( $key, $value ) = ( $line =~ /^\s*([^\s=]+)\s*=\s*(\S+)?\s*$/ );
+        next unless defined $key;
+        next unless exists $to_enable{$key};
+
+        # Remove duplicate, empty and templated values
+        if ( $seen_settings{$key} || !defined($value) || ( $value eq '@@REPLACE@@' || $value eq '@@REPLACE_PASS@@' ) ) {
+            $line = '';
+            next;
+        }
+
+        $seen_settings{$key} = 1;
+
+        # leave generated credentials as-is
+        next if ( !defined( $to_enable{$key} ) );
+
+        # leave correct settings alone
+        next if ( $value eq $to_enable{$key} );
+
+        # fix setting
+        $line = "$key=$to_enable{$key}\n";
+        push( @changes, { $key => $to_enable{$key} } );
+    }
+
+    # add missing settings
+    foreach my $key ( keys %to_enable ) {
+        next if $seen_settings{$key};
+        push( @changes, { $key => ( $to_enable{$key} // '***HIDDEN***' ) } );
+        $to_enable{$key} //= Cpanel::Rand::Get::getranddata(16);
+        unshift( @{$current_conf}, "$key=$to_enable{$key}\n" );
+    }
+
+    return \@changes;
+}
+
+sub _has_changes {
+    my $changes = shift;
+
+    foreach my $type (qw/removed renamed manual enabled/) {
+        return 1 if scalar @{ $changes->{$type} };
+    }
+    return 0;
+}
+
+sub _print_changes {
+    my $changes = shift;
+
+    foreach my $removed ( @{ $changes->{'removed'} } ) {
+        print "[*] Deprecated directive: '$removed' will be disabled.\n";
+    }
+    foreach my $renamed ( @{ $changes->{'renamed'} } ) {
+        print "[*] Renamed directive: '$_' will be updated to '$renamed->{$_}'.\n" foreach keys %{$renamed};
+    }
+    foreach my $manual ( @{ $changes->{'manual'} } ) {
+        print "[*] Deprecated configuration: '$manual' will be disabled as this requires admin intervention.\n";
+    }
+    foreach my $enabled ( @{ $changes->{'enabled'} } ) {
+        print "[*] New enabled settings: The '$_' directive was added and set to '$enabled->{$_}'.\n" foreach keys %{$enabled};
+    }
+
+    return 0;
+}
+
+sub _nochanges {
+    print "[+] $CONF_FILE does not contain any directives that need to be updated.\n";
+    return 0;
+}
+
+sub _nofile {
+    print "[*] $CONF_FILE is not present on the system. Nothing to do.\n";
+    return 0;
+}
+
+sub send_notification {
+    my ( $self, $changes ) = @_;
+
+    return if $ENV{'CPANEL_BASE_INSTALL'};    # Nothing is setup. it's meaningless to notify here.
+    my $old = $self->_locale()->set_context_plain();
+
+    require Cpanel::Notify;
+    my $ic_obj = Cpanel::Notify::notification_class(
+        'class'            => 'Check::PdnsConf',
+        'application'      => 'Check::PdnsConf',
+        'status'           => 1,
+        'constructor_args' => [
+            'origin'    => 'migrate-pdns-conf',
+            'skip_send' => 1,
+            %{$changes},
+        ]
+    );
+    $ic_obj->send();
+
+    $self->_locale()->set_context($old);
+    return 1;
+}
+
+sub _locale {
+    my ($self) = @_;
+    require Cpanel::Locale;
+    return ( $self->{'_locale'} ||= Cpanel::Locale->get_handle() );
+}
+
+sub _overwrite_and_fix_ownership {
+    my ( $conf, $content ) = @_;
+
+    my ( $named_uid, $named_gid ) = ( Cpanel::PwCache::getpwnam_noshadow('named') )[ 2, 3 ];
+    my $overwrite_callback = sub {
+        my $fh = shift;
+        chmod( 0600, $fh );
+        chown( $named_uid, $named_gid, $fh );
+    };
+
+    return Cpanel::FileUtils::Write::overwrite( $conf, $content, { before_installation => $overwrite_callback } );
+}
+
+1;
+
+__END__
+
+=pod
+
+=encoding utf8
+
+=head1 NAME
+
+migrate-pdns-conf
+
+=head1 DESCRIPTION
+
+Utility to update PowerDNS configuration from v3.x to v4.1:
+
+    * Deprecated options will be removed.
+    * Renamed configuration directives will be updated to the new names.
+    * New settings will be enabled.
+
+=head1 SYNOPSIS
+
+    migrate-pdns-conf [OPTIONS]
+
+    OPTIONS:
+    --notify    Send notification about changes made to System Administrator.
+                Default: on
+                To disable notifications, use --no-notify
+
+    --dry-run   Do a dry-run without altering the file, or sending the notification.
+                Prints the changes that would be made to screen.
+
+    --help      This documentation.
+
+=cut

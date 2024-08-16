@@ -1,0 +1,1913 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+#                                      Copyright 2024 WebPros International, LLC
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited.
+
+package scripts::cpanel_initial_install;
+
+use cPstrict;
+
+use Cpanel::ChildErrorStringifier      ();
+use Cpanel::Chkservd::Manage           ();
+use Cpanel::Chkservd::Tiny             ();
+use Cpanel::Config::LoadConfig         ();
+use Cpanel::Config::ConfigObj          ();
+use Cpanel::Config::CpConfGuard        ();
+use Cpanel::Config::FlushConfig        ();
+use Cpanel::Config::LoadCpConf         ();
+use Cpanel::ConfigFiles                ();
+use Cpanel::DnsUtils::Add              ();
+use Cpanel::DIp::Update                ();
+use Cpanel::Timezones                  ();
+use Cpanel::RPM::Versions::File        ();
+use Proc::FastSpawn                    ();
+use Cpanel::FeatureShowcase            ();
+use Cpanel::Finally                    ();
+use Cpanel::Carp                       ();
+use Cpanel::LoadModule                 ();
+use Cpanel::FileUtils::TouchFile       ();
+use Cpanel::FileUtils::Write           ();
+use Cpanel::Kernel                     ();
+use Cpanel::Kernel::GetDefault         ();
+use Cpanel::NSCD::Log                  ();
+use Cpanel::Quota::Utils               ();
+use Cpanel::Pkgr                       ();
+use Cpanel::Usage                      ();
+use Cpanel::NAT                        ();
+use Cpanel::Init::Simple               ();
+use Cpanel::TimeHiRes                  ();
+use Cpanel::Server::Type               ();
+use Cpanel::Sys::Hostname::Modify      ();
+use Cpanel::TimeHiRes                  ();
+use Cwd                                ();
+use File::Path                         ();
+use File::Copy                         ();
+use Cpanel::MariaDB                    ();
+use Cpanel::SafeRun::Object            ();
+use Cpanel::Services::Running          ();
+use Cpanel::Yum::Vars                  ();
+use Cpanel::MysqlUtils::ServiceName    ();
+use Cpanel::MysqlUtils::MyCnf::Adjust  ();
+use Whostmgr::Services                 ();
+use Whostmgr::TweakSettings            ();
+use Cpanel::ForkAsync                  ();
+use Cpanel::Wait::Constants            ();
+use Cpanel::ServerTasks                ();    # a sub is overridden later in code so let's load it for safety.
+use Cpanel::Daemonizer::Tiny           ();
+use Cpanel::Install::EA4               ();
+use Cpanel::Install::Utils::Packaged   ();
+use Cpanel::Install::Utils::Logger     ();
+use Cpanel::Install::Utils::Command    ();
+use Cpanel::Install::LetsEncrypt       ();
+use Cpanel::Install::MySQL             ();
+use Cpanel::Install::JobRunner         ();
+use Cpanel::NameServer::Utils::Enabled ();
+use Cpanel::OS                         ();
+use Cpanel::OSSys::Env                 ();
+use Cpanel::Slurper                    ();
+use Cpanel::Resolvers                  ();
+use Cpanel::Systemd                    ();
+
+# These start off as 0 and once they have been deferred they will
+# be set to 1
+my %targets_to_defer_to_after_first_upcp = ( 'sitepublisher' => 0, 'mailman' => 0 );
+my %module_by_type                       = (
+    'MySQL'   => 'Cpanel::Mysql::Install',
+    'MariaDB' => 'Cpanel::MariaDB::Install',
+);
+
+# We only use this file in the installer and we delete it when
+# we are done.
+my $mysql_rpm_download_complete_file = '/var/cpanel/mysql_rpm_download_completed';
+
+my %background_pids;
+my $run_tasks_in_main_process = 0;
+
+Cpanel::Carp::enable();    #make sure fatal results in a backtrace
+
+my $MAIN_PROCESS_PID;
+
+exit __PACKAGE__->script(@ARGV) unless caller();
+
+# loggers helper
+sub INFO ($msg) {
+    return Cpanel::Install::Utils::Logger::INFO($msg);
+}
+
+sub DEBUG ($msg) {
+    return Cpanel::Install::Utils::Logger::DEBUG($msg);
+}
+
+sub WARN ($msg) {
+    return Cpanel::Install::Utils::Logger::WARN($msg);
+}
+
+sub FATAL ($msg) {
+    return Cpanel::Install::Utils::Logger::FATAL($msg);
+}
+
+sub script (@ARGS) {
+
+    if ( !$ENV{'CPANEL_BASE_INSTALL'} ) {
+        die("This program is designed to be run from the cpanel installer. It is probably destructive to run but if you insist, you'll need to set the environment variable CPANEL_BASE_INSTALL=1 before you run it\n");
+    }
+
+    # ensure locale are set
+    local @ENV{qw{LANG LANGUAGE LC_ALL LC_MESSAGES LC_CTYPE}} = qw{C C C C C};
+
+    my $skip_apache     = 0;
+    my $skip_repo_setup = 0;
+    my $installstart    = time();
+
+    my %opts = (
+        'skipapache'    => \$skip_apache,
+        'installstart'  => \$installstart,
+        'skipreposetup' => \$skip_repo_setup,
+    );
+
+    Cpanel::Usage::wrap_options( \@ARGS, \&usage, \%opts );
+
+    #Set this because we also run during sysup which is done as a result of a deferred task
+    #also done during upcp so this is a forever thing that has to be tracked by touchfile
+    touch($Cpanel::ConfigFiles::SKIP_REPO_SETUP_FLAG) if $skip_repo_setup;
+
+    my $lock_file = $Cpanel::ConfigFiles::BASE_INSTALL_IN_PROGRESS_FILE;
+    $| = 1;    ## no critic qw(Variables::RequireLocalizedPunctuationVars)
+    umask 022;
+
+    ## no critic qw(ProhibitStringyEval)
+    # Don't create the END block until run time.
+    $MAIN_PROCESS_PID = $$;
+    eval q{
+        # Cleanup the lock file on exit.
+        END {
+
+            return unless $MAIN_PROCESS_PID && $$ == $MAIN_PROCESS_PID;
+
+            if ( $lock_file and open(my $fh, '<', $lock_file ) ) {
+                my $pid = <$fh>;
+                close $fh;
+
+                chomp $pid if ($pid);
+                if ( !$pid or $pid == $$ ) {
+                    print "Removing $lock_file\n";
+                    unlink $lock_file;
+                }
+            }
+        }
+    };
+    ## use critic qw(ProhibitStringyEval)
+
+    # Create the lock file.
+    touch( $lock_file, $$ );
+
+    # Open the install logs for append.
+    open_logs();
+
+    # case CPANEL-28892:
+    # securetmp cannot run in the background because it has a window of broken-ness for
+    # /tmp where the files are being moved around.
+    INFO('Securing the /tmp and /var/tmp directories.');
+    Cpanel::Install::Utils::Command::ssystem( '/usr/local/cpanel/scripts/securetmp', '--auto', '--install' );
+
+    # Determine local distro and version. Fail if unsupported distro.
+    die q[Unuspported distribution: ] . Cpanel::OS::display_name() unless Cpanel::OS::is_supported();
+
+    # setup /etc/yum/vars/cp_centos_major_version as soon as possible
+    Cpanel::Yum::Vars::install();
+
+    # if you suspect an error from racing tasks, then you can try setting this to 1 to force tasks to run serially.
+    $run_tasks_in_main_process = $ENV{'RUN_TASKS_IN_MAIN_PROCESS'} // 0;
+    INFO("run_tasks_in_main_process=$run_tasks_in_main_process");
+
+    _run_in_background(
+        \&set_up_swap_if_needed,
+        'Setting up SWAP'
+    );
+
+    # Disable fs.protected_regular if it is enabled by default
+    disable_fs_protected_regular_if_needed();
+
+    # Store the initial install version.
+    File::Copy::copy( '/usr/local/cpanel/version', '/var/cpanel/install_version' );
+
+    # Upgrade to cloud linux if licensed via cpanel. Change distro if it updates.
+
+    upgrade_to_cloud_linux();
+
+    # /var/cpanel/cpanel.config probably already exists from updatenow.static, but updatenow and *.static files
+    # are considered daemons and CpConfGuard does not compute dynamic values for daemons.
+    Cpanel::Config::CpConfGuard->new();
+
+    my $installer_dir = Cwd::getcwd();
+
+    # Now software is installed, call rdate in case it couldn't be called earlier.
+    $installstart = update_system_clock($installstart);
+    {
+        # Save the /var/cpanel/cpanel.config and cache file we've been avoiding up to this point.
+        INFO("Setting up /var/cpanel/cpanel.config");
+        local $ENV{CPANEL_BASE_INSTALL} = 0;
+        Cpanel::Config::CpConfGuard::clearcache();
+        Cpanel::Config::LoadCpConf::loadcpconf();
+    }
+
+    # Remember resolv.conf in case its data goes missing:
+    my $resolv_conf = Cpanel::Slurper::read('/etc/resolv.conf');
+
+    # Lowercase the host name if necessary (no need to fork anymore, this is now run by cpanel perl)
+    Cpanel::Sys::Hostname::Modify::make_hostname_lowercase_fqdn();
+
+    # NAT auto-detection/configuration
+    Cpanel::Install::Utils::Command::ssystem('/usr/local/cpanel/scripts/build_cpnat');
+
+    # Check if the hostname resolves - this *must* be done after build_cpnat
+    # so that the resolution checks are performed properly on NAT environments
+    Cpanel::Install::Utils::Command::ssystem( '/usr/local/cpanel/scripts/ensure_hostname_resolves', '-y' );
+
+    # If the resolvers went missing, tell NetworkManager to leave them alone, then put them back:
+    if ( $ENV{CPANEL_BASE_INSTALL} && !Cpanel::Resolvers::fetchresolvers()->@* ) {
+        WARN("The system DNS resolvers went missing when cPanel adjusted the hostname.");
+        if ( Cpanel::OS::networking() eq 'NetworkManager' ) {
+
+            my $nm_conf_file = '/etc/NetworkManager/conf.d/99-cpanel.conf';
+            WARN("Configuring NetworkManager using file “$nm_conf_file”.");
+            Cpanel::Slurper::write( $nm_conf_file, <<'EOF', 0644 );
+[main]
+dns = none
+EOF
+
+            Cpanel::Systemd::systemctl(qw(reload NetworkManager.service));
+            sleep 1;    # give everything time to settle
+        }
+
+        INFO("Restoring previous DNS resolvers.");
+        Cpanel::Slurper::write( '/etc/resolv.conf', $resolv_conf, 0644 );
+        sleep 1;        # give everything time to settle
+    }
+
+    # Import the MySQL key before going to install to avoid conflicts later
+    INFO("Attempting to pre-import the mysql gpg key");
+    Cpanel::Install::MySQL::install_mysql_keys();
+
+    my $mysql_download_pid = _run_in_background(
+        sub {
+            INFO("Downloading MySQL/MariaDB packages");
+            eval { download_mariadb_or_mysql($skip_apache) };
+            if ($@) {
+                WARN("Errors seen pre-caching the database server packages. A second attempt will be made to download it for install");
+            }
+            else {
+                INFO("Completed downloading MySQL/MariaDB packages");
+            }
+            return 0;
+        },
+        'MySQL/MariaDB package Download'
+    );
+
+    if ( !$skip_repo_setup ) {
+        Cpanel::Install::EA4::install_apache_repo();
+    }
+
+    my $ea4_or_universal_hooks_install_pid;
+    if ( Cpanel::Server::Type::is_dnsonly() ) {
+        $ea4_or_universal_hooks_install_pid = _install_yum_universal_hooks_in_background();
+    }
+    elsif ($skip_apache) {
+        WARN("Skipping Apache installation due to command line request");
+    }
+    else {
+        $ea4_or_universal_hooks_install_pid = _install_ea4_in_background();
+    }
+
+    # Setup databases
+    my $dbsetup_pid = _setup_databases_and_dependent_apps($skip_apache);
+
+    # Created /etc/domainips after build_cpnat and hostname
+    Cpanel::DIp::Update::update_dedicated_ips_and_dependencies_or_die();
+
+    # Stop and possibly remove some services
+    disable_and_remove_init_services();
+
+    # Reduce memory pressure as soon as we can
+    Cpanel::Install::Utils::Command::ssystem('/usr/local/cpanel/scripts/vps_optimizer');
+
+    # Make cpanel.pem right away
+    require Cpanel::SSLCerts;
+    Cpanel::SSLCerts::checkForExpiredServiceCrts();
+
+    # Init the package management system, update installed, then run sysup
+    ensure_rpms_installed();
+
+    # Setup default cPanel users;
+    do_taskrun();
+
+    # Update license information ASAP so code can get at it.
+    INFO("Updating license information");
+    Cpanel::Install::Utils::Command::ssystem(qw{/usr/local/cpanel/cpkeyclt});
+
+    # Make touch files corresponding to cpanel.config settings.
+    do_cpanel_config_touch_files();
+
+    if ( -e '/usr/sbin/pwconv' ) {
+        INFO("making sure we are shadowed");
+        Cpanel::Install::Utils::Command::ssystem('/usr/sbin/pwconv');
+    }
+
+    _shutdown_cpanel_services();
+
+    INFO("Making sure the firewall (if present) is setup for cPanel.");
+    Cpanel::Install::Utils::Command::ssystem('/usr/local/cpanel/scripts/configure_firewall_for_cpanel');
+
+    _run_modular_jobs();
+
+    setup_misc_cpanel_config_files();
+
+    setup_exim_config_defaults();
+
+    INFO("Setting up the local name server.");
+    setup_nameserver();
+
+    # make sure dnsadmin is up so we can do dns dcv
+    #
+    mkdir '/var/cpanel/dnsadmin', 0700;
+
+    Cpanel::Install::Utils::Command::ssystem( '/usr/local/cpanel/3rdparty/bin/perl', "/usr/local/cpanel/install/CpanelService.pm" );
+    Cpanel::Install::Utils::Command::ssystem(qw{/usr/local/cpanel/scripts/restartsrv_dnsadmin});
+
+    # warn on failure: do not abort the installation if it fails
+    _run_and_wait_in_background( \&_setup_dns_and_dkim, 'Setup DNS and DKIM', stop_on_failure => 0 );
+
+    _run_tasks_that_can_be_done_after_updatenow_in_the_background();
+
+    _defer_targets();
+
+    INFO("Downloading deferred packages");
+    Cpanel::Install::Utils::Command::ssystem(qw{/usr/local/cpanel/scripts/check_cpanel_pkgs --fix --no-broken --no-digest --download-only});
+
+    if ($ea4_or_universal_hooks_install_pid) {
+
+        # Apache needs to be installed before upcp
+        _wait_for_background_tasks_to_finish($ea4_or_universal_hooks_install_pid);
+    }
+
+    _run_webserver_post_install_and_ssl_cert_check_in_background();
+
+    INFO("Installing deferred packages");
+    Cpanel::Install::Utils::Command::ssystem(qw{/usr/local/cpanel/scripts/check_cpanel_pkgs --fix --no-broken --no-digest});
+
+    setup_ftpserver();
+
+    INFO("Waiting for MySQL/MariaDB installation to complete");
+    _wait_for_background_tasks_to_finish($dbsetup_pid);
+    INFO("Finished waiting for MySQL/MariaDB installation to complete");
+
+    _run_tasks_that_must_wait_until_deferred_are_installed();
+
+    Cpanel::Install::Utils::Command::ssystem('/usr/local/cpanel/scripts/ensure_crontab_permissions');
+
+    # Run upcp for the first time.
+    # NOTE: This will start cpanellogd.
+    INFO(" ");
+    INFO(" ");
+    INFO("Running upcp for the first time.");
+    INFO(" ");
+    INFO(" ");
+
+    # upcp will link 3rdparty binaries
+    Cpanel::Install::Utils::Command::ssystem(qw{/usr/local/cpanel/scripts/upcp manual});    # --force should not be needed
+
+    _install_deferred_targets();
+
+    if ( !Cpanel::Server::Type::is_dnsonly() ) {                                            # Fix for broken mailman installer ( still needed )
+        Cpanel::Install::Utils::Command::ssystem( '/usr/local/cpanel/scripts/set_mailman_archive_perms', '--background' );
+    }
+
+    schdir($installer_dir);
+
+    # Restore any staged cpanel accounts
+    cpanel_account_restore();
+
+    my $howto = get_howto();
+
+    my $boot_kernel = eval { Cpanel::Kernel::GetDefault::get() };
+    $boot_kernel = '' unless defined $boot_kernel;
+    WARN($@) if $@;
+
+    # Tailwatchd should be started from the queue
+    # to avoid a race condition where its already in the queue
+    # and we try to start it.
+    #
+    # Previously we would start tailwatchd after
+    # flushing the task queue which lead to a race
+    # condition where the task queue might start it
+    # and then restartsrv would try as well.  The one
+    # that lost the race would error.  By putting it
+    # in the queue we ensure we only do it once.
+
+    # CPANEL-26289: Ensure locales are the first thing we do in the background
+    # after the install finshes to preserve legacy behavior
+    _schedule_task( 'LocaleTasks' => "build_locale_databases", 20 );
+
+    _schedule_task( 'TailwatchTasks'    => 'reloadtailwatch',           200 );
+    _schedule_task( 'SpamassassinTasks' => 'update_spamassassin_rules', 3000 );
+
+    INFO("Queuing system package update");
+    _schedule_task( 'API'              => "verify_api_spec_files",     2000 );
+    _schedule_task( 'MaintenanceTasks' => 'run_system_package_update', 1000 );    #rpmup
+
+    # ensure_rpms_installed will only install the most critical
+    # rpms because sysup limits the number of rpms that
+    # are installed during CPANEL_BASE_INSTALL=1 to ensure we can
+    # move on as fast as possible.
+    # Since users have come to expect some rpms will
+    # be preinstalled on cPanel systems we do these in the
+    # background.
+    _schedule_task( 'MaintenanceTasks' => 'run_base_package_update', 700 );    #sysup
+
+    _schedule_task( 'TemplateTasks' => "rebuild_templates",                             500 );
+    _schedule_task( 'cPAddons'      => "install_cpaddons",                              100 );
+    _schedule_task( 'ScriptTasks'   => "run_script /usr/local/cpanel/scripts/mailperm", 3500 );
+
+    # Do this last as its of low importance since we won't have enough accounts on the system
+    # soon enough for it to matter
+    _schedule_task( 'ScriptTasks' => 'run_script /usr/local/cpanel/scripts/find_outdated_services --auto', 3600 );
+
+    # Remove any unneeded rpms that could not be removed during this install
+    # in order to prevent a condition where we see : Error: Rpmdb changed underneath us
+    _schedule_task( 'ScriptTasks' => 'run_script /usr/local/cpanel/scripts/check_cpanel_pkgs --fix --no-digest --no-broken', 2000 );
+
+    # CPANEL-26871: ensure httpd.conf is rebuilt once splitlogs has been installed
+    # in the upcp
+    warn if !eval { Cpanel::ServerTasks::queue_task( ['ApacheTasks'], 'build_apache_conf', 'apache_restart' ); 1 };
+
+    # Do not defer this. We need this in place before the first login.
+    Cpanel::Install::Utils::Command::ssystem(qw{/usr/local/cpanel/scripts/install_cpanel_analytics});
+
+    # CPANEL-27822: defer checks of spamd for 30 minutes since the latest rules
+    # will be installed in the background
+    Cpanel::Chkservd::Tiny::suspend_service( 'spamd', 60 * 30 );
+    _schedule_task( 'CpServicesTasks' => "restartsrv spamd", 1 );
+
+    # Install ImunifyAV if it's available for this platform
+    _schedule_task( 'ImunifyTasks' => 'install_imunifyav', 900 );
+
+    # Some WP Toolkit packages still use SHA1 signatures
+    ensure_crypto_policy_has_sha1();
+
+    # Install WP Toolkit
+    _schedule_task( 'WPTK' => 'install_wptk', 1200 );
+
+    _wait_for_background_tasks_to_finish( keys %background_pids );
+
+    # This will attempt to clear the task queue prior to system shutdown.
+    if ( -e '/usr/bin/systemctl' ) {
+        INFO("Enabling one-time shutdown hook");
+        Cpanel::Install::Utils::Command::ssystem( '/usr/bin/systemctl', 'start', 'cpcleartaskqueue' );
+    }
+
+    INFO("Flushing the task queue");
+
+    # Queueprocd will start tailwatchd
+    run_final_tasks_in_background_that_can_be_done_later_if_shutdown_now();
+
+    my $finishtime        = time();
+    my $installtime       = $finishtime - $installstart;
+    my $installfinishtime = localtime($finishtime);
+
+    INFO( sprintf( "cPanel install finished in %d minutes and %d seconds!", int( $installtime / 60 ), $installtime % 60 ) );
+
+    display_howto($howto);
+
+    # Check if the kernel set for boot matches what's currently running (uname -r)
+    notify_if_boot_kernel_changed($boot_kernel);
+
+    save_system_config_at_install_for_analytics();
+
+    if ( -x '/root/cpanel_profile/postinstallhook' ) {
+        INFO("Running /root/cpanel_profile/postinstallhook");
+        Cpanel::Install::Utils::Command::ssystem('/root/cpanel_profile/postinstallhook');
+    }
+
+    return 0;
+}
+
+sub _schedule_task ( $plugin, $task, $delay = 120 ) {
+
+    die q[Invalid plugin name] if ref $plugin;
+    die qq[invalid task name $task] if $task =~ m{^\d+$}a;
+    die qq[invalid delay '$delay' for task $task] unless $delay =~ m{^\d+$}a;
+
+    INFO("schedule_task: [ $plugin ], $task in $delay seconds.");
+    warn unless eval { Cpanel::ServerTasks::schedule_task( [$plugin], $delay, $task ); 1 };
+
+    return;
+}
+
+### ---- END sub script ---- ####
+
+sub schdir {
+    my $dir = shift;
+    my $cwd = Cwd::getcwd();
+    chdir($dir) || die "Cannot chdir to ${dir} ($!), cwd was: $cwd";
+
+    return;
+}
+
+sub _run_modular_jobs {
+    my $runner = Cpanel::Install::JobRunner->new();
+    $runner->dispatch_next() while $runner->get_pending_jobs();
+
+    return;
+}
+
+# NOTE : This code is duplicated in build-tools/bootstrap_sandbox . If you change this, you probably need to change it there as well.
+sub disable_fs_protected_regular_if_needed {
+
+    return unless Cpanel::OS::kernel_supports_fs_protected_regular();
+
+    my $current_value = Cpanel::SafeRun::Object->new( 'program' => "/usr/sbin/sysctl", 'args' => [ '-b', 'fs.protected_regular' ] )->stdout();
+
+    # Assume that fs.regular_fifos could also be enabled, so disable them now..
+    unless ( length $current_value && $current_value eq 0 ) {
+        Cpanel::Install::Utils::Command::ssystem( '/usr/sbin/sysctl', 'fs.protected_regular=0' );
+        Cpanel::Install::Utils::Command::ssystem( '/usr/sbin/sysctl', 'fs.protected_fifos=0' );
+    }
+
+    # .. and ensure they stay disabled on reboot
+    my $sysctl_conf_path = '/usr/lib/sysctl.d/protect-links.conf';
+
+    if ( open( my $sysctl_conf_rd_fh, '<', $sysctl_conf_path ) ) {
+        my @file_contents = (<$sysctl_conf_rd_fh>);
+        close($sysctl_conf_rd_fh);
+
+        if ( open( my $sysctl_conf_wr_fh, '>', $sysctl_conf_path ) ) {
+            foreach my $line (@file_contents) {
+                chomp $line;
+                if ( $line =~ m/^fs\.protected_regular/ ) {
+                    print $sysctl_conf_wr_fh "fs.protected_regular = 0\n";
+                }
+                elsif ( $line =~ m/^fs\.protected_fifos/ ) {
+                    print $sysctl_conf_wr_fh "fs.protected_fifos = 0\n";
+                }
+                else {
+                    print $sysctl_conf_wr_fh "$line\n";
+                }
+            }
+            close($sysctl_conf_wr_fh);
+        }
+    }
+    return;
+}
+
+sub ensure_rpms_installed {
+
+    unlink '/var/cpanel/useyum';    # No longer used by cPanel.
+
+    # Assure yum exclusions are reinstated
+    unlink '/etc/checkyumdisable';
+
+    # We do not need to run sysup since its run as part of Cpanel::Update::Now
+    return;
+}
+
+sub ensure_crypto_policy_has_sha1 {
+
+    if ( Cpanel::OS::crypto_policy_needs_sha1() ) {
+        Cpanel::Install::Utils::Command::ssystem( Cpanel::OS::bin_update_crypto_policies(), '--set', 'DEFAULT:SHA1' );
+    }
+
+    return;
+}
+
+sub update_system_clock {
+    my $installstart = shift;
+
+    # Set the clock
+    my $was = time();
+    Cpanel::Install::Utils::Command::ssystem('/usr/local/cpanel/scripts/rdate');
+    my $now = time();
+    INFO( "Clock set to: " . localtime($now) );
+    my $change = $now - $was;
+
+    # Adjust the start time if it shifted more than 10 seconds.
+    if ( abs($change) > 10 ) {
+        WARN("Clock changed by $change seconds.");
+        $installstart += $change;
+        WARN( "Starting time adjusted to " . localtime($installstart) );
+    }
+    else {
+        INFO("Clock changed by $change seconds");
+    }
+
+    return $installstart;
+}
+
+sub set_up_swap_if_needed {
+    INFO('Checking for sufficient memory or swap.');
+
+    return if Cpanel::OSSys::Env::get_envtype() eq 'virtuozzo';
+
+    Cpanel::Install::Utils::Command::ssystem(qw{/usr/local/cpanel/bin/create-swap --if-needed --verbose});
+
+    return;
+}
+
+sub _early_install_tasks {
+    return qw{
+      Repos FixPamConf MailMan DefaultFeatureFiles
+      Users Conf ExternalAuth CPanelPost
+      ResellersInit FixLogPermissions Perm SecurityCheck
+    };
+}
+
+sub do_taskrun {
+    INFO('Setting up early taskrun items.');
+
+    foreach my $task ( _early_install_tasks() ) {
+        Cpanel::Install::Utils::Command::ssystem( '/usr/local/cpanel/3rdparty/bin/perl', "/usr/local/cpanel/install/$task.pm" );
+    }
+
+    Cpanel::Install::Utils::Command::ssystem(qw{/usr/local/cpanel/scripts/restartsrv_dnsadmin  --stop --notconfigured-ok});
+    Cpanel::Install::Utils::Command::ssystem(qw{/usr/local/cpanel/scripts/restartsrv_dnsadmin  --start});
+
+    return;
+}
+
+sub download_mariadb_or_mysql {
+    my ($skip_apache) = @_;
+
+    # If download_mariadb_or_mysql dies this is ok as it will only slow
+    # down the install since we retry the download during the install
+    my $finally = Cpanel::Finally->new(
+        sub {
+            Cpanel::FileUtils::TouchFile::touchfile($mysql_rpm_download_complete_file);
+        }
+    );
+
+    local $ENV{CPANEL_BASE_INSTALL} = 0;    # build_mysql_conf will exit if this is 1 to prevent double rebuilds
+    my $set_version = _get_mysql_set_version();
+
+    # We don't need to do this for MySQL 5.6 and below
+    return 1 if ( $set_version < 5.7 );
+
+    my $install_obj = _create_mysqldb_install_obj($set_version);
+
+    INFO("Preparing to download MySQL/MariaDB packages");
+
+    # Work around race condition where the mysql download starts before ea4 install
+    # by waiting for ea4 to have profiles in place in order to avoid
+    # the state where the mysql download blocks ea4 from installing via yum lock
+    _wait_for_ea4_profiles_to_be_installed() if !$skip_apache && !Cpanel::Server::Type::is_dnsonly();
+
+    INFO("Starting MySQL/MariaDB package download");
+    $install_obj->download_pkgs($set_version);
+
+    return 1;
+}
+
+sub install_mariadb_or_mysql {
+    my ($skip_apache) = @_;
+    local $ENV{CPANEL_BASE_INSTALL} = 0;    # build_mysql_conf will exit if this is 1 to prevent double rebuilds
+    my $set_version = _get_mysql_set_version();
+    INFO("The 'mysql-version' key is set to: $set_version.");
+    my $type = _get_mysql_type($set_version);
+
+    my $install_obj = _create_mysqldb_install_obj($set_version);
+    if ( Cpanel::OS::db_needs_preseed() && !Cpanel::MariaDB::version_is_mariadb($set_version) ) {
+        my $preseed_path = $install_obj->write_preseed_file($set_version);
+        $install_obj->preseed_configuration($preseed_path);
+    }
+
+    return _do_mysqlbase_db_install( $type, $set_version, $install_obj, $skip_apache );
+}
+
+sub _do_mysqlbase_db_install {
+    my ( $type, $set_version, $install_obj, $skip_apache ) = @_;
+
+    if ($set_version) {
+        INFO("Installing $type");
+
+        INFO("Installing $type dependencies");
+        if ( $set_version < 5.7 ) {
+
+            # Deps will be installed automatically if
+            # we are using yum repos so there is no need
+            # to do a separate yum transaction which only
+            # slows things down
+            $install_obj->install_known_deps($set_version);
+        }
+        else {
+            INFO("Installing $type packages");
+
+            _wait_for_mysql_to_be_downloaded();
+            _wait_for_ea4_to_be_installed() if !$skip_apache && !Cpanel::Server::Type::is_dnsonly();
+
+            # A dry-run is pointless since we have not installed
+            # $type before
+            $install_obj->install_pkgs_without_dry_run($set_version);
+
+            # Needs the file /etc/apparmor.d/usr.sbin.mysqld in place (by installing mysql package), so this must be done after installing the packages
+            if ( Cpanel::OS::security_service() eq 'apparmor' ) {
+                $install_obj->configure_apparmor();
+            }
+        }
+    }
+
+    if ( -e '/var/run/mysqld/mysqld.sock' && !-e '/var/lib/mysql/mysql.sock' ) {
+        symlink( '/var/run/mysqld/mysqld.sock', '/var/lib/mysql/mysql.sock' );
+    }
+
+    INFO("Installing $type Upgrade Hooks");
+    $install_obj->install_upgrade_hook();
+
+    return;
+}
+
+sub _get_mysql_set_version {
+    my $config = scalar Cpanel::Config::LoadCpConf::loadcpconf_not_copy();
+    return $config->{'mysql-version'};
+}
+
+sub _get_mysql_type {
+    my ($set_version) = @_;
+    return Cpanel::MariaDB::version_is_mariadb($set_version) ? 'MariaDB' : 'MySQL';
+
+}
+
+sub _create_mysqldb_install_obj {
+    my ($set_version) = @_;
+    INFO("The 'mysql-version' key is set to: $set_version.");
+    my $type         = _get_mysql_type($set_version);
+    my $pass_version = $set_version >= 5.7 ? $set_version : undef;
+    my $module       = $module_by_type{$type} or die "Failed to determine module from type: “$type”";
+    Cpanel::LoadModule::load_perl_module($module);
+    return "$module"->new(
+        'output_obj'            => Cpanel::Install::Utils::Logger::get_output_obj(),
+        'skip_build_mysql_conf' => 1,
+
+        # For 5.7+ we no longer have any targets in etc/rpm.versions
+        # so lets not block rpm to do nothing as it slows down the
+        # whole install
+        ( $set_version >= 5.7 ? ( 'skip_ensure_rpms' => 1 ) : () )
+    );
+}
+
+sub run_roundcube_ifnecessary {
+
+    return unless my $v = Cpanel::Pkgr::get_package_version('cpanel-roundcubemail');
+
+    local $ENV{'CPANEL_ROUNDCUBE_INSTALL_VERSION'} = $v;
+    INFO('Running /usr/local/cpanel/bin/update-roundcube-db');
+    Cpanel::Install::Utils::Command::ssystem(qw{/usr/local/cpanel/bin/update-roundcube-db});
+    INFO('/usr/local/cpanel/bin/update-roundcube-db Done');
+    return;
+}
+
+sub setup_openidconnect_for_cpanelid() {
+
+    INFO("Setup cPanelID");
+
+    # In CPANEL-28178 we fixed cPanelID.pm to observe the SUPER's return of
+    # undef when the underlying configuration was missing.  This now makes
+    # is_configured return the correct result which allows us to fix the
+    # missing config.
+    require Cpanel::Security::Authn::OpenIdConnect;
+    my $provider = Cpanel::Security::Authn::OpenIdConnect::get_openid_provider( 'cpaneld', 'cpanelid' );
+    if ( !$provider->is_configured() ) {
+        $provider->set_client_configuration( { 'client_id' => 'auto', 'client_secret' => 'auto' } );
+    }
+
+    return;
+}
+
+sub _setup_databases_and_dependent_apps {
+    my ($skip_apache) = @_;
+    return _run_in_background(
+        sub {
+            my $finally;
+
+            # Defer this
+            use warnings qw(once redefine);
+            my $restoreconpath = '/usr/sbin/restorecon';
+            if ( -l $restoreconpath ) {
+                my $target = readlink($restoreconpath);
+
+                # This is a hack to avoid modifing the mysql rpms
+                # which is only safe since we are doing a base cPanel install
+                # and require selinux to be disabled anyways.
+                #
+                # Prevent the installer from calling restorecon
+                # during mysql install since we have selinux disabled
+                # and this causes a stall.  We put restorecon back
+                # after the mysql parts are done
+                unlink($restoreconpath);
+                $finally = Cpanel::Finally->new(
+                    sub {
+                        symlink( $target, $restoreconpath ) or die "Failed to restore $restoreconpath link to $target: $!";
+                    }
+                );
+
+            }
+
+            # Install MariaDB or a version of Mysql 5.7+ if necessary.
+            install_mariadb_or_mysql($skip_apache);
+
+            # Do this before starting mysql
+            {
+                # Avoid doing anything that requires mysql to be running
+                Cpanel::MysqlUtils::MyCnf::Adjust::auto_adjust(
+                    {
+                        'force'      => 1,
+                        'debug'      => 0,
+                        'verbose'    => 1,
+                        'no-restart' => 1,
+                    }
+                );
+            }
+
+            Cpanel::Install::Utils::Command::ssystem('/usr/local/cpanel/scripts/update_mysql_systemd_config');
+
+            Cpanel::Install::Utils::Command::ssystem(qw{/usr/local/cpanel/bin/build_mysql_conf --no-upgrade --no-selinux});
+
+            # Run scripts/securemysql is no longer needed
+            # since all yum based installed call build_mysql_conf
+            # which will do this
+
+            Cpanel::Init::Simple::call_cpservice_with( Cpanel::MysqlUtils::ServiceName::get_installed_version_service_name() => qw/enable/ );
+
+            undef $finally;
+
+            Cpanel::Chkservd::Manage::enable('mysql');
+
+            return 0;
+        },
+        'SQL Databases and dependent apps'
+    );
+}
+
+sub upgrade_to_cloud_linux {
+    DEBUG("Detecting if Cloud Linux is licensed through cpanel");
+
+    # Assure local::lib to /usr/bin/perl so perl modules can be installed to home directories.
+    # upcp now does this
+
+    my $license_options = `/usr/local/cpanel/cpanel -F`;    ## no critic qw(Cpanel::ProhibitQxAndBackticks)
+    return if $license_options !~ m/cloudlinux/ms;
+
+    my $cloud_installer = '/usr/local/cpanel/bin/cloudlinux_update';
+    INFO("Upgrading your distro to Cloud Linux");
+    if ( !-x $cloud_installer ) {
+        WARN("Cannot convert your system to Cloud Linux without $cloud_installer");
+    }
+    else {
+        Cpanel::Install::Utils::Command::ssystem($cloud_installer);
+        Cpanel::OS::clear_cache_after_cloudlinux_update();                                                   #
+        die q[Unuspported distribution: ] . Cpanel::OS::display_name() unless Cpanel::OS::is_supported();    # make sure the new version is supported
+    }
+
+    # Re-check system to make sure we haven't moved to cloud linux
+    return;
+}
+
+sub setup_ftpserver {
+
+    my $config = scalar Cpanel::Config::LoadCpConf::loadcpconf();
+
+    # Setup the FTP server. Default to disabled
+
+    my $target = $config->{'ftpserver'} || 'disabled';
+    $target = 'disabled' if ( Cpanel::Server::Type::is_dnsonly() );    # DNSONLY installs cannot set a custom ftp server.
+
+    Cpanel::Install::Utils::Logger::INFO("Setting up FTP server to '$target'");
+    if ( $target !~ m/^(disabled|proftpd|pure-ftpd)$/ ) {
+        Cpanel::Install::Utils::Logger::WARN("$target is an unsupported ftpserver. Will default to 'disabled' instead");
+        $target = 'disabled';
+    }
+
+    my $no_anon_ftp = '/var/cpanel/noanonftp';
+    if ( !-e $no_anon_ftp && $target ne 'disabled' ) {
+        Cpanel::Install::Utils::Logger::INFO('Defaulting Anonymous FTP off');
+        Cpanel::FileUtils::TouchFile::touchfile('/var/cpanel/noanonftp');    # Default
+    }
+
+    Cpanel::Install::Utils::Command::ssystem( '/usr/local/cpanel/scripts/setupftpserver', $target );
+
+    return;
+}
+
+sub setup_nameserver {
+
+    my $config = scalar Cpanel::Config::LoadCpConf::loadcpconf();
+
+    # Setup the name server. Default to PowerDNS
+    {
+        # powerdns should be the default everywhere unless another choice was set
+        my $default_nameserver = Cpanel::OS::list_contains_value( 'dns_supported', 'powerdns' ) ? 'powerdns'    #
+          : Cpanel::OS::list_contains_value( 'dns_supported', 'bind' ) ? 'bind'
+          : 'disabled'                                                                                          #
+          ;
+
+        my $target = $config->{'local_nameserver_type'} || $default_nameserver;
+        INFO("Setting up name server to '$target'");
+
+        # Make sure the nameserver can be installed on the system
+        my ( $valid, $reason ) = Cpanel::NameServer::Utils::Enabled::valid_nameserver_type($target);
+        if ( !$valid ) {
+            my $fallback = $target ne $default_nameserver ? $default_nameserver : 'disabled';
+            WARN("$target cannot be setup on your system (will default to '$fallback' instead): $reason");
+            $target = $fallback;
+            ( $valid, $reason ) = Cpanel::NameServer::Utils::Enabled::valid_nameserver_type($target);
+            FATAL("$target is an unsupported name server: $reason.") unless $valid;
+        }
+
+        # The name server must be set up before attempting to reset it to cPanel defaults.
+        Cpanel::Install::Utils::Command::ssystem( '/usr/local/cpanel/scripts/setupnameserver', '--force', $target );
+
+        if ( $target =~ m/^(bind|powerdns)$/ ) {
+            if ( -e '/etc/named.conf' ) {
+                INFO("Saving /etc/named.conf, and rebuild with cPanel defaults");
+                if ( rename '/etc/named.conf', '/etc/named.conf.precpanelinstall' ) {
+                    Cpanel::Install::Utils::Command::ssystem('/usr/local/cpanel/scripts/rebuilddnsconfig');
+                }
+                else {
+                    WARN("Unable to rebuild /etc/named.conf file");
+                }
+            }
+        }
+
+    }
+
+    # Setup the mail server.
+    {
+        my $target = $config->{'mailserver'};
+        $target = 'disabled' if ( Cpanel::Server::Type::is_dnsonly() );    # DNSONLY installs cannot set a custom mail server.
+
+        INFO("Setting up mail server to '$target'");
+        if ( $target !~ m/^(disabled|dovecot)$/ ) {
+            WARN("$target is an unsupported mail server. Will default to 'dovecot' instead");
+            $target = 'dovecot';
+        }
+        Cpanel::Install::Utils::Command::ssystem( '/usr/local/cpanel/scripts/setupmailserver', $target );
+    }
+
+    return;
+}
+
+sub setup_misc_cpanel_config_files {
+
+    INFO('Setting up misc cPanel config files.');
+
+    # FB Case about running this out of maintenance and into the install script
+    DEBUG('  Running scripts/secureit');
+    Cpanel::Install::Utils::Command::ssystem( '/usr/local/cpanel/scripts/secureit', '--fast' );
+
+    # rc.local is not run with systemd.
+    if ( Cpanel::OS::service_manager() eq 'initd' ) {
+
+        # sync time on reboot.
+        my $rc_local = '/etc/rc.d/rc.local';
+        DEBUG('  Configuring rdate to run on reboot');
+        if ( open my $rc_fh, '>>', $rc_local ) {
+            print {$rc_fh} "/usr/local/cpanel/scripts/rdate &\n";
+            close $rc_fh;
+        }
+    }
+
+    DEBUG('  Setting WHM theme to x');
+    Cpanel::FileUtils::Write::overwrite( '/var/cpanel/whmtheme', 'x', 0644 );
+
+    # can be missing on some systems
+    Cpanel::FileUtils::TouchFile::touchfile('/etc/fstab');
+
+    DEBUG("Setup /var/cpanel/user_notifications/");
+    mkdir '/var/cpanel/user_notifications/', 0751;
+
+    return;
+}
+
+sub setup_exim_config_defaults {
+
+    INFO('Setting up exim default configuration options.');
+
+    # Load the initial config, if the config file exists,
+    # if it does not exist, start with an empty hash.
+    my $initial_config = Cpanel::Config::LoadConfig::loadConfig( '/etc/exim.conf.localopts', undef, "=", undef, undef, 1 );
+    $initial_config ||= {};
+
+    # Get all the initial config values that are not undefs
+    my %config = map { $_ => $initial_config->{$_} }
+      grep { defined $initial_config->{$_} }
+      keys %{$initial_config};
+
+    # Fill the config with default values for any we don't already have
+    # We don't want to step on any values already setup in the config file
+    Whostmgr::TweakSettings::load_module('Mail');
+    my $mail_conf;
+    {
+        no warnings 'once';
+        $mail_conf = Whostmgr::TweakSettings::Mail::get_conf();    # PPI NO PARSE - loaded with load_module
+    }
+
+    # Once Whostmgr::TweakSettings::Configure::Mail implements a save
+    # function we can get rid of this and just use the save via
+    # Whostmgr::TweakSettings::apply_module_settings
+    foreach my $key ( sort keys %{$mail_conf} ) {
+
+        # Don't overwrite initial values
+        next if exists $config{$key};
+
+        my $section;
+        {
+            no warnings 'once';
+            $section = $Whostmgr::TweakSettings::Mail::Conf{$key};
+        }
+        next unless exists $section->{'default'};
+
+        # Start with the default value
+        my $value = $section->{'default'};
+
+        # Execute if it is a code ref rather than an actual value
+        $value = $value->() if ref $value eq 'CODE';
+
+        $config{$key} = $value;
+
+        # Some of these have actions to trigger creation of touch-files or symlinks
+        # See that the action gets run
+        if ( exists $section->{'action'} and ref $section->{'action'} eq 'CODE' ) {
+
+            # Pass the value as both the new value and the old value since this is to
+            # be the initial value and we don't want to trigger running updateuserdomains multiple times
+            $section->{'action'}->( $value, $value );
+        }
+    }
+
+    # Write out all settings
+    my $rc = Cpanel::Config::FlushConfig::flushConfig( '/etc/exim.conf.localopts', \%config, undef, undef, { 'sort' => 1 } );
+    WARN('Error writing exim default configuration options to:  /etc/exim.conf.localopts') unless $rc;
+
+    return;
+}
+
+sub os_service_restart {
+    my $service = shift or die;
+
+    DEBUG("Restarting service $service");
+    Cpanel::Init::Simple::call_cpservice_with( $service => qw/restart/ );
+
+    return;
+}
+
+sub cpanel_account_restore {
+    my $acct_restore_file = '/etc/cpanelacctrestore';
+    return if ( !-e $acct_restore_file );
+
+    INFO("Restoring Accounts.");
+    sleep(2);
+
+    if ( open( my $fh, '<', $acct_restore_file ) ) {
+        while (<$fh>) {
+            s/\n//g;
+            DEBUG("Restoring $_");
+            Cpanel::Install::Utils::Command::ssystem( "/usr/local/cpanel/scripts/restorepkg", "$_" );
+        }
+        close($fh);
+    }
+    else {
+        WARN("Failed to open $acct_restore_file: $!");
+    }
+
+    return unlink($acct_restore_file);
+}
+
+sub enable_cphulkd {
+    my $conf_dir = '/var/cpanel/hulkd';
+
+    INFO("Enabling cphulkd ...");
+    mkdir "$conf_dir", 0755 unless -e "$conf_dir";
+
+    if ( Whostmgr::Services::enable('cphulkd') ) {
+
+        # Set up monitoring by default.
+        Cpanel::Chkservd::Manage::enable('cphulkd');
+        INFO("Done");
+    }
+    else {
+        WARN("Unable to enable cphulkd");
+    }
+
+    return;
+}
+
+sub enable_quotas {
+    INFO("Enabling quotas ...");
+
+    my $old_umask = umask(0077);    # Case 92381: Logs should not be world-readable.
+    open( my $fh, ">", _enable_quotas_log() ) || WARN("Unable to open log file for enabling quotas.");
+    umask($old_umask);
+
+    my $quotas_run = Cpanel::SafeRun::Object->new(
+        program => "/usr/local/cpanel/scripts/fixquotas",
+        stdout  => $fh,
+        stderr  => $fh,
+    );
+
+    my $needs_reboot = Cpanel::Quota::Utils::reboot_required();
+    WARN( $quotas_run->autopsy() ) if !$needs_reboot && $quotas_run->CHILD_ERROR();
+
+    if ($needs_reboot) {
+        WARN("You must reboot the server after you enable quotas.");
+    }
+
+    INFO("Done");
+
+    return;
+}
+
+sub hide_feature_showcase {
+    INFO("Disabling feature showcase ...");
+
+    my $drivers  = Cpanel::Config::ConfigObj::get_available_drivers( 1, 1 );
+    my $showcase = Cpanel::FeatureShowcase->new();
+    my @features = $showcase->get_feature_showcase_names();
+    push @features, keys %{$drivers};
+
+    return unless scalar @features;
+
+    $showcase->mark_features_as_viewed( $Cpanel::FeatureShowcase::SOURCE_GUI, @features );
+
+    INFO("Done");
+
+    return;
+}
+
+sub _enable_quotas_log {
+    return "/var/log/quota_enable.log";
+}
+
+sub notify_if_boot_kernel_changed {
+
+    my $boot_kernel = shift;
+
+    my $current_kernel = Cpanel::Kernel::get_running_version();
+    $current_kernel = '' unless defined $current_kernel;
+    return if $current_kernel eq $boot_kernel;
+
+    WARN("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
+    WARN("Your system kernel may have been updated.");
+    WARN("Current kernel ($current_kernel) has been changed to: $boot_kernel");
+    WARN("Before rebooting the system, please ensure that the installed kernel version is compatible with your deployment.");
+    if ( Cpanel::OS::is_cloudlinux() ) {
+        WARN(" ");
+        WARN(" ************************************************************************************************************");
+        WARN(" ");
+        WARN("   NOTE: Because this is a Cloud Linux install, cPanel WILL NOT BE FULLY FUNCTIONAL until you reboot. ");
+        WARN(" ");
+        WARN(" ************************************************************************************************************");
+        WARN(" ");
+    }
+    WARN("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
+
+    return;
+}
+
+sub open_logs {
+    my $log_file = '/var/log/cpanel-install.log';
+    $ENV{'TZ'} = Cpanel::Timezones::calculate_TZ_env();
+    Cpanel::Install::Utils::Logger::init($log_file);
+    return;
+}
+
+sub os_service_stop {
+    my $service = shift or die;
+
+    DEBUG("Ensuring service $service is not running");
+    local $@;
+
+    # Do not warn since many of these may not be installed
+    eval {
+        local $SIG{'__WARN__'} = sub { return; };
+        Cpanel::Init::Simple::call_cpservice_with( $service => qw/stop/ );
+    };
+
+    # Even if the init script doesn't exist, try to kill the service.
+    if ( Cpanel::Install::Utils::Command::ssystem( 'killall', '-q', $service ) == 0 ) {
+        Cpanel::Install::Utils::Command::ssystem( 'killall', '-q', '-9', $service );
+        DEBUG("Killed $service");
+    }
+
+    return;
+}
+
+sub touch {    ## no critic qw(RequireArgUnpacking)
+    my $file = shift;
+
+    open( my $fh, ">>", $file ) or return;
+    print {$fh} '';    # Must send something to the file or it doesn't save
+
+    foreach my $line (@_) {    # concat anything passed into the subroutine.
+        print {$fh} $line;
+    }
+    close $fh;
+
+    return;
+}
+
+sub usage {
+    my $prog = $0;
+    $prog =~ s{^.+/(.+)$}{$1};
+    print "This script should not be called manually.\n";
+    exit;                      ## no critic qw(Cpanel::NoExitsFromSubroutines) -- pre-existing code; protects against manual invocation
+}
+
+sub disable_and_remove_init_services {
+    INFO("Disabling unneeded services...");
+
+    my @service_shutdown = qw(named);
+    push @service_shutdown, qw(smail sendmail postfix master httpd apache wu-ftpd inetd)
+      if ( !Cpanel::Server::Type::is_dnsonly() );
+
+    Cpanel::NSCD::Log::disable_logging();
+
+    INFO("Stopping services:");
+    foreach my $service (@service_shutdown) {
+        os_service_stop($service);
+    }
+
+    # p0f should be disabled on new installs
+    Whostmgr::Services::disable('p0f');
+
+    return;
+}
+
+sub get_howto {
+    my $version = '';
+
+    if ( open( my $fh, "<", "/usr/local/cpanel/version" ) ) {
+        $version = <$fh>;
+        $version =~ s/^(\d+\.\d+).*/$1/gs;
+    }
+
+    my $map = {
+        version => $version,
+        ip      => _get_public_ip(),
+    };
+
+    return _howto_message($map);
+}
+
+sub display_howto {
+    my ($howto) = @_;
+    foreach my $line ( split( "\n", $howto ) ) {
+        INFO($line);
+    }
+
+    return;
+}
+
+sub save_system_config_at_install_for_analytics {
+    my $data = {
+        'hostname' => '',
+        ## Add more data here
+    };
+
+    eval {
+        require Cpanel::JSON;
+        require Cpanel::Analytics;
+        require Cpanel::Sys::Hostname;
+        require Cpanel::Analytics::Config;
+
+        $data->{'hostname'} = Cpanel::Sys::Hostname::gethostname(1);
+
+        Cpanel::Analytics::prerequisites();
+        Cpanel::JSON::DumpFile( Cpanel::Analytics::Config::ANALYTICS_DATA_DIR() . '/system_config_at_install.json', $data );
+    };
+
+    return;
+}
+
+sub _howto_message {
+    my $map = shift;
+
+    my $login_url = Cpanel::SafeRun::Object->new( 'program' => "/usr/local/cpanel/scripts/whmlogin" )->stdout();
+    chomp $login_url;
+
+    return <<EOM;
+\e[0;36;40mCongratulations! Your installation of cPanel & WHM $map->{version} is now complete. The next step is to configure your server. \e[0m
+
+Before you configure your server, ensure that your firewall allows access on port 2087.
+
+After ensuring that your firewall allows access on port 2087, you can configure your server.
+
+1. Open your preferred browser
+
+2. Navigate to the following url using the address bar and enter this one-time autologin url:
+
+$login_url
+
+After the login url expires you generate a new one using the 'whmlogin' command or manually login at:
+
+https://$map->{ip}:2087
+
+Visit https://go.cpanel.net/whminit for more information about first-time configuration of your server.
+
+Visit http://support.cpanel.net or https://go.cpanel.net/allfaq for additional support
+
+Thank you for installing cPanel & WHM $map->{version}!
+
+EOM
+}
+
+sub _get_public_ip {
+    require Cpanel::DIp::MainIP;
+    require Cpanel::NAT;
+    return Cpanel::NAT::get_public_ip( Cpanel::DIp::MainIP::getmainip() );
+}
+
+sub cpanel_config_actions {
+    return qw/
+      allow_login_autocomplete apache_port dormant_services email_send_limits_count_mailman email_send_limits_defer_cutoff emailsperdaynotify
+      enablecompileroptimizations eximmailtrap jailmountbinsuid jailmountusrbinsuid jailprocmode maxemailsperhour nobodyspam
+      popbeforesmtpsenders signature_validation skipbwlimitcheck skipparentcheck userdirprotect
+      /;
+}
+
+sub cpanel_config_post_actions {
+    return qw/
+      allow_deprecated_accesshash
+      api_shell
+      conserve_memory
+      domainowner_mail_pass
+      email_send_limits_min_defer_fail_to_trigger_protection
+      enablefileprotect
+      exim-retrytime
+      invite_sub
+      phploader
+      popbeforesmtp
+      resetpass
+      resetpass_sub
+      skipanalog
+      skipawstats
+      skipwebalizer
+      ssl_default_key_type
+      smtpmailgidonly
+      usemysqloldpass
+      /;
+}
+
+# This subroutine helps document what action and post_action subs need to be run during a fresh install.
+# A unit test will go off if you add a new one and don't update one of these subs
+sub cpanel_config_ignored_actions {
+
+    # Post actions
+    my @ignore = qw/ apache_ssl_port
+      allow_login_autocomplete autodiscover_proxy_subdomains ipv6_listen
+      proxysubdomains autoupdate_certificate_on_hostname_mismatch /;
+
+    # Actions
+    push @ignore, qw/allow_server_info_status_from autodiscover_host chkservd_check_interval jailapache skipdiskusage
+      system_diskusage_critical_percent system_diskusage_warn_percent tcp_check_failure_threshold/;
+
+    # build_global_cache run by cpkeyclt
+    push @ignore, qw/allowcpsslinstall display_cpanel_doclinks display_cpanel_promotions/;
+
+    # rebuild httpd.conf not required
+    push @ignore, qw/enable_piped_logs/;
+
+    # MySQL restart is not required
+    push @ignore, qw/
+      mycnf_auto_adjust_innodb_buffer_pool_size
+      mycnf_auto_adjust_maxallowedpacket
+      mycnf_auto_adjust_openfiles_limit
+      /;
+
+    # phpini and php_fpm already handled
+    push @ignore, qw/
+      php_max_execution_time
+      php_memory_limit
+      php_post_max_size
+      php_upload_max_filesize
+      /;
+    push @ignore, qw/
+      debughooks
+      disable_cphttpd
+      disk_usage_include_mailman
+      disk_usage_include_sqldbs
+      emailarchive
+      pma_disableis
+      requiressl
+      server_locale
+      skipboxtrapper
+      skipmailman
+      skipspamassassin
+      skipspambox
+      ssh_host_key_checking
+      usemailformailmanurl
+      xframecpsrvd
+      /;
+
+    return @ignore;
+}
+
+sub do_cpanel_config_touch_files {
+    my $cp_config = scalar Cpanel::Config::LoadCpConf::loadcpconf();
+    Whostmgr::TweakSettings::load_module('Main');
+    my $tweak_conf;
+    {
+        no warnings 'once';
+        $tweak_conf = \%Whostmgr::TweakSettings::Main::Conf;
+    }
+
+    # Block task queueing during a fresh install.
+    no warnings 'redefine';
+    local *Cpanel::ServerTasks::schedule_task = sub { };
+
+    # These actions expect a hash not a string to be passed in.
+    $cp_config->{'dormant_services'}           = { map { $_ => 1 } split /\s*,\s*/, $cp_config->{'dormant_services'} };
+    $tweak_conf->{'dormant_services'}{'value'} = sub { {} };
+    $cp_config->{'phploader'}                  = { map { $_ => 1 } split( /,/, $cp_config->{'phploader'} ) };
+
+    # Walk all the actions.
+    foreach my $key ( cpanel_config_actions() ) {
+        next if ( !exists $cp_config->{$key} );
+        next if ( !$tweak_conf->{$key} );
+        next if ( ref $tweak_conf->{$key}->{'action'} ne 'CODE' );
+        DEBUG("Running defined action for cpanel.config key $key");
+
+        $tweak_conf->{$key}->{'action'}->( $cp_config->{$key} );
+    }
+
+    # Walk all the post actions.
+    foreach my $key ( cpanel_config_post_actions() ) {
+        next if ( !exists $cp_config->{$key} );
+        next if ( !$tweak_conf->{$key} );
+        next if ( ref $tweak_conf->{$key}->{'post_action'} ne 'CODE' );
+
+        DEBUG("Running defined post_action for cpanel.config key $key");
+        $tweak_conf->{$key}->{'post_action'}->( $cp_config->{$key}, undef, 1 );
+    }
+
+    return;
+}
+
+sub _run_in_background ( $code, $desc = '' ) {
+
+    if ($run_tasks_in_main_process) {
+
+        # fork and wait for the job: do not leak anything to the main processs...
+        return _run_and_wait_in_background( $code, $desc );
+    }
+
+    return __fork_and_run( $code, $desc );
+}
+
+sub _run_and_wait_in_background ( $code, $desc = '', %opts ) {
+
+    my $pid = __fork_and_run( $code, $desc ) or return;
+
+    return _wait_for_background_pids( { $pid => 1 }, %opts );
+}
+
+sub __fork_and_run ( $code, $desc = '' ) {
+
+    my $pid = Cpanel::ForkAsync::do_in_child(
+        sub {
+            local $0 = "cpanel_initial_install - $desc";
+            my $status = $code->() // 0;
+            return $status;
+        }
+    );
+    $background_pids{$pid} = $desc;
+
+    return $pid;
+}
+
+sub _wait_for_background_tasks_to_finish (@pids) {
+
+    return 1 unless scalar @pids;
+
+    my %pids_to_check = map { $_ => 1 } @pids;
+    while (1) {
+        last unless _wait_for_background_pids( \%pids_to_check );
+        my $total_pids = scalar keys %pids_to_check;
+        last unless $total_pids;
+        _show_wait_for("$total_pids background tasks");
+        Cpanel::TimeHiRes::sleep(0.25);
+    }
+    return 1;
+}
+
+sub _wait_for_background_pids ( $pids_to_check_hr, %opts ) {
+    return 1 if $run_tasks_in_main_process;
+    my @pids = sort keys %$pids_to_check_hr;
+    return unless scalar @pids;    # nothing to wait for
+    DEBUG("_wait_for_background_pids: @pids");
+
+    $opts{stop_on_failure} //= 1;    # default
+    my $stop_on_failure = delete $opts{stop_on_failure};
+    FATAL( "Unknown arguments: " . join( ', ', sort keys %opts ) ) if scalar keys %opts;
+
+    foreach my $pid (@pids) {
+        my $waitpid_result = waitpid( $pid, $Cpanel::Wait::Constants::WNOHANG );
+        if ( $waitpid_result != 0 ) {
+            if ( $waitpid_result > 0 ) {    # -1 means its already dead and $? is not set
+                my $exit_code = $?;
+                if ( $exit_code != 0 ) {
+                    my $child_error_msg = Cpanel::ChildErrorStringifier->new($?)->autopsy();
+                    my $error_type      = $stop_on_failure ? 'a fatal error' : 'a warning';
+                    my $msg             = "The background process “$background_pids{$pid}” failed with $error_type: $child_error_msg";
+                    if ($stop_on_failure) {
+                        kill 'TERM', keys %background_pids;
+                        FATAL($msg);
+                    }
+                    else {
+                        WARN($msg);
+                    }
+                }
+            }
+            DEBUG("Process: $pid - $background_pids{$pid} has finished.");
+            delete $background_pids{$pid};
+            delete $pids_to_check_hr->{$pid};
+        }
+    }
+    return 1;
+}
+
+# If a server has 2GB+ ram, we now enable PHP-FPM by default for new accounts
+sub set_up_php_fpm_by_default {
+
+    require Cpanel::PHPFPM::Config;
+    Cpanel::PHPFPM::Config::set_default_accounts_to_fpm(1) if Cpanel::PHPFPM::Config::should_default();
+
+    {
+        # enforce the creation of /var/cpanel/php-fpm.d
+        require Cpanel::Server::FPM::Manager;
+        local $@;
+        eval { Cpanel::Server::FPM::Manager::sync_config_files(); } or warn $@;
+    }
+
+    # customer decides in feature showcase
+    Cpanel::Chkservd::Manage::disable('cpanel_php_fpm');
+    Whostmgr::Services::disable('cpanel_php_fpm');
+
+    return;
+}
+
+sub _setup_dns_and_dkim {
+
+    {
+        require Whostmgr::ACLS;
+        require Whostmgr::Hostname::DNS;
+        local $ENV{'REMOTE_USER'} = 'root';
+        Whostmgr::ACLS::init_acls();
+        my ( $status, $statusmsg, $statuscode ) = Whostmgr::Hostname::DNS::ensure_dns_for_hostname();
+
+        Whostmgr::ACLS::clear_acls();
+
+        if ( !$status && $statuscode && $statuscode == Cpanel::DnsUtils::Add::STATUS_NO_NSS_CONFD() ) {
+
+            # If there are no nameservers setup this will fail
+            # and that is expected.  In this case the hostname
+            # change will triger the A entry and DKIM
+            # add via Whostmgr::Hostname
+            return;
+        }
+        warn $statusmsg if !$status && length $statusmsg;
+    }
+
+    {
+        require Cpanel::DKIM;
+        require Cpanel::Hostname;
+        my $hostname = Cpanel::Hostname::gethostname(1);
+        if ( !Cpanel::DKIM::get_domain_private_key($hostname) ) {
+            require Cpanel::DKIM::Transaction;
+            my $dkim = Cpanel::DKIM::Transaction->new();
+
+            # We do not care about failures here since
+            # we expect they won't control DNS most of
+            # the time for the hostname.
+            $dkim->set_up_user_domains( 'root', [$hostname] );
+            $dkim->commit();
+        }
+    }
+    return;
+}
+
+sub run_final_tasks_in_background_that_can_be_done_later_if_shutdown_now {
+    return Cpanel::Daemonizer::Tiny::run_as_daemon(
+        sub {
+            local $ENV{CPANEL_BASE_INSTALL} = 0;
+            open( STDERR, '>>', '/usr/local/cpanel/logs/error_log' )
+              or die "Could not redirect STDERR to /usr/local/cpanel/logs/error_log: $!";
+            open( STDOUT, '>&=', \*STDERR );    ## no critic(InputOutput::RequireCheckedOpen)
+
+            Cpanel::Install::Utils::Command::ssystem(qw{/usr/local/cpanel/scripts/restartsrv_cpsrvd});
+            Cpanel::Install::Utils::Command::ssystem(qw{/usr/local/cpanel/scripts/restartsrv_queueprocd});
+            Cpanel::Install::Utils::Command::ssystem(qw{/usr/local/cpanel/scripts/restartsrv_apache_php_fpm});
+
+            say "[$$] Flushing task queue.";
+            system(qw{/usr/local/cpanel/bin/servers_queue run});
+            say "[$$] Completed flushing task queue.";
+
+            # This will keep the “cpcleartaskqueue” pseudo-service
+            # “active”, which means it’ll still cause a clear of task queue
+            # on the next (first) system shutdown, but subsequent shutdowns
+            # won’t be affected.
+            Cpanel::Install::Utils::Command::ssystem( '/usr/bin/systemctl', 'disable', 'cpcleartaskqueue' );
+
+            say "[$$] Done.";
+
+            return;
+        }
+    );
+}
+
+sub _run_tasks_that_must_wait_until_deferred_are_installed {
+
+    {
+        require '/usr/local/cpanel/scripts/fixquotas';    ## no critic qw(RequireBarewordIncludes)
+        Scripts::FixQuotas::_install_quota_packages_conditional_if_needed();
+    }
+
+    return _run_in_background(
+        sub {
+
+            # Enable services for startup.
+            # TODO: Add chkconfig to RPM spec entries and remove this code.
+            my @services = qw/cpanel sshd nscd/;
+            INFO('Adding services to startup.');
+            foreach my $service (@services) {
+                INFO(" - Enabling $service");
+                Cpanel::Init::Simple::call_cpservice_with( $service => qw/enable/ );
+            }
+
+            # enable cphulkd by default
+            enable_cphulkd();
+
+            # enable quotas by default except on DNSONLY systems
+            enable_quotas() unless Cpanel::Server::Type::is_dnsonly();
+
+            INFO("Automatically enabling features");
+            Cpanel::Install::Utils::Command::ssystem(qw{/usr/local/cpanel/scripts/ensure_autoenabled_features --run});
+
+            # mark features as shown, so no feature showcase is
+            # seen on new installs
+            hide_feature_showcase();
+
+            # This does not need MySQL to be installed yet
+            INFO("Update phpMyAdmin configuration");
+            Cpanel::Install::Utils::Command::ssystem(qw{/usr/local/cpanel/bin/update_phpmyadmin_config --force});
+
+            # do roundcube finishing touches #
+            run_roundcube_ifnecessary();
+
+            # deferred Exim RPM installation overwrote changes to /etc/sysconfig/exim, so restore those:
+            require Whostmgr::Exim::Sysconfig;
+            my $cp_config = scalar Cpanel::Config::LoadCpConf::loadcpconf();
+            Whostmgr::Exim::Sysconfig::update_sysconfig( $cp_config->{'exim-retrytime'} ) if defined $cp_config->{'exim-retrytime'};
+
+            # Setup cPanelID
+            setup_openidconnect_for_cpanelid();
+
+            return 0;
+        },
+        "Apps that require deferred packages"
+    );
+}
+
+sub _run_webserver_post_install_and_ssl_cert_check_in_background {
+    return _run_in_background(
+        sub {
+            # We Start cpsrvd and httpd because there may be a license type change in the middle
+            # of the install
+            #
+            # If the WebServer is disabled then checkallsslcerts will be doing HTTP DCV with cpsrvd
+            Cpanel::Install::Utils::Command::ssystem(qw{/usr/local/cpanel/scripts/restartsrv_cpsrvd --force});
+
+            # If the WebServer is not disabled then checkallsslcerts will be doing HTTP DCV with httpd
+            Cpanel::Install::Utils::Command::ssystem(qw{/usr/local/cpanel/scripts/restartsrv_httpd --force});
+
+            # Since we wait for the apache install to finish
+            # we do this after _wait_for_background_tasks_to_finish on $ea4_or_universal_hooks_install_pid
+            # Enable PHP-FPM by default for new accounts on systems with 2GB+ ram
+            set_up_php_fpm_by_default();
+
+            # Now that apache is up we can try to get an ssl certificate
+            Cpanel::Install::LetsEncrypt::install_and_activate();
+            Cpanel::Install::Utils::Command::ssystem(qw{/usr/local/cpanel/bin/checkallsslcerts --verbose});
+
+            # Try again to get an ssl certificate to decrease the chances that
+            # their first WHM login is to an insecure page.
+
+            warn if !eval { Cpanel::ServerTasks::schedule_task( ['SSLTasks'], 60, 'checkallsslcerts --retry' ); 1 };
+
+            # sanity fix existing zones on the server
+            warn if !eval { Cpanel::ServerTasks::schedule_task( ['ScriptTasks'], 1, 'run_script /usr/local/cpanel/scripts/fix_dns_zone_ttls --fix' ); 1 };
+
+            return 0;
+        },
+        'WebServer post install and SSL certificate check'
+    );
+
+}
+
+sub _run_tasks_that_can_be_done_after_updatenow_in_the_background {
+
+    return _run_in_background(
+        sub {
+            DEBUG("Starting tasks_that_can_be_done_after_updatenow_in_the_background");
+
+            # We do these in a background on initial install
+            # while we are waiting for upcp
+            my @pre_maint = (
+
+                # CPANEL-26289: ensure en is available right away after install finishes
+                ['/usr/local/cpanel/bin/hulkdsetup'],
+                [ '/usr/local/cpanel/bin/build_locale_databases', '--locale=en' ],
+                [ '/usr/local/cpanel/scripts/autorepair',         'autorepair' ],
+                [ '/usr/local/cpanel/scripts/manage_greylisting', '--init', '--update_common_mail_providers' ],
+                ['/usr/local/cpanel/bin/setupdbmap'],
+                [ '/usr/local/cpanel/scripts/check_maxmem_against_domains_count', '--always-fix' ],
+                ['/usr/local/cpanel/scripts/fixetchosts'],
+                [ '/usr/local/cpanel/scripts/litespeed-check', '--run' ],
+                [qw{/usr/local/cpanel/bin/install-login-profile --install cpanel-user-commands}],
+            );
+            foreach my $cmd (@pre_maint) {
+                DEBUG("Task after updatenow: @$cmd");
+                Cpanel::Install::Utils::Command::ssystem(@$cmd);
+            }
+
+            for my $cmd (
+                'migrate_tweak_settings',
+                'legacy_cfg_installer',
+                'register_hooks',
+                'build_userdata_cache',
+            ) {
+                DEBUG("Task after updatenow: $cmd");
+                Cpanel::Install::Utils::Command::ssystem("/usr/local/cpanel/bin/$cmd");
+            }
+
+            my $eximdb_run = Cpanel::SafeRun::Object->new(
+                program => $^X,
+                args    => [
+                    '-MCpanel::EximStats::ConnectDB',
+                    '-e' => 'Cpanel::EximStats::ConnectDB::dbconnect()',
+                ],
+                stdout => \*STDOUT,
+                stderr => \*STDERR,
+            );
+
+            warn $eximdb_run->autopsy() if $eximdb_run->CHILD_ERROR();
+
+            return 0;
+        },
+        'Background install tasks',
+    );
+}
+
+# We do not want to start the yum install of MySQL until cPanel has
+# started installing RPMs because as soon as yum gets the lock it will
+# block the rpm install which will defeat the performance improvement of
+# downloading rpms via yum while rpm is installing the cPanel provided rpms
+#
+# We also do not want to start the yum install until the background download
+# has finished in order to ensure we do not end up downloading the rpms 2x
+# because the background download was not yet finished
+sub _wait_for_mysql_to_be_downloaded {
+    while (1) {
+        if ( -e $mysql_rpm_download_complete_file ) {
+            unlink $mysql_rpm_download_complete_file;
+            return;
+        }
+
+        _show_wait_for("MySQL package download to begin installing packages");
+        last unless _wait_for_background_pids( {%background_pids} );
+        Cpanel::TimeHiRes::sleep(0.25);
+    }
+    return;
+}
+
+sub _wait_for_ea4_profiles_to_be_installed {
+    while (1) {
+        _show_wait_for("EA4 profiles to be installed");
+        last unless _wait_for_background_pids( {%background_pids} );
+        return if -s "/usr/local/bin/ea_install_profile";
+        Cpanel::TimeHiRes::sleep(0.25);
+
+    }
+    return 1;
+}
+
+sub _wait_for_ea4_to_be_installed {
+    while (1) {
+        return if -s "/usr/sbin/httpd";
+        _show_wait_for("EA4 to be installed");
+        last unless _wait_for_background_pids( {%background_pids} );
+        Cpanel::TimeHiRes::sleep(0.25);
+
+    }
+    return 1;
+}
+
+sub _show_wait_for ( $blocking_proc_text = undef ) {
+    state $last_message;
+    state $last_time;
+
+    if ( $blocking_proc_text && $last_message && $last_message eq $blocking_proc_text ) {
+        return if time() - $last_time < 30;    # only display every 30 sec the same message...
+    }
+
+    $last_message = $blocking_proc_text;
+    $last_time    = time();
+
+    INFO( "Waiting for (" . join( ', ', ( $blocking_proc_text ? "[$blocking_proc_text]" : () ), sort values %background_pids ) . ")." );
+
+    return;
+}
+
+sub _shutdown_cpanel_services {
+    INFO("Making sure cPanel processes are not running");
+
+    # If the cpsrvd binary isn't in place we haven't installed
+    # binaries yet so there is no need to proceed.
+    return if !-e '/usr/local/cpanel/cpsrvd';
+    foreach my $app (qw(cpsrvd cpdavd cphulkd)) {
+        if ( Cpanel::Services::Running::is_online($app) ) {
+            Cpanel::Install::Utils::Command::ssystem( '/usr/local/cpanel/etc/init/stop' . $app );
+        }
+    }
+    return;
+}
+
+sub _install_yum_universal_hooks_in_background {
+
+    #On DNSONLY we need EA4's yum-universal-plugins package to fix mysql, etc.
+    #
+    return _run_in_background(
+        sub {
+
+            # XXX TODO following short circuit will be removed later once we have EA4 sorted for ubuntu
+            return 0 unless Cpanel::OS::is_yum_based();
+            INFO("Installing YUM universal hooks...");
+            if ( !Cpanel::Install::Utils::Packaged::install_needed_packages('yum-plugin-universal-hooks') ) {
+                FATAL("Failed to install “yum-plugin-universal-hooks”");
+            }
+            return 0;
+        },
+        'Install YUM universal hooks'
+    );
+}
+
+sub _install_ea4_in_background {
+    return _run_in_background(
+        sub {
+            INFO("Installing EA4");
+            Cpanel::Install::EA4::setup_config_and_fs_for_ea4();
+            if ( !Cpanel::Install::EA4::install_apache() ) {
+                FATAL("Failed to install EA4");
+            }
+            return 0;
+        },
+        'EA4 Install',
+    );
+}
+
+sub _defer_targets {
+    my $rpm_file = Cpanel::RPM::Versions::File->new();
+    foreach my $target ( keys %targets_to_defer_to_after_first_upcp ) {
+        my $value = $rpm_file->target_settings($target) || '';
+        if ( $value ne 'uninstalled' ) {
+            $targets_to_defer_to_after_first_upcp{$target} = 1;
+            INFO("Marking $target to be uninstalled");
+            $rpm_file->set_target_settings( { 'key' => [$target], 'value' => 'uninstalled' } );
+        }
+        else {
+            INFO("$target is already set to uninstalled ($value)");
+        }
+
+    }
+    $rpm_file->save();
+    return;
+}
+
+sub _install_deferred_targets {
+    my $rpm_file               = Cpanel::RPM::Versions::File->new();
+    my $has_targets_to_install = 0;
+    foreach my $target ( keys %targets_to_defer_to_after_first_upcp ) {
+        if ( $targets_to_defer_to_after_first_upcp{$target} ) {
+            $has_targets_to_install = 1;
+            $rpm_file->delete_target_settings( { 'key' => [$target], 'value' => 'uninstalled' } );
+        }
+    }
+    if ($has_targets_to_install) {
+        $rpm_file->save();
+        undef $rpm_file;
+
+        INFO("Installing deferred targets");
+        Cpanel::Install::Utils::Command::ssystem(qw{/usr/local/cpanel/scripts/check_cpanel_pkgs --fix --no-broken --no-digest});
+    }
+    return;
+}
+
+1;

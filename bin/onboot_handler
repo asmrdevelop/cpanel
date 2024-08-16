@@ -1,0 +1,52 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - bin/onboot_handler                      Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package bin::onboot_handler;
+
+use strict;
+use warnings;
+
+use Cpanel::SafeRun::Errors ();
+use Cpanel::Logger;
+
+use Try::Tiny;
+
+our @dirs_to_check = ( '/usr/local/cpanel/libexec/on_boot', '/var/cpanel/on_boot' );
+
+sub script {
+    my $logger ||= Cpanel::Logger->new();
+
+    $logger->info("On Boot Handler started");
+
+    foreach my $dir (@dirs_to_check) {
+        next if !-d $dir;
+
+        opendir my $fd, $dir or next;
+
+        while ( my $line = readdir($fd) ) {
+            next if ( $line =~ m/^\./ );
+
+            my $path = $dir . "/" . $line;
+            if ( -x $path ) {
+                try {
+                    $logger->info("On Boot Handler running $path");
+                    Cpanel::SafeRun::Errors::saferunallerrors($path);
+                };
+            }
+        }
+
+        close $fd;
+    }
+
+    $logger->info("On Boot Handler completed");
+
+    return 0;
+}
+
+exit( script(@ARGV) ? 0 : 1 ) unless caller();
+
+1;

@@ -1,0 +1,62 @@
+[%#
+Variables passed in:
+
+origin                  - the system component from which the the notification was requested.
+rpms                    - an array of rpms that were missing, unnecessary, broken, or repaired
+                          - [{rpm=>'rpmname',status=>'missing|broken|etc','info'=>'additionalinfo'},...]
+check_cpanel_pkgs_path  - the path to the check_cpanel_pkgs script
+
+For more information about how to customize notification templates, read our documentation at https://go.cpanel.net/notificationtemplates
+
+-%]
+
+[%
+    PROCESS "include/colors.tmpl";
+    PROCESS "include/styles.tmpl";
+    PROCESS "include/code_standout.tmpl";
+    PROCESS "include/zebra_table.tmpl";
+
+    WRAPPER 'wrapper/main.html.tmpl';
+          NOTICE.email_reason = "[check_cpanel_pkgs] " _ CPANEL.locale.maketext('There are altered Packages on “[_1]”.' , NOTICE.host_server);
+
+    NOTICE.table_titles = [
+        CPANEL.locale.maketext("Packages"),
+        CPANEL.locale.maketext("Status"),
+        CPANEL.locale.maketext("Additional Information")
+    ];
+
+    NOTICE.table_items = [];
+    # Organize the values into columns that mirror the titles
+    FOREACH rpm IN NOTICE.rpms;
+        table_item = [];
+        table_item.push(rpm.rpm);
+        IF rpm.status == "missing";
+            table_item.push(CPANEL.locale.maketext("Missing"));
+        ELSIF rpm.status == 'unnecessary';
+            table_item.push(CPANEL.locale.maketext("Unnecessary"));
+        ELSIF rpm.status == 'broken';
+            table_item.push(CPANEL.locale.maketext("Broken"));
+        ELSIF rpm.status == 'repaired';
+            table_item.push(CPANEL.locale.maketext("Repaired"));
+        END;
+        table_item.push(rpm.info);
+        NOTICE.table_items.push(table_item);
+    END;
+
+%]
+
+<p>
+    [% CPANEL.locale.maketext('The system detected problems with the following [asis,cPanel]-provided files that the Packaging System controls:') %]
+</p>
+<p style="padding:10px;">
+    [% zebra_table(titles=NOTICE.table_titles, items=NOTICE.table_items)%]
+</p>
+<p>
+    [% CPANEL.locale.maketext('If you did not make these changes intentionally, execute the following command as the [asis,root] user to correct them:') %]
+</p>
+<p>
+    [% code_standout(command=NOTICE.check_cpanel_pkgs_path _ " --fix"); %]
+</p>
+
+
+[% END %]

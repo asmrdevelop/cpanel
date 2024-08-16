@@ -1,0 +1,1055 @@
+[%
+# cpanel - whostmgr/docroot/templates/createacct.tmpl
+#                                                  Copyright 2023 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+USE Net;
+USE CPSort;
+USE JSON;
+USE Whostmgr;
+USE AccountEnhancements;
+USE NVData;
+USE ExpVar;
+
+SET enhancements = AccountEnhancements.list();
+SET spamassassin_disabled_title = locale.maketext('You cannot disable this option when the “[asis,Apache SpamAssassin™]: Forced Global ON” setting is enabled in the “[_1]” interface.', locale.maketext('Exim Configuration Manager'));
+
+SET worker_settings = {};
+FOR worker = data.mail_workers;
+    worker_settings.${worker.alias} = worker.system_settings;
+END;
+
+SET pkg_system_default_values = {};
+FOR pkg = data.package_defaults.keys;
+    pkg_system_default_values.${pkg} = data.package_defaults.$pkg.default;
+END;
+
+IF data.locked_to_mail_worker;
+    SET spamassassin_globally_enabled = worker_settings.values().0.Mail.globalspamassassin;
+ELSE;
+    SET spamassassin_globally_enabled = data.spamassassin_globally_enabled;
+END;
+
+SET over_account_limit = 0;
+IF data.number_of_accounts_remain <= 0 && data.check_user_account_limits;
+    over_account_limit = 1;
+END;
+
+SET manual_resources_help = [];
+SET custom_controls = [];
+SET no_package_defaults = {};
+
+SET acl_add_pkg = 'settings-acl_add-pkg';
+SET acl_not_edit_account = 'settings-acl_not_edit-account';
+SET acl_edit_account = 'settings-acl_edit-account';
+
+# The below (10**12 - 1) is used purely for display purposes to ensure
+# a reasonable width on the type=number inputs:
+SET DEFAULT_NUMBER_LIMIT = 999999999999;
+
+WRAPPER 'master_templates/master.tmpl'
+    app_key = 'create_a_new_account'
+    breadcrumburl = '/scripts5/wwwacctform'
+    theme = 'bootstrap'
+    scripts = [
+        '/js/sorttable.js',
+        '/templates/accounts/createacct.min.js',
+        '/templates/common/collapsible_wrapper/collapsible_wrapper.min.js'
+    ]
+    stylesheets = [
+        '/cjt/css/ajaxapp-min.css',
+        '/templates/common/revised_notices.min.css',
+        '/templates/packages/common.min.css',
+        '/templates/accounts/createacct.min.css',
+        '/templates/common/collapsible_wrapper/collapsible_wrapper.min.css'
+    ]
+    extrastyle = ''
+    include_legacy_stylesheets = 1
+-%]
+
+[%# TODO: Copy this to account transfers. -%]
+[% IF Whostmgr.get_max_users() && Whostmgr.minimum_accounts_needed( Whostmgr.get_max_users() ) %]
+    [%- PROCESS 'menu/_license_excess_create.tmpl' -%]
+    <script>
+        var PAGE = { noForm: true };
+    </script>
+[% ELSIF !data.$acl_edit_account && !data.all_pkgs.size  && !data.invalid_nameserver_setup -%]
+    <div class="notice notice-warning">
+        <div class="notice-content">
+            [% IF data.$acl_add_pkg %]
+            [% locale.maketext('You have not added any packages. [output,url,_1,Add a package] to continue.', cp_security_token _ '/scripts/addpkg2') %]
+            [% ELSE %]
+            [% locale.maketext('No account packages are available for you. Contact your administrator for more information.') %]
+            [% END %]
+        </div>
+    </div>
+    <script>
+        var PAGE = { noForm: true };
+    </script>
+[% ELSE %]
+
+    [% PROCESS '_pkg_hover.tmpl' -%]
+    [% PROCESS '_ajaxapp_header.tmpl' -%]
+
+    [% IF data.invalid_nameserver_setup -%]
+    <p style="margin-left:20px">[% locale.maketext('Your nameserver setup in [output,url,_1,Basic WebHost Manager® Setup] is invalid. Please enter at least two nameservers there before attempting to create an account.', "$cp_security_token/scripts/editsets") %]</p>
+    [% ELSE -%]
+    <script type="text/javascript">
+
+    var PAGE = {
+        nsListUrlPrefix: "[% cp_security_token %]/scripts2/getnslist?domain=",
+        spf_checked: [% data.spf_checked ? 'true' : 'false' -%],
+        ALLOWSTUPIDSTUFF: [% data.username_allowstupidstuff %],
+        username_regexp: [% data.username_regexp.json() %],
+        max_email_quota_mib: [% data.max_email_quota_mib.json() %],
+        REQUIRED_PASSWORD_STRENGTH: [% data.minpwstrength %],
+        ZONE_TEMPLATE_SPF: [% data.zone_template_spf.json() || '{}' -%],
+        addpackage: [% data.$acl_add_pkg -%],
+        editaccount: [% data.$acl_edit_account -%],
+        packages: [% data.all_pkgs.json() %],
+    };
+
+    </script>
+    <div id="why_strong_passwords_text" style="display: none">
+        <p>[% locale.maketext('A strong password is very important to maintain security. Web servers are usually more powerful and have access to greater bandwidth than your personal computer, which makes them a prime target for [output,url,_1,password crackers,target,_blank].', "http://en.wikipedia.org/wiki/Password_cracking") %]</p>
+        <p>[% locale.maketext("We [output,strong,strongly recommend] that you use the built-in password generator to create your password.") %]</p>
+    </div>
+
+    <div id="content">
+[% SET show_limits_summary = 'settings-show_limits_summary' %]
+[% IF data.$show_limits_summary %]
+    <!--LIMITS INFO FOR RESELLERS-->
+    <div id="accountLimits" class="fatBorder">
+
+    [% SET limits_accounts = 'settings-limits_accounts' %]
+    [% IF data.$limits_accounts %]
+        <h2>[% locale.maketext("Account Limits") %]</h2>
+            <table class="table">
+            <thead>
+                <th>Limit</th>
+                <th>&nbsp;</th>
+                <th>Information</th>
+            </thead>
+            <tbody>
+        [% SET limits_number_of_accounts = 'settings-limits_number_of_accounts' %]
+        [% IF data.$limits_number_of_accounts %]
+            <tr>
+                <td>[% locale.maketext("Number of Accounts") %]</td>
+                <td><img src="/images/progresbar-2-[% data.progress_number_of_accounts %].jpg" /> <b>[% data.number_of_accounts %] / [% data.number_of_accounts_allowed %]</b></td>
+            </tr>
+            [% IF over_account_limit %]
+            <tr>
+                <td colspan="2"><b>[% locale.maketext("You have reached your account limit quota. You cannot create new accounts.") %]</b>
+            </tr>
+            [% END %]
+        [% END %]
+
+        [% SET limits_resources = 'settings-limits_resources' %]
+        [% IF data.$limits_resources %]
+            <tr>
+                <td>[% locale.maketext("Disk Space") %]</td>
+                <td><img src="/images/progresbar-2-[% data.progress_disk_usage %].jpg" /> <b>[% data.disk_used %] / [% data.disk_allowed %]</b></td>
+                <!-- <td>[% data.disk_remain %]</td> -->
+                <td>
+            [% SET overselling_disk = 'settings-overselling_disk' %]
+            [% IF data.$overselling_disk %]
+                    [% locale.maketext("Your Disk Usage Limit is calculated based on how much disk space all your accounts have used.") %]
+            [% ELSE %]
+                    [% locale.maketext("Your Disk Usage Limit is calculated based on how much disk space all your accounts have been allocated.") %]
+            [% END %]
+                </td>
+            </tr>
+            <tr>
+                <td>[% locale.maketext("Bandwidth") %]</td>
+                <td><img src="/images/progresbar-2-[% data.progress_bw_usage %].jpg" /> <b>[% data.bw_used %] / [% data.bw_allowed %]</b></td>
+                    <!-- <td>[% data.bw_remain %]</td> -->
+                <td>
+            [% SET overselling_bw = 'settings-overselling_bw' %]
+            [% IF data.$overselling_bw %]
+                    [% locale.maketext("Your Bandwidth Usage Limit is calculated based on how much bandwidth all your accounts have used.") %]
+            [% ELSE %]
+                    [% locale.maketext("Your Bandwidth Usage Limit is calculated based on how much bandwidth all your accounts have been allocated.") %]
+            [% END %]
+                </td>
+            </tr>
+        [%# limits_resources %]
+        [% END %]
+            </tbody>
+        </table>
+    [%# limits_accounts %]
+    [% END %]
+
+    [% SET limits_resources = 'settings-limits_resources' %]
+    [% IF data.$limits_resources %]
+        <h2>[% locale.maketext("Accounts Limits Based on Resources") %]</h2>
+        <p>
+            [% locale.maketext("The following limits show how many accounts could be created based on your remaining resources. If account creation is limited by a specific number of accounts then you may not be able to create as many accounts as listed below.") %]
+        <p>
+        <table class="table" id="bwrl">
+            <thead>
+                <tr>
+                    <th>[% locale.maketext("Package") %]</th>
+                    <th>&nbsp;</th>
+                    <th>[% locale.maketext("Limiting Factor") %]</th>
+                </tr>
+            </thead>
+            <tbody>
+        [% FOREACH resource_package IN data.resource_pkg_list %]
+                <tr>
+                    <td><span style="cursor:crosshair; cursor:help;" onmouseover="hover_pkg(this,'[% resource_package.pkg %]');" onmouseout="dehover_pkg(this,'[% resource_package.pkg %]');">[% resource_package.pkg %]</span></td>
+                    <td><img src="/images/progresbar-2-[% resource_package.progress %].jpg" alt="" /> <b>[% resource_package.current %] / [% resource_package.max_allowed %]</b></td>
+                    <td><img src="/images/[% resource_package.limit_image %]_24.gif" align="middle" alt="[% resource_package.limit_image %]" /></td>
+                    <!-- <td>[% resource_package.remain %]</td> -->
+                </tr>
+        [% END %]
+        </tbody>
+        </table>
+
+        [% SET incompat_pkgs = 'settings-incompat_pkgs' %]
+        [% IF data.$incompat_pkgs %]
+        <div align="left">
+            <div style="clear: right; padding-right: 2px;">[% locale.maketext("The following packages have been disabled because they have unlimited bandwidth or quota limits:") %]</div>
+            <ul>
+            [% FOREACH incompatible_package IN data.incompat_pkg_list %]
+                <li>[% incompatible_package.pkg %]</li>
+            [% END %]
+            </ul>
+        </div>
+        [% END %]
+    [%# limits_resources %]
+    [% END %]
+
+    [% SET show_limits_number_of_packages = 'settings-show_limits_number_of_packages' %]
+    [% IF data.$show_limits_number_of_packages %]
+            <h2>[% locale.maketext("Per Account Quantity Limits") %]</h2>
+            <table class="table" id="pqrl">
+                <thead>
+                    <th>Package</th>
+                    <th>&nbsp;</th>
+                </thead>
+        [% FOREACH number_package IN data.number_pkg_list %]
+                <tbody>
+                    <tr>
+                        <td><span style="cursor:crosshair; cursor:help;" onMouseOver="hover_pkg(this,'[% number_package.pkg %]');" onMouseOut="dehover_pkg(this,'[% number_package.pkg %]');">[% number_package.pkg %]</span></td>
+                        <td><img src="/images/progresbar-2-[% number_package.progress %].jpg" /> <b>[% number_package.current %] / [% number_package.max_allowed %]</b></td>
+                        <!-- <td>[% number_package.remain %]</td> -->
+                    </tr>
+        [% END %]
+                </tbody>
+            </table>
+    [% END %]
+
+         </div>
+[%# show_limits_summary %]
+[% END -%]
+
+[%~ MACRO manualSettingControl(prefix, resource_obj, defaultvalue, min, max) BLOCK ~%]
+    [% SET select_unlimited = resource_obj.default == 'unlimited' -%]
+    <div class="tableWrapper">
+        <div class="rowWrapper">
+            <div class="cellWrapper">
+                    <input
+                        type="radio"
+                        id="[% prefix %]_custom_radio"
+                        name="[% prefix %]_control"
+                        value="custom"
+                        [%~ IF !select_unlimited ~%]checked[%~ END ~%]
+                        [% IF !resource_obj.can_unlimited -%]
+                            class="invisible"
+                            checked
+                        [% END -%]
+                    />
+                    <input
+                        type="number"
+                        class="resource-text"
+                        name="[% prefix %]"
+                        id="[% prefix %]"
+                        value="[% defaultvalue || 0 %]"
+                        size="10"
+                        min="[% min %]"
+                        max="[% max || DEFAULT_NUMBER_LIMIT -%]"
+                    />
+
+                    [% IF resource_obj.can_unlimited -%]
+                         <input type="radio" id="[% prefix %]_unlimited_radio" name="[% prefix %]_control" value="unlimited" [%~ IF select_unlimited ~%]checked[%~ END ~%] />
+                         <label for="[% prefix %]_unlimited_radio">[% locale.maketext('Unlimited') -%]</label>
+                    [% END -%]
+                </div>
+                <div class="cellWrapper" id="[% prefix %]_manual_errors">
+                    <div id="[% prefix %]_error"></div>
+                </div>
+        </div>
+    </div>
+[% END %]
+
+[%~ MACRO manualResource(resource_name) BLOCK ~%]
+    [% SET resource_obj = data.package_schema.$resource_name -%]
+
+    [% SET unlimited = resource_obj.default == 'unlimited' ? 1 : 0 %]
+    [% SET default_value = unlimited ? resource_obj.min : resource_obj.default %]
+
+    [% custom_controls.push( {
+        name => resource_name,
+        label => resource_obj.label,
+        min => resource_obj.min,
+        max => resource_obj.max,
+        default => resource_obj.default,
+    } ) -%]
+
+    <div class="propertyEditor">
+        <div class="propertyLabel">
+        [% locale.makevar(resource_obj.label) -%]
+        [% IF resource_obj.help_text -%]
+        [% manual_resources_help.push([resource_name, resource_obj]) %]
+            <span id="[% resource_name %]__help"><span class="far fa-question-circle help-text"></span></span>
+        [% END -%]
+        </div>
+        <div class="propertyValue">
+            [% manualSettingControl(resource_name, resource_obj, default_value, resource_obj.min, resource_obj.max) %]
+        </div>
+    </div>
+[% END %]
+
+        <!-- <div id="leftform"> -->
+        <form action="[% cp_security_token %]/scripts5/wwwacct" name="mainform" id="mainform" method="post">
+            <!-- prevent password autofill -->
+            <input type="text" style="display:none">
+            <input type="password" autocomplete='off' style="display:none">
+
+            <input type="hidden" name="sign" value="" />
+            <input type="hidden" name="plan" />
+
+            <div class="fatBorder">
+                <fieldset class="groupEditor">
+                [%
+                    WRAPPER common/collapsible_wrapper/collapsible_wrapper.tmpl
+                    label = locale.maketext("Domain Information")
+                    id = "domain_information"
+                    isExpanded = 1
+                    disableCollapse = 1
+                %]
+                    <div class="propertyGroup">
+                        <div class="propertyEditor">
+                            <div class="propertyLabel"><label for="domain">[% locale.maketext('Domain') %]</label></div>
+                            <div class="propertyValue">
+                                <div class="tableWrapper">
+                                    <div class="rowWrapper">
+                                        <div class="cellWrapper">
+                                            <input type="text" name="domain" id="domain" />
+                                        </div>
+                                        <div class="cellWrapper">
+                                            <div id="domain_error"></div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="propertyEditor">
+                            <div class="propertyLabel"><label for="username">[% locale.maketext("Username") %]</label></div>
+                            <div class="propertyValue">
+                                <div class="tableWrapper">
+                                    <div class="rowWrapper">
+                                        <div class="cellWrapper">
+                                            <input type="text" name="username" id="username" maxlength="16" />
+                                        </div>
+                                        <div class="cellWrapper">
+                                            <div id="username_error"></div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="propertyEditor">
+                            <div class="propertyLabel"><label for="password">[% locale.maketext("Password") %]</label></div>
+                            <div class="propertyValue">
+                                <div class="tableWrapper">
+                                    <div class="rowWrapper">
+                                        <div class="cellWrapper">
+                                            <input type="password" autocomplete='off' name="password" id="password" value="" />
+                                        </div>
+                                        <div class="cellWrapper">
+                                            <div id="password_error"></div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="propertyEditor">
+                            <div class="propertyLabel"><label for="password2">[% locale.maketext("Re-type Password") %]</label></div>
+                            <div class="propertyValue">
+                                <div class="tableWrapper">
+                                    <div class="rowWrapper">
+                                        <div class="cellWrapper">
+                                            <input type="password" autocomplete='off' id="password2" />
+                                        </div>
+                                        <div class="cellWrapper">
+                                            <div id="password2_error"></div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="propertyEditor" id="pwStrengthEditor">
+                            <div class="propertyLabel">[% locale.maketext("Strength") %] (<div style="display: inline" id="why_strong_passwords_link" class="action_link">[% locale.maketext("Why?") %]</div>)</div>
+                            <div class="propertyValue">
+                                <div id="pwStrengthContainer">
+                                    <div id="pwStrengthWidget"><div id="password_strength"></div></div>
+                                    <div id="pwStrengthButton"><input type="button" id="create_strong_password" class="btn btn-default" value="[% locale.maketext('Password Generator') %]" tabindex="-1" /></div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="propertyEditor last">
+                            <div class="propertyLabel"><label for="contactemail">[% locale.maketext("Email") %]</label></div>
+                            <div class="propertyValue">
+                                <div class="tableWrapper">
+                                    <div class="rowWrapper">
+                                        <div class="cellWrapper">
+                                            <input type="text" name="contactemail" id="contactemail" />
+                                        </div>
+                                        <div class="cellWrapper">
+                                            <div id="contactemail_error"></div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        [% SET show_custom_wpsq_options = 'settings-custom-wpsq-options' %]
+                        [% IF data.$show_custom_wpsq_options %]
+                        [% # WP Squared simplified version of options %]
+                        [% manualResource('maxaddon') %]
+                        [% END %]
+                    </div>
+
+                [% END %]
+                </fieldset>
+            </div><!-- end domain_information -->
+
+            <!-- db mapping -->
+            <input type="hidden" id="dbuser" name="dbuser" value="" />
+            <!-- end database_information -->
+
+            <!-- set your package -->
+            [% SET hide_package_settings = 'settings-hide_package_settings' %]
+            [% IF ! data.$hide_package_settings %]
+            <div class="fatBorder">
+                <fieldset class="groupEditor">
+                    [%
+                        WRAPPER common/collapsible_wrapper/collapsible_wrapper.tmpl
+                        label = locale.maketext("Package")
+                        id = "package_wrapper"
+                        isExpanded = 1
+                        disableCollapse = 1
+                    %]
+
+                    [% IF Whostmgr.hasroot() %]
+                    <div class="alert alert-warning quota_sensitive" style="display:none;">
+                        <span class="glyphicon glyphicon-exclamation-sign"></span>
+                        [% IF Whostmgr.template_vars.needs_reboot.quota %]
+                        <div class="alert-message">[% locale.maketext("Quotas are currently disabled. Quotas defined in packages will not function until you [output,url,_1,reboot,target,_blank].","$cp_security_token/scripts/graceful_reboot_landing?suggest=1") %]</div>
+                        [% ELSE %]
+                        <div class="alert-message">[% locale.maketext("Quotas are currently disabled. Quotas defined in packages will not function until you [output,url,_1,enable,target,_blank] them.", "$cp_security_token/scripts/dialog?dialog=quotas") %]</div>
+                        [% END %]
+                    </div>
+                    [% END %]
+                    <div class="propertyGroup" id="package_div">
+                        <div class="propertyEditor">
+                            <div class="propertyLabel"><label for="pkgselect">[% locale.maketext("Choose a Package") %]</label></div>
+                            <div class="propertyValue">
+                                <div class="tableWrapper">
+                                    <div class="rowWrapper">
+                                        <div class="cellWrapper">
+                                            <select name="msel" id="pkgselect" class="select" style="width:150px;">
+
+                                                [% IF !data.all_pkgs.size() %]
+                                                    <option
+                                                        autofill="off"
+                                                        autocomplete="off"
+                                                    >---</option>
+                                                [% END -%]
+
+                                                [% FOR package = data.all_pkgs %]
+                                                    <option
+                                                        value="[% package.name.html %]"
+                                                        autofill="off"
+                                                        autocomplete="off"
+                                                        [% IF package.name == data.defpackage; 'selected="selected"'; END %]
+                                                        [% !package.creatable && 'disabled' -%]
+                                                        class="[% package.creatable ? 'creatable' : 'viewable' %]"
+                                                    >[% package.name.html -%]
+                                                        [% ! package.creatable && locale.maketext("(Cannot use due to limits)") %]
+                                                    </option>
+                                                [% END %]
+                                            </select>
+                                        </div>
+                                        [% IF data.all_pkgs.size %]
+                                            <div class="cellWrapper tracePackage">
+                                                <img id="traceImg" src="[% MagicRevision( '/images/trace.gif' ) %]" style="cursor:crosshair; cursor:help;" onmouseover="hover_pkg(this,'[% data.pkg %]');" onmouseout="dehover_pkg(this,'[% data.pkg %]');" alt="" />
+                                            </div>
+                                        [% END %]
+                                        <div class="cellWrapper">
+                                            <div id="pkgselect_error"></div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+    [% IF data.$acl_edit_account %]
+                        <div id="manualOptionsEditor" class="propertyEditor last">
+                            <div class="propertyLabel"><label for="manual">[% locale.maketext("Select Options Manually") %]</label></div>
+                            <div class="propertyValue"><input value="1" type="checkbox" id="manual" /></div>
+                        </div>
+    [% IF data.$acl_add_pkg %]
+                        <div id="mansettings1" class="propertyEditor hidden">
+                            <div class="propertyLabel"><label for="pkgchkbox">[% locale.maketext("Save Manual Settings as a Package") %]</label></div>
+                            <div class="propertyValue"><input type="checkbox" name="savepkg" id="pkgchkbox" value="1" /></div>
+                        </div>
+                        <div id="pkgNameEditor" class="propertyEditor hidden">
+                            <div class="propertyLabel"><label for="pkgname">[% locale.maketext("Package Name") %]</label></div>
+                            <div class="propertyValue">
+                                <div class="tableWrapper">
+                                    <div class="rowWrapper">
+                                        <div class="cellWrapper">
+                                            <input type="text" name="pkgname" id="pkgname" />
+                                        </div>
+                                        <div class="cellWrapper">
+                                            <div id="pkgname_error" class="hidden"></div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <div id="featureListEditor" class="propertyEditor hidden">
+                            <div class="propertyLabel"><label for="fid">[% locale.maketext("Feature List") %]</label></div>
+                            <div class="propertyValue">
+                                <select name="featurelist" id="fid">
+                                    [% FOREACH feature IN data.feature_list %]
+                                            <option value="[% feature %]">[% feature %]</option>
+                                    [% END %]
+                                </select>
+                            </div>
+                        </div>
+    [%# acl_add_pkg %]
+    [% END %]
+                </fieldset>
+            </div><!-- end package_div -->
+
+            <div id="mansettings" class="fatBorder hidden">
+                <fieldset class="groupEditor">
+                    [%
+                        WRAPPER common/collapsible_wrapper/collapsible_wrapper.tmpl
+                        label = locale.maketext("Manual Resource Options")
+                        id = "manual_resource_options"
+                        isOptional = 1
+                        isExpanded = 1
+                        disableCollapse = 1
+                    %]
+                    <div class="propertyGroup" class="createacct__d-block" id="manual_resource_options">
+                        <div class="content width-inherit" style="display: block" id="resource_wrapper">
+                        [% SET acl_allow_emaillimits_pkgs = 'settings-acl_allow-emaillimits-pkgs' %]
+                        [% FOREACH resource_name IN data.package_defaults_order %]
+                            [% SET cur = data.package_schema.$resource_name -%]
+                            [% NEXT IF cur.hide -%]
+                            [% NEXT IF !data.$acl_allow_emaillimits_pkgs && resource_name == 'max_email_per_hour' %]
+                            [% NEXT IF !data.$acl_allow_emaillimits_pkgs && resource_name == 'max_defer_fail_percentage' %]
+
+                            [% no_package_defaults.${resource_name} = cur.default; -%]
+
+                            [% NEXT IF cur.type != 'numeric' %]
+
+                            [% manualResource(resource_name) %]
+                        [% END %]
+                        </div>
+                    </div>
+                    [% END %]
+                </fieldset>
+            </div><!-- end mansettings -->
+
+    [% ELSE %]
+        </fieldset>
+    </div><!-- end package_div -->
+    [% END %]
+     [%# The following div is populated via API call. %]
+     <div id="packageExtensions"></div>
+    [%# acl_edit_account %]
+    [% END %]
+    [%# WRAPPER collapsible_wrapper %]
+    [% END %]
+
+    [%# start account_enhancements %]
+    [%
+        SET user = Whostmgr.ENV.REMOTE_USER;
+        SET enhancement_limits = AccountEnhancements.list_enhancement_limits( user );
+
+        FOREACH enhancement_limit IN enhancement_limits.data;
+            IF enhancement_limit.value.limited == 1 && enhancement_limit.value.limit == 0;
+                enhancement_limits.data.delete(enhancement_limit.key);
+            END;
+        END;
+
+        SET enhancement_has_data_to_show = enhancements.data.size || enhancements.errors.size || enhancements.warnings.size;
+        SET enhancement_limit_not_blocking = Whostmgr.hasroot() || enhancement_limits.data.size;
+    %]
+    [%- IF enhancement_has_data_to_show && enhancement_limit_not_blocking %]
+    <div id="account_enhancements_container" class="fatBorder">
+        <fieldset class="groupEditor">
+            [%
+                WRAPPER common/collapsible_wrapper/collapsible_wrapper.tmpl
+                label = locale.maketext("Account Enhancements")
+                id = "account_enhancements"
+                isOptional = 1
+            %]
+                [% IF enhancements.errors.size %]
+                <div class="callout callout-danger" id="enhancements-danger-callout">
+                    <div class="callout-heading">
+                        <strong>[% locale.maketext('Error') %]</strong>
+                    </div>
+
+                    [% FOREACH error IN enhancements.errors %]
+                        <p>[% error.html() %]</p>
+                    [%- END -%]
+                </div>
+                [% END %]
+
+                [% IF enhancements.warnings.size %]
+                <div class="callout callout-warning callout-breakword" id="enhancements-warning-callout">
+                    <div class="callout-heading">
+                        <strong>[% locale.maketext('Warning') %]</strong>
+                    </div>
+
+                    [%- FOREACH message IN enhancements.warnings -%]
+                        <p>[% message.html() %]</p>
+                    [%- END -%]
+                </div>
+                [% END %]
+                <div class="propertyGroup">
+                [%
+                    FOREACH enhancement IN enhancements.data;
+                    IF Whostmgr.hasroot() || enhancement_limits.data.defined(enhancement.id);
+                    SET html_name = enhancement.name.html();
+                -%]
+                    <div class="propertyEditor">
+                        <div class="propertyLabel">
+                            <label id="enhancement__label-[% loop.index() %]" for="enhancement__checkbox-[% loop.index() %]">
+                                [% html_name %]
+                            </label>
+                        </div>
+                        <div class="propertyValue">
+                            <input value="[% html_name %]" type="checkbox" name="account_enhancements-[% loop.index() %]" id="enhancement__checkbox-[% loop.index() %]" />
+                        </div>
+                    </div>
+                [% END; END -%]
+                </div>
+            [% END -%]
+        </fieldset>
+    </div>[%# end account_enhancements %]
+    [% END -%]
+
+    [% SET hide_main_settings = 'settings-hide_main_settings' %]
+    [% IF ! data.$hide_main_settings %]
+    <div id="settings_div" class="fatBorder">
+        <fieldset class="groupEditor">
+            [% IF data.$acl_not_edit_account %]
+                <div class="notice">
+                    <div class="notice-content">
+                        [% locale.maketext('The package that you choose determines these settings. For example, you can only select an IP address if the selected package includes a dedicated IP address.') %]
+                    </div>
+                </div>
+           [% END %]
+        <div class="propertyGroup" id="settings_section">
+            [% SET acl_add_pkg_ip = 'settings-acl_add-pkg-ip' %]
+            [% IF data.$acl_add_pkg_ip %]
+                <div class="propertyEditor hidden" id="dedicatedIp">
+                    <div class="propertyLabel"><label for="ipchkbox">[% locale.maketext('Dedicated IP') %]</label></div>
+                    <div class="propertyValue"><input value="1" type="checkbox" name="ip" id="ipchkbox" /></div>
+                </div>
+
+                <div class="propertyEditor hidden" id="ipSelect">
+                    <div class="propertyLabel"><label for="customip">[% locale.maketext('Select the IP Address') %]</label></div>
+                    <div class="propertyValue">
+                        <select name="customip" id="customip">
+                            <option value="" selected="selected">--[% locale.maketext('Auto Assign') %]--</option>
+                            [% FOREACH option IN data.ip_options.cpsort({'code' => \Net.inet_aton, 'num' => 1}) -%]
+                            <option value="[% option %]">[% option %]</option>
+                            [% END -%]
+                        </select>
+                    </div>
+                </div>
+            [% END -%]
+
+        [% SET acl_allow_shell = 'settings-acl_allow-shell' %]
+        [% IF data.$acl_allow_shell && data.user_can_have_shell %]
+                <div class="propertyEditor hidden" id="allowShell">
+                    <div class="propertyLabel"><label for="hasshell">[% locale.maketext('Shell Access') %]</label></div>
+                    <div class="propertyValue"><input type="checkbox" checked="checked" name="hasshell" id="hasshell" value="1" /></div>
+                </div>
+        [% END %]
+        [% IF data.user_can_have_cgi %]
+                <div class="propertyEditor" id="allowCGI">
+                    <div class="propertyLabel"><label for="cgi">[% locale.maketext('CGI Access') %]</label></div>
+                    <div class="propertyValue"><input value="1" type="checkbox" checked="checked" name="cgi" id="cgi" /></div>
+                </div>
+        [% END -%]
+                <div class="propertyEditor hidden" id="allowDigest">
+                    <div class="propertyLabel"><label for="digestauth" id="digestauth_label">[% locale.maketext('Digest Authentication for Web Disk') %]</label>
+                    </div>
+                    <div class="propertyValue">
+                        <input value="1" type="checkbox" name="digestauth" id="digestauth" />
+                        <img id="digestauth-info" align="absmiddle" src="[% MagicRevision( '/images/info.png') %]" onclick="CPANEL.ajax.toggleToolTip(this,'[% locale.maketext('Digest Authentication') %]');" title="[% locale.maketext('[list_and,_*] require Digest Authentication support to be enabled in order to access your Web Disk over a clear text/unencrypted connection.', 'Windows Vista®', 'Windows® 7', 'Windows® 8') %] [% locale.maketext('If the server has an SSL certificate signed by a recognized certificate authority and you are able to make an SSL connection over port 2078, you do not need to enable this.') %]"> </a>
+                    </div>
+                </div>
+
+            [% SET acl_edit_account = 'settings-acl_edit-account' %]
+            [% IF data.$acl_edit_account %]
+                <div class="propertyEditor">
+                    <div class="propertyLabel"><label for="cpmod">[% locale.maketext("[asis,cPanel] Theme") %]</label></div>
+                    <div class="propertyValue">
+                        <select name="cpmod" id="cpmod">
+                            [% FOR theme = data.themes -%]
+                                <option value="[% theme %]" autofill="off" autocomplete="off" [% theme == data.deftheme && 'selected="selected"' %] />
+                                    [% theme %]
+                                </option>
+                            [% END -%]
+                        </select>
+                    </div>
+                </div>
+            [% END %]
+                <div class="propertyEditor">
+                    <div class="propertyLabel"><label for="language">[% locale.maketext("Locale") %]</label></div>
+                    <div class="propertyValue">
+                        <select name="language" class="select createacct__w-100" id="language">[%# TODO: change 'language' to 'locale' %]
+                          [% PROCESS '_locale_option_tags.tmpl' %]
+                        </select>
+                        <span class="help-block">
+                            [% user_feedback_text_for_more_locales() %]
+                        </span>
+                    </div>
+                </div>
+                <div class="propertyEditor">
+                    <div class="propertyLabel"><label for="spamassassin">[% locale.maketext("Enable [asis,Apache SpamAssassin™]") %]</label></div>
+                    <div class="propertyValue">
+                        <input value="1" type="checkbox" name="spamassassin" id="spamassassin" checked="checked"
+                            [% IF spamassassin_globally_enabled %]disabled title="[% spamassassin_disabled_title.html() %]"[% END %]/>
+                        <input name="spamassassin" id="spamassassin_hidden" value="1" type="hidden" [% IF !spamassassin_globally_enabled %]disabled[% END %]>
+                    </div>
+                </div>
+                <div class="propertyEditor last">
+                    <div class="propertyLabel">
+                        <label id="spambox_label" for="spambox">
+                            [% locale.maketext("Enable Spam Box") %]
+                            <span id="spambox_help"><span class="far fa-question-circle help-text"></span></span>
+                        </label>
+                    </div>
+                    <div class="propertyValue">
+                        <input value="1" type="checkbox" name="spambox" id="spambox" checked="checked"/>
+                    </div>
+                    <div id="spambox_help_content" style="display: none">
+                        <p>[% locale.maketext("Save spam messages to a folder.") %]</p>
+                        <p>[% locale.maketext("When you disable this option, the system delivers messages flagged as spam to the user’s inbox.") %]</p>
+                        <p>[% locale.maketext("You must enable [asis,Apache SpamAssassin™] to use the Spam Box feature.") %]</p>
+                    </div>
+                </div>
+            </div>
+        </fieldset>
+    </div><!-- end settings_div -->
+    [% END %]
+
+        [% SET hide_mailrouting_settings = 'settings-hide_mailrouting_settings' %]
+        [% IF ! data.$hide_mailrouting_settings %]
+        <div class="fatBorder">
+            <fieldset class="groupEditor">
+                [%
+                    WRAPPER common/collapsible_wrapper/collapsible_wrapper.tmpl
+                    label = locale.maketext("Mail Routing Settings")
+                    id = "mail_routing_settings"
+                    isOptional = 1
+                %]
+                [% IF data.locked_to_mail_worker -%]
+                    [% locale.maketext('Your account uses the following server to perform mail services: “[_1]” ([_2]). All accounts that you create will use this configuration.', data.mail_workers.0.alias().html(), data.mail_workers.0.hostname().html()) -%]
+                [% ELSE -%]
+                    <div class="propertyGroup" id="mail_routing_settings">
+                        <div class="propertyEditor">
+                            <div class="propertyCombined">
+                                <input type="radio" name="mxcheck" id="mxcheck_auto" value="auto" /> <label for="mxcheck_auto" class="label_txt" id="mxcheck_auto_label">[% locale.maketext("Automatically Detect Configuration") %]</label><span class="status" id="mxcheck_auto_current_setting" style="font-weight: bold"></span> ([% locale.maketext("recommended") %]) <span class="action_link" id="mxcheck_auto_toggle" onclick="CPANEL.util.toggle_more_less(this, 'mxcheck_auto_desc');">[% locale.maketext("more »") %]</span>
+                                <div id="mxcheck_auto_desc" style="display: none">
+                                    <ul class="mxcheck_autolist" style="margin-left: 25px">
+                                        <li>
+                                            [% locale.maketext("Local Mail Exchanger") %] <span id="mxcheck_detected_state_local"></span><br />
+                                            <em>[% locale.maketext("If the lowest numbered mail exchanger points to an IP address on this server, the server will be configured to accept mail locally and from outside the server.") %]</em>
+                                        </li>
+                                        <li>
+                                            [% locale.maketext("Backup Mail Exchanger") %] <span id="mxcheck_detected_state_secondary"></span><br />
+                                            <em>[% locale.maketext("If a mail exchanger that is not the lowest numbered mail exchanger points to an IP address on this server, the server will be configured to act as a backup mail exchanger.") %]</em>
+                                        </li>
+                                        <li>
+                                            [% locale.maketext("Remote Mail Exchanger") %] <span id="mxcheck_detected_state_remote"></span><br />
+                                            <em>[% locale.maketext("If there are no mail exchangers that point to an IP address on this server, the server will not accept mail locally and will send mail to the lowest MX record.") %]</em>
+                                        </li>
+                                    </ul>
+                                    <p>[% locale.maketext("Note: It is not possible to automatically detect an MX configuration if the MX entries do not resolve (for example, if you mistype a domain name or enter one that does not exist). If your MX configuration is set to auto and you add or edit an MX record that does not resolve, you will see a warning and the MX configuration will default to the last known setting.") %]</p>
+                                    <p>[% locale.maketext("If you have IP addresses that are not bound to any network device on this server and you would like automatic selection to consider them as local, you can edit the list of additional local IP addresses [output,url,_1,here,target,_blank].", "$cp_security_token/scripts6/editremoteipslist") %]
+                                </div>
+                            </div>
+                        </div>
+                        <div class="propertyEditor">
+                            <div class="propertyCombined"><!-- this option is preselected for historical compatibility -->
+                                <input checked="checked" type="radio" name="mxcheck" id="mxcheck_local" value="local" /> <label for="mxcheck_local" class="label_txt" id="mxcheck_local_label">[% locale.maketext("Local Mail Exchanger") %]</label> <span class="action_link" onclick="CPANEL.util.toggle_more_less(this, 'mxcheck_local_desc');">[% locale.maketext("more »") %]</span><br />
+                                <div id="mxcheck_local_desc" style="display: none"><p class="highlight-accordian-desc"><em>[% locale.maketext("Configure the server to always accept mail. Mail will be delivered locally on the server whenever it is sent from the server or outside the server.") %]</em></p></div>
+                            </div>
+                        </div>
+                        <div class="propertyEditor">
+                            <div class="propertyCombined">
+                                <input type="radio" name="mxcheck" id="mxcheck_secondary" value="secondary" /> <label for="mxcheck_secondary" class="label_txt" id="mxcheck_secondary_label">[% locale.maketext("Backup Mail Exchanger") %]</label> <span class="action_link" onclick="CPANEL.util.toggle_more_less(this, 'mxcheck_secondary_desc');">[% locale.maketext("more »") %]</span><br />
+                                <div id="mxcheck_secondary_desc" style="display: none"><p class="highlight-accordian-desc"><em>[% locale.maketext("Configure the server as a backup mail exchanger. Mail will be held until a lower number mail exchanger is available.") %]</em></p></div>
+                            </div>
+                        </div>
+                        <div class="propertyEditor">
+                            <div class="propertyCombined">
+                                <input type="radio" name="mxcheck" id="mxcheck_remote" value="remote" /> <label class="label_txt" for="mxcheck_remote" id="mxcheck_remote_label">[% locale.maketext("Remote Mail Exchanger") %]</label> <span class="action_link" onclick="CPANEL.util.toggle_more_less(this, 'mxcheck_remote_desc');">[% locale.maketext("more »") %]</span><br />
+                                <div id="mxcheck_remote_desc" style="display: none"><p class="highlight-accordian-desc"><em>[% locale.maketext("Configure the server to not accept mail locally and send mail to the lowest MX record.") %]</em></p></div>
+                            </div>
+                        </div>
+                        [% IF data.has_root %]
+                        <div class="propertyEditor last">
+                            <div class="propertyCombined">
+                                <input
+                                    type="radio"
+                                    name="mxcheck"
+                                    id="mxcheck_worker"
+                                    value="worker"
+                                    [% data.mail_workers.size ? '' : 'disabled' %]
+                                /> <label class="label_txt [% data.mail_workers.size ? '' : 'disabled' %]" for="mxcheck_worker" id="mxcheck_worker_label">[% locale.maketext("Mail Child Node") %]</label>
+                                [% IF data.mail_workers.size %]
+                                <span class="click-reenable" onclick="document.getElementById('mxcheck_worker').checked = true; document.getElementById('mail_worker_node_selector').disabled = false; document.getElementById('mail_worker_node_selector').focus()">
+                                    <select disabled name="mail_node_alias" id="mail_worker_node_selector">
+                                    [% FOR node = data.mail_workers -%]
+                                        <option value="[% node.alias().html() %]">[% node.alias().html() %]&nbsp;&nbsp;([% node.hostname().html() %])</option>
+                                    [% END -%]
+                                    </select>
+                                </span>
+                                [% END %]
+
+                                <span class="action_link" onclick="CPANEL.util.toggle_more_less(this, 'worker_desc');">[% locale.maketext("more »") %]</span><br />
+                                <div id="worker_desc" style="display: none">
+                                    <p class="highlight-accordian-desc">
+                                        <em>
+                                            [% locale.maketext('Configure this account to use a [asis,cPanel amp() WHM] mail child node to perform mail services.') %]
+                                        </em>
+                                        [% IF data.mail_workers.size %]
+                                            <a target="_blank"  href="../scripts7/link-server-nodes">[% locale.maketext('Manage Linked Nodes') %] <i class="fas fa-external-link-alt" aria-hidden="true"></i></a>
+                                        [% END %]
+                                    </p>
+                                    [% IF !data.mail_workers.size %]
+                                    <div class="callout callout-info node-warning-message" id="noChildNodesInfoBlock">
+                                        <p>
+                                            [% locale.maketext('You can utilize a remote [asis,cPanel amp() WHM] server to handle certain services, like mail.') %]
+                                            [% locale.maketext('You must first link that [asis,cPanel amp() WHM] server node to this one.') %]
+                                            <a href="../scripts7/link-server-nodes/create" target="_self" id="linkAServerNodeLink">
+                                                [% locale.maketext('Click here to link a [asis,cPanel amp() WHM] server node.') %]
+                                            </a>
+                                        </p>
+                                    </div>
+                                    [% END %]
+                                </div>
+                            </div>
+                        </div>
+                        [% END %]
+                    </div>
+                [% END -%]
+                [% END -%]
+            </fieldset>
+        </div>
+        [% END -%]
+
+    [% SET acl_all = 'settings-acl_all' %]
+    [% IF data.$acl_all %]
+            [% SET hide_reseller_settings = 'settings-hide_reseller_settings' %]
+            [% IF ! data.$hide_reseller_settings %]
+            <div class="fatBorder">
+                <fieldset class="groupEditor">
+                    [%
+                        WRAPPER common/collapsible_wrapper/collapsible_wrapper.tmpl
+                        label = locale.maketext("Reseller Settings")
+                        id = "reseller_settings"
+                        isOptional = 1
+                    %]
+                    <div class="propertyGroup" id="reseller_settings">
+                        <div class="propertyEditor">
+                            <div class="propertyCombined">
+                                <label>
+                                    <input value="1" type="checkbox" id="resell" name="reseller" />
+                                    [% locale.maketext('Make the account a reseller') %]
+                                </label>
+                            </div>
+                        </div>
+                        <div class="propertyEditor last">
+                            <div class="propertyCombined">
+                                <label class="disabled">
+                                    <input value="1" type="checkbox" name="ownerself" id="ownerself" disabled="disabled" />
+                                    [% locale.maketext('Make the account own itself (i.e., the user can modify the account)') %]
+                                </label>
+                            </div>
+                        </div>
+                    </div>
+                    [% END %]
+                </fieldset>
+            </div>
+            [% END %]
+    [% END %]
+
+        [% SET hide_dns_settings = 'settings-hide_dns_settings' %]
+        [% IF ! data.$hide_dns_settings %]
+        <div class="fatBorder">
+            <fieldset class="groupEditor">
+                [%
+                    WRAPPER common/collapsible_wrapper/collapsible_wrapper.tmpl
+                    label = locale.maketext("DNS Settings")
+                    id = "dns_settings"
+                    isOptional = 1
+                %]
+                <input type="hidden" name="hasuseregns" value="1" />
+                <div class="propertyGroup" id="dns_settings">
+                    [% IF data.item('settings-acl_create-dns') || data.item('settings-acl_edit-dns') -%]
+                    <div class="propertyEditor">
+                        <div class="propertyCombined">
+                            <label id="dkim_label">
+                                <input type="checkbox" [% data.dkim_checked && 'checked="checked"' -%] name="dkim" id="dkim" value="1" />
+                                [% locale.maketext("Enable [output,acronym,DKIM,DomainKeys Identified Mail] on this account.") %]
+                            </label>
+                        </div>
+                    </div>
+
+                    <div class="propertyEditor">
+                        <div class="propertyCombined">
+                            <label for="spf" id="spf_label">
+                                <input type="checkbox" [% data.spf_checked && 'checked="checked"' %] name="spf" id="spf" value="1" />
+                                [% locale.maketext("Enable [output,acronym,SPF,Sender Policy Framework] on this account.") %]
+                            </label>
+                            <span id="default_spf">&nbsp;&nbsp;(<span id="default_spf_string">[% data.default_spf_string FILTER html %]</span>)</span>
+                            <span id="zone_template_controlled"><br />(<a id="zone_template_link" target="_blank" href="../scripts2/editzonetemplate?template=">zone template</a>: <span id="zone_template_spf_string"></span>)</span>
+                        </div>
+                    </div>
+                    [% END # data.item -%]
+                    <div class="propertyEditor">
+                        <div class="propertyCombined">
+                            <label>
+                                <input value="1" [% data.useregns_checked %] type="checkbox" name="useregns" id="useregns" />
+                                [% locale.maketext("Use the nameservers specified at the Domain’s Registrar.") %] ([% locale.maketext("Ignore locally specified nameservers.") %])
+                            </label>
+                        </div>
+                    </div>
+                    [% SET acl_all = 'settings-acl_all' %]
+                    [% IF data.$acl_all %]
+                    <div class="propertyEditor">
+                        <div class="propertyCombined">
+                            <label for="forcedns">
+                                <input value="1" type="checkbox" name="forcedns" id="forcedns" />
+                                [% locale.maketext("Overwrite any existing DNS zones for the account.") %]
+                            </label>
+                        </div>
+                    </div>
+                    [% END # data.$acl_all %]
+                    <div class="propertyEditor last">
+                            <div class="propertyCombined">
+                                <div class="rowWrapper">
+                                    <div id="nsTitle">[% locale.maketext("Nameservers:") %]</div>
+                                    <div id="nstouse"></div>
+                                </div>
+                            </div>
+                    </div>
+                </div>
+                [% END # wrapper %]
+            </fieldset>
+        </div>
+        [% END # dns_settings %]
+
+        <div id="formButtons" class="form-group">
+        [% IF over_account_limit %]
+            <input type="submit" id="submit-error" value="[% locale.maketext("Reached account limit quota.") %]" class="btn btn-primary" disabled />
+        [% ELSE %]
+            <input type="submit" id="submit" value="[% locale.maketext("Create") %]" class="btn btn-primary" />
+        [% END %]
+        </div>
+        </form>
+    [% END #invalid_nameserver_setup -%]
+    [% PROCESS '_ajaxapp_footer.tmpl' -%]
+[% END %]
+[% IF data.mail_workers.size %]
+    <style>
+        .click-reenable select[disabled] {
+            pointer-events: none;
+        }
+    </style>
+    <script>
+        function updateUiPerGlobalSpamassassin(globalspamassassinFlag) {
+            var cb = document.getElementById("spamassassin");
+            var hidden = document.getElementById("spamassassin_hidden");
+
+            cb.disabled = !!globalspamassassinFlag;
+            cb.title = globalspamassassinFlag ? PAGE.spamassassin_disabled_title : "";
+            hidden.disabled = !globalspamassassinFlag;
+        }
+
+        PAGE.local_globalspamassassin = !![% JSON.stringify(data.spamassassin_globally_enabled) %];
+        PAGE.worker_settings = [% JSON.stringify(worker_settings) %];
+        PAGE.spamassassin_disabled_title = [% JSON.stringify(spamassassin_disabled_title) %];
+
+
+
+        document.addEventListener("readystatechange", function (e) {
+            if(document.readyState === "complete") {
+                var linkageSelect = document.getElementById("mail_worker_node_selector");
+                if (linkageSelect) {
+                    let mxCheck = document.getElementById("mxcheck_worker");
+                    if (mxCheck && mxCheck.checked) {
+                        linkageSelect.disabled = false;
+                        linkageSelect.removeAttribute("disabled");
+                    };
+                };
+            };
+        });
+
+        var mxRadios = document.getElementsByName("mxcheck");
+        Array.from(mxRadios).forEach( function(el) {
+            el.addEventListener( 'input', function(e) {
+                var workerSelector = document.getElementById("mail_worker_node_selector");
+
+                var globalspamassassin;
+
+                if (el.value === "worker") {
+                    workerSelector.disabled = false;
+
+                    var selectedWorkerName = workerSelector.options[ workerSelector.selectedIndex ].value;
+
+                    globalspamassassin = !!PAGE.worker_settings[selectedWorkerName].Mail.globalspamassassin;
+                }
+                else {
+                    workerSelector.disabled = true;
+                    globalspamassassin = PAGE.local_globalspamassassin;
+                }
+
+                updateUiPerGlobalSpamassassin(globalspamassassin);
+            } );
+        });
+    </script>
+[% END -%]
+<script>
+PAGE.cPCustomControls = [% custom_controls.json() %];
+PAGE.noPackageDefaults = [% no_package_defaults.json() %];
+
+import('[% MagicRevision('/js/modules/pkgform-help_optimized.js') %]').then( o => {
+[% FOR name_cur = manual_resources_help -%]
+    YAHOO.util.Event.onDOMReady( () => {
+        o.cPSetupResourceHelp(
+            document.getElementById('[% "${name_cur.0}__help" %]'),
+            [% locale.makevar( name_cur.1.label ).json %],
+            [% locale.makevar( name_cur.1.help_text ).json %]
+        );
+    } );
+[% END -%]
+} );
+</script>
+[% END #wrapper -%]

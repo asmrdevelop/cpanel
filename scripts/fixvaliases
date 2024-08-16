@@ -1,0 +1,53 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/fixvaliases                     Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+use warnings;
+
+use Cpanel::ConfigFiles      ();
+use Cpanel::PwCache          ();
+use Cpanel::Email::Constants ();
+use Cpanel::Email::Perms     ();
+
+require "/usr/local/cpanel/scripts/safetybits.pl";    ## no critic qw(RequireBarewordIncludes)
+
+my $mailgid = ( Cpanel::PwCache::getpwnam('mail') )[3];
+
+opendir( CPU, "/var/cpanel/users" );
+my @USERS = readdir(CPU);
+closedir(CPU);
+my $dns = '';
+foreach my $file (@USERS) {
+    next if ( !getpwnam($file) );
+    my @UNFO    = getpwnam($file);
+    my $homedir = $UNFO[7];
+    if ( $homedir ne "" ) {
+        if ( -d "$homedir/mail" ) {
+            safe_chmod( $Cpanel::Email::Perms::MAILDIR_PERMS, "$file", "${homedir}/mail" );
+            safe_chmod( 0660,                                 "$file", "${homedir}/mail/inbox" );
+        }
+    }
+    if ( -f "$Cpanel::ConfigFiles::cpanel_users/$file" ) {
+        open( F, "$Cpanel::ConfigFiles::cpanel_users/$file" );
+        while (<F>) {
+            if (/^DNS=(\S+)/) { $dns = $1; }
+        }
+        close(F);
+        if ( $dns ne "" ) {
+            print "Fixing $dns....\n";
+            open( VA, ">>", "$Cpanel::ConfigFiles::VALIASES_DIR/$dns" );
+            close(VA);
+            open( VF, ">>", "$Cpanel::ConfigFiles::VFILTERS_DIR/$dns" );
+            close(VF);
+            chown $UNFO[2], $mailgid, "$Cpanel::ConfigFiles::VALIASES_DIR/$dns";
+            chown $UNFO[2], $mailgid, "$Cpanel::ConfigFiles::VFILTERS_DIR/$dns";
+            chmod Cpanel::Email::Constants::VFILE_PERMS(), "$Cpanel::ConfigFiles::VALIASES_DIR/$dns";
+            chmod Cpanel::Email::Constants::VFILE_PERMS(), "$Cpanel::ConfigFiles::VFILTERS_DIR/$dns";
+            $dns = '';
+        }
+    }
+}

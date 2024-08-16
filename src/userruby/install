@@ -1,0 +1,50 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+my $thisver = '1.0';
+open( RUBY, '<', 'ruby-wrapper.c' );
+while (<RUBY>) {
+    if (/cPanel Ruby Wrapper ([\d\.]+)/) {
+        $thisver = $1;
+        last();
+    }
+}
+close(RUBY);
+
+system("/usr/local/cpanel/scripts/checkccompiler");
+my $ver;
+my $installed = 0;
+open( RUBY, '<', '/usr/bin/ruby' );
+while (<RUBY>) {
+    if (/cPanel Ruby Wrapper ([\d\.]+)/) {
+        $ver       = $1;
+        $installed = 1;
+        last();
+    }
+}
+close(RUBY);
+
+if ( $ver eq $thisver ) {
+    print "cPanel Ruby Wrapper $thisver is already installed\n";
+    exit();
+}
+
+system( "gcc", '-s', "ruby-wrapper.c", "-o", "/usr/bin/ruby-wrapper" );
+
+if ( -e '/usr/bin/ruby-wrapper' ) {
+    my $time = time();
+
+    if ($installed) {
+        rename( '/usr/bin/ruby',         '/usr/bin/ruby-wrapper.' . $time );
+        rename( '/usr/bin/ruby-wrapper', '/usr/bin/ruby' );
+        print "Upgrade of cPanel Ruby Wrapper from $ver to $thisver Complete\n";
+    }
+    else {
+        rename( '/usr/bin/ruby-bin',     '/usr/bin/ruby.' . $time );
+        rename( '/usr/bin/ruby',         '/usr/bin/ruby-bin' );
+        rename( '/usr/bin/ruby-wrapper', '/usr/bin/ruby' );
+        print "Install of cPanel Ruby Wrapper $thisver Complete\n";
+    }
+}
+else {
+    print "Install Failed\n";
+}

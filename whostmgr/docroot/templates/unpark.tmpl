@@ -1,0 +1,23 @@
+[% IF ! data.noheader -%]
+[% PROCESS 'master_templates/_defheader.tmpl'
+    theme="yui"
+    header = locale.maketext('Unpark a Domain')
+    breadcrumburl = '/scripts2/listparked'
+-%]
+[% END -%]
+[% IF ! data.accountexists -%]
+Unable to find out which user owns the parked domain [% data.pdomain %].
+[% ELSIF ! data.hasaccess -%]
+Access denied. You don't seem to have access to that user.
+[% ELSIF ! data.result -%]
+<p class="errors">There was a problem unparking [% data.pdomain %] from [% data.maindomain %]:
+                <a href="#" onClick="document.getElementById('details').style.display='block'; return false;">Show Details</a> </p>
+                <div class="details" id="details">
+                [% data.error -%]
+                </div>
+[% ELSE -%]
+[% data.pdomain %] was successfully unparked from [% data.maindomain %].
+[% END -%]
+[% IF ! data.noheader -%]
+[% PROCESS 'master_templates/_deffooter.tmpl' theme="yui" -%]
+[% END -%]

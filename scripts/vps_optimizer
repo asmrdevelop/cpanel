@@ -1,0 +1,272 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/vps_optimizer                   Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::vps_optimzer;
+
+use strict;
+use warnings;
+
+use Try::Tiny;
+use Pod::Usage   ();
+use Getopt::Long ();
+
+use Cpanel::LoadFile                      ();
+use Cpanel::Exception                     ();
+use Cpanel::ArrayFunc::Uniq               ();
+use Cpanel::FileUtils::TouchFile          ();
+use Cpanel::Transaction::File::LoadConfig ();
+
+our $version      = '2.0';
+our $CPSPAMD_PATH = '/etc/cpspamd.conf';
+
+exit __PACKAGE__->new()->run_from_command_line(@ARGV) unless caller();
+
+sub new {
+    my $class = shift;
+    return bless {}, $class;
+}
+
+sub run_from_command_line {
+    my ( $self, @cmdline_args ) = @_;
+
+    die Cpanel::Exception::create('RootRequired')->to_string_no_id() unless ( $> == 0 && $< == 0 );
+
+    $self->{'opts'} = _parse_and_validate_opts( \@cmdline_args );
+
+    # -1 to get the right exit code
+    return Pod::Usage::pod2usage( -exitval => 'NOEXIT', -output => \*STDOUT, -verbose => 99, -sections => [qw(NAME DESCRIPTION SYNOPSIS)] ) - 1
+      if $self->{'opts'}->{'help'};
+
+    return 1 if !$self->_validate_environment();
+    return 0 if !$self->_should_run_on_environment();
+
+    my $changes  = $self->determine_changes_to_be_made();
+    my $restarts = $self->make_changes($changes);
+
+    $self->_restart_services($restarts);
+    $self->_mark_run_complete();
+
+    return 0;
+}
+
+sub determine_changes_to_be_made {
+    my $self = shift;
+
+    # defaults used in the previous version
+    my $changes = {
+        'conserve_memory' => 1,
+        'spamd_config'    => {
+            'maxspare'    => 1,
+            'maxchildren' => 3,
+        }
+    };
+
+    require Cpanel::Sys::Hardware::Memory;
+    my $mem_on_system = Cpanel::Sys::Hardware::Memory::get_installed();    # returns MiB
+
+    if ( $mem_on_system > 1500 ) {
+        $changes->{'conserve_memory'} = 0;
+
+        if ( $mem_on_system < 2500 ) {
+            $changes->{'spamd_config'}->{'maxspare'}    = 2;
+            $changes->{'spamd_config'}->{'maxchildren'} = 6;
+        }
+        elsif ( $mem_on_system < 4000 ) {
+            $changes->{'spamd_config'}->{'maxspare'}    = 3;
+            $changes->{'spamd_config'}->{'maxchildren'} = 9;
+        }
+        else {
+            $changes->{'spamd_config'}->{'maxspare'}    = 3;
+            $changes->{'spamd_config'}->{'maxchildren'} = 12;
+        }
+    }
+
+    return $changes;
+}
+
+sub make_changes {
+    my ( $self, $changes_hr ) = @_;
+
+    if ( $changes_hr->{'conserve_memory'} ) {
+        print '[*] Enabling conserve_memory options... ';
+        Cpanel::FileUtils::TouchFile::touchfile('/var/cpanel/conserve_memory')
+          if !$self->{'opts'}->{'dry-run'};
+        print "Done\n";
+    }
+    elsif ( -e '/var/cpanel/conserve_memory' ) {
+        print '[*] Disabling conserve_memory options... ';
+        unlink '/var/cpanel/conserve_memory'
+          if !$self->{'opts'}->{'dry-run'};
+        print "Done\n";
+    }
+
+    require Cpanel::Config::Services;
+    my $restarts = [qw/exim dovecot tailwatchd/];
+    if ( Cpanel::Config::Services::service_enabled('spamd') ) {
+        $self->update_spamd_config( $changes_hr->{'spamd_config'} );
+        unshift @{$restarts}, 'spamd';
+    }
+    return $restarts;
+}
+
+sub update_spamd_config {
+    my ( $self, $spamd_config ) = @_;
+    my $ex;
+
+    require Cpanel::Transaction::File::LoadConfig;
+    try {
+        my $cpspamd_txn      = Cpanel::Transaction::File::LoadConfig->new( 'path' => $CPSPAMD_PATH, 'delimiter' => '=', 'permissions' => 0644 );
+        my $cur_spamd_config = $cpspamd_txn->get_data();
+        foreach my $directive ( sort ( Cpanel::ArrayFunc::Uniq::uniq( keys %{$spamd_config}, keys %{$cur_spamd_config} ) ) ) {
+            if ( !exists $cur_spamd_config->{$directive} ) {
+                print "[*] Adding spamassassin $directive as “$spamd_config->{$directive}”...\n";
+            }
+            elsif ( !exists $spamd_config->{$directive} || $spamd_config->{$directive} == $cur_spamd_config->{$directive} ) {
+                $spamd_config->{$directive} = $cur_spamd_config->{$directive};
+                print "[*] Preserving spamassassin $directive as “$spamd_config->{$directive}”...\n";
+            }
+            else {
+                print "[*] Switching spamassassin $directive from “$cur_spamd_config->{$directive}” to “$spamd_config->{$directive}”...\n";
+            }
+        }
+
+        if ( !$self->{'opts'}->{'dry-run'} ) {
+            $cpspamd_txn->set_data($spamd_config);
+            $cpspamd_txn->save_or_die();
+        }
+
+        print "[+] Done\n";
+    }
+    catch {
+        $ex = $_;
+
+        print "[!] " . Cpanel::Exception::get_string_no_id($ex) . "\n";
+    };
+
+    return $ex ? 0 : 1;
+}
+
+sub _restart_services {
+    my ( $self, $restarts_ar ) = @_;
+
+    return if $self->{'opts'}->{'dry-run'};
+
+    print "[*] Enqueueing service restarts....\n";
+    foreach my $service ( @{$restarts_ar} ) {
+        _schedule_cpservices_task("restartsrv $service");
+    }
+    print "[+] Done\n";
+    return;
+}
+
+sub _mark_run_complete {
+    my $self = shift;
+
+    if ( !-e '/var/cpanel/vps_optimized' ) {
+        mkdir( '/var/cpanel/vps_optimized', 0700 );
+    }
+
+    Cpanel::FileUtils::TouchFile::touchfile("/var/cpanel/vps_optimized/$version")
+      if !$self->{'opts'}->{'dry-run'};
+
+    print "[+] Optimizations Complete!\n";
+    return 1;
+}
+
+sub _should_run_on_environment {
+    my $self = shift;
+
+    my $envtype = Cpanel::LoadFile::loadfile('/var/cpanel/envtype');
+    if ( $envtype && $envtype eq 'standard' ) {
+        print "[*] This script is not meant to be run on standard environments\n";
+        return 0;
+    }
+    if ( -e '/var/cpanel/vps_optimized/' . $version && !$self->{'opts'}->{'force'} ) {
+        print "[*] Optimizations have already been performed once. Use --force to redo optimizations\n";
+        return 0;
+    }
+    return 1;
+}
+
+sub _schedule_cpservices_task {
+    my ($task_str) = @_;
+
+    my $err;
+    require Cpanel::ServerTasks;
+    try {
+        Cpanel::ServerTasks::schedule_task( ['CpServicesTasks'], 5, $task_str );
+    }
+    catch {
+        $err = $_;
+    };
+    if ($err) {
+        print "[!] " . Cpanel::Exception::get_string_no_id($err) . "\n";
+        return 0;
+    }
+    return 1;
+}
+
+sub _validate_environment {
+    my $self = shift;
+
+    if ( !-e '/usr/local/cpanel/cpkeyclt' ) {
+        print "[!] Incomplete cPanel installation found. Missing cpkeyclt binary!\n" if $self->{'opts'}->{'verbose'};
+        return 0;
+    }
+
+    if ( !-e '/var/cpanel/envtype' ) {
+        print "[*] Validating system environment via cpkeyclt...\n" if $self->{'opts'}->{'verbose'};
+        system '/usr/local/cpanel/cpkeyclt';
+        if ( !-e '/var/cpanel/envtype' ) {
+            print "[!] Problem verifying license information";
+            return 0;
+        }
+    }
+
+    return 1;
+}
+
+sub _parse_and_validate_opts {
+    my $cmdline_args_ar = shift;
+
+    my $opts = {};
+    Getopt::Long::GetOptionsFromArray(
+        $cmdline_args_ar,
+        $opts,
+        'help',    'verbose', 'force',
+        'dry-run', 'skipstartup'
+    ) or die Cpanel::Exception->create_raw("[!] Invalid usage. See --help\n")->to_string_no_id();
+
+    return $opts;
+}
+
+1;
+
+__END__
+
+=encoding utf8
+
+=head1 NAME
+
+vps_optimizer
+
+=head1 DESCRIPTION
+
+Utility to optimize services for Virtual Private Servers.
+
+=head1 SYNOPSIS
+
+    vps_optimizer [OPTIONS]
+
+    --dry-run         Do not perform any optimization. Simply print what will be done to the screen.
+    --skipstartup     Do not [re]start services after configuration changes have been made.
+    --force           Perform optimizations even if script was run previously.
+    --verbose         Enable verbose output
+
+    --help            This documentation.
+
+=cut

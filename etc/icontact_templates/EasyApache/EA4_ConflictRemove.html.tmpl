@@ -1,0 +1,49 @@
+[%#
+Purpose
+=======
+
+This notification should be used when there are packages removed in EA4 environment
+as a result of resolving conflicts in the package dependencies.
+
+This notification helps the user to know and understand the conflicts among a package dependencies and
+how they got resolved.
+
+Required Variables
+==================
+
+tried_to_keep - A package name that is kept as part of resolving a conflict.
+tried_to_remove - A package name that is removed/uninstalled as part of resolving a conflict.
+failed_to_remove - Could not remove the desired package because of an error while resolving the conflict.
+
+For more information about how to customize notification templates, read our documentation at https://go.cpanel.net/notificationtemplates
+
+-%]
+
+[%
+    PROCESS "include/colors.tmpl";
+    PROCESS "include/styles.tmpl";
+    PROCESS "include/code_block.tmpl";
+
+    SET reason = CPANEL.locale.maketext('The “[_1]” package conflicts with the “[_2]” package in [asis,EasyApache 4].', NOTICE.tried_to_keep, NOTICE.tried_to_remove);
+    WRAPPER 'wrapper/main.html.tmpl';
+          NOTICE.email_reason = reason;
+%]
+    [% IF !NOTICE.failed_to_remove %]
+    <p>
+        [% CPANEL.locale.maketext('To resolve this conflict, we removed the “[output,strong,_1]” package and kept the “[output,strong,_2]” package.', NOTICE.tried_to_remove, NOTICE.tried_to_keep) %]
+    </p>
+    [% ELSE %]
+    <p>
+        [% CPANEL.locale.maketext('To resolve this conflict, we attempted to remove the “[output,strong,_1]” package and keep the “[output,strong,_2]” package. However, the system encountered the following error:', NOTICE.tried_to_remove, NOTICE.tried_to_keep) %]
+    </p>
+    <ul>
+        <li>
+            <strong>[% NOTICE.failed_to_remove %]</strong>
+        </li>
+    </ul>
+    <p>
+        [% CPANEL.locale.maketext('[output,strong,Note]: You must remove one of the packages manually to resolve this conflict.') %]
+    </p>
+    [% END %]
+
+[% END #END of Wrapper -%]

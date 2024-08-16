@@ -1,0 +1,25 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - bin/mount_cpbackup                      Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use Cpanel::Config::Backup ();
+use Cpanel::BackupMount    ();
+
+$Cpanel::BackupMount::VERBOSE = 1;
+my $bck_conf_ref = Cpanel::Config::Backup::load();
+if ( $bck_conf_ref->{'BACKUPMOUNT'} && $bck_conf_ref->{'BACKUPDIR'} ) {
+    if ( $0 =~ /unmount/i ) {
+        Cpanel::BackupMount::unmount_backup_disk( $bck_conf_ref->{'BACKUPDIR'}, 'cpbackup_mount' );
+    }
+    else {
+        Cpanel::BackupMount::mount_backup_disk( $bck_conf_ref->{'BACKUPDIR'}, 'cpbackup_mount', 86400 );
+    }
+}
+else {
+    print "No backup disk is configured\n";
+}
+
+exit 0;

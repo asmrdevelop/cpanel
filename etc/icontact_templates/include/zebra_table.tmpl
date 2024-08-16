@@ -1,0 +1,56 @@
+[% MACRO zebra_table BLOCK %]
+[%#
+
+    Usage:
+
+    titles (optional) - array of titles to be used
+    items             - array of arrays of values to display
+    boldfirst         - if set, will make first column bold
+
+-%]
+   <table style="
+        margin:5px auto;
+        border: 1px solid [% dark_gray %];
+        padding:0;"
+        cellpadding="0" cellspacing="0" >
+        [% IF titles %]
+            <tr>
+                [% FOREACH title IN titles %]
+                <th style="
+                    border-bottom: 1px solid [% dark_gray %];
+                    background-color: [% medium_gray %];
+                    padding: 5px;
+                    [% IF loop.last -%]
+                    padding-right:10px;
+                    [%- END %]
+                    [% IF loop.first -%]
+                    padding-left:10px;
+                    [%- END %]"
+                    align="left">
+                    [% title %]
+                </th>
+                [% END %]
+            </tr>
+        [% END %]
+        [% FOREACH item IN items %]
+        <tr style="background-color:[% loop.index % 2 == 1 ? light_gray : white %];">
+            [% FOREACH col IN item %]
+            <td style="
+                [% IF boldfirst && loop.first -%]
+                font-weight:bold;
+                [%- END %]
+                font-family: [% mono_font_family %];
+                padding: 5px;
+                [% IF loop.last -%]
+                padding-right:10px;
+                [%- END %]
+                [% IF loop.first -%]
+                padding-left:10px;
+                [%- END %]" >
+                [% col %]
+            </td>
+            [% END %]
+        </tr>
+        [% END %]
+   </table>
+[% END %]

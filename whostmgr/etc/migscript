@@ -1,0 +1,74 @@
+
+my $DOMAINS_PER_BATCH = 256;
+
+my $domain_to_user_map = Cpanel::Config::LoadUserDomains::loaduserdomains( {}, 1 );
+my @zones_to_process = sort keys %$domain_to_user_map;
+
+my ( @all_results, @reload_list );
+while ( my @zones = splice( @zones_to_process, 0, $DOMAINS_PER_BATCH ) ) {
+
+    # First break down the domain list into a list of zones we need to fetch
+    print "Fetching a block of zones...(@zones zones)..." . flush_buffer();
+
+    my %ZONES = %{ Cpanel::DnsUtils::Fetch::fetch_zones( 'zones' => \@zones ) };
+    print "Done." . line_break();
+
+    js_scroll();
+
+    my $SYNCZONES_request_data;
+
+    foreach my $zone ( keys %ZONES ) {
+        next if !$ZONES{$zone};
+
+        my $zone_updated = 0;
+        if ( !$ZONES{$zone} || $ZONES{$zone} =~ m/^[\r\s\n]*$/ ) {
+            next;
+        }
+        $ZONES{$zone} =~ s/\b([0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3})/$IPS{$1} ? (($zone_updated = 1) ? $IPS{$1} : $IPS{$1}) : $1/ge;
+        if ($zone_updated) {
+            print qq{Updating $zone..} . flush_buffer();
+
+            if ( !length $ZONES{$zone} ) {
+                warn qq{Critical error the zone "$zone" was unexpectedly empty after modification.};
+                next;
+            }
+            $ZONES{$zone} = Cpanel::DnsUtils::Stream::upsrnumstream( $ZONES{$zone} );    #increase serial number
+            $ZONES{$zone} =~ s/([^\w\-\.\@])/sprintf("%%%2.2x",ord($1))/eg;
+
+            $SYNCZONES_request_data .= "cpdnszone-$zone=$ZONES{$zone}&";
+
+            push @reload_list, $zone;
+            print "...done" . line_break();
+        }
+    }
+
+    js_scroll();
+
+    Cpanel::DnsUtils::AskDnsAdmin::askdnsadmin( 'SYNCZONES', 0, '', '', '', $SYNCZONES_request_data ) if $SYNCZONES_request_data;
+}
+
+print line_break();
+if (@reload_list) {
+    print "Reloading nameserver for zone changes..." . flush_buffer();
+    print line_break();
+    Cpanel::DnsUtils::AskDnsAdmin::askdnsadmin( 'RELOADZONES', 0, join( ',', @reload_list ) )
+      unless !@reload_list;
+}
+else {
+    print "No zone files were updated...." . flush_buffer();
+}
+
+print "Done.";
+print line_break();
+
+sub flush_buffer {
+    $ENV{'WHM50'} ? " \n " : "";
+}
+
+sub line_break {
+    $ENV{'WHM50'} ? "<br />\n" : "\n";
+}
+
+sub js_scroll {
+    syswrite( STDOUT, '<script>window.setTimeout(function() { try { scrollend() } catch (e) { } },180);</script>' . "\n" ) if $ENV{'WHM50'};
+}

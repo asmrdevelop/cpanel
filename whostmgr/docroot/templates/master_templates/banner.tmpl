@@ -1,0 +1,30 @@
+<!-- banner -->
+[%
+    SET banner = Whostmgr.get_banner_details(app_key);
+
+    # Banner styles are not compatible with YUI based apps.
+    IF theme == 'yui';
+        hide_banner_ad = 1;
+    END;
+%]
+[% IF !hide_banner_ad && banner.defined && !(theme == 'bootstrap' || theme == 'jupiter') %]
+    [% IF locale.get_html_dir_attr() == 'rtl'; %]
+        <link rel='stylesheet' type='text/css' href="[% Whostmgr.find_file_url('/styles/master-rtl.cmb.min.css') %]" />
+    [% ELSE %]
+        <link rel='stylesheet' type='text/css' href="[% Whostmgr.find_file_url('/styles/master-ltr.cmb.min.css') %]" />
+    [% END %]
+[% END %]
+
+[% IF hide_banner_ad;
+        # Do not show the banner ad
+   ELSIF banner.key.defined;
+        IF banner.template.defined && template_exists("/usr/local/cpanel/whostmgr/docroot/templates/banners/${banner.key}/${banner.template}");
+            INCLUDE "/usr/local/cpanel/whostmgr/docroot/templates/banners/${banner.key}/${banner.template}";
+        ELSE;
+            INCLUDE "/usr/local/cpanel/whostmgr/docroot/templates/banners/def_banner.ptt";
+        END;
+   ELSIF template_exists("/var/cpanel/customizations/whm/includes/${app_key}_banner.html.tt");
+        INCLUDE "/var/cpanel/customizations/whm/includes/${app_key}_banner.html.tt";
+   END
+%]
+<!-- banner -->

@@ -1,0 +1,131 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/check_maxmem_against_domains_count
+#                                                  Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::check_maxmem_against_domains_count;
+
+=encoding utf-8
+
+=head1 NAME
+
+check_maxmem_against_domains_count
+
+=head1 USAGE
+
+    check_maxmem_against_domains_count [ --always-fix | --report-only ]
+
+    check_maxmem_against_domains_count --help
+
+=head1 DESCRIPTION
+
+This script verifies that C<maxmem> in F<cpanel.config> is sufficient
+for the number of accounts on the server. If there is a problem, it
+defaults to prompting the user for the proper course of action.
+
+=cut
+
+use strict;
+use warnings;
+
+use parent qw( Cpanel::HelpfulScript );
+
+use Try::Tiny;
+
+use IO::Prompt ();
+
+use Cpanel::Config::LoadCpConf  ();
+use Cpanel::Config::CpConfGuard ();
+use Cpanel::Maxmem              ();
+
+use constant _OPTIONS => (
+    'always-fix',
+    'report-only',
+);
+
+__PACKAGE__->new(@ARGV)->run() if !caller;
+
+sub run {
+    my ($self) = @_;
+
+    #Load this right off because if we try to instantiate Locale
+    #while we already have cpconf locked we’ll get double locking.
+    #(Why do we lock the file to read cpconf for locale??)
+    $self->locale();
+
+    my $cpconf_ref = Cpanel::Config::LoadCpConf::loadcpconf_not_copy();
+
+    $self->_check_maxmem($cpconf_ref);
+
+    return;
+}
+
+sub _check_maxmem {
+    my ( $self, $cpconf_ref ) = @_;
+
+    my $proceed_yn;
+    if ( $self->getopt('report-only') ) {
+        $proceed_yn = 0;
+    }
+
+    if ( $self->getopt('always-fix') ) {
+        if ( defined $proceed_yn ) {
+            die $self->help( $self->locale()->maketext( 'Do not provide both “[_1]” and “[_2]”.', '--report-only', '--always-fix' ) );
+        }
+
+        $proceed_yn = 1;
+    }
+
+    my $min_maxmem = $self->_get_min_maxmem();
+    $self->say_maketext( 'Minimum “[_1]” value: [_2]', 'maxmem', $min_maxmem );
+
+    my $status_quo = $cpconf_ref->{'maxmem'};
+    $self->say_maketext( 'Current “[_1]” value: [_2]', 'maxmem', $status_quo );
+
+    $self->say(q<>);
+
+    if (
+        !$status_quo ||                                            # == 0 is unlimited
+        $status_quo eq 'unlimited' || $status_quo >= $min_maxmem
+    ) {
+        $self->say_maketext( 'Your system’s “[_1]” setting meets the minimum requirements for the number of [asis,cPanel] accounts on the system.', 'maxmem' );
+    }
+    else {
+        $self->say_maketext( 'Your system’s “[_1]” is too low.', 'maxmem' );
+
+        my $locale = $self->locale();
+
+        if ( !defined $proceed_yn ) {
+            $proceed_yn = IO::Prompt::prompt(
+                '-yes_no',
+                "\n" . $locale->maketext('Do you want the system to update this setting now?') . q< [y/n] >,
+            );
+        }
+
+        if ($proceed_yn) {
+            $self->say_maketext('The system will now update this setting to the minimum value.');
+
+            my $cpconf_obj = Cpanel::Config::CpConfGuard->new();
+            $cpconf_obj->set( 'maxmem' => $min_maxmem );
+            $cpconf_obj->save();
+
+            $self->say(q<>);
+            $self->say_maketext( '“[_1]” is now set to the minimum value.', 'maxmem' );
+        }
+    }
+
+    return;
+}
+
+#----------------------------------------------------------------------
+
+#overridden in tests
+sub _get_min_maxmem {
+    my ( $self, @args ) = @_;
+    return Cpanel::Maxmem::minimum(@args);
+}
+
+1;

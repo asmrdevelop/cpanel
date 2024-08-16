@@ -1,0 +1,314 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/enable_spf_dkim_globally        Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+#
+
+package scripts::enable_spf_dkim_globally;
+
+use strict;
+use warnings;
+
+use Cpanel::SPF                     ();
+use Cpanel::DKIM::Transaction       ();
+use Cpanel::Logger                  ();
+use Cpanel::Config::Users           ();
+use Cpanel::Config::CpUserGuard     ();
+use Cpanel::Config::LoadCpUserFile  ();
+use Cpanel::DnsUtils::AskDnsAdmin   ();
+use Cpanel::DnsUtils::Fetch         ();
+use Cpanel::PwCache::Build          ();
+use Cpanel::ZoneFile                ();
+use Cpanel::Config::LoadUserDomains ();
+use Cpanel::ServerTasks             ();
+use Getopt::Long                    ();
+
+my $DOMAINS_TO_RELOAD_EACH_CALL    = 2048;
+my $DKIM_RECORD_NAME_PREFIX        = 'default._domainkey.';
+my $DKIM_RECORD_NAME_PREFIX_LENGTH = length $DKIM_RECORD_NAME_PREFIX;
+
+our $logger;
+our @USERS = ();
+
+sub new {
+    my $pkg = shift;
+    return bless {
+        domains_by_user => scalar Cpanel::Config::LoadUserDomains::loaduserdomains( undef, 0, 1 ),
+        reload_zones    => [],
+    }, $pkg;
+}
+
+sub as_script {
+    my $self = shift;
+
+    $logger //= Cpanel::Logger->new();
+
+    my $execute;
+    Getopt::Long::GetOptions(
+        "user=s" => \@USERS,
+        "x"      => \$execute,
+    );
+
+    if ( not $execute ) {
+        my $msg = qq{To execute, use the -x flag.};
+        $logger->die($msg);
+    }
+
+    $self->run();
+
+    return 1;
+}
+
+sub run {
+    my $self         = shift;
+    my $options_href = shift;    # { users => [qw/user1 user2/] }
+
+    $logger //= Cpanel::Logger->new();
+
+    my @users =
+      ( exists $options_href->{user} and @{ $options_href->{user} } ) ?    #
+      @{ $options_href->{user} }
+      :                                                                    #
+      scalar @USERS ?                                                      #
+      @USERS
+      :                                                                    #
+      Cpanel::Config::Users::getcpusers();                                 #
+
+    Cpanel::PwCache::Build::init_passwdless_pwcache() if scalar @users > 5;
+
+    my $domains_by_user = $self->{domains_by_user};
+
+  USERS:
+    foreach my $user (@users) {
+
+        unless ( exists $domains_by_user->{$user} ) {
+            $logger->warn(qq{Invalid user "$user", skipping.});
+            next USERS;
+        }
+
+        my $users_domains_ref = $domains_by_user->{$user};
+
+        $self->_enable_spf_dkim_cpusers_file($user);
+
+        my $zone_ref = Cpanel::DnsUtils::Fetch::fetch_zones( 'zones' => $users_domains_ref );
+
+        $self->_setup_spf_for_all_users_domains( $user, $zone_ref );
+
+        $zone_ref = Cpanel::DnsUtils::Fetch::fetch_zones( 'zones' => $users_domains_ref );    # Need to fetch again in case setup_spf has modified them
+
+        $self->_setup_dkim_for_users_domains_without_it( $user, $zone_ref );
+
+        push @{ $self->{'reload_zones'} }, grep { exists $zone_ref->{$_} } @$users_domains_ref;
+    }
+
+    $self->_reload_zones();
+
+    Cpanel::ServerTasks::queue_task( ['DKIMTasks'], 'refresh_entire_dkim_validity_cache' );
+
+    return 1;
+}
+
+sub _setup_spf_for_all_users_domains {
+    my ( $self, $user, $zone_ref ) = @_;
+
+    my $users_domains_ref = $self->{domains_by_user}->{$user};
+
+    # set up SPF on all domains owned by $users
+    my ( $status, $msg ) = Cpanel::SPF::setup_spf(
+        'user'       => $user,
+        'preserve'   => 1,
+        'skipreload' => 1,
+        'zone_ref'   => $zone_ref
+    );
+    $logger->warn(qq{Failed to set up SPF for $user: $msg}) unless $status;
+    return $status;
+}
+
+sub _setup_dkim_for_users_domains_without_it {
+    my ( $self, $user, $zone_ref ) = @_;
+
+    my $users_domains_ref       = $self->{domains_by_user}->{$user};
+    my $seen_dkim_for_domain_hr = _find_domains_that_have_dkim_installed($zone_ref);
+
+    foreach my $domain (@$users_domains_ref) {
+        if ( $seen_dkim_for_domain_hr->{$domain} ) {
+            $logger->info(qq{"default._domainkey" DKIM TXT record detected for $domain, skipping.});
+        }
+    }
+
+    my @domains_to_setup_dkim_on = grep { !$seen_dkim_for_domain_hr->{$_} } @$users_domains_ref;
+    if (@domains_to_setup_dkim_on) {
+
+        my $dkim = Cpanel::DKIM::Transaction->new();
+
+        my @w;
+
+        my $result = do {
+            local $SIG{'__WARN__'} = sub { push @w, @_ };
+
+            $dkim->set_up_user_domains(
+                $user,
+                \@domains_to_setup_dkim_on,
+                $zone_ref,
+            );
+        };
+
+        $dkim->commit();
+
+        if ( !$result || !$result->was_any_success() ) {
+            $logger->warn(qq{Failed to set up DKIM for $user: @w});
+        }
+
+        return $result->was_any_success();
+    }
+    return;
+}
+
+sub _enable_spf_dkim_cpusers_file {
+    my ( $self, $user ) = @_;
+    my $cpuser_data = Cpanel::Config::LoadCpUserFile::loadcpuserfile($user);
+    if ( !$cpuser_data->{'HASSPF'} || !$cpuser_data->{'HASDKIM'} ) {
+
+        # check each domain to make sure that we don't overwrite SPF
+        my $lock = Cpanel::Config::CpUserGuard->new($user);
+        $lock->{data}{HASSPF}  = 1;
+        $lock->{data}{HASDKIM} = 1;
+        $lock->save;
+    }
+    return 1;
+}
+
+sub _reload_zones {
+    my ($self) = @_;
+
+    while ( @{ $self->{'reload_zones'} } ) {
+        Cpanel::DnsUtils::AskDnsAdmin::askdnsadmin( 'RELOADZONES', 0, join( ',', splice( @{ $self->{'reload_zones'} }, 0, $DOMAINS_TO_RELOAD_EACH_CALL ) ) );
+    }
+    return 1;
+}
+
+sub _find_domains_that_have_dkim_installed {
+    my ($zone_ref) = @_;
+
+    my %seen_dkim_for_domain;
+
+    foreach my $zone ( keys %$zone_ref ) {
+        my $dkim_records_ar = _get_dkim_records_from_zone_ref( $zone, $zone_ref->{$zone} );
+        foreach my $record (@$dkim_records_ar) {
+            my $record_name_without_prefix = substr( $record->{'name'}, $DKIM_RECORD_NAME_PREFIX_LENGTH );
+            my $domain                     = _convert_zone_name_to_domain( $record_name_without_prefix, $zone );
+            $seen_dkim_for_domain{$domain} = 1;
+        }
+    }
+
+    return \%seen_dkim_for_domain;
+}
+
+sub _get_dkim_records_from_zone_ref {
+    my ( $zone, $zone_contents_ar ) = @_;
+    my $zone_obj = Cpanel::ZoneFile->new( 'domain' => $zone, 'text' => $zone_contents_ar );
+    return [ grep { index( $_->{'name'}, $DKIM_RECORD_NAME_PREFIX ) == 0 } $zone_obj->find_records( { 'type' => 'TXT' } ) ];
+
+}
+
+sub _convert_zone_name_to_domain {
+    my ( $zone_name_record, $zone ) = @_;
+
+    # If the name does not end with a . we must append .$zone
+    if ( substr( $zone_name_record, -1 ) eq '.' ) {
+        return substr( $zone_name_record, 0, -1 );    # strip tailing .
+    }
+    return $zone_name_record . '.' . $zone;
+}
+
+if ( not caller() ) {
+    my $enable = scripts::enable_spf_dkim_globally->new();
+    $enable->as_script;
+    exit 0;
+}
+
+1;
+
+__END__
+
+=head1 NAME
+
+/scripts/enable_spf_dkim_globally
+
+=head1 USAGE AS A SCRIPT
+
+  /scripts/enable_spf_dkim_globally -x [--user=<user1>] [--user=<user2>] ... [--user=<userN>]
+
+=head2 AS A LIBRARY
+
+This script is internally written as a modulino, which means it can be C<require>'d:
+
+  use strict;
+  require q{/scripts/enable_spf_dkim_globally};
+  my $enable = scripts::enable_spf_dkim_globally->new();
+  $enable->run();                                       # globally enable, iterate over domains from all users
+  $enable->run( { user => [qw/username1 username2/] }); # globally enable, iterate over domains from list of specified users
+
+=head1 DESCRIPTION
+
+This script enables C<SPF> and C<DKIM> system-wide, and it adds respective C<DNS> entries for all domains
+if none exist. If a C<DKIM DNS> record is detected for a domain, it remains untouched. If a C<SPF>
+record exists, it is updated.
+
+The scope of the domains that are affected with new C<DKIM>/C<SPF> or updated C<SPF> records may be limited
+by using the C<--user> flag to specify one or more users from whom the list of domains to affect is generated.
+
+=head1 REQUIRED COMMAND LINE ARGUMENTS
+
+=over 4
+
+=item -x
+
+Use this option to actually run the script, otherwise it will warn and return
+without doing anything.
+
+=back
+
+=head1 COMMAND LINE OPTIONS
+
+=over 4
+
+=item --user C<username>
+
+Specify a user or list of users for whom all domains are enabled rather than all user
+accounts on the system. Specify more than one user by using one C<--user> per username.
+
+For example,
+
+  /scripts/enable_spf_dkim_globally -x --user="username1" --user="username2"
+
+If no users are specified, all domains for all user accounts on the system are enabled.
+
+=back
+
+=head1 DIAGNOSTICS
+
+None
+
+=head1 EXIT STATUS
+
+Exit status is 0 (success) unless an unexpected error occurs.
+
+=head1 DEPENDENCIES
+
+None
+
+=head1 INCOMPATIBILITIES
+
+None
+
+=head1 BUGS AND LIMITATIONS
+
+None
+
+=head1 LICENSE AND COPYRIGHT
+
+   Copyright 2022 cPanel, L.L.C.

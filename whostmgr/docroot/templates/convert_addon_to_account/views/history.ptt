@@ -1,0 +1,174 @@
+<div class="row">
+    <div class="col-xs-6">
+        <h2>[% locale.maketext('Conversion History') %]</h2>
+    </div>
+    <div class="col-xs-6 text-right flip">
+        <div class="navigation-controls">
+            <button id="viewAddons"
+                type="button"
+                class="btn btn-primary"
+                ng-click="history.viewAddons()">
+                [% locale.maketext('View Addon Domains') %]</button>
+        </div>
+    </div>
+</div>
+<p class="description">[% locale.maketext('The Conversion History page displays completed and in progress conversions.') %]</p>
+<div id="paginationControls" class="row search-page-container">
+    <div class="col-xs-12 col-sm-12 col-md-4 col-lg-4">
+        <search id="filterList"
+            ng-model="history.conversions.meta.filterValue"
+            placeholder="[% locale.maketext('Filter by domain') %]"
+            autofocus
+            ng-change="history.conversions.searchList()"></search>
+    </div>
+    <div class="col-xs-12 col-sm-12 col-md-8 col-lg-8">
+        <div id="paginator" class="pagination-container pull-right flip hidden-xs hidden-sm">
+            <page-size id="topPageSize"
+                allowed-sizes="history.conversions.meta.pageSizes"
+                total-items="history.conversions.meta.totalItems"
+                ng-model="history.conversions.meta.pageSize"
+                show-all="false"
+                ng-change="history.conversions.selectPageSize()">
+            </page-size>
+            <uib-pagination id="topPager"
+                ng-change="history.conversions.selectPage()"
+                ng-model="history.conversions.meta.pageNumber"
+                max-size="history.conversions.meta.maxPages"
+                items-per-page="history.conversions.meta.pageSize"
+                total-items="history.conversions.meta.totalItems"
+                direction-links="true"
+                boundary-links="true"
+                rotate="false"
+                first-text="<<"
+                last-text=">>"
+                previous-text="<"
+                next-text=">">
+            </uib-pagination>
+        </div>
+    </div>
+</div>
+<div id="tableStats" class="row hidden-xs hidden-sm">
+    <div class="col-xs-8">
+        <div class="page-stats selected-stats">
+        </div>
+    </div>
+    <div class="col-xs-4">
+        <div class="page-stats pull-right flip">
+        {{history.conversions.paginationMessage()}}
+        </div>
+    </div>
+</div>
+<div id="tableContainer">
+    <table id="table" class="table table-striped responsive-table">
+        <thead>
+            <tr>
+                <th id="domainHeader">
+                    <span toggle-sort id="sortByDomain" onsort="history.conversions.sortList" sort-meta="history.conversions.meta" sort-field="domain">
+                        [% locale.maketext('Domain') %]
+                    </span>
+                </th>
+                <th id="statusHeader">
+                    <span toggle-sort id="sortByStatus" onsort="history.conversions.sortList" sort-meta="history.conversions.meta" sort-field="status">
+                        [% locale.maketext('Status') %]
+                    </span>
+                </th>
+                <th id="startTimeHeader">
+                    <span toggle-sort id="sortByStartTime" onsort="history.conversions.sortList" sort-meta="history.conversions.meta" sort-field="start_time">
+                        [% locale.maketext('Start Time') %]
+                    </span>
+                </th>
+                <th id="endTimeHeader">
+                    <span toggle-sort id="sortByEndTime" onsort="history.conversions.sortList" sort-meta="history.conversions.meta" sort-field="end_time">
+                        [% locale.maketext('End Time') %]
+                    </span>
+                </th>
+                <th id="actionsHeader" class="actions-column">[% locale.maketext('Actions') %]</th>
+                <th id="historGearMenuContainer" class="gearColumn text-right flip">
+                    <span class="dropdown" uib-dropdown>
+                        <a href id="historyGearMenu" class="dropdown-toggle" uib-dropdown-toggle>
+                          <span class="fas fa-cog fa-lg"></span>
+                        </a>
+                        <ul class="dropdown-menu dropdown-menu-right text-left flip" uib-dropdown-menu>
+                            <li>
+                                <a id="reloadHistoryMenuItem" href ng-click="history.forceLoadList()">[% locale.maketext('Refresh List') %]</a>
+                            </li>
+                        </ul>
+                    </span>
+                </th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr id="historyLoadingNotice" class="info empty-row ng-hide" ng-show="history.ui.is_loading">
+                <td colspan="6" id="loadingMessage">
+                    <i id="loadingSpinner" class="fas fa-spinner fa-spin"></i>
+                    [% locale.maketext('Loading …') %]
+                </td>
+            </tr>
+            <tr id="emptyListNotice" class="info empty-row ng-hide" ng-show="history.conversions.filteredList.length == 0 && !history.ui.is_loading">
+                <td colspan="6" id="emptyMessage">[% locale.maketext('The Conversion History is empty.') %]</td>
+            </tr>
+            <tr ng-repeat="conversion in history.conversions.filteredList" ng-hide="history.ui.is_loading || history.conversions.filteredList.length == 0">
+
+                <td data-title="[% locale.maketext('Domain') %]">
+                    <span>{{ conversion.domain }}</span>
+                </td>
+                <td data-title="[% locale.maketext('Status') %]">
+                    <job-status ng-model="conversion.status"></job-status>
+                </td>
+                <td data-title="[% locale.maketext('Start Time') %]">
+                    <span>{{ conversion.start_time | local_datetime }}</span>
+                </td>
+                <td data-title="[% locale.maketext('End Time') %]">
+                    <span>{{ conversion.end_time | local_datetime }}</span>
+                </td>
+                <td data-title="[% locale.maketext('Actions') %]">
+                    <button type="button" id="goToDetailsViewButton_{{ $index }}" class="btn btn-link"
+                        ng-click="history.goToDetailsView(conversion.job_id)">
+                        <span class="fas fa-info-circle"></span>
+                        [% locale.maketext('Details') %]
+                    </button>
+                </td>
+                <td>
+                </td>
+            </tr>
+        </tbody>
+    </table>
+</div>
+<div class="row hidden-md hidden-lg">
+    <div class="col-xs-4">
+        <div class="page-stats selected-stats">
+        </div>
+    </div>
+    <div class="col-xs-8">
+        <div class="page-stats pull-right flip">
+            {{history.conversions.paginationMessage()}}
+        </div>
+    </div>
+</div>
+<div class="row search-page-container visible-sm-block visible-xs-block hidden-lg hidden-md">
+    <div class="col-xs-12 col-sm-12">
+        <div id="paginatorBottom" class="pagination-container">
+            <page-size id="bottomPageSize"
+                allowed-sizes="history.conversions.meta.pageSizes"
+                total-items="history.conversions.meta.totalItems"
+                ng-model="history.conversions.meta.pageSize"
+                show-all="false"
+                ng-change="history.conversions.selectPageSize()">
+            </page-size>
+            <uib-pagination id="bottomPager"
+                ng-change="history.conversions.selectPage()"
+                ng-model="history.conversions.meta.pageNumber"
+                max-size="history.conversions.meta.maxPages"
+                items-per-page="history.conversions.meta.pageSize"
+                total-items="history.conversions.meta.totalItems"
+                direction-links="true"
+                boundary-links="true"
+                rotate="false"
+                first-text="<<"
+                last-text=">>"
+                previous-text="<"
+                next-text=">">
+            </uib-pagination>
+        </div>
+    </div>
+</div>

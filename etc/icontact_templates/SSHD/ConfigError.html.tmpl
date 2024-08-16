@@ -1,0 +1,28 @@
+[%-
+    PROCESS "include/colors.tmpl";
+    PROCESS "include/styles.tmpl";
+    PROCESS "include/blacklist_whitelist_links.tmpl";
+
+    WRAPPER 'wrapper/main.html.tmpl';
+-%]
+
+<p>
+[% CPANEL.locale.maketext('The following changes could not be applied to the “[_1]” file:' NOTICE.filename) %]
+</p>
+<blockquote style="font-family: monospace; border: 1px dotted #555555; padding: 10px;">
+[%- NOTICE.diff FILTER html FILTER html_line_break -%]
+</blockquote>
+
+[% IF NOTICE.syntax_error %]
+<p>
+[% CPANEL.locale.maketext('The changes failed a syntax check failed with the following error:') %]
+</p>
+<blockquote style="font-family: monospace; border: 1px dotted #555555; padding: 10px;">
+[%- NOTICE.syntax_error FILTER html FILTER html_line_break -%]
+</blockquote>
+
+[% END %]
+<p>
+[% CPANEL.locale.maketext('These changes need to be applied manually. Please contact [output,url,_1,cPanel Support,target,_2] for further assistance.', 'https://go.cpanel.net/support','_blank') %]
+</p>
+[% END %]

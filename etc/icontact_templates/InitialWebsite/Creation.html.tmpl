@@ -1,0 +1,54 @@
+[%#
+Variables passed in:
+
+username     - The username that we tried to create (successfully or not)
+domain       - The domain that we tried to create (successfully or not)
+status       - True/false value indicating the success or failure of the creation.
+reason       - In the case of a failure, the error message is available in this field.
+
+For more information about how to customize notification templates, read our documentation at https://go.cpanel.net/notificationtemplates
+
+-%]
+
+[%
+    PROCESS "include/colors.tmpl";
+    PROCESS "include/styles.tmpl";
+    PROCESS "include/code_block.tmpl";
+
+    WRAPPER 'wrapper/main.html.tmpl';
+%]
+
+<div>
+    [% IF !NOTICE.status; %]
+        <div>
+            [% CPANEL.locale.maketext('The system failed to set up your requested website at “[_1]”.', NOTICE.username) %]
+        </div>
+        <div>
+            [% CPANEL.locale.maketext('Error:') %]
+        </div>
+        <pre>
+            [% NOTICE.reason %]
+        </pre>
+    [% ELSE %]
+        <div>
+            [% CPANEL.locale.maketext('The system successfully created your new [asis,cPanel] account and website.') %]
+        </div>
+
+        <div>
+            [% CPANEL.locale.maketext('Account information:') %]
+            <ul>
+                <li>[% CPANEL.locale.maketext('Username: [_1]', NOTICE.username.html()) %]</li>
+                <li>[% CPANEL.locale.maketext('Domain: [_1]',   NOTICE.domain.html()) %]</li>
+            </ul>
+        </div>
+
+        <div>
+            [% CPANEL.locale.maketext('To log in to your new [asis,cPanel] account, use the following login [output,acronym,URL,Uniform Resource Locator]:') %]
+            <ul>
+            <li><a href="[% NOTICE.login_url.html() %]">[% NOTICE.login_url.html() %]</a></li>
+            </ul>
+        </div>
+    [% END %]
+</div>
+
+[% END %]

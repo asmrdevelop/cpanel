@@ -1,0 +1,54 @@
+[% SET CPANEL.CPVAR.dprefix = "../" %]
+
+[%
+    # Case 158089: Determine how much to chop off of the database name before returning to step 2
+    SET dbownerprefix = ExpVar.expand('$dbownerprefix');
+    SET prefix_length = dbownerprefix.length();
+    SET adduserdb = execute("Postgresql", "grant_all_privileges", {'database' => RAW_FORM.db, 'user' => RAW_FORM.user});
+%]
+
+[% WRAPPER '_assets/master.html.tt'
+    app_key = 'postgresql_database_wizard'
+-%]
+<div class="body-content">
+    [% IF adduserdb.status %]
+    <div class="alert alert-success">
+        <span class="glyphicon glyphicon-ok-sign"></span>
+        [% locale.maketext("Added the user “[output,strong,_1]” to the database “[output,strong,_2]”.", FORM.user, FORM.db) %]
+    </div>
+    [% ELSE %]
+        [% IF adduserdb.errors.size %]
+            [% FOREACH message IN adduserdb.errors %]
+                <div class="alert alert-danger" role="alert">
+                    <span class="glyphicon glyphicon-remove-sign" aria-hidden="true"></span>
+                    <div class="alert-message">
+                        <strong class="alert-title">
+                            [% locale.maketext('Error:') %]
+                        </strong>
+                        <span class="alert-body">
+                        <span id="error-[% loop.index() %]">
+                            [% message.html() %]
+                        </span>
+                    </span>
+                    </div>
+                </div>
+            [% END %]
+        [% END %]
+    [% END %]
+
+    <div class="section">
+        <h2>[% locale.maketext("Step 4: Complete the Task") %]</h2>
+        <a href="wizard1.html">[% locale.maketext("Add another database.") %]</a><br />
+        <br />
+        <a href="wizard2.html?db=[% RAW_FORM.db.substr(prefix_length) FILTER uri %]&nocreate=1">[% locale.maketext("Add another user for your PostgreSQL database.") %]</a><br />
+        <br />
+        <a href="index.html">[% locale.maketext("Return to PostgreSQL Databases.") %]</a><br />
+        <br />
+        <a href="../index.html">[% locale.maketext("Return Home") %]</a><br />
+    </div>
+
+
+
+
+</div><!-- end body-content -->
+[% END #wrapper %]

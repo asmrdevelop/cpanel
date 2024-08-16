@@ -1,0 +1,58 @@
+[%#
+    Variables passed in:
+
+
+  For more information about how to customize notification templates, read our documentation at https://go.cpanel.net/notificationtemplates
+
+-%]
+
+[%
+    PROCESS "include/colors.tmpl";
+    PROCESS "include/styles.tmpl";
+    PROCESS "include/code_block.tmpl";
+
+    WRAPPER 'wrapper/main.html.tmpl';
+
+    NOTICE.email_reason = CPANEL.locale.maketext('The system has detected an unusually large amount of outbound email.');
+%]
+
+[%
+    # Compat for including cPanel template below
+    locale = CPANEL.locale;
+    mail_client_settings = NOTICE;
+    in_html_email = 1;
+%]
+
+<b>[% CPANEL.locale.maketext("It is possible that the following email [numerate,_1,address has,addresses have] been sending spam from your server:", NOTICE.spammers.size) -%]</b>
+
+<ul>
+[% FOREACH spammer IN NOTICE.spammers -%]
+<li>[% spammer -%]</li>
+[% END -%]
+</ul>
+
+<p>
+[% CPANEL.locale.maketext("The system detected that [numerate,_1,this email account,these email accounts] sent messages to a large number of distinct recipients in an hour.", NOTICE.spammers.size) -%]
+</p>
+
+[% IF NOTICE.action == 'block' -%]
+<p>
+<b>[% CPANEL.locale.maketext("The system blocks outbound emails from [numerate,_1,this email account,these email accounts] because you configured the system to automatically block accounts that it detects as potential spammers.", NOTICE.spammers.size) -%]</b>
+</p>
+[% END -%]
+
+[% IF NOTICE.action == 'hold' -%]
+<p>
+<b>[% CPANEL.locale.maketext("The system holds outbound emails from [numerate,_1,this email account,these email accounts] because you configured the system to automatically hold email from accounts that it detects as potential spammers.", NOTICE.spammers.size) -%]</b>
+</p>
+[% END -%]
+
+<p><b>Options:</b>
+<ol>
+  <li> [% CPANEL.locale.maketext("To view what emails are being sent via [asis,WHM], visit [output,url,_2,_2,target,_3].", CPANEL.locale.maketext('Mail Delivery Reports'),CPANEL.assemble_whm_url("scripts11/emailstats_search"),'_blank'); %] </li>
+  <li> [% CPANEL.locale.maketext("Learn more about “[_1]” at [output,url,_2,_2,target,_3].", CPANEL.locale.maketext('Managing Account Suspensions'),'https://go.cpanel.net/mailaccountsuspension','_blank'); %] </li>
+  <li> [% CPANEL.locale.maketext("Learn more about “[_1]” at [output,url,_2,_2,target,_3].", CPANEL.locale.maketext('Email Send Limits'),'https://go.cpanel.net/setemailsendlimits','_blank'); %] </li>
+  <li> [% CPANEL.locale.maketext("To manage the limit that triggers this notification, set the “Number of unique recipients per hour to trigger potential spammer notification” option in the [_1] interface in [asis, WHM] at [output,url,_2,_2,target,_3].", CPANEL.locale.maketext('Tweak Settings'), CPANEL.assemble_whm_url("scripts2/tweaksettings"), '_blank'); %]</li>
+</ol>
+
+[% END %]

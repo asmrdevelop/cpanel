@@ -1,0 +1,129 @@
+<div class="list-container">
+    <div class="row search-page-container">
+        <div class="col-xs-12 col-sm-12 col-md-4 col-lg-4">
+            <search ng-model="meta.filterValue" ng-change="searchList()"></search>
+        </div>
+        <div class="col-xs-12 col-sm-12 col-md-8 col-lg-8">
+            <div class="pagination-container hidden-xs hidden-sm">
+                <page-size id="pageSize"
+                    allowed-sizes="meta.pageSizes"
+                    total-items="meta.totalItems"
+                    ng-model="meta.pageSize"
+                    show-all="true"
+                    ng-show="showPager"
+                    ng-change="selectPageSize()">
+                </page-size>
+                <uib-pagination id="paginateItems"
+                    total-items="meta.totalItems"
+                    ng-model="meta.currentPage"
+                    max-size="0"
+                    boundary-links="true"
+                    rotate="false"
+                    previous-text="<"
+                    next-text=">"
+                    first-text="<<"
+                    last-text=">>"
+                    items-per-page="meta.pageSize"
+                    ng-show="showPager"
+                    ng-change="selectPage()">
+                </uib-pagination>
+            </div>
+        </div>
+    </div>
+    <div class="row hidden-xs hidden-sm">
+        <div class="col-xs-4">
+            <div class="page-stats pull-right">
+                <span class="title">{{ pagination_msg() }}</span>
+            </div>
+        </div>
+    </div>
+    <table class="table table-striped responsive-table">
+        <thead>
+            <tr>
+                <th>
+                     <span class="tri-state-box">
+                        <tri-state-checkbox checkboxes="filteredAccounts" use-int="{{ true }}"></tri-state-checkbox>
+                    </span>
+                </th>
+                <th class="col-xs-3 col-sm-3 col-md-2 col-lg-2">
+                    <span toggle-sort id="sortUsername" sort-meta="meta"
+                              sort-field="username"
+                              onSort="sortList">
+                        [% locale.maketext('Username') %]
+                    </span>
+                </th>
+                <th class="col-xs-4 col-sm-5 col-md-6 col-lg-6">
+                    <span toggle-sort id="sortDomain" sort-meta="meta"
+                              sort-field="domain"
+                              onSort="sortList">
+                        [% locale.maketext('Domain') %]
+                    </span>
+                </th>
+                <th>
+                    <span toggle-sort id="sortMailbox" sort-meta="meta"
+                              sort-field="mailbox_format"
+                              onSort="sortList">
+                        [% locale.maketext('Current Format') %]
+                    </span>
+                </th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr ng-repeat="account in filteredAccounts track by $index"
+                ng-click="account.selected = !account.selected ? 1 : 0"
+                class="clickable">
+                <td>
+                    <input type="checkbox" ng-checked="account.selected"></input>
+                </td>
+                <td data-title="[% locale.maketext('Username') %]" ng-bind="account.username">
+                </td>
+                <td data-title="[% locale.maketext('Domain') %]" ng-bind="account.domain">
+                </td>
+                <td>
+                    <span ng-bind="account.mailbox_format"></span>
+                </td>
+            </tr>
+            <tr ng-if="accounts" ng-hide="filteredAccounts.length" class="info empty-row">
+                <td colspan="4">[% locale.maketext('No results match.') %]</td>
+            </tr>
+            <tr ng-hide="accounts.length" class="info empty-row">
+                <td colspan="4">[% locale.maketext('No users.') %]</td>
+            </tr>
+        </tbody>
+    </table>
+    <div class="row hidden-md hidden-lg">
+        <div class="col-xs-8 pull-right">
+            <div class="page-stats pull-right">
+                <span class="title">{{ pagination_msg() }}</span>
+            </div>
+        </div>
+    </div>
+    <div class="row search-page-container visible-sm-block visible-xs-block hidden-lg hidden-md">
+        <div class="col-xs-12 col-sm-12">
+            <div class="pagination-container">
+                <page-size id="pageSize"
+                    allowed-sizes="meta.pageSizes"
+                    total-items="meta.totalItems"
+                    ng-model="meta.pageSize"
+                    show-all="true"
+                    ng-show="showPager"
+                    ng-change="selectPageSize()">
+                </page-size>
+                <uib-pagination id="paginateItems"
+                    total-items="meta.totalItems"
+                    ng-model="meta.currentPage"
+                    max-size="0"
+                    boundary-links="true"
+                    rotate="false"
+                    previous-text="<"
+                    next-text=">"
+                    first-text="<<"
+                    last-text=">>"
+                    items-per-page="meta.pageSize"
+                    ng-show="showPager"
+                    ng-change="selectPage()">
+                </uib-pagination>
+            </div>
+        </div>
+    </div>
+</div>

@@ -1,0 +1,451 @@
+[%
+    USE Whostmgr;
+    USE CPGraph;
+    USE CPMath;
+    USE CPSort;
+    USE JSON;
+
+    SET barsize = 80;
+
+    WRAPPER 'master_templates/master.tmpl' theme="yui"
+        app_key = 'view_bandwidth_usage'
+        stylesheets = ['/css/graphs.css']
+        canvas = 1
+        extrastyle = '
+table {
+    width: 100%;
+}
+.text-right {
+    text-align: right;
+}
+.top-warning {
+    margin-bottom: 1.5em;
+}
+';
+
+    SET months=[
+        '',
+        'Jan',
+        'Feb',
+        'Mar',
+        'Apr',
+        'May',
+        'Jun',
+        'Jul',
+        'Aug',
+        'Sep',
+        'Oct',
+        'Nov',
+        'Dec'
+    ];
+
+    IF data.month == 1;
+        SET lastyear = data.year - 1;
+        SET lastmonth = 12;
+        SET nextyear = data.year;
+        SET nextmonth = 2;
+    ELSIF data.month == 12;
+        SET lastyear = data.year;
+        SET lastmonth = 11;
+        SET nextyear = data.year + 1;
+        SET nextmonth = 1;
+    ELSE;
+        SET lastyear = data.year;
+        SET lastmonth = data.month - 1;
+        SET nextyear = data.year;
+        SET nextmonth = data.month + 1;
+    END;
+
+    #what to put in the links for sorting descending
+    SET link_descs = {
+        'user' => 0,
+        'maindomain' => 0,
+        'totalbytes' => 0,
+    };
+
+    IF data.month == data.current_month && data.year == data.current_year;
+        SET current_view = 1;
+    ELSE;
+        SET current_view = 0;
+    END;
+
+    SET sorter = { 'field' => data.sortreq || 'user', };
+    IF data.sortreq == 'totalbytes';  #check for numeric sort
+        SET sorter.num = 1;
+    ELSE;   #we want case-insensitive sorting
+        SET sorter.case = 0;
+    END;
+    IF data.sort_desc;  #check for descending sort
+        SET sorter.desc = 1;
+    ELSE;
+        link_descs.${data.sortreq} = 1;
+    END;
+-%]
+
+[% IF data.db_creation_in_progress %]
+
+    <div class="alert alert-warning">
+        <span class="glyphicon glyphicon-exclamation-sign"></span>
+        <div class="alert-message">
+            [% locale.maketext('This interface is temporarily unavailable while the system rebuilds root’s bandwidth cache database.') %]
+        </div>
+    </div>
+
+
+[% ELSE %]
+
+[% IF data.warnings && data.warnings.size -%]
+    <div class="alert alert-warning top-warning">
+        <span class="glyphicon glyphicon-exclamation-sign"></span>
+        <div class="alert-message">
+            <p><strong class="alert-title">[% locale.maketext('[numerate,_1,Warning,Warnings]:', data.warnings.size) -%]</strong></p>
+
+            [% IF 1 == data.warnings.size -%]
+                <p>[% data.warnings.0.html() %]</p>
+            [% ELSE -%]
+                <ol>
+                [% FOR warning = data.warnings -%]
+                    <li>[% warning.html() -%]</li>
+                [% END -%]
+                </ol>
+            [% END -%]
+        </div>
+    </div>
+[% END -%]
+
+<script type='text/javascript'>
+      function showcells (user,val) {
+        var row = document.getElementById("dc_" + user);
+        if (row) {
+            row.style.display = val;
+        }
+      }
+
+
+      function handleState (imger,user) {
+         if (imger.src.indexOf("plus.gif") > 0) {
+            showcells(user,'');
+            imger.src='/minus.gif';
+         } else {
+            showcells(user,'none');
+            imger.src='/plus.gif';
+         }
+      }
+
+
+      function hideshowcol() {
+         var best_fit_style, megs_style;
+         var best_fit_nodes = document.getElementsByClassName("show-best-fit");
+         var show_megs_nodes = document.getElementsByClassName("show-megs");
+
+         if (document.colform.units.value.indexOf("Megabytes") > 0){
+            document.colform.units.value="Show Units with Best Fit";
+            best_fit_style = "none";
+            megs_style = "";
+         } else {
+            document.colform.units.value="Show Units in Megabytes";
+            best_fit_style = "";
+            megs_style = "none";
+         }
+
+         for (var i = 0, len = best_fit_nodes.length; i < len; i++) {
+            best_fit_nodes[i].style.display = best_fit_style;
+         }
+         for (i = 0, len = show_megs_nodes.length; i < len; i++) {
+            show_megs_nodes[i].style.display = megs_style;
+         }
+      }
+</script>
+<div class='brickcontainer'><div class='brickcontainer2'>
+[% WRAPPER '_brick.tmpl' bricktitle='Notes' -%]
+      <UL>
+      <LI>   This tool logs HTTP, FTP, SMTP, and POP3 traffic.  This accounts for almost all
+      traffic that a normal account will use. </LI>
+      <LI>Parked domain bandwidth is included in the domain that the parked domain is parked on.</LI>
+      [% IF current_view -%]
+        <LI>Use the <a href="../scripts/dialog?dialog=unsusbwall">Unsuspend Bandwidth Exceeders</a> interface to temporarily disable bandwidth limit enforcement.</LI>
+        <LI>Use the <a href="../cgi/statmanager.cgi">Statistics Software Configuration</a> interface to process statistics for one or more users and update their bandwidth limit enforcement statuses.</LI>
+      [% END # current_view -%]
+      </UL>
+[% END -%]
+
+    <table class="brick">
+        <tr>
+        <td>
+            <a
+                href="[% cp_security_token %]/scripts/showbw?month=[% lastmonth %]&year=[% lastyear %]&showres=[% data.showres %]&sortreq=[% data.sortreq %]">Last Month
+                ([% months.$lastmonth _ ' ' _ lastyear %])</a>
+        </td>
+        <td><b>[% months.${data.month} _ ' ' _ data.year %]</b></td>
+        <td class="text-right">
+    [% IF data.current_month > data.month || data.current_year > data.year -%]
+            <a
+                href="[% cp_security_token %]/scripts/showbw?month=[% nextmonth %]&year=[% nextyear %]&showres=[% data.showres %]&sortreq=[% data.sortreq %]">Next Month
+                ([% months.$nextmonth _ ' ' _ nextyear %])</a>
+    [% ELSE -%]
+            Next Month ([% months.$nextmonth _ ' ' _ nextyear %])
+    [% END -%]
+        </td>
+        </tr>
+    </table>
+
+<!-- sqtable -->
+<div>
+    <form name="colform">
+        <input class="btn-secondary" type="button" onclick='hideshowcol();' value="Show Units in Megabytes" name="units">
+    </form>
+
+    <table class="brick" name="bwtable" id="bwtable">
+        <tr class="scellheader">
+        <td>
+            <b><a
+                href="[% cp_security_token %]/scripts/showbw?showres=[% data.showres %]&sortreq=user&month=[% data.month %]&year=[% data.year %]&desc=[% link_descs.user %]">
+                [% locale.maketext('User') %]</a></b>
+        </td>
+        <td>
+            <b><a
+                href="[% cp_security_token %]/scripts/showbw?showres=[% data.showres %]&sortreq=maindomain&month=[% data.month %]&year=[% data.year %]&desc=[% link_descs.maindomain %]">
+                [% locale.maketext('Domain') %]</a></b>
+        </td>
+        <td class="show-best-fit">
+            <b><a
+                href="[% cp_security_token %]/scripts/showbw?showres=[% data.showres %]&sortreq=totalbytes&desc=[% link_descs.totalbytes %]&month=[% data.month %]&year=[% data.year %]">Xfer<br />(Best Fit)</a></b>
+        </td>
+        <td class="show-megs" style="display: none;">
+            <b><a
+                href="[% cp_security_token %]/scripts/showbw?showres=[% data.showres %]&desc=[% link_descs.totalbytes %]&sortreq=totalbytes&month=[% data.month %]&year=[% data.year %]">Xfer<br />(in Megs)</a></b>
+        </td>
+        <td class="show-best-fit"><b>Limit<br />(Best Fit)</b></td>
+        <td class="show-megs" style="display: none;"> <b>Limit<br />(in Megs)</b></td>
+        <td>
+            <b><a
+                href="[% cp_security_token %]/scripts/showbw?showres=[% data.showres %]&sortreq=totalbytes&month=[% data.month %]&year=[% data.year %]&desc=[% link_descs.totalbytes %]">
+                [% locale.maketext('Usage') %]</a></b>
+        </td>
+        </tr>
+[%
+    SET bw_count=0;
+    FOR acct = data.accts.cpsort( sorter );
+        IF (acct.limit == 'unlimited');
+            SET acct.limit = 0;
+        END;
+        SET fractionused = (acct.limit && acct.totalbytes / acct.limit) || 0;
+        SET percent = CPMath.ceil( fractionused * 100 );
+        SET has_plus_domains = 0;
+        SET bw_numbers = [];
+        SET sorted_bwusage = acct.bwusage.sort('domain');
+        FOR bw=sorted_bwusage;
+            IF ( ! has_plus_domains && bw.domain != acct.maindomain );
+                SET has_plus_domains = 1;
+                SET pie_colors = CPGraph.get_graph_colors_css(acct.bwusage.size);
+            END;
+            bw_numbers.push(bw.usage);
+        END;
+
+        SET color = 'green';
+        SET tclass = '';
+        IF ( percent >= 85 );
+            SET tclass = 'tdshadered';
+            SET color = 'red';
+        ELSIF ( percent >= 70 );
+            SET tclass = 'tdshadeyellow';
+            SET color = 'yellow';
+        END;
+        IF ( ! tclass );
+            SET tclass = loop.index % 2 ? 'tdshade1' : 'tdshade2';
+        END;
+
+        SET bar_width_pct = fractionused * 100;
+        IF (bar_width_pct > 100);
+            bar_width_pct = 100;
+        END
+-%]
+        <tr class="[% tclass %]">
+        <td>[% acct.user -%]
+        [% IF data.showres == '' && acct.reseller && Whostmgr.hasroot() -%]
+            <a
+                href="[% cp_security_token %]/scripts/showbw?month=[% data.month %]&year=[% data.year %]&showres=[% acct.user %]&sortreq=[% data.sortreq %]">
+                <img src="/check.gif" border="0" /></a>
+        [% END -%]
+        </td>
+        <td>[% acct.maindomain -%]
+        [% IF acct.deleted; ' <span class="redstatus">(deleted)</span>'; END %]
+        [% IF has_plus_domains -%]
+[%# IMPORTANT: make space for the graph BEFORE it is rendered, or else
+    IE8 (maybe others) will draw it in a 0x0 <div> with overflow: "hidden".
+    Alternatively, adjust the width/height of the <div> inside the <canvas>
+    after rendering.
+-%]
+            <a
+                onclick='handleState(document.getElementById("plus_[% acct.user %]"),"[% acct.user %]"); [% IF acct.totalbytes %]draw_pie_graph("graph_[% acct.user %]_container", [% bw_numbers.json() %], [% pie_colors.json() %] );[% END %]'>
+                <img border="0" src="/plus.gif" id="plus_[% acct.user %]"></a>
+        [% END -%]
+        </td>
+[%
+        SET megs_gigs_xfer = gethumanbw(acct.totalbytes);
+        IF acct.limit == 'N/A';
+            SET bwlimit = 'N/A';
+            SET meg = 'N/A';
+        ELSIF acct.limit == 0;
+            SET bwlimit = 'unlimited Meg';
+            SET meg = 'unlimited';
+        ELSE;
+            SET display_limits = gethumanbw( acct.limit );
+            SET bwlimit = display_limits.2;
+            SET meg = display_limits.0;
+        END;
+-%]
+        <td class="text-right show-best-fit [% acct.user %]_xfer">[% megs_gigs_xfer.2 -%]</td>
+        <td class="text-right show-megs [% acct.user %]_xfer" style="display: none;">[% megs_gigs_xfer.0 %] M</td>
+        <td class="text-right show-best-fit">[% bwlimit %]
+        [% IF ! acct.deleted && Whostmgr.checkacl('limit-bandwidth') -%]
+            <a href="[% cp_security_token %]/scripts2/limitbw?user=[% acct.user %]&submit-domain=Limit">
+                <img align="absmiddle" src="/change.gif" border="0"></a>
+        </td>
+        <td class="text-right show-megs" style="display: none;">[% meg %] M&nbsp;
+            <a href="[% cp_security_token %]/scripts2/limitbw?user=[% acct.user %]&submit-domain=Limit">
+                <img align="absmiddle" src="/change.gif" border="0" /></a>
+        </td>
+        [% ELSE -%]
+        </td>
+        <td class="text-right show-megs" style="display: none;">[% meg %] M</td>
+        [% END -%]
+        <td class="bw_usage_bar">
+            <div style="float:left; width:[% barsize %]px; border: 1px solid #ddd; margin-right: 3px; background-color: white">
+                <div style="float:left; background: url([% Whostmgr.getbargif() %]) repeat green; width:[% bar_width_pct %]%">&nbsp;</div>
+            </div>
+            [% percent %]% used
+        </td>
+        <td>
+            <img src="/[% color %]-status.gif">
+            [% IF acct.bwlimited -%]
+            <img src="/lock.gif">
+            [% END # acct.bwlimited -%]
+        </td>
+        </tr>
+        <tr id="dc_[% acct.user %]" class="[% tclass %]" style="display: none"><td colspan="2">
+        <table>
+[%
+        FOR bw=sorted_bwusage;
+            bw_count = bw_count + 1;
+            SET megs_gigs_xfer = gethumanbw(bw.usage);
+-%]
+        <tr id="dc[% bw_count %]" class="[% tclass %]">
+        <td>
+            [% IF acct.totalbytes > 0 -%]
+            <div class="legend_block" style="background-color:[% pie_colors.${loop.index} %]"></div>
+            [% END -%]
+            [% bw.domain %]
+            [% IF acct.deleted -%]
+            <span class="redstatus">(deleted)</span>
+            [% END -%]
+            [% IF bw.deleted -%]
+            (deleted)
+            [% END -%]
+        </td>
+        <td class="text-right show-best-fit">[% megs_gigs_xfer.2 %]</td>
+        <td class="text-right show-megs" style="display: none;">[% megs_gigs_xfer.0 %] M</td>
+        </tr>
+        [% END #sorted_bwusage -%]
+        </table>
+        </td>
+        <td colspan="4">
+        <table>
+        <tr><td>
+        <div id="xpie_[% acct.user %]">
+            <div id="graph_[% acct.user %]_container" class="pie_container"></div>
+        </div>
+        </td></tr>
+        </table>
+        </td></tr>
+    [% END #data.accts -%]
+    </table>
+    <br />
+
+
+[% WRAPPER '_brick.tmpl' bricktitle='Legend' -%]
+    <table>
+    [% IF Whostmgr.hasroot() -%]
+        <tr>
+        <td><img src="/check.gif"></td>
+        <td>Show only accounts that belong to this reseller.</td>
+        </tr>
+    [% END -%]
+        <tr>
+        <td><img src="/plus.gif"></td>
+        <td>Show the list of subdomains, addon domains, and parked domains that belong to the corresponding account.</td>
+        </tr>
+        <tr>
+        <td><img src="/change.gif"></td>
+        <td>Adjust the bandwidth limit for the corresponding account.</td>
+        </tr>
+        <tr>
+        <td><img src="/lock.gif"></td>
+        [% IF current_view -%]
+        <td>The system is enforcing a bandwidth limit on the corresponding account.
+        [% ELSE # NOT current_view -%]
+        <td>Accounts are over their bandwidth limits for the displayed month.
+        [% END # current_view -%]
+        </tr>
+        <tr>
+        <td colspan="2" class="tdshade1"><img src="/green-status.gif"> Accounts are under 70% of their bandwidth limits.</td>
+        </tr>
+        <tr>
+        <td colspan="2" class="tdshadeyellow"><img src="/yellow-status.gif"> Accounts reached 70% of their bandwidth limits.</td>
+        </tr>
+        <tr>
+        <td colspan="2" class="tdshadered"><img src="/red-status.gif"> Accounts reached 85% of their bandwidth limits.</td>
+        </tr>
+    </table>
+[% END -%]
+
+<br />
+
+[% WRAPPER '_brick.tmpl' bricktitle='Total Bandwidth Usage' -%]
+    [% SET megs_gigs_xfer = gethumanbw( data.totalbw ) -%]
+    <div>
+        <table>
+            <tr>
+            <td class="show-best-fit"><b>[% megs_gigs_xfer.2 %]</b></td>
+            <td class="show-megs" style="display: none"><b>[% megs_gigs_xfer.0 %] M</b></td>
+            </tr>
+        </table>
+    </div>
+[% END -%]
+[%# endsqtable -%]
+
+[% IF data.showres != '' -%]
+[% WRAPPER '_brick.tmpl' bricktitle='Limited Output' -%]
+Only accounts belonging to [% data.showres -%] are being shown. If you wish to see all accounts,
+<a href="[% cp_security_token %]/scripts/showbw?month=[% data.month %]&year=[% data.year %]&sortreq=[% data.sortreq %]">click here</a>.
+[% END -%]
+
+<br />
+
+[% END -%]
+</div>
+</div>
+</div>
+
+<script type="text/javascript" src="[% MagicRevision('/cjt/jquery.js') %]"></script>
+<script type="text/javascript" src="[% MagicRevision('/jqplot/dist/jquery.jqplot.min.js') %]"></script>
+<script type="text/javascript" src="[% MagicRevision('/jqplot/dist/plugins/jqplot.pieRenderer.min.js') %]"></script>
+<script type="text/javascript" src="[% MagicRevision('/jqplot/jqplot.cpanel.js') %]"></script>
+<script type="text/javascript">
+function draw_pie_graph( container_id, numbers, colors ) {
+    var container = YAHOO.util.Dom.get( container_id );
+    if ( ! container.childNodes.length ) {
+        var xformed_data = numbers.map( function(v,i) { return [parseInt(i),parseInt(v)] } );
+        var these_options = new CPANEL._pie_chart_options();
+        these_options.seriesColors = colors;
+        $.jqplot( container_id, [xformed_data], these_options );
+    }
+}
+
+[% IF data.show_whm_bw_usage_in_megs -%]
+hideshowcol();
+[% END -%]
+</script>
+
+[% END #db_creation_in_progress %]
+[% END #wrapper -%]

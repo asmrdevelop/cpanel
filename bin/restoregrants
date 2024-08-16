@@ -1,0 +1,95 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - bin/restoregrants                       Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+#----------------------------------------------------------------------
+# TODO: Refactor this logic to be under Cpanel::DB::GrantsFile.
+#----------------------------------------------------------------------
+
+use strict;
+use warnings;
+
+use Cpanel::CachedDataStore     ();
+use Cpanel::ConfigFiles         ();
+use Cpanel::Usage               ();
+use Cpanel::MysqlUtils::Command ();
+use Cpanel::PostgresUtils       ();
+use Cpanel::Logger              ();
+use Cpanel::MysqlUtils::Grants  ();
+
+my $cpuser = '';
+my $db     = '';
+my $dbuser = '';
+my $all    = '';
+
+my %opts = (
+    'cpuser' => \$cpuser,
+    'db'     => \$db,
+    'dbuser' => \$dbuser,
+    'all'    => \$all,
+);
+
+Cpanel::Usage::wrap_options( \@ARGV, \&usage, \%opts );
+
+if ( !$cpuser || !$db || ( !$dbuser && !$all ) ) {
+    usage();
+}
+
+my $sqlcmd;
+if ( $db =~ /^mysql$/i ) {
+    $db     = 'MYSQL';
+    $sqlcmd = \&Cpanel::MysqlUtils::Command::sqlcmd;
+}
+elsif ( $db =~ /^pg$/i ) {
+    $db     = 'PGSQL';
+    $sqlcmd = \&Cpanel::PostgresUtils::exec_psql;
+}
+else {
+    usage();
+    exit;
+}
+
+my $logger = Cpanel::Logger->new();
+
+my $grants;
+if ( -e "$Cpanel::ConfigFiles::DATABASES_INFO_DIR/grants_${cpuser}.yaml" ) {
+    $grants = Cpanel::CachedDataStore::fetch_ref("$Cpanel::ConfigFiles::DATABASES_INFO_DIR/grants_${cpuser}.yaml");
+}
+else {
+    $logger->warn("The grant file for user $cpuser does not exist.");
+    exit 1;
+}
+
+if ($dbuser) {
+    if ( !defined $grants->{$db}{$cpuser}{$dbuser} ) {
+        $logger->die("Unable to restore grants for $cpuser. No grants stored. Either reset the user's password or re-add the user.");
+        exit 1;
+    }
+    $logger->info("Updating grants from $dbuser");
+    foreach my $grant ( @{ $grants->{$db}{$cpuser}{$dbuser} } ) {
+        my $grant_obj = Cpanel::MysqlUtils::Grants::parse($grant) or next;
+        $sqlcmd->( $grant_obj->to_string() );
+    }
+}
+elsif ($all) {
+    foreach my $dbowner ( keys %{ $grants->{$db} } ) {
+        $logger->info("Updating grants for $dbowner");
+        foreach my $duser ( keys %{ $grants->{$db}{$dbowner} } ) {
+            foreach my $grant ( @{ $grants->{$db}{$dbowner}{$duser} } ) {
+                my $grant_obj = Cpanel::MysqlUtils::Grants::parse($grant) or next;
+                $sqlcmd->( $grant_obj->to_string() );
+            }
+        }
+    }
+}
+
+sub usage {
+    my $prog = $0;
+    print <<USAGE;
+$prog [--cpuser=cpuser] [--db=mysql|pg] [--dbuser=dbuser|--all]
+USAGE
+    exit 1;
+}

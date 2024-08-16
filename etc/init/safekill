@@ -1,0 +1,35 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - etc/init/safekill                       Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package etc::init::safekill;
+
+use strict;
+use warnings;
+
+use Cpanel::Kill        ();
+use Cpanel::ProcessInfo ();
+
+run(@ARGV) unless caller;
+
+sub run {
+    my @args = @_;
+
+    local $| = 1;
+
+    if ( !$args[0] ) {
+        die "Usage: $0 <daemon...>";
+    }
+
+    #Don’t kill() ancestor processes of the current process.
+    my @lineage = Cpanel::ProcessInfo::get_pid_lineage();
+
+    Cpanel::Kill::safekill( [@args], $Cpanel::Kill::VERBOSE, undef, \@lineage );
+
+    return;
+}
+
+1;

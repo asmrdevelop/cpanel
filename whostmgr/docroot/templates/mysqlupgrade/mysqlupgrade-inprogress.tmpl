@@ -1,0 +1,50 @@
+[% PROCESS 'master_templates/_defheader.tmpl'
+    header = locale.maketext('Upgrade Database Version')
+    theme = 'bootstrap'
+    breadcrumburl = '/scripts/mysqlupgrade';
+
+    SET upgrade_types = {
+        unattended_automatic = locale.maketext('Unattended Upgrade'),
+        unattended_manual = locale.maketext('Partially-Interactive Upgrade'),
+        interactive = locale.maketext('Interactive Upgrade')
+    }
+-%]
+<div id="content">
+  <div class="callout callout-warning">
+    <div class="callout-heading">[% locale.maketext('Warning') %]</div>
+    <div>[%locale.maketext('We detected a database version upgrade process. Wait for the current upgrade to finish before you attempt another upgrade.') %]</div>
+  </div>
+
+  <h2>[% locale.maketext('Upgrade Details') %]</h2>
+  <table class="table table-responsive table-condensed table-striped">
+    <tr>
+      <td>[% locale.maketext('Process ID:') %]</td>
+      <td>[% data.pid.html() %]</td>
+    </tr>
+    <tr>
+      <td>[% locale.maketext('Current step number:') %]</td>
+      <td>[% data.step.html() %]</td>
+    </tr>
+    <tr>
+      <td>[% locale.maketext('Starting database version:') %]</td>
+      <td>[% data.current_version.html() %]</td>
+    </tr>
+    <tr>
+      <td>[% locale.maketext('Selected database version:') %]</td>
+      <td>[% data.selected_version.html() %]</td>
+    </tr>
+    <tr>
+      <td>[% locale.maketext('Upgrade Type:') %]</td>
+      <td>[% upgrade_types.${data.upgrade_type} %]</td>
+    </tr>
+  </table>
+
+  <p>[%locale.maketext('If you are certain that the upgrade process that is listed here is finished, you may click the following button to restart the upgrade.') %]</p>
+  <form action="[% cp_security_token %]/scripts/mysqlupgrade" method="post">
+      <input type="hidden" name="ignore_last_run" value="1">
+      <div class="form-group">
+          <button type="submit" class="btn btn-primary">[% locale.maketext('Ignore Current Upgrade') %]</button>
+      </div>
+  </form>
+</div>
+[% PROCESS 'master_templates/_deffooter.tmpl' -%]

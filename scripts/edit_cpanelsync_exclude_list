@@ -1,0 +1,100 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/edit_cpanelsync_exclude_list    Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use Getopt::Param;
+
+my $prm = Getopt::Param->new( { 'help_coderef' => \&help, } );
+
+my $exclude_file = '/etc/cpanelsync.exclude';
+
+help() if ( !$prm->list_params() || ( !$prm->exists_param('remove') && !$prm->exists_param('add') ) );
+
+if ( $prm->exists_param('file') ) {
+    $exclude_file = $prm->get_param('file');
+    if ( !$exclude_file ) {
+        help();
+    }
+}
+
+if ( $prm->exists_param('remove') ) {
+    my %rem;
+    @rem{ $prm->get_param('remove') } = ();
+
+    my $edit = 0;
+    my $cont = '';
+
+    if ( open my $read_fh, '<', $exclude_file ) {
+        while (<$read_fh>) {
+            chomp;
+            if ( exists $rem{$_} ) {
+                $edit++;
+            }
+            else {
+                $cont .= "$_\n";
+            }
+        }
+        close $read_fh;
+    }
+
+    if ($edit) {
+        if ( open my $write_fh, '>', $exclude_file ) {
+            print {$write_fh} $cont;
+            close $write_fh;
+            print "Files removed ($edit)\n" if -t STDIN;
+        }
+        else {
+            print "Could not remove files: $!";
+        }
+    }
+    else {
+        print "No files to remove.\n" if -t STDIN;
+    }
+}
+
+if ( $prm->exists_param('add') ) {
+    my %current;
+    if ( open my $read_fh, '<', $exclude_file ) {
+        while (<$read_fh>) {
+            chomp;
+            $current{$_} = '';
+        }
+        close $read_fh;
+    }
+
+    my $add = '';
+    for my $file ( $prm->get_param('add') ) {
+        $add .= "$file\n" if $file =~ m{^/} && !exists $current{$file};
+    }
+
+    if ($add) {
+        if ( open my $add_fh, '>>', $exclude_file ) {
+            print {$add_fh} $add;
+            close $add_fh;
+            print "Files added\n" if -t STDIN;
+        }
+        else {
+            print "Could not add files: $!";
+        }
+    }
+    else {
+        print "No files to add.\n" if -t STDIN;
+    }
+}
+
+sub help {
+    print <<"END_HELP";
+$0 [--help | --add=/full/path/to/file --remove=/full/path/to/otherfile --file=/path/to/cpanelsync_exclude_file (optional) ]
+
+    You can specify zero or more of either --add or --remove
+
+    Files are removed first then files are added. Files are added in the order specified.
+
+    The "--file" option allows you to edit a specific cpanelsync.exclude file rather than the global one.
+
+END_HELP
+    exit;
+}

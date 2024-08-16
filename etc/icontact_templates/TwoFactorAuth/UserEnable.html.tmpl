@@ -1,0 +1,40 @@
+[%#
+Variables passed in:
+user              - The account name of the user who disabled 2FA
+
+Optional arguments:
+overwrote_prev    - True if a previous 2FA configuration was overwritten
+action_url        - URL to page where user can setup 2FA
+-%]
+
+[%
+    PROCESS "include/colors.tmpl";
+    PROCESS "include/styles.tmpl";
+    PROCESS "include/code_block.tmpl";
+
+    WRAPPER 'wrapper/main.html.tmpl';
+
+    NOTICE.email_reason = CPANEL.locale.maketext('Two-factor authentication configured on your account');
+-%]
+
+<p>
+    [% IF NOTICE.overwrote_prev %]
+        [% CPANEL.locale.maketext('You reconfigured two-factor authentication on your “[_1]” account.', NOTICE.user) %]
+        [% CPANEL.locale.maketext('The previous [output,acronym,2FA,Two-Factor Authentication] configuration is now invalid.') %]
+        [% CPANEL.locale.maketext('You may delete the old entry from your authentication app.') %]
+    [% ELSE %]
+        [% CPANEL.locale.maketext('You configured two-factor authentication on your “[_1]” account.', NOTICE.user) %]
+    [% END %]
+</p>
+<p>
+    [% CPANEL.locale.maketext('If you lose access to your account, please contact your system administrator.') %]
+</p>
+<p>
+    [% IF NOTICE.action_url %]
+        [% CPANEL.locale.maketext('To remove two-factor authentication from your account, visit [output,url,_1].', NOTICE.action_url) %]
+    [% ELSE %]
+        [% CPANEL.locale.maketext('For more information about Two-Factor Authentication, read our documentation at [output,url,_1].', 'https://go.cpanel.net/2fa') %]
+    [% END %]
+</p>
+
+[% END %]

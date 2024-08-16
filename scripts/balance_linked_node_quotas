@@ -1,0 +1,90 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/balance_linked_node_quotas.pl   Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::balance_linked_node_quotas;
+
+use cPstrict;
+
+=encoding utf-8
+
+=head1 NAME
+
+F<balance_linked_node_quotas>
+
+=head1 USAGE
+
+    balance_linked_node_quotas [--help]
+
+=head1 DESCRIPTION
+
+If a user has a 10-MiB disk quota and distributes its activity across
+multiple cPanel & WHM servers, we need a way to enforce a single quota
+across multiple servers. This script serves that function.
+
+To do this, we begin by collecting disk usage from all worker
+nodes. For each user, we compute disk usage on all worker nodes then alter
+quotas so that each individual node’s account for the user has a quota
+proportional to disk usage.
+
+For example: consider a user with a 10-MiB quota who uses a Mail worker.
+Assume that the local (controller) node uses 3.1 MiB of space, and the Mail
+node uses 6.2 MiB. In this setup, the controller account uses 1/3rd of the
+account’s total disk usage, so we’ll assign it that share of the quota, or
+3.33 MiB. Likewise, the Mail worker uses 2/3rds of the account’s total
+disk usage, so we’ll give it 6.67 MiB of the quota.
+
+Note that we don’t actually limit users until they reach a threshold of
+disk usage; until that time each of the user’s nodes has the full quota
+(for example, 10 MiB for this user).
+
+=cut
+
+#----------------------------------------------------------------------
+
+use parent qw( Cpanel::HelpfulScript );
+
+use List::Util;
+
+use AnyEvent ();
+
+use Cpanel::Config::Users                  ();
+use Cpanel::LinkedNode::QuotaBalancer::Run ();
+use Cpanel::Output::Formatted::Terminal    ();
+use Whostmgr::ACLS                         ();
+
+use constant _OPTIONS => ('verbose');
+
+our ( $a, $b );
+
+__PACKAGE__->new(@ARGV)->run() if !caller;
+
+#----------------------------------------------------------------------
+
+sub run ($self) {
+    local $ENV{'REMOTE_USER'} = getpwuid $>;
+    Whostmgr::ACLS::init_acls();
+
+    my $cv = AnyEvent->condvar();
+
+    my @usernames = Cpanel::Config::Users::getcpusers();
+
+    my $logger = Cpanel::Output::Formatted::Terminal->new();
+
+    my $runstate = Cpanel::LinkedNode::QuotaBalancer::Run::run_for_users(
+        \@usernames,
+        $logger,
+        verbosity => $self->getopt('verbose') ? 1 : 0,
+    );
+
+    $runstate->get_promise()->finally($cv);
+
+    $cv->recv();
+
+    return;
+}
+
+1;

@@ -1,0 +1,106 @@
+<h4 class="section-heading">[% locale.maketext('Local Destination') %]</h4>
+<form name="local_transport_config" ng-if="!destinationState.fetching_data" ng-disabled="destinationState.savingDestination || destinationState.validatingDestination" novalidate>
+    <div class="section-body">
+        <div class="form-group">
+            <div class="row">
+                <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                    <label for="local_name">[% locale.maketext('Destination Name') %]</label>
+                    <span class="info-block">[% locale.maketext('Enter a name for this destination.') %]</span>
+                </div>
+            </div>
+            <div class="row">
+                <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                    <input ng-model="destinationState.destination.local.name" type="text" name="name" id="local_name" class="form-control" minlength="1" ng-maxlength="256" required/>
+                </div>
+                <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                    <ul validation-container field-name="name">
+                        <validation-item
+                            field-name="name"
+                            validation-name="required">
+                                [% locale.maketext('You must enter a destination name.') %]
+                        </validation-item>
+                        <validation-item
+                            field-name="name"
+                            validation-name="maxlength">
+                               [% locale.maketext('The destination name must contain between [numf,1] and [numf,256] characters.') %]
+                        </validation-item>
+                    </ul>
+                </div>
+            </div>
+        </div>
+        <div class="form-group">
+            <div class="row">
+                <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                    <input ng-model="destinationState.destination.local.upload_system_backup" type="checkbox" name="upload_system_backup" id="local_system"/>
+                    <label for="local_system">[% locale.maketext('Transfer System Backups to this Destination') %]</label>
+                </div>
+            </div>
+            <div class="row">
+                <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                    <div class="callout callout-warning">[% locale.maketext('[output,strong,Warning:] System Backups contain sensitive security details.') %] [% locale.maketext('You should transfer System Backups over encrypted methods.') %]</div>
+                </div>
+            </div>
+        </div>
+		<div class="form-group">
+            <div class="row">
+                <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                    <input
+                        ng-model="destinationState.destination.local.only_used_for_logs"
+                        type="checkbox"
+                        name="only_used_for_logs"
+                        id="local_logsonly"/>
+                    <label for="sftp_system">[% locale.maketext('Only use this destination for log file transfers[comment,title of option like one above, but looks wrong title cased]') %]</label>
+                    <div class="callout callout-warning">
+                        <span>[% locale.maketext('[output,strong,Warning:] Enabling this option will prevent it from being used for account and/or system backups.') %] [% locale.maketext('Only enable this option if this destination will only be used for log backups. If it will be used for all backups, leave this unchecked.') %]</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="form-group">
+            <div class="row">
+                <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                    <label for="local_path">[% locale.maketext('Backup Directory') %]</label>
+                    <span class="info-block">[% locale.maketext('Enter a backup directory name.') %] [% locale.maketext('You must choose a different directory path than the one you specified for the Default Backup Directory setting in the backup Settings tab.') %]</span>
+                </div>
+            </div>
+            <div class="row">
+                <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                    <input ng-model="destinationState.destination.local.path" type="text" name="path" id="local_path" class="form-control" full-path required/>
+                </div>
+                <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                    <ul validation-container field-name="path">
+                        <validation-item
+                            field-name="path"
+                            validation-name="required">
+                            [% locale.maketext('You must enter a path for the additional local destination.') %]
+                        </validation-item>
+                    </ul>
+                </div>
+            </div>
+        </div>
+        <div class="form-group">
+            <div class="row">
+                <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                    <input type="checkbox" id="local_mount_backup_toggle" ng-model="destinationState.destination.local.mount">
+                    <label for="local_mount_backup_toggle">[% locale.maketext('Mount Backup Drive as Needed') %]</label>
+                    <span class="info-block">[% locale.maketext('Requires a separate drive or other mount point.') %]</span>
+                </div>
+            </div>
+            <div class="row">
+                <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                </div>
+            </div>
+        </div>
+        <div class="form-group">
+            <div class="row">
+                <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                    <div id="save_config">
+                        <button type="submit" id="save_destination_btn" cp-action="saveDestination(destinationState.destination)" ng-disabled="local_transport_config.$pristine || local_transport_config.$invalid || destinationState.savingDestination || destinationState.validatingDestination">[% locale.maketext('Save Destination') %]</button>
+                        <button type="button" id="save_and_validate_destination" button-class="btn-default" cp-action="saveAndValidateDestination(destinationState.destination)" ng-disabled="local_transport_config.$pristine || local_transport_config.$invalid || destinationState.savingDestination || destinationState.validatingDestination">[% locale.maketext('Save and Validate Destination') %]</button>
+                        <button type="button" class="btn btn-link" id="cancel_destination" ng-click="cancelDestination()" ng-disabled="destinationState.savingDestination || destinationState.validatingDestination">[% locale.maketext('Cancel') %]</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</form>

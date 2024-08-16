@@ -1,0 +1,57 @@
+<div>
+    <div id="{{ :: searchSettingsID}}" ng-show="displaySettingsPanel" class="panel ng-hide panel-default form-group">
+        <div class="panel-body">
+            <div class="row">
+                <div ng-repeat="(filterKey, searchFilterOption) in options" class="col-md-3">
+                    <div>
+                        <h4>
+                            {{ :: searchFilterOption.label }}
+                        </h4>
+                    </div>
+                    <div class="checkbox">
+                        <label>
+                                <input
+                                    id="{{ :: filterKey }}_all"
+                                    type="checkbox"
+                                    ng-disabled="all_checked[filterKey]"
+                                    ng-checked="all_checked[filterKey]"
+                                    title="[% locale.maketext('Show All') %]"
+                                    ng-click="set_search_filter_values(filterKey, true)">
+                                 {{ :: all_label }}
+                        </label>
+                    </div>
+                    <div class="checkbox" ng-repeat="type in searchFilterOption.options">
+                        <label>
+                            <input
+                                id="{{ :: filterKey }}_{{ :: type.value }}"
+                                type="checkbox"
+                                ng-model="values[filterKey][type.value]"
+                                name="{{ :: filterKey }}"
+                                ng-value="type.value"
+                                title="{{ :: type.description }}"
+                                ng-change="update(filterKey)">
+                                    <span ng-bind-html="type.label"></span>
+                        </label>
+                    </div>
+                </div>
+            </div>
+            <div ng-transclude></div>
+        </div>
+    </div>
+    <div id="{{ :: setValuesID}}" ng-show="filteredItemsToDisplay && displaySetValues && !displaySettingsPanel" class="ng-hide form-group">
+        <span
+            ng-repeat="(filterKey, searchFilterOption) in options"
+            class="label label-default"
+            style="font-weight:normal;font-size:11px;margin-right:5px"
+            id="{{ :: setValuesID}}_{{ :: filterKey }}"
+            ng-if="get_filtered_labels(filterKey).length">
+            <a style="font-weight:inherit;padding:0;margin:0;font-size:inherit;color:inherit;" href="javascript:void(0);" ng-click="open_settings()">
+                {{ :: searchFilterOption.label }}
+                <span id="{{ :: setValuesID}}_{{ :: filterKey }}_{{ :: searchFilterOption.label }}" ng-bind-html="get_filtered_labels(filterKey).join(', ')"></span>
+            </a>
+            <a style="font-weight:inherit;padding:0;margin:0;font-size:inherit;color:inherit;" href="javascript:void(0)" ng-click="set_search_filter_values(filterKey, true)">
+                <span class='fas fa-times fa-sm  '></span>
+            </a>
+        </span>
+    </div>
+</div>

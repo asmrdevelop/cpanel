@@ -1,0 +1,112 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/install_plugin                  Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+
+PluginInstaller::run(@ARGV) unless caller;
+
+package PluginInstaller;
+
+use Getopt::Long qw(GetOptionsFromArray);
+use File::MMagic ();                        # Prevents compilation into binary.
+use POSIX        ();
+
+use Cpanel::Plugin::Install         ();
+use Cpanel::TempFile                ();
+use Cpanel::ExtractFile             ();
+use Cpanel::Config::LoadWwwAcctConf ();
+
+my $theme;
+my $default_theme;
+
+sub usage {
+    my $exit_code = shift || 0;
+    print <<"EO_USAGE";
+install_plugin /path/to/plugin/archive
+
+  Installs features from the specified plugin archive.
+
+    Options:
+      --theme     Theme to install the plugin to (default: $default_theme).
+
+EO_USAGE
+
+    POSIX::_exit($exit_code);
+    return;
+}
+
+sub bail_out {
+    my ($msg) = @_;
+    print STDERR "error: $msg\n\n";
+    usage(1);
+    return;
+}
+
+sub run {
+    my (@args) = @_;
+
+    my ( $archive, $help );
+
+    my $wwwacctconf = Cpanel::Config::LoadWwwAcctConf::loadwwwacctconf();
+    $default_theme = $wwwacctconf->{DEFMOD};
+
+    GetOptionsFromArray(
+        \@args,
+        'theme=s' => \$theme,
+        'help'    => \$help,
+    ) || usage(1);
+
+    if ($help) {
+        usage(0);
+    }
+
+    $theme ||= $default_theme;
+
+    $archive = $args[0];
+    if ( !defined $archive ) {
+        bail_out 'No archive given!';
+    }
+
+    unless ( -e $archive ) {
+        bail_out "No file found at $archive";
+    }
+
+    my $staging_dir;
+    my $temp_dir_obj = Cpanel::TempFile->new;
+
+    if ( !-d $archive ) {
+
+        # determine that the archive is in a format we can actually work with
+        my $type = File::MMagic->new->checktype_filename($archive);
+        unless ( $type =~ /x-g?(bzip2|tar|zip)$/ ) {
+            bail_out "Unrecognized archive format.";
+        }
+
+        $staging_dir = $temp_dir_obj->dir( prefix => 'Cpanel-install_plugin' );
+        chmod 0755, $staging_dir;
+
+        # extract to staging dir
+        my $files = Cpanel::ExtractFile::extractfile( $archive, 'dir' => $staging_dir );
+        $staging_dir = Cpanel::Plugin::Install::determine_plugin_docroot($staging_dir);
+    }
+    else {
+        # if $ARGV[0] is a directory, we'll attempt to work with that.
+        $staging_dir = $archive;
+    }
+
+    if ( !-e "${staging_dir}/install.json" ) {
+        print "install.json is missing from the plugin archive, cannot process\n";
+        POSIX::_exit(1);
+    }
+
+    POSIX::_exit(1) unless Cpanel::Plugin::Install::install_plugin( $staging_dir, $theme );
+    print "Plugin installed ok\n";
+
+    return;
+}
+
+1;

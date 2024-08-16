@@ -1,0 +1,1703 @@
+[%#
+    ts_conf - REQUIRED
+    ts_texts
+    tweakmodule
+    tweakcfg
+    conf
+    nocontainers
+    changed_settings (optional for tweaksettings only right now)
+-%]
+
+[% USE ServerRoles -%]
+[% USE JSON -%]
+[% USE Whostmgr -%]
+[% USE CPHash -%]
+[% USE CPScalar -%]
+[% USE CPSort -%]
+[% USE Encoder -%]
+
+<!-- prevent password autofill -->
+<input type="text" style="display:none">
+<input type="password" autocomplete='off' style="display:none">
+<style type="text/css">
+#find_container {
+    float: right;
+    margin-left: 6px;
+    margin-right: 6px;
+}
+
+.noradio {
+  width: 95%;
+}
+
+.yui-navset {
+    position: static;  /* override tabview.css */
+}
+</style>
+
+[%# could not get scrolling tabs to behave in IE6 -%]
+[% SET this_is_ie6 = CPANEL.ua_is_ie().match('^6'); -%]
+[% bootstrap = bootstrap; %]
+
+<input type="hidden" name="module" value="[% tweakmodule %]" />
+<!--
+<table width="98%" class="datatable tweaksettings">
+-->
+<script type="text/javascript">
+var tweak_controls = [];
+</script>
+[% UNLESS nocontainers -%]
+<div class="tweaksettings">
+<div id="promptBeforeSelect" style="visibility:hidden">
+    <div id="promptHd" class="hd"></div>
+    <div id="promptBd" class="bd"></div>
+    <div id="promptFt" class="ft">
+        <button id="promptOk"
+            class="btn-primary btn-small"
+            type="button">
+            [% locale.maketext('Continue') %]
+        </button>
+        <button id="promptCancel"
+            class="btn-secondary btn-small"
+            type="button">
+            [% locale.maketext('Cancel') -%]
+        </button>
+    </div>
+</div>
+<div class="" style="align:left;" >
+<div id="tweaktabs" class="yui-navset">
+
+<div id="find_container">
+<span class="jumptext">[% locale.maketext("Find") %]&nbsp;</span>
+<input type="text" name="find" id="quickjump" onKeyUp="try {searchpage(this);} catch(e) {}" style="width:130px;"[% IF bootstrap -%] class="form-control"[% END -%]>
+<b style="display:none;" id="clearlnk" class="smalltext"><a onClick="try {clearsearch()} catch(e) {};return false;" href="javascript:void(0)">x</a></b>
+<span id="gosearch" class="smalltext[% IF bootstrap -%] text-danger[% END -%]" style="display:none; margin: 0 auto">[% locale.maketext("No Matches") %]</span>
+
+</div>
+[% END -%]
+[%
+SET extrascript = '';
+
+IF tweakcfg.extra_settings;
+    FOR settings_key = tweakcfg.extra_settings.keys;
+        ts_conf.$settings_key = tweakcfg.extra_settings.$settings_key;
+    END;
+END;
+
+SET TS_display = ts_display || ts_texts.TS_display;
+SET make_tabs = TS_display.size > 1;
+
+SET hide_group = {};
+FOR group_item = TS_display;
+    SET shown = 0;
+
+    FOR setting_name = group_item.1;
+        SET cur_settings = ts_conf.$setting_name;
+
+        # Sometimes ts_conf is pre-filtered to have removed
+        # role-restricted settings. This handles those cases.
+        IF !cur_settings;
+            NEXT;
+        END;
+
+        IF !cur_settings.needs_role || ServerRoles.are_roles_enabled(cur_settings.needs_role);
+            shown = 1;
+            LAST;
+        END;
+    END;
+
+    IF !shown;
+        hide_group.${group_item.0} = 1;
+    END;
+END;
+
+IF make_tabs;
+    UNLESS this_is_ie6;
+        '<div id="left_scroll_button" class="scroll_button inactive"> &lt; </div>';
+        '<div id="right_scroll_button" class="scroll_button"> &gt; </div>';
+        '<div id="scrolling_tabs_container" valign="bottom">';
+        '<div id="scrolling_tabs" class="yui_tabview_scroll_tabs">';
+    END;
+
+    '<ul id="yui_tabs" class="yui-nav">';
+    FOR group_item = TS_display;
+        SET group = group_item.0;
+
+        IF !hide_group.$group;
+            SET groupkey = group.replace('[^A-Za-z0-9]','');
+            SET class_html = loop.last ? ' class="last"' : '';
+
+            "\t<li$class_html><a href='#tab_${groupkey}'><em>${group}</em></a></li>\n";
+        END;
+    END;
+    '</ul>' _ "\n";
+
+    UNLESS this_is_ie6;
+        '</div>';
+        '</div>';
+    END;
+END;
+
+'<div id="alltweaks" class="yui-content">' _ "\n\n";
+
+FOR group_item = TS_display;
+    SET group = group_item.0;
+
+    IF hide_group.$group;
+        NEXT;
+    END;
+
+    SET groupkey = group.replace('[^A-Za-z0-9]','');
+    SET header_text = ts_headers
+        ? ts_headers.$group
+            ? ts_headers.$group.txt
+            : ''
+        : ''
+    ;
+
+    '<div id="' _ 'tab_' _ groupkey _ '">';
+
+    WRAPPER '_brick.tmpl'
+        bootstrap = bootstrap
+        norow=1
+        bricktitle = group _ ( header_text ? " $header_text" : '' )
+        brickid = "group_" _ groupkey
+        brickclass = "settingsgroup"
+    ;
+
+        #do this because we do NEXT IF to some of the rows, which would give
+        #two rows with the same color using loop.index
+        SET row_index = 0;
+
+        SET sorted_keys = group_item.1;
+        IF tweakcfg.extra_texts && tweakcfg.extra_texts.$group;
+            SET extra_keys = tweakcfg.extra_texts.$group.keys.sort();
+            SET sorted_keys = sorted_keys.merge( extra_keys );
+
+            FOR extra_key = extra_keys;
+                SET ts_texts.$extra_key = tweakcfg.extra_texts.$group.$extra_key;
+            END;
+        END;
+
+        FOR key = sorted_keys;
+
+            "\n<!-- |$group| |$key| -->\n";
+            SET cur_settings = ts_conf.$key;
+
+            # Sometimes ts_conf is pre-filtered to have removed
+            # role-restricted settings. This handles those cases.
+            IF !cur_settings;
+                NEXT;
+            END;
+
+            SET cur_texts = ts_texts.$key;
+            SET cur_label = cur_texts.label || cur_settings.label;
+
+            NEXT IF cur_settings.exists( 'skipif' )
+                && ref( \cur_settings.skipif ) == 'CODE'
+                && cur_settings.skipif( conf )
+            ;
+
+            SET row_index = row_index + 1;
+            SET tclass = row_index % 2 ? 'tdshade1_noborder' : 'tdshade2_noborder';
+
+            '<input type="hidden" name="___original_' _ key.cpanel_safe_html_encode_str() _ '" value="' _ conf.$key.cpanel_safe_html_encode_str() _ '">';
+
+            IF ! conf.$key.defined;
+                '<input type="hidden" name="___undef_original_' _ key.cpanel_safe_html_encode_str() _ '" value="1">';
+            END;
+
+            IF cur_settings.needs_role && !ServerRoles.are_roles_enabled(cur_settings.needs_role);
+                NEXT;
+            END;
+
+            SET this_is_a_button = cur_settings && cur_settings.type == 'button';
+
+            IF this_is_a_button;
+                IF cur_settings && cur_settings.popup;
+                    SET button_html = "<a onclick='return quick_popup_button(this," _  cur_label.json _ ");' target=\"${cur_settings.target}\" class=\"btn-primary\" href=\"${cur_settings.action}\">${cur_texts.button}</a>";
+                ELSE;
+                    SET button_html = "<a target=\"${cur_settings.target}\" class=\"btn-primary\" href=\"${cur_settings.action}\">${cur_texts.button}</a>";
+                END;
+                #if no label, put the button on the left and then go to the next setting
+                IF !cur_texts.label;
+                    "<tr class='$tclass'><td class='label_and_help' style='text-align:left'>";
+                    button_html;
+                    '</td><td></td></tr>';
+                    NEXT;
+                END;
+            END;
+
+            SET newoption_title = '';
+
+            IF changed_settings && changed_settings.exists(key);
+                SET newoption = !this_is_a_button;
+                IF newoption;
+                    SET newoption_title = locale.maketext('The setting, [_1], has changed since the last time you saved this page.',key);
+                END;
+            ELSE;
+                SET newoption = !this_is_a_button && !conf.exists( key );
+                IF newoption;
+                    SET newoption_title = locale.maketext('The setting, [_1], was not set in the configuration file, so the default has been used.',key);
+                    IF cur_settings.exists('default');
+                        SET conf.$key = cur_settings.default;
+                    END;
+                END;
+            END;
+
+            IF cur_settings.requires_test;
+                extrascript = extrascript _ "register_requires_test( '$key', '"
+                    _ cur_settings.requires_test.join("','")
+                    _ "')\n"
+                ;
+            END;
+            IF cur_settings.excludes;
+                SET excludes = ref ( cur_settings.excludes ) == 'ARRAY'
+                    ? cur_settings.excludes
+                    : cur_settings.excludes.split(',')
+                ;
+
+                FOR exclusion = excludes;
+                    IF exclusion != key;  #cannot exclude self
+                        extrascript = extrascript _ "register_exclude('$key','$exclusion');\n";
+                    END;
+                END;
+            END;
+            IF cur_settings.requires;
+                FOR requirement = cur_settings.requires.split(',');
+                    IF requirements != key;  #cannot require self
+                        extrascript = extrascript _ "register_requires('$key','$requirement');\n";
+                    END;
+                END;
+            END;
+            IF cur_settings.depends;
+                FOR dep = cur_settings.depends;
+                    extrascript = extrascript _ "register_depends('$key','$dep');\n";
+                END;
+            END;
+
+            IF cur_settings.exists('value');
+                #ignore the value in the config file and use the value supplied
+                conf.$key = cur_settings.value(conf);
+            END;
+
+            SET unformatted_value = conf.$key;
+            SET formatted_value = cur_settings.exists( 'format' ) && ref( \cur_settings.format ) == 'CODE'
+                ? cur_settings.format( unformatted_value )
+                : unformatted_value
+            ;
+            SET formatted_value_enc = formatted_value.cpanel_safe_html_encode_str();
+
+            IF newoption || this_is_a_button || cur_settings.type == 'multiselect';
+                SET is_invalid = 0;
+            ELSE;
+                #undef values are "special"
+                IF cur_settings.type == 'number' && !formatted_value.length;
+                    SET formatted_value = UNDEF;
+                    SET is_invalid = 0;
+                END;
+
+                IF formatted_value.defined();
+                    TRY;
+                        SET is_invalid = cur_settings.exists( 'checkval' )
+                            && ref( \cur_settings.checkval ) == 'CODE'
+                            && ! cur_settings.checkval( formatted_value ).defined();
+                    CATCH;
+                        SET is_invalid = 1;
+                    END;
+                ELSE;
+                    #if undef but setting can't disable, then that's invalid
+                    SET is_invalid = !cur_settings.can_undef;
+                END;
+            END;
+
+
+            IF is_invalid;
+                SET tclass = tclass _ ' invalid';
+            END;
+
+
+            SET range_html = [];
+            IF cur_settings.exists('minimum');
+                SET minimum = cur_settings.minimum;
+
+                # If a special formatter is being applied to the displayed value, the same
+                # needs to be done to the displayed minimum, if any.
+                IF cur_settings.exists( 'format' ) && ref( \cur_settings.format ) == 'CODE';
+                    minimum = cur_settings.format( minimum );
+                END;
+
+                range_html.push( locale.maketext('Minimum: [numf,_1]',minimum) );
+            END;
+
+            IF cur_settings.exists('maximum');
+                SET maximum = cur_settings.maximum;
+
+                IF cur_settings.exists( 'format' ) && ref( \cur_settings.format ) == 'CODE';
+                    maximum = cur_settings.format( maximum );
+                END;
+
+                range_html.push( locale.maketext('Maximum: [numf,_1]',maximum) );
+            END;
+
+            SET range_html = ( range_html.size > 0 )
+                ? ' <span class="range">(' _ range_html.join('; ') _ ')</span>'
+                : UNDEF
+            ;
+
+            SET newoption_html = '';
+            IF newoption;
+                SET newoption_html = '<span id="' _ key _ '_warning" title="' _ newoption_title _ '" class="changed_setting">&nbsp;</span> ';
+            END;
+
+            SET cur_help = cur_texts.help || cur_settings.help;
+            IF tweakcfg.display_label;
+                IF !cur_help;
+                    SET display_html = "<div id='label-$key'>${newoption_html}${cur_label}${range_html}</div>";
+                ELSIF tweakcfg.always_show_help;
+                    SET display_html = "<div id='label-$key'>${newoption_html}${cur_label}${range_html}</div>"
+                    _ "<div>"
+                    _ "<div class='help' id='help-$key'>$cur_help</div>"
+                    _ '</div>';
+                ELSE;
+                    SET display_html = "<div id='label-$key'>${newoption_html}${cur_label}${range_html}"
+                    _ "&nbsp;<a href='javascript:void(0)' onclick='showhelp(\"$key\"); return false;'>[?]</a>"
+                    _ '</div>'
+                    _ "<div>"
+                    _ "<div class='help' id='help-$key' style='display:none;'>$cur_help</div>"
+                    _ '</div>'
+                    ;
+                END;
+            ELSE;
+                # Adding an alert warning to inform users that their website stats are not available because of
+                # the 'common' setting as LOGSTYLE.
+                IF key == "LOGSTYLE" && formatted_value == "common";
+                    SET common_setting_warning =
+                    "<div class='alert alert-warning'>"
+                    _    locale.maketext("Your “[_1]” uses the “[_2]” setting. Your website’s stats may not function.", "LOGSTYLE", "COMMON")
+                    _ "</div>";
+                    SET display_html = common_setting_warning _ cur_help;
+                ELSE;
+                    SET display_html = cur_help _ range_html;
+                END;
+            END;
+
+            "<tr id='${key}_container' class='$tclass'>\n";
+            "<td class='label_and_help' id='labelhelp-$key'>"
+                _ (debug ? "<b>$key</b> " : '' )
+                _ display_html
+                _ ( is_invalid
+                    ? '<br /><br/><span class="warning">The current value for this field is invalid. You must update it.</span>'
+                    : ''
+                )
+                _ "</td>\n"
+            ;
+
+            "<td class='controls' valign='middle'>";
+
+            SWITCH cur_settings.type;
+            CASE [ 'button' ];
+                button_html;  #assembled earlier
+
+            CASE [ 'path' 'text' 'number' 'size' 'password' ];
+
+                SET text_type = cur_settings.type == 'password'
+                    ? 'password'
+                    : 'text'
+                ;
+
+                SET input_maxlength = cur_settings.exists('maxlength')
+                    ? " maxlength='${cur_settings.maxlength}'"
+                    : ''
+                ;
+
+                IF cur_settings.exists('maxlength') && cur_settings.maxlength && cur_settings.exists('size') && cur_settings.size;
+                    SET input_size = " size='${cur_settings.size}'";
+                ELSIF cur_settings.exists('maxlength') && cur_settings.maxlength;
+                    SET input_size = " size='${cur_settings.maxlength}'";
+                ELSIF cur_settings.exists('width') && cur_settings.width;
+                    SET input_size = " size='${cur_settings.width}'";
+                ELSE;
+                    SET input_size = '';
+                END;
+
+
+                SET buttons = [];
+                SET use_radio_buttons = cur_settings.options || cur_settings.can_undef || cur_settings.defined( 'default' );
+                SET cur_radios = cur_settings.options;
+                IF !cur_radios && (cur_settings.can_undef || cur_settings.defined( 'default' ));
+                    cur_radios = [];
+                    # Note: order in which we push items to the list matters, so we can't
+                    # collapse the if logic nicely here.
+                    IF cur_settings.can_undef && cur_settings.item( 'default' ).length != 0;
+                        cur_radios.push(UNDEF);
+                    END;
+                    IF cur_settings.defined( 'default' );
+                        cur_radios.push(cur_settings.default);
+                    END;
+                    IF cur_settings.defined( 'pci' );
+                        cur_radios.push(cur_settings.pci);
+                    END;
+                END;
+
+                IF cur_radios;
+                    "<script type='text/javascript'>tweak_controls.push( '$key' )</script>";
+
+                    SET selected_radio = '';
+                    FOR cur_radio = cur_radios;
+                        IF !cur_radio.defined;
+                            SET undef_is_default = cur_settings.exists( 'default' )
+                                && ! cur_settings.defined( 'default' )
+                            ;
+
+                            IF ( undef_is_default );
+                                SET extrascript = extrascript
+                                _ "default_values['$key'] = null;\n";
+                            END;
+
+                            IF is_invalid;
+                                SET check_undef = undef_is_default;
+                            ELSE;
+                                SET check_undef = !formatted_value.defined();
+                            END;
+
+                            IF check_undef;
+                                selected_radio = 'undef';
+                            END;
+
+                            buttons.push( '<label>'
+                            _ "<input type='radio' name='${key}_control' value='undef'"
+                            _ " id='${key}_undef'"
+                            _ ( check_undef ? ' checked="checked"' : '' )
+                            _ ' onclick="checktweaks()"'
+                            _ ' />'
+                            _ ( cur_texts.undef || cur_settings.can_undef )
+                            _ ( undef_is_default ? '&nbsp;<span class="' : '' )
+                            _ ( ( bootstrap && undef_is_default ) ? 'label label-' : '' )
+                            _ ( undef_is_default ? 'default">default</span>' : '' )
+                            _ '</label>'
+                            );
+                        ELSIF cur_radio == cur_settings.default;
+                            #in case any Javascript tests on the value
+                            SET js_default = cur_settings.default.match('\A\d+(?:\.\d+)\z')
+                                ? cur_settings.default + 0
+                                : "'${cur_settings.default}'"
+                            ;
+                            SET extrascript = extrascript
+                            _ "default_values['$key'] = $js_default;\n";
+
+                            SET cur_default = cur_settings.default;
+                            SET default_text = cur_settings.default_text || cur_default;
+
+                            SET cur_radio_checked = is_invalid || formatted_value == cur_default;
+                            IF cur_radio_checked;
+                                selected_radio = 'default';
+                            END;
+
+                            buttons.push( '<label>'
+                                _ "<input type='radio' name='${key}_control' value='default'"
+                                _ ( cur_radio_checked ? ' checked="checked"' : '' )
+                                _ ' onclick="checktweaks()"'
+                                _ ' />&nbsp;'
+                                _ default_text
+                                _ ( cur_settings.exists( 'unit' ) ? "&nbsp;${cur_settings.unit}" : '' )
+                                _ '&nbsp;<span class="'
+                                _ ( bootstrap ? 'label label-' : '' )
+                                _ 'default">default</span>'
+                                _ '</label>'
+                            );
+                        ELSIF cur_radio == cur_settings.pci;
+                            SET pci_text = cur_settings.pci_text || cur_settings.pci;
+
+                            SET cur_radio_checked = (formatted_value == cur_settings.pci);
+                            IF cur_radio_checked;
+                                selected_radio = 'pci';
+                            END;
+
+                            buttons.push( '<label>'
+                                _ "<input type='radio' name='${key}_control' value='pci'"
+                                _ ( cur_radio_checked ? ' checked="checked"' : '' )
+                                _ ' onclick="checktweaks()"'
+                                _ ' />'
+                                _ (pci_text || cur_settings.pci)
+                                _ ( cur_settings.exists( 'unit' ) ? "&nbsp;${cur_settings.unit}" : '' )
+                                _ '&nbsp;<span class="pci">PCI recommended</span>'
+                                _ '</label>'
+                            );
+                        ELSE;
+                            SET text_key = "custom_${cur_radio}";
+
+                            SET cur_radio_text = cur_texts.custom.$cur_radio;
+                            SET cur_radio_text = cur_radio_text.html();
+
+                            IF !cur_radio_text;
+                                cur_radio_text = cur_radio.html();
+                                cur_radio_text = cur_radio _ ( cur_settings.exists( 'unit' ) ? "&nbsp;${cur_settings.unit}" : '' );
+                            END;
+
+                            SET cur_radio_checked = (formatted_value == cur_radio);
+                            IF cur_radio_checked;
+                                selected_radio = "custom_$cur_radio";
+                            END;
+
+                            cur_radio_html = cur_radio.html();
+
+                            buttons.push( '<label>'
+                                _ "<input type='radio' name='${key}_control' value=\"custom_${cur_radio_html}\""
+                                _ ( cur_radio_checked ? ' checked="checked"' : '' )
+                                _ ' onclick="checktweaks()"'
+                                _ ' />'
+                                _ cur_radio_text
+                                _ '</label>'
+                            );
+                        END;
+                    END;
+
+                    SET custom_selected = !selected_radio;
+
+                    SET disabled_html = custom_selected
+                        ? ''
+                        : ' disabled="disabled"'
+                    ;
+
+                    SET checked_html = custom_selected
+                        ? ' checked="checked"'
+                        : ''
+                    ;
+
+                    SET default_input_value = formatted_value.defined()
+                        ? formatted_value_enc
+                        : cur_settings.default
+                    ;
+
+                    buttons.push(
+                        ( bootstrap ?
+                            "<div class='input-group'>"
+                            _ "<div class='input-group-addon'>"
+                            _ "<input type='radio' onclick='checktweaks()' name='${key}_control' value='other' $checked_html />"
+                            _ "</div>"
+                            _ "<input onkeyup='checktweaks()' id='$key' name='${key}_other' type='$text_type' $input_size $input_maxlength $disabled_html value=\"$default_input_value\" class='form-control' />"
+                            _ "</div>"
+                        :
+                            "<input type='radio' onclick='checktweaks()' name='${key}_control' value='other' $checked_html />"
+                            _ "<input onkeyup='checktweaks()' id='$key' name='${key}_other' type='$text_type' autocomplete='off' $input_size $input_maxlength $disabled_html value=\"$default_input_value\" />"
+                            _ ( key.match('TTL$') ? '<br><br><i>' _ locale.maketext('Required') _ '</i>' : '' )
+                        )
+                        _ ( cur_settings.exists( 'unit' ) ? "&nbsp;${cur_settings.unit}" : '' )
+                    );
+                ELSE;  #no buttons, simple text field
+                    SET disabled_html = cur_settings.can_undef && ! formatted_value.defined()
+                        ? 'disabled="disabled"'
+                        : ''
+                    ;
+                    "<input class='noradio' onkeyup=\"checktweaks('$key');\" id='$key' type='$text_type' autocomplete='off' $disabled_html"
+                        _ " name='$key'$input_size $input_maxlength value=\"$formatted_value_enc\" />"
+                        _ ( cur_settings.unit.defined() ? "&nbsp;${cur_settings.unit}" : '' )
+                    ;
+                    IF key == 'ADDR';
+                        '<br><br><i>' _ locale.maketext('Required') _ '</i>';
+                    END;
+                END;
+
+                '<div class="brickcontainer">';  #weird hack to achieve centering...
+                "<ul onclick='check_tweak_controls(\"$key\", true)' style='text-align: left; list-style-type: none; padding: 0px; margin: 0 auto'>";
+
+                "<li>" _ buttons.join('</li><li>') _ '</li>';
+
+                '</ul></div>';
+
+            CASE 'textarea';
+                "<textarea name='$key'>$formatted_value_enc</textarea>";
+
+            CASE 'multiselect';
+                '<div class="brickcontainer" style="text-align: left">';
+                FOR opt = cur_settings.options;
+                    SET checked_html = conf.$key.$opt ? 'checked="checked"' : '';
+
+                    # NB: If every option is hidden then the user will see
+                    # no controls, which is awkward. If that’s ever a
+                    # possibility, we’ll need to make this smarter.
+                    IF cur_settings.hidden.grep("$opt").size();
+                        IF checked_html;
+                            "<input type='hidden' name='${key}' value='${opt}' />";
+                        END;
+
+                        NEXT;
+                    ELSE;
+                        SET label = cur_texts.optionlabels.$opt || cur_settings.optionlabels.$opt || opt;
+                        IF cur_settings.default.$opt;
+                            label = label _ " <span class='"
+                            _ ( bootstrap ? "label label-" : "" )
+                            _ "default'>default</span>";
+                        END;
+                        IF cur_settings.pci.$opt;
+                            label = label _ " <span class='pci'>PCI Recommended</span>";
+                        END;
+                        "<label><input type='checkbox' name='${key}' value='${opt}' $checked_html /> $label</label><br />";
+                    END;
+                END;
+                '</div>';
+
+            CASE [ 'select', 'locale' ];
+                IF cur_settings.sorter;
+                    SET select_options = cur_settings.sorter( cur_settings.options );
+                ELSE;
+                    SET select_options = cur_settings.options.sort();
+                END;
+
+                SET cur_option_in_options = 0;
+                SET select_html = "<select id='${key}_select' name='${key}' onchange='checktweaks()'"
+                _ ( bootstrap ? " class='form-control'" : "" )
+                _ ">";
+                IF cur_settings.type == 'locale';
+                    data.selected_locale = conf.$key || cur_settings.default || 'en';
+                    options_html = PROCESS '_locale_option_tags.tmpl';
+                    SET select_html = select_html _ options_html;
+                ELSE;
+                    FOREACH opt = select_options;
+                        IF opt == conf.$key;
+                            SET cur_option_in_options = 1;
+                            SET selected_html = 'selected="selected"';
+                        ELSE;
+                            SET selected_html = '';
+                        END;
+                        SET opt_html = cur_texts.optionlabels.$opt || cur_settings.optionlabels.$opt || opt;
+
+                        SET select_html = select_html _ "<option ${selected_html} value='$opt'>$opt_html</option>";
+                    END;
+                END;
+                SET select_html = select_html _ '</select>';
+                select_html = select_html _ '<div class="brickcontainer" style="text-align:left">';
+                IF cur_settings.exists('default');
+                    IF cur_settings.type == 'locale';
+                        SET cur_default = locale.get_locale_name(cur_settings.default);
+                    ELSE;
+                        SET cur_default = cur_settings.default;
+                    END;
+                    select_html = select_html _ '<br />' _ locale.maketext('System Default: [_1]',cur_default);
+                END;
+                IF cur_settings.exists('pci');
+                    select_html = select_html _ '<br />' _ locale.maketext('PCI Recommendation: [_1]',cur_settings.pci);
+                END;
+                select_html = select_html _ '</div>';
+
+                SET use_radio_buttons = cur_settings.allow_other;
+                IF use_radio_buttons;
+                    "<script type='text/javascript'>tweak_controls.push( '$key' )</script>";
+
+                    '<div class="brickcontainer">';  #weird hack to achieve centering...
+                    "<ul class='tweak_settings' onclick='check_tweak_controls(\"$key\", true)'>";
+
+                    "<li>"
+                    _ "<input type='radio' name='${key}_control' value=''"
+                    _ ( cur_option_in_options ? ' checked="checked"' : '' )
+                    _ ' />'
+                    _ select_html
+                    _ '</li>'
+                    ;
+
+                    IF cur_settings.exists('maxlength') && cur_settings.maxlength;
+                        SET input_size = " size='${cur_settings.maxlength}'";
+                    ELSIF cur_settings.exists('width') && cur_settings.width;
+                        SET input_size = " size='${cur_settings.width}'";
+                    ELSE;
+                        SET input_size = '';
+                    END;
+
+                    "<li>"
+                    _ '<label>'
+                    _ "<input type='radio' name='${key}_control' value='other'"
+                    _ ( ! cur_option_in_options ? ' checked="checked"' : '' )
+                    _ ' />'
+                    _ 'Other:'
+                    _ '</label>'
+                    _ '&nbsp;'
+                    _ "<input type='text' $input_size id='${key}_other' name='${key}_other' value='$formatted_value_enc'"
+                    _ ( bootstrap ? " class='form-control'" : "" )
+                    _ " />"
+                    _ '</li>'
+                    _ ( key == 'ETHDEV' ? '<br><i>' _ locale.maketext('Required') _ '</i>' : '' )
+                    ;
+
+                    '</ul></div>';
+                ELSE;
+                    select_html;
+                END;
+
+            CASE [ 'radio' 'binary' 'inversebinary' ];   #radio buttons, with values specified in "options"
+                SET is_binary = cur_settings.type == 'binary' || cur_settings.type == 'inversebinary';
+                '<div class="brickcontainer">';  #weird hack to achieve centering...
+                '<ul class="tweak_settings'
+                    _ (is_binary ? ' binary' : '')
+                    _ '">'
+                ;
+
+                SET cur_optionlabels = cur_texts.optionlabels || cur_settings.optionlabels;
+                IF cur_settings.exists( 'options' ) && cur_optionlabels;
+                    FOREACH cur_option=cur_settings.options;
+                        IF ref( cur_option ) != 'ARRAY' && CPHash.vmethod('exists',cur_optionlabels, cur_option);
+                            SET cur_settings.options.${loop.index} = [
+                                cur_optionlabels.$cur_option, cur_option,
+                            ];
+                        END;
+                    END;
+                END;
+
+                SET radio_options = cur_settings.options || ( cur_settings.type == 'inversebinary'
+                    ? [ [ 'On', 0 ], ['Off', 1 ] ]
+                    : [ [ 'On', 1 ], ['Off', 0 ] ]
+                ) ;
+
+                FOR cur_option = radio_options;
+                    IF ref( cur_option ) == 'ARRAY';
+                        SET real_option = cur_option.1;
+                        SET disp_option = cur_option.0;
+                    ELSE;
+                        SET real_option = cur_option;
+                        SET disp_option = cur_option;
+                    END;
+
+                    IF cur_settings.exists( 'default' )
+                    && real_option == cur_settings.default;
+                        IF bootstrap;
+                            SET spacer = '&nbsp;';
+                        ELSE;
+                            SET spacer = is_binary ? '<br />' : '&nbsp;';
+                        END;
+                        SET disp_option = disp_option _ "$spacer<span class='"
+                        _ ( bootstrap ? "label label-" : "" )
+                        _ "default'>default</span>";
+                    END;
+
+                    IF cur_settings.exists( 'pci' )
+                    && real_option == cur_settings.pci;
+                        SET spacer = is_binary ? '<br />' : '&nbsp;';
+                        SET disp_option = disp_option _ "$spacer<span class='pci'>PCI recommended</span>";
+                    END;
+
+                    radio_onclick_fn = "checktweaks()";
+                    IF (key == "LOGSTYLE" && real_option == "common");
+                        radio_onclick_fn = "promptBeforeSelection('" _ key _ "', '" _ formatted_value _ "')";
+                    END;
+
+                    "<li><label><input type='radio' id='${key}_${real_option}' name='$key' value='${real_option}'"
+                        _ ( real_option == formatted_value ? ' checked="checked"' : '' )
+                        _ ' onclick="'_ radio_onclick_fn _';" />&nbsp;'
+                        _ disp_option
+                        _ '</label>'
+                        _ '</li>'
+                    ;
+                END;
+
+                '</ul></div>';
+            END;
+
+            "</td>";
+            "</tr>\n";
+        END;
+
+    END;
+    '</div>';
+END;
+
+IF make_tabs;
+'<div id="tab_All"></div>';
+END;
+'</div>';
+
+-%]
+
+
+
+[% UNLESS nocontainers -%]
+</div>
+</div>
+</div>
+
+<br />
+<div class="clearit" style="clear:both; height: 1px; width: auto;">&nbsp;</div>
+
+[% END -%]
+
+<script type="text/javascript">
+function getQueryParamByName(name) {
+    var query = window.location.search.substring(1);
+    var parms = query.split('&');
+    for (var i = 0; i < parms.length; i++) {
+        var pos = parms[i].indexOf('=');
+        if (pos > 0) {
+            var key = parms[i].substring(0, pos);
+            var val = parms[i].substring(pos + 1);
+            if(key === name) {
+                return val;
+            }
+        }
+    }
+    return "";
+}
+var _TSForm = ( typeof TweakForm == 'undefined' )  //test if this is set
+    ? document.forms[0]
+    : TweakForm
+;
+
+function quick_popup_button(thisEl,thisTitle) {
+    do_quick_popupbox({
+                title:thisTitle,
+                url:thisEl.href,
+                iframe:true,
+                buttons: { 'close':1, 'save-iframe':1 },
+                showloading:1
+            });
+
+    return false;
+}
+
+//https://developer.mozilla.org/en/Core_JavaScript_1.5_Reference/Global_Objects/Array/filter
+function array_first( theArray, fun /* thisp*/) {
+    var len = theArray.length >>> 0;
+    if (typeof fun != "function")
+        throw new TypeError();
+
+    var res = new Array();
+    var thisp = arguments[2];
+    for (var i = 0; i < len; i++) {
+        if (i in theArray) {
+            var val = theArray[i];
+            if (fun.call(thisp, val, i, theArray)) {
+                return val;
+            }
+        }
+    }
+
+    return;
+};
+
+
+var requires = {};
+var excludes = {};
+var requires_tests = {};
+var depends = {};
+var default_values = {};
+var current_config = [% conf.json %];
+var _help_opened = {};
+var _help_animating = {};
+function showhelp(tid) {
+    if ( _help_animating[tid] ) return;
+
+    _help_animating[tid] = true;
+
+    var help_el = document.getElementById('help-' + tid);
+    var is_displayed = YAHOO.util.Dom.getRegion( help_el );
+
+    var label_el = document.getElementById('label-' + tid);
+
+    var slide;
+    if ( is_displayed ) {
+        slide = CPANEL.animate.slide_up(help_el);
+    }
+    else {
+        if ( !(tid in _help_opened) ) {
+            var td = document.getElementById('labelhelp-' + tid);
+            DOM.setStyle(td, 'padding-top', label_el.offsetTop + 'px');
+            DOM.setStyle(td, 'vertical-align', 'top');
+
+            var parent_width = CPANEL.dom.get_content_width( help_el.parentNode.offsetParent );
+            var extra_left = parseFloat( DOM.getStyle( help_el, "margin-left" ) ) || 0
+                + parseFloat( DOM.getStyle( help_el, "border-left-width" ) ) || 0
+                + parseFloat( DOM.getStyle( help_el, "padding-left" ) ) || 0
+            ;
+            var extra_right = parseFloat( DOM.getStyle( help_el, "margin-right" ) ) || 0
+                + parseFloat( DOM.getStyle( help_el, "border-right-width" ) ) || 0
+                + parseFloat( DOM.getStyle( help_el, "padding-right" ) ) || 0
+            ;
+            help_el.style.width = ( parent_width - extra_left - extra_right ) + "px";
+            _help_opened[tid] = 1;
+        }
+
+        slide = CPANEL.animate.slide_down(help_el);
+    }
+
+    slide.onComplete.subscribe( function() { delete _help_animating[tid] } );
+}
+function getoptval(tid) {
+    var El = DOM.get(tid);
+
+    if ( _TSForm[ tid + '_control' ] ) {  //control radio buttons
+        var inputs = _TSForm[ tid + '_control' ];
+        var checked = array_first( inputs, function(i) { return i.checked } );
+
+        if ( checked === undefined || checked.value == 'undef' ) {
+            return false;
+        }
+        else if ( ( ! checked.value ) || checked.value == '0' ) {
+            return 0;
+        }
+        else if ( checked.value == 'default' ) {
+            return default_values[ tid ];
+        }
+        else if ( checked.value == 'other' ) {
+            return _TSForm[ tid + '_other' ].value;
+        }
+        else {
+            return 1;
+        }
+    }
+    else if ( El ) {
+        if (El.getAttribute('type') == 'text') { return El.value }
+    }
+    else {  //radio buttons
+        var inputs = _TSForm[ tid ];
+        if (inputs) {
+            var checked = array_first( inputs, function(i) { return i.checked } );
+
+            return ( ( ! checked ) || ( ! checked.value ) || ( checked.value == '0' ) )
+                ? false
+                : checked.value
+            ;
+        }
+    }
+
+    if (current_config.hasOwnProperty(tid)) {
+      return current_config[tid];
+    }
+    return undefined;
+}
+
+function enable_control( key ) {
+    var control_buttons = _TSForm[ key + '_control' ];
+    var control_value;
+    if ( control_buttons ) {
+        for ( var c=0, ctl; ctl = control_buttons[c]; c++ ) {
+            ctl.disabled = false;
+
+            if ( ctl.checked ) {
+                control_value = ctl.value;
+            }
+        }
+    }
+
+    var controls = _TSForm[key];
+    if ( controls[0] ) {
+        for ( var c=0, ctl; ctl = controls[c]; c++ ) {
+            ctl.disabled = false;
+        }
+    }
+    else if ( ! control_value ) {  //undefined, or empty string
+        controls.disabled = false;
+    }
+
+    var container = document.getElementById( key + '_container' );
+    var revert = document.getElementById( key + '_revert' );
+
+    var container_class = container.className.split(/\s+/);
+    var new_class = [];
+    for ( var c=0, cl; cl = container_class[c]; c++ ) {
+        if ( cl != 'disabled' ) {
+            new_class.push( cl );
+        }
+    }
+    container.className = new_class.join(' ');
+
+    if ( revert ) {
+        revert.disabled = false;
+    }
+}
+
+function disable_control( key ) {
+    var controls = _TSForm[key];
+    if ( controls[0] ) {
+        for ( var c=0, ctl; ctl = controls[c]; c++ ) {
+            ctl.disabled = true;
+        }
+    }
+    else {
+        controls.disabled = true;
+    }
+
+    var control_buttons = _TSForm[ key + '_control' ];
+    if ( control_buttons ) {
+        for ( var c=0, ctl; ctl = control_buttons[c]; c++ ) {
+            ctl.disabled = true;
+        }
+    }
+
+    var container = document.getElementById(key + '_container');
+    var revert = document.getElementById( key + '_revert' );
+
+    if ( ! container.className.match( /(?:^|\s)disabled(?:$|\s)/ ) ) {
+        container.className = container.className.split(/\s+/).concat('disabled').join(' ');
+    }
+
+    if ( revert ) {
+        revert.disabled = true;
+    }
+}
+
+//disables a control explicitly, not because something else is set
+function set_disable( checkbox, key ) {
+    var control = document.getElementById( key );
+    control.disabled = checkbox.checked;
+}
+
+function set_value( key, value ) {
+    var control = document.getElementById( key );
+    var disabler = document.getElementById( key + '_undef' );
+
+    if ( value !== false ) {
+        control.value = value;
+    }
+
+    if ( disabler ) {
+        disabler.checked = ( value === false );
+        control.disabled = ( value === false );
+    }
+}
+
+function checktweaks() {
+    var showdb = {};
+    for (var requirer in requires) {
+        var showcol=1;
+        for(var requiree in requires[requirer]) {
+            var optval = getoptval( requiree );
+            if ( optval || optval === '' ) {
+                showcol=1;
+            } else {
+                showcol=0;
+                break;
+            }
+        }
+        showdb[requirer]=showcol;
+    }
+    for(var key in requires_tests) {
+        var req = requires_tests[key].req;
+        var testop = requires_tests[key].testop;
+        var op = requires_tests[key].op;
+        if (req.match(/^\$/)) {
+            req = getoptval(req.replace(/^\$/,''));
+        }
+        if (op.match(/^\$/)) {
+            op = getoptval(op.replace(/^\$/,''));
+        }
+        var result = eval('"' + req + '" ' + testop + ' "' + op + '"');
+        if (result && showdb[key] != 0) { /*from above*/
+            showdb[key]=1;
+        } else {
+            showdb[key]=0;
+        }
+    }
+    for(var excludee in excludes) {
+        var showcol=1;
+        for(var excluder in excludes[excludee]) {
+            var optval = getoptval( excluder );
+            if ( ( optval && optval !== '0' ) || optval === '' ) {
+                showcol=0;
+                break;
+            } else {
+                showcol=1;
+            }
+        }
+        if (showdb[excludee] != 0) {
+            showdb[excludee]=showcol;
+        }
+    }
+    for (var key in depends ) {
+        for ( var dep in depends[key] ) {
+            check_depends(dep);
+        }
+    }
+
+    for (var key in showdb) {
+      if (showdb[key] == 1) {
+          enable_control( key );
+      } else if (showdb[key] == 0) {
+          disable_control( key );
+      }
+    }
+    return false;
+}
+
+/* Check for dependencies declared in the tweaksetting's YAML entry/iContact schema module */
+function check_depends(thing) {
+    if(!thing) return false;
+    var elem = document.getElementById(thing);
+    var deps = Object.keys(depends[thing]);
+
+    /*XXX what if it is a radio, etc.? not sure what to do there, as there's no 'value'. */
+    var invalid = 0;
+    for( var i = 0; i < deps.length; i++ ) {
+        var chainedElem = document.getElementById(deps[i]);
+
+        /* If the dependent element doesn't exist, just ignore it, the developer probably did something silly */
+        if( !chainedElem ) continue;
+        var submitBtn = document.querySelector('input[type="submit"]');
+        if( !submitBtn ) {
+            /* Give it a second to figure it out */
+            window.setTimeout(function() { check_depends(thing); }, 1000 );
+        } else {
+            if( !chainedElem.value && elem.value ) {
+                submitBtn.disabled = true;
+                document.getElementById( deps[i] + "_container").classList.add("invalid");
+            } else if( chainedElem.value && !elem.value ) {
+                submitBtn.disabled = true;
+                document.getElementById( thing + "_container").classList.add("invalid");
+            } else {
+                submitBtn.disabled = false;
+                document.getElementById( deps[i] + "_container").classList.remove("invalid");
+                document.getElementById( thing + "_container").classList.remove("invalid");
+            }
+        }
+    }
+
+    return false;
+}
+
+var confirm_panel;
+function promptBeforeSelection(tweakKey, lastValue){
+    var promptMessage = "";
+    var promptHeaderText = "";
+    // Add messages
+    if(tweakKey === "LOGSTYLE"){
+        promptMessage = LOCALE.maketext("If you select the “[_1]” log style, your website’s stats may no longer function. Are you sure that you wish to continue?", "COMMON");
+        promptHeaderText = LOCALE.maketext("[_1][comment,proper name] selection", "Apache LOGSTYLE");
+    }
+
+    if (!confirm_panel) {
+        var panel_options = {
+            width: "500px",
+            fixedcenter: true,
+            close: true,
+            draggable: false,
+            modal: true,
+            visible: true
+        };
+        confirm_panel = new YAHOO.widget.Panel("promptBeforeSelect", panel_options);
+        confirm_panel.render();
+        YAHOO.util.Event.addListener("promptCancel", "click", function () {
+            var previousEl = DOM.get(tweakKey + "_" + lastValue);
+            if(previousEl.type === "radio" || previousEl.type === "checkbox"){
+                previousEl.checked = true;
+            }
+            confirm_panel.hide();
+        }, tweakKey, lastValue);
+    }
+    document.getElementById("promptHd").innerHTML = promptHeaderText;
+    document.getElementById("promptBd").innerHTML = promptMessage;
+    YAHOO.util.Event.removeListener("promptOk", "click");
+    YAHOO.util.Event.addListener("promptOk", "click", function () {
+        confirm_panel.hide();
+        checktweaks();
+    });
+    confirm_panel.show();
+}
+
+function register_requires_test(key,req,testop,op) {
+    requires_tests[key] = {
+                    req: req,
+                    testop: testop,
+                    op: op
+                };
+}
+function register_exclude(key,exclude) {
+    if (!excludes[key]) { excludes[key] = {}; }
+    excludes[key][exclude]=1;
+}
+
+function register_requires(key,req) {
+    if (!requires[key]) { requires[key] = {}; }
+    requires[key][req]=1;
+}
+
+function register_depends(key,dep) {
+    if (!depends[key]) { depends[key] = {}; }
+    depends[key][dep] = 1;
+    return false;
+}
+
+var selected_input;
+function check_tweak_controls( var_name, to_focus ) {
+    var radio_buttons = _TSForm[ var_name + '_control' ];
+
+    for (var r=0, rb; rb = radio_buttons[r]; r++) {
+        var to_disable = ! rb.checked;
+
+        var li_parent = YAHOO.util.Dom.getAncestorByTagName( rb, 'li' );
+        var inputs = li_parent.getElementsByTagName('input');
+        var selects = li_parent.getElementsByTagName('select');
+
+        for ( var i=0, cur_input; cur_input = inputs[i]; i++ ) {
+            if ( cur_input != rb ) {
+                cur_input.disabled = to_disable;
+                if ( to_focus && !to_disable && cur_input != selected_input ) {
+                    var cur_type = cur_input.type.toLowerCase();
+                    if ( cur_type == 'text' || cur_type == 'password' ) {
+                        cur_input.focus();
+                        cur_input.select();
+                        selected_input = cur_input;
+                    }
+                }
+            }
+        }
+
+        for ( var s=0, cur_select; cur_select = selects[s]; s++ ) {
+            cur_select.disabled = to_disable;
+            if ( to_focus && !to_disable && cur_select != selected_input ) {
+                cur_select.focus();
+                selected_input = cur_select;
+            }
+        }
+    }
+}
+
+for ( var tc=0; tc < tweak_controls.length; tc++ ) {
+    check_tweak_controls( tweak_controls[tc], false );  //disable auto-focusing
+}
+
+function setAllTabVisibility (tabView,setting) {
+    var len;
+    var tabs = tabView.get('tabs');
+    for (var i = 0, len = tabs.length; i < len; i++) {
+        tabs[i].set('contentVisible',setting,true);
+        var thead = tabs[i].get('contentEl').getElementsByTagName('thead');
+        if (thead && thead[0]) {
+            (thead[0].getElementsByTagName('tr'))[0].style.display=(setting ? '' : 'none');
+        }
+    }
+}
+
+var tweakTabs;
+
+/* Search Code Starts Here */
+
+var insearch = 0;
+var idgen = 0;
+var ElementTextCache = {};
+var tblParentCache = {};
+var searchCells = [];
+
+function searchpage(searchBoxEl) {
+    var searchText = searchBoxEl.value.toLowerCase();
+
+    if (searchText) {
+        document.getElementById('clearlnk').style.display='';
+    } else {
+        insearch=0;
+        document.getElementById('clearlnk').style.display='none';
+    }
+
+    var matchCount = 0;
+    var cur_tbl_match_count = 0;
+    var allParentHeaders = {};
+    var matchedParentUls = {};
+
+[% IF make_tabs -%]
+    if (!insearch) {
+        if (tweakTabs.get('activeTab').get('label') != "All") {
+            var tabs = tweakTabs.get('tabs');
+            tweakTabs.set('activeIndex', 0);
+        }
+        insearch=1;
+    }
+[% END -%]
+
+    var last_tbl_parent = null;
+    for(var i = 0;i < searchableElements.length;i++) {
+        var cur_elem = searchableElements[i];
+        var innerText;
+        if (!ElementTextCache[cur_elem.id] || ElementTextCache[cur_elem.id] == "") {
+            var AddedsearchText = cur_elem.getAttribute('searchtext');
+            innerText = cur_elem.innerHTML.replace(/\<[^\>]+\>/g,'');
+            if (AddedsearchText) { innerText += " " + AddedsearchText; }
+            innerText += " " + cur_elem.id.replace(/_container$/,'');
+            innerText = innerText.toLowerCase();
+            ElementTextCache[cur_elem.id] = innerText;
+        } else {
+            innerText = ElementTextCache[cur_elem.id];
+        }
+        var tblParent = getTblParent(cur_elem);
+        allParentHeaders[tblParent.id] = tblParent;
+        if ( tblParent !== last_tbl_parent ) cur_tbl_match_count = 0;
+        if (innerText.match(searchText)) {
+            matchCount++;
+            cur_tbl_match_count++;
+            matchedParentUls[tblParent.id] = 1;
+            YAHOO.util.Dom.removeClass(cur_elem,'searchhide');
+
+            if ( cur_tbl_match_count % 2 ) {
+                DOM.addClass(cur_elem, 'tdshade1_noborder');
+                DOM.removeClass(cur_elem, 'tdshade2_noborder');
+            }
+            else {
+                DOM.addClass(cur_elem, 'tdshade2_noborder');
+                DOM.removeClass(cur_elem, 'tdshade1_noborder');
+            }
+        } else {
+            YAHOO.util.Dom.addClass(cur_elem,'searchhide');
+        }
+        last_tbl_parent = tblParent;
+    }
+
+    document.getElementById('gosearch').style.display=(matchCount == 0 ? '' : 'none');
+
+    for(var i in allParentHeaders) {
+        if (matchedParentUls[i]) {
+            YAHOO.util.Dom.removeClass(allParentHeaders[i],'searchhide');
+        } else {
+            YAHOO.util.Dom.addClass(allParentHeaders[i],'searchhide');
+        }
+    }
+
+[% UNLESS this_is_ie6 -%]
+    adjust_scroll();
+[% END -%]
+}
+
+
+
+function getTblParent(tagEl) {
+    if (!tagEl.id) {
+        tagEl.id = 'idgen' + idgen++;
+    }
+    if (tblParentCache[tagEl.id]) { return tblParentCache[tagEl.id]; }
+
+    var parent_row = YAHOO.util.Dom.getAncestorByTagName( tagEl, 'table' ).rows[0];
+    tblParentCache[tagEl.id] = parent_row;
+    return parent_row;
+}
+
+function clearsearch() {
+    var quickJumpEl = document.getElementById('quickjump');
+    quickJumpEl.value='';
+    searchpage(quickJumpEl);
+    insearch=0;
+}
+/* Search Code Ends Here */
+
+var EU = YAHOO.util.Event;
+
+
+[% extrascript %]
+
+function init_tweaks () {
+[% IF make_tabs -%]
+    tweakTabs = new YAHOO.widget.TabView('tweaktabs');
+
+    tweakTabs.addTab(
+        new YAHOO.widget.Tab( { label: 'All', active: true } ),
+        0
+    );
+
+    tweakTabs.on('beforeActiveTabChange', function(e) {
+            insearch=0;
+            if (e.prevValue.get('label') == "All") {
+                clearsearch();
+                setAllTabVisibility(tweakTabs,false);
+            }
+
+            });
+
+    tweakTabs.on('activeTabChange', function(e) {
+            insearch=0;
+            if (e.newValue.get('label') == "All") {
+                setAllTabVisibility(tweakTabs,true);
+            }
+            });
+    setAllTabVisibility(tweakTabs,true);
+[% END -%]
+
+    var alltweaksEl = YAHOO.util.Dom.get('alltweaks');
+    searchableElements = alltweaksEl.getElementsByTagName('tr');
+
+    checktweaks();
+    var quickJumpEl = document.getElementById('quickjump');
+
+    var stop_propagation = function(e) {
+        var key_code = YAHOO.util.Event.getCharCode(e);
+        if ( key_code == 13 ) YAHOO.util.Event.preventDefault(e);
+    };
+
+    YAHOO.util.Event.addListener( quickJumpEl, 'keypress', stop_propagation );
+    YAHOO.util.Event.addListener( quickJumpEl, 'keydown',  stop_propagation );
+
+    [% IF Whostmgr.FORM.find %]
+
+        quickJumpEl.value = [% Whostmgr.FORM.find.json %];
+        searchpage(quickJumpEl);
+
+    [% END %]
+
+    try { quickJumpEl.focus(); } catch(e) {
+        //love IE
+    }
+
+    // Reset the search focus after the navigation area finishes loading.
+    // We wrap the call here in a setTimeout without a time so that
+    // the javascript is executed on the next available cycle.
+    window.addEventListener("content-container-init", function() {
+        window.setTimeout(function() {
+            quickJumpEl.focus();
+        });
+    });
+    [% IF make_tabs %]
+    var tabs = tweakTabs.get("tabs");
+
+    var preTab = getQueryParamByName('active_tab') || false;
+    if(preTab){
+        var re = new RegExp("^tab_" + preTab.trim() + "$" , "i");
+        for(var i = 0; i < tabs.length; i++){
+            if(re.test(tabs[i].get("contentEl").id) !== false){
+                tweakTabs.set('activeIndex', i);
+                break;
+            }
+        }
+    }
+    [% END %]
+}
+
+init_tweaks();
+
+
+[% UNLESS this_is_ie6 || !make_tabs -%]
+//YAHOO.util.Dom.getRegion does not include margins
+function getRegionWithMargins( el ) {
+    el = DOM.get(el);
+
+    var get_float_from_style = function( style ) {
+        var raw_style = DOM.getStyle( el, style );
+        if ( !raw_style || !YAHOO.lang.isString(raw_style) ) {
+            return;
+        }
+
+        var match = raw_style.match( /(\d+(?:\.\d+)?)([a-z]+)/ );
+        if ( !match ) return;
+
+        var unit = match[2];
+        var pixels;
+        if ( unit == 'em' ) {
+            if ( ! CPANEL._dummy_div ) {
+                var dummy_div = document.createElement('div');
+                CPANEL._dummy_div = dummy_div;
+
+                DOM.setStyle( dummy_div, 'position', 'absolute' );
+                DOM.setStyle( dummy_div, 'visibility', 'hidden' );
+                DOM.setStyle( dummy_div, 'height', '1px' );
+                document.body.appendChild( dummy_div );
+            }
+
+            DOM.setStyle( CPANEL._dummy_div, 'width', raw_style );
+            pixels = DOM.getRegion( CPANEL._dummy_div ).width;
+        }
+        else {
+            pixels = parseFloat( match[0] );
+        }
+
+        return pixels;
+    };
+
+    var base_region = DOM.getRegion(el);
+
+    var margin_top    = get_float_from_style( 'margin-top'    ) || 0;
+    var margin_right  = get_float_from_style( 'margin-right'  ) || 0;
+    var margin_bottom = get_float_from_style( 'margin-bottom' ) || 0;
+    var margin_left   = get_float_from_style( 'margin-left'   ) || 0;
+
+    var new_region = new YAHOO.util.Region(
+        base_region.top    - margin_top,
+        base_region.right  + margin_right,
+        base_region.bottom + margin_bottom,
+        base_region.left   - margin_left
+    );
+
+    return new_region;
+};
+
+
+var scrolling_tabs = document.getElementById('scrolling_tabs');
+var tabs_list = document.getElementById('yui_tabs');
+
+var scroll_content_copy = tabs_list.cloneNode(true);
+YAHOO.util.Dom.setStyle( scroll_content_copy, 'position',   'absolute' );
+YAHOO.util.Dom.setStyle( scroll_content_copy, 'visibility', 'hidden'   );
+scrolling_tabs.appendChild( scroll_content_copy );
+var scroll_width = YAHOO.util.Dom.getRegion( scroll_content_copy ).width;
+scroll_content_copy.parentNode.removeChild( scroll_content_copy );
+
+if ( 'addEventListener' in scrolling_tabs ) {
+    scrolling_tabs.addEventListener( 'DOMMouseScroll', function(e) {
+        if ( max_scroll > 0 ) {
+            scroll_by( e.detail );
+            blink_buttons_with_wheel( e.detail )
+            e.preventDefault(); e.stopPropagation();
+        }
+    }, false );
+    scrolling_tabs.addEventListener( 'mousewheel', function(e) {
+        if ( max_scroll > 0 ) {
+            var scroll_distance = e.wheelDelta / -40;
+            scroll_by( scroll_distance );
+            blink_buttons_with_wheel( scroll_distance )
+            e.preventDefault(); e.stopPropagation();
+        }
+    }, false );
+}
+else {
+    scrolling_tabs.onmousewheel = function() {
+        if ( max_scroll > 0 ) {
+            var scroll_distance = window.event.wheelDelta / -20 * scale;
+            scroll_by( scroll_distance );
+            blink_buttons_with_wheel( scroll_distance )
+            return false;
+        }
+    };
+}
+
+var scroll_button_class_remover = null;
+function blink_buttons_with_wheel( reported_delta ) {
+    if ( cur_pos <= 0 && reported_delta < 0 ) {
+        return false;
+    }
+    if ( cur_pos >= max_scroll && reported_delta > 0 ) {
+        return false;
+    }
+
+    var active_button = ( reported_delta > 0 )
+        ? right_scroll_button
+        : left_scroll_button
+    ;
+
+    DOM.addClass( active_button, 'scrolling' );
+
+    //wait to see when the scroll wheel stops moving
+    if ( ! scroll_button_class_remover ) {
+        var old_pos = -1;
+        scroll_button_class_remover = function() {
+            if ( old_pos == cur_pos ) {
+                DOM.removeClass( active_button, 'scrolling' );
+                scroll_button_class_remover = null;
+            }
+            else {
+                old_pos = cur_pos;
+                setTimeout( scroll_button_class_remover, 60 );
+            }
+        };
+        scroll_button_class_remover();
+    }
+}
+
+var left_scroll_button = document.getElementById('left_scroll_button');
+var right_scroll_button = document.getElementById('right_scroll_button');
+
+var left_scroller_total_region = getRegionWithMargins( left_scroll_button );
+var right_scroller_total_region = getRegionWithMargins( right_scroll_button );
+
+var fixed_right_scroller_pos = left_scroller_total_region.width + scroll_width;
+var find_area_threshold = fixed_right_scroller_pos + right_scroller_total_region.width;
+
+var cur_pos = 0;
+var scale = 1.5;
+var max_scroll;
+function adjust_scroll() {
+    var find_total_region = getRegionWithMargins( 'find_container' );
+    var old_scroll = max_scroll;
+
+    max_scroll = scroll_width - YAHOO.util.Dom.getRegion( scrolling_tabs ).width + 1;
+
+    var difference = max_scroll - old_scroll;
+    if ( cur_pos > 0 && difference < 0 ) {
+        scroll_by( difference );
+    }
+    else if ( right_scroll_button_inactive ) {
+        right_scroll_button_activate();
+    }
+};
+adjust_scroll();
+window.onresize = adjust_scroll;
+
+var right_scroll_button_inactive = false;
+var right_scroll_button_activate = function() {
+    DOM.removeClass( right_scroll_button, 'inactive' );
+    right_scroll_button_inactive = false;
+}
+var right_scroll_button_deactivate = function() {
+    DOM.addClass( right_scroll_button, 'inactive' );
+    right_scroll_button_inactive = true;
+}
+
+function scroll_by( pixel_increment, window_drag ) {
+    if ( cur_pos <= 0 ) {
+        if ( pixel_increment < 0 ) {
+            return false;
+        }
+        else if ( cur_pos + pixel_increment > 0 ) {
+            DOM.removeClass( left_scroll_button, 'inactive' );
+        }
+    }
+    if ( cur_pos >= max_scroll ) {
+        if ( pixel_increment > 0 ) {
+            return false;
+        }
+        else if ( cur_pos + pixel_increment < max_scroll ) {
+            right_scroll_button_activate();
+        }
+    }
+
+    var new_pos;
+    if ( cur_pos > 0 && cur_pos + pixel_increment <= 0 ) {
+        new_pos = 0;
+        DOM.addClass( left_scroll_button, 'inactive' );
+    } else if ( cur_pos < max_scroll && cur_pos + pixel_increment >= max_scroll ) {
+        new_pos = max_scroll;
+        right_scroll_button_deactivate();
+    }
+    else {
+        new_pos = cur_pos + pixel_increment;
+    }
+
+    YAHOO.util.Dom.setStyle( tabs_list, 'left', ( -1 * new_pos ) + 'px' );
+    cur_pos = new_pos;
+
+    return pixel_increment;
+}
+
+var mousedown_scroll = 0;
+function start_scroll( scroll_left ) {
+    var old_pos = cur_pos;
+
+    mousedown_scroll = scroll_left ? -1 : 1;
+    var increment = mousedown_scroll * scale * 2;
+
+    var recursive_scroll = function() {
+        var ok_to_scroll = scroll_left ? (cur_pos > 0) : (cur_pos < max_scroll);
+        if ( mousedown_scroll != 0 && ok_to_scroll ) {
+            scroll_by( increment );
+            setTimeout( recursive_scroll, 8 );
+        }
+    };
+
+    recursive_scroll();
+
+}
+function stop_scroll() {
+    mousedown_scroll = 0;
+}
+
+left_scroll_button.onmousedown = function() {
+    DOM.addClass( left_scroll_button, 'scrolling' );
+    start_scroll( true );
+};
+left_scroll_button.onmouseout = function() {
+    DOM.removeClass( left_scroll_button, 'scrolling' );
+    stop_scroll();
+};
+left_scroll_button.onmouseup = left_scroll_button.onmouseout;
+
+right_scroll_button.onmousedown = function() {
+    DOM.addClass( right_scroll_button, 'scrolling' );
+    start_scroll( false );
+};
+right_scroll_button.onmouseout = function() {
+    DOM.removeClass( right_scroll_button, 'scrolling' );
+    stop_scroll();
+};
+right_scroll_button.onmouseup = right_scroll_button.onmouseout;
+[% END #exclusion for IE6 -%]
+
+</script>

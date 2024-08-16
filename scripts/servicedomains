@@ -1,0 +1,251 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/servicedomains                  Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::servicedomains;
+
+use strict;
+use warnings;
+
+use Cpanel::Config::LoadCpConf ();
+use Cpanel::Proxy              ();
+use Getopt::Long;
+use Pod::Usage;
+
+exit( __PACKAGE__->script(@ARGV) );
+
+sub script {    ## no critic qw(Subroutines::ProhibitExcessComplexity)
+    my ( $class, @args ) = @_;
+
+    if ( $> != 0 ) {
+        die "Must be root to run $0";
+    }
+
+    # process arguments
+    my $help;
+    my $user;
+    my $domain;
+    my $man;
+    my $subdomain;
+    my $force_autodiscover_support;
+    my $allow_disabled;
+    my $old_autodiscover_host;
+    my $no_replace;
+    my $ifenabled;
+    Getopt::Long::GetOptionsFromArray(
+        \@args,
+        'domain=s'                     => \$domain,
+        'force_autodiscover_support=s' => \$force_autodiscover_support,
+        'allow_disabled'               => \$allow_disabled,
+        'help'                         => \$help,
+        'man'                          => \$man,
+        'no_replace=s'                 => \$no_replace,
+        'old_autodiscover_host=s'      => \$old_autodiscover_host,
+        'subdomain=s'                  => \$subdomain,
+        'user=s'                       => \$user,
+        'ifenabled'                    => \$ifenabled,
+    ) || pod2usage("Invalid options");
+
+    if ($ifenabled) {
+        my $conf = Cpanel::Config::LoadCpConf::loadcpconf_not_copy();
+        if ( !$conf->{proxysubdomains} ) {
+            print "Service subdomains are not enabled; there is nothing to do.\n";
+            return;
+        }
+    }
+
+    my $action = shift @args || ( $help = 1 );
+    $action = lc $action if $action;
+
+    # validate
+
+    if ( $user && $domain ) {
+        pod2usage("User and Domain cannot be specified at the same time");
+    }
+
+    if ( !$help && $action ne 'add' && $action ne 'remove' ) {
+        pod2usage("Invalid action ($action) specified");
+    }
+
+    my @subdomains;
+    if ( defined $subdomain ) {
+        @subdomains = split( m{,}, $subdomain );
+        if ( grep ( !m/^(?:webmail|webdisk|cpcalendars|cpcontacts|whm|cpanel|autoconfig|autodiscover)$/, @subdomains ) ) {
+            pod2usage("Invalid subdomain specified, must be: whm, cpanel, webmail, webdisk, cpcalendars, cpcontacts, autoconfig, and autodiscover");
+        }
+    }
+
+    pod2usage( { -verbose => 2 } ) if $man;
+    pod2usage(1)                   if $help;
+
+    # dispatch
+
+    my %args = ();
+    my $function;
+
+    if ($force_autodiscover_support) {
+        $args{'force_autodiscover_support'} = 1;
+    }
+
+    if ($allow_disabled) {
+        $args{'include_disabled'} = 1;
+    }
+
+    if ( defined $no_replace ) {
+        $args{'no_replace'} = $no_replace;    # we have to replace the old records
+    }
+
+    if ($old_autodiscover_host) {
+        $args{'old_autodiscover_host'} = $old_autodiscover_host;
+    }
+
+    if (@subdomains) {
+        $args{'subdomain'} = \@subdomains;
+    }
+
+    if ( $action eq 'add' ) {
+        if ($user) {
+            print "Adding service subdomains for user ${user}.\n";
+            $args{'user'} = $user;
+            my ( $status, $msg, $results ) = Cpanel::Proxy::setup_proxy_subdomains(%args);    # issafe
+            foreach my $response ( sort { $a->{'domain'} cmp $b->{'domain'} } @{ $results->{'domain_status'} } ) {
+                print _pad( $response->{'domain'}, 35 ) . $response->{'msg'} . "\n";
+            }
+
+            print $msg . "\n" if $msg;
+            return 1          if !$status;
+        }
+        elsif ($domain) {
+            print "Adding service subdomains for domain ${domain}.\n";
+            $args{'domain'} = $domain;
+            my ( $status, $msg, $results ) = Cpanel::Proxy::setup_proxy_subdomains(%args);    # issafe
+            foreach my $response ( sort { $a->{'domain'} cmp $b->{'domain'} } @{ $results->{'domain_status'} } ) {
+                print _pad( $response->{'domain'}, 35 ) . $response->{'msg'} . "\n";
+            }
+
+            print $msg . "\n" if $msg;
+            return 1          if !$status;
+        }
+        else {
+            print "Adding service subdomains for all users.\n";
+            print "This may take several minutes if there are many accounts on the system.\n";
+            my $rsp = Cpanel::Proxy::setup_all_proxy_subdomains(%args);                       # issafe
+            foreach my $response ( @{$rsp} ) {
+                print _pad( $response->{'domain'}, 35 ) . $response->{'msg'} . "\n";
+            }
+            return 0;
+        }
+    }
+    elsif ( $action eq 'remove' ) {
+        if ($user) {
+            print "Removing service subdomains for user ${user}.\n";
+            $args{'user'} = $user;
+            my ( $status, $msg, $results ) = Cpanel::Proxy::remove_proxy_subdomains(%args);    # issafe
+            foreach my $response ( sort { $a->{'domain'} cmp $b->{'domain'} } @{ $results->{'domain_status'} || [] } ) {
+                print _pad( $response->{'domain'}, 35 ) . $response->{'msg'} . "\n";
+            }
+
+            print $msg . "\n" if $msg;
+            return 1          if !$status;
+        }
+        elsif ($domain) {
+            print "Removing service subdomains for domain ${domain}.\n";
+            $args{'domain'} = $domain;
+            my ( $status, $msg, $results ) = Cpanel::Proxy::remove_proxy_subdomains(%args);    # issafe
+            foreach my $response ( sort { $a->{'domain'} cmp $b->{'domain'} } @{ $results->{'domain_status'} || [] } ) {
+                print _pad( $response->{'domain'}, 35 ) . $response->{'msg'} . "\n";
+            }
+
+            print $msg . "\n" if $msg;
+            return 1          if !$status;
+        }
+        else {
+            print "Removing service subdomains for all users.\n";
+            print "This may take several minutes if there are many accounts on the system.\n";
+            my $rsp = Cpanel::Proxy::remove_all_proxy_subdomains(%args) || [];                 # issafe
+            foreach my $response ( @{$rsp} ) {
+                print _pad( $response->{'domain'}, 35 ) . $response->{'msg'} . "\n";
+            }
+            return 0;
+        }
+    }
+
+    return 0;
+}
+
+sub _pad {
+    my ( $text, $length ) = @_;
+
+    if ( length($text) > $length ) {
+        return substr( $text, 0, ( $length - 1 ) ) . '…';
+    }
+    else {
+        return $text . ( ' ' x ( $length - length $text ) );
+    }
+}
+
+__END__
+
+=head1 NAME
+
+servicedomains - Add or remove service subdomains
+
+=head1 SYNOPSIS
+
+servicedomains [action] [options]
+
+    Options:
+      --help                          Brief help message
+      --man                           Full help message
+      --user=                         User to configure
+      --domain=                       Domain to configure
+      --subdomain=                    Service subdomain to manipulate
+      --no_replace=0                  Enable replacment of existing records (currently
+                                      only used for changing autodiscover hosts)
+      --old_autodiscover_host=        The previously configured autodiscover host (used
+                                      for matching old records and updating them to the
+                                      new host)
+      --force_autodiscover_support=1  Behave as if the autodiscover support has not been
+                                      disabled even if it has. This is useful for
+                                      removing the autodiscovery service subdomains after
+                                      the support for them has been disabled.
+      --ifenabled                     Only perform the operation if service subdomains
+                                      are enabled.
+
+    Actions:
+      add          Create service subdomains
+      remove       Remove service subdomains
+
+=head1 DESCRIPTION
+
+This script creates the DNS records required to use cpanel.domain.com,
+webmail.domain.com, webdisk.domain.com, whm.domain.com, cpcontacts.domain.com,
+and cpcalendars.domain.com service redirect domains. This script will add the
+required subdomains to the main domain's DNS record without creating any
+matching VirtualHost entry in httpd.conf. When the service domains setting in
+the WebHostManger Tweak Settings has also been enabled, this will allow http
+and https connections to cpanel.domain.com to be internally proxied to
+port 2082, webmail.domain.com to port 2095, webdisk.domain.com to port 2077,
+whm.domain.com to port 2086, and cpcalendars.domain.com and cpcontacts.domain.com
+to port 2079.
+
+When no --user or --domain argument is supplied this script will attempt to
+configure the service subdomains for all cPanel accounts.
+
+If no --user or --domain argument is supplied and
+the system will not configure autoconfig, autodiscover, or SRV
+records for domains that are not listed in /etc/localdomains.
+
+When --subdomain is specified, this script will only add or remove the
+specified service subdomain.  When no --subdomain is specified, it will
+add or remove all four service subdomains.
+
+The --ifenabled flag causes the script to immediately exit if service subdomains
+are not enabled. This may be used as a convenience in cases where systems that
+already have service subdomains need to have all of them updated, but systems that
+don't have service subdomains should be left alone.
+
+=cut

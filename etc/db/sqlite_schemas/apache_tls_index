@@ -1,0 +1,36 @@
+CREATE TABLE vhost_certificates (
+
+    -- indexed
+    vhost_name      text not null primary key,
+    certificate_id  text not null,  -- to match two certificates
+
+    _encryption_id  text not null,  -- e.g., RSA modulus, to match a key
+                                    -- for ECC, use public X.
+                                    -- This is a “private” row, not exposed
+                                    -- to callers.
+
+    -- not indexed
+    encryption_algorithm    text not null,
+    signature_algorithm     text not null,
+    not_after               text not null,  -- ISO string
+    validation_type         text,           -- can be null
+
+    -- Also private. This will contain details about the specific
+    -- encryption type/strength for this key. For RSA, this will be the
+    -- modulus length, while for ECC it will be the curve name.
+    _encryption_detail      text not null,
+
+    -- We have API calls that return these.
+    -- Otherwise they’re not needed (as of August 2017, anyway).
+    subject                 text not null,
+    issuer                  text not null,
+    not_before              text not null,
+
+    -- automatically created … a cache of the certificate domains
+    certificate_domains     text not null
+);
+
+-- These are not unique indexes because the same certificate
+-- can be installed onto multiple vhosts concurrently.
+CREATE INDEX _encryption_id_index ON vhost_certificates (_encryption_id);
+CREATE INDEX certificate_id_index ON vhost_certificates (certificate_id);

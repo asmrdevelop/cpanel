@@ -1,0 +1,120 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - bin/dbmaptool                           Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+use warnings;
+use Cpanel::Config::Users              ();
+use Cpanel::DB::Map                    ();
+use Cpanel::Usage                      ();
+use Cpanel::PostgresUtils              ();
+use Cpanel::PostgresUtils::PgPass      ();
+use Cpanel::MysqlUtils::Command        ();
+use Cpanel::Encoder::URI               ();
+use Cpanel::DB::Map::Collection::Index ();
+use Cpanel::MysqlUtils::MyCnf::Basic   ();
+
+if ( !@ARGV ) {
+    usage();
+}
+
+my %users  = map { $_ => 1 } Cpanel::Config::Users::getcpusers();
+my $cpuser = shift @ARGV;
+
+if ( !exists $users{$cpuser} ) {
+    print "$cpuser is not a valid user\n";
+    usage();
+}
+
+my $type    = '';
+my $dbusers = '';
+my $dbs     = '';
+
+my %opts = (
+    'type'    => \$type,
+    'dbusers' => \$dbusers,
+    'dbs'     => \$dbs,
+);
+
+Cpanel::Usage::wrap_options( \@ARGV, \&usage, \%opts );
+
+my $dbindex;
+my $map;
+my $server;
+my $dbexists;
+my $userexists;
+if ( $type =~ /^mysql$/i ) {
+    $dbindex    = Cpanel::DB::Map::Collection::Index->new( { 'db' => 'MYSQL' } );
+    $map        = Cpanel::DB::Map->new( { 'cpuser' => $cpuser, 'db' => 'MYSQL' } );
+    $server     = Cpanel::MysqlUtils::MyCnf::Basic::get_server();
+    *userexists = \&Cpanel::MysqlUtils::Command::user_exists;
+    *dbexists   = \&Cpanel::MysqlUtils::Command::db_exists;
+}
+elsif ( $type =~ /^pg$|^pgsql$/i ) {
+    $dbindex    = Cpanel::DB::Map::Collection::Index->new( { 'db' => 'PGSQL' } );
+    $map        = Cpanel::DB::Map->new( { 'cpuser' => $cpuser, 'db' => 'PGSQL' } );
+    $server     = Cpanel::PostgresUtils::PgPass::get_server();
+    *userexists = \&Cpanel::PostgresUtils::user_exists;
+    *dbexists   = \&Cpanel::PostgresUtils::db_exists;
+}
+else {
+    print "$type is an invalid type\n";
+    usage();
+}
+
+my $owner = $map->get_owner( { 'name' => $cpuser, 'server' => $server } );
+
+my @dbusers;
+if ($dbusers) {
+    @dbusers = split /\s+|\,\s*/, $dbusers;
+    foreach my $dbuser (@dbusers) {
+        if ( !userexists($dbuser) ) {
+            $dbuser = Cpanel::Encoder::URI::uri_decode_str($dbuser);
+            print "$dbuser does not exist in the database\n";
+        }
+        elsif ( $dbuser =~ /^\d+/ || $dbuser =~ /^[^-a-zA-Z0-9]+$/ ) {
+            $dbuser = Cpanel::Encoder::URI::uri_decode_str($dbuser);
+            print "$dbuser is an invalid user name\n";
+        }
+        else {
+            $owner->add_dbuser( { 'dbuser' => $dbuser, 'server' => $server } );
+        }
+    }
+}
+
+my @dbs;
+if ($dbs) {
+    @dbs = split /\s+|\,\s*/, $dbs;
+    foreach my $db (@dbs) {
+        if ( !dbexists($db) ) {
+            $db = Cpanel::Encoder::URI::uri_decode_str($db);
+            print "$db does not exist in the database\n";
+        }
+        elsif ( $db =~ /[^a-zA-Z0-9_-]/ ) {
+            $db = Cpanel::Encoder::URI::uri_decode_str($db);
+            print "$db is an invalid database name\n";
+        }
+        elsif ( my $dbuser = $dbindex->get_dbuser_by_db($db) ) {
+            $db     = Cpanel::Encoder::URI::uri_decode_str($db);
+            $dbuser = Cpanel::Encoder::URI::uri_decode_str($dbuser);
+            print "$db is already owned by $dbuser\n";
+        }
+        else {
+            $owner->add_db($db);
+        }
+    }
+}
+
+$map->save();
+
+sub usage {
+    print "$0 cpuser --type mysql|pg --dbusers 'user1, user2' --dbs 'db1, db2'\n
+           These flags are treated individually. This tool will not map a virtual user to a database.
+           /usr/local/cpanel/bin/dbmaptool user1 --type mysql --dbs 'db1' --dbusers 'virt1'
+           /usr/local/cpanel/bin/dbmaptool user1 --type mysql --dbs 'db1' && /usr/local/cpanel/bin/dbmaptool user1 --type mysql --dbusers 'virt1'
+           The above two commands are analogous; result in cpuser 'user1' having privileges for 'db1' and having a virtual user named 'virt1.'\n";
+    exit;
+}

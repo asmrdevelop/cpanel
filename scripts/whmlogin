@@ -1,0 +1,82 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+package scripts::whmlogin;
+
+# cpanel - scripts/whmlogin                    Copyright 2022 cPanel L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+use warnings;
+
+use Cpanel::SafeRun::Object ();
+use Cpanel::JSON            ();
+
+exit( __PACKAGE__->run(@ARGV) ) unless caller();
+
+sub run {
+    my ( $self, @args ) = @_;
+
+    unless ( $> == 0 || $< == 0 ) {
+        print "You must run this program as the root user.\n";
+        return 1;
+    }
+
+    my $nowait;
+    if (@args) {
+        my $help = grep( m/help/, @args ) ? 1 : 0;
+        my $msg  = <<EOS;
+Usage: $0 [--nowait]
+Generate a single use auto-login url for WHM
+
+Options:
+   --nowait     Do not wait for /var/cpanel/cpinit-ip.wait to be removed,
+                instead exit with return status 2 if waiting would have
+                occurred.
+
+EOS
+        if ($help) {
+            print STDOUT $msg;
+            return 0;
+        }
+        if ( grep m/nowait/, @args ) {
+            $nowait = 1;
+        }
+        else {
+            print STDERR "Invalid arguments: @args\n\n$msg";
+            return 1;
+        }
+    }
+
+    my $elapsed_wait = 0;
+    my $wait_file    = '/var/cpanel/cpinit-ip.wait';
+    if ( -e $wait_file ) {
+        if ($nowait) {
+            return 2;
+        }
+        print STDERR "Please wait for initial setup to complete.";
+        while ( -e $wait_file ) {
+            sleep 1;
+            ++$elapsed_wait;
+            print STDERR ".";
+            if ( $elapsed_wait > 300 ) {
+                print STDERR "\nGiving up on waiting.\n";
+                unlink $wait_file or print STDERR "Could not remove $wait_file: $!";
+                last;
+            }
+        }
+        print STDERR "\n\n";
+    }
+
+    my $run = Cpanel::SafeRun::Object->new_or_die(
+        'program' => '/usr/local/cpanel/bin/whmapi1',
+        'args'    => [ '--output=json', 'create_user_session', 'user=root', 'service=whostmgrd' ]
+    );
+    my $json = $run->stdout();
+    my $out  = Cpanel::JSON::Load($json);
+    if ( !$out->{'metadata'}{'result'} ) { die "whmapi1 create_user_session failed: $out->{'metadata'}{'reason'}" }
+    print $out->{data}{url} . "\n";
+    return 0;
+}
+

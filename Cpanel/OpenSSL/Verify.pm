@@ -1,0 +1,104 @@
+package Cpanel::OpenSSL::Verify;
+
+# cpanel - Cpanel/OpenSSL/Verify.pm                Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+use warnings;
+
+use Cpanel::Exception ();
+
+#https://www.openssl.org/docs/manmaster/apps/verify.html, 28th April 2016
+#Several of these are marked there as unused, but we might as well have them.
+my @CODE_TO_NAME = qw(
+  OK
+  UNSPECIFIED
+  UNABLE_TO_GET_ISSUER_CERT
+  UNABLE_TO_GET_CRL
+  UNABLE_TO_DECRYPT_CERT_SIGNATURE
+  UNABLE_TO_DECRYPT_CRL_SIGNATURE
+  UNABLE_TO_DECODE_ISSUER_PUBLIC_KEY
+  CERT_SIGNATURE_FAILURE
+  CRL_SIGNATURE_FAILURE
+  CERT_NOT_YET_VALID
+  CERT_HAS_EXPIRED
+  CRL_NOT_YET_VALID
+  CRL_HAS_EXPIRED
+  ERROR_IN_CERT_NOT_BEFORE_FIELD
+  ERROR_IN_CERT_NOT_AFTER_FIELD
+  ERROR_IN_CRL_LAST_UPDATE_FIELD
+  ERROR_IN_CRL_NEXT_UPDATE_FIELD
+  OUT_OF_MEM
+  DEPTH_ZERO_SELF_SIGNED_CERT
+  SELF_SIGNED_CERT_IN_CHAIN
+  UNABLE_TO_GET_ISSUER_CERT_LOCALLY
+  UNABLE_TO_VERIFY_LEAF_SIGNATURE
+  CERT_CHAIN_TOO_LONG
+  CERT_REVOKED
+  INVALID_CA
+  PATH_LENGTH_EXCEEDED
+  INVALID_PURPOSE
+  CERT_UNTRUSTED
+  CERT_REJECTED
+  SUBJECT_ISSUER_MISMATCH
+  ERR_AKID_SERIAL_MISMATCH
+  ERR_AKID_ISSUER_SERIAL_MISMATCH
+  KEYUSAGE_NO_CERTSIGN
+  UNABLE_TO_GET_CRL_ISSUER
+  UNHANDLED_CRITICAL_EXTENSION
+  KEYUSAGE_NO_CRL_SIGN
+  UNHANDLED_CRITICAL_CRL_EXTENSION
+  INVALID_NON_CA
+  PROXY_PATH_LENGTH_EXCEEDED
+  KEYUSAGE_NO_DIGITAL_SIGNATURE
+  PROXY_CERTIFICATES_NOT_ALLOWED
+  INVALID_EXTENSION
+  INVALID_POLICY_EXTENSION
+  NO_EXPLICIT_POLICY
+  DIFFERENT_CRL_SCOPE
+  UNSUPPORTED_EXTENSION_FEATURE
+  UNNESTED_RESOURCE
+  PERMITTED_VIOLATION
+  EXCLUDED_VIOLATION
+  SUBTREE_MINMAX
+  APPLICATION_VERIFICATION
+  UNSUPPORTED_CONSTRAINT_TYPE
+  UNSUPPORTED_CONSTRAINT_SYNTAX
+  UNSUPPORTED_NAME_SYNTAX
+  CRL_PATH_VALIDATION_ERROR
+  PATH_LOOP
+  SUITE_B_INVALID_VERSION
+  SUITE_B_INVALID_ALGORITHM
+  SUITE_B_INVALID_CURVE
+  SUITE_B_INVALID_SIGNATURE_ALGORITHM
+  SUITE_B_LOS_NOT_ALLOWED
+  SUITE_B_CANNOT_SIGN_P_384_WITH_P_256
+  HOSTNAME_MISMATCH
+  EMAIL_MISMATCH
+  IP_ADDRESS_MISMATCH
+  DANE_NO_MATCH
+);
+
+sub error_name_to_code {
+    my ($name) = @_;
+
+    for my $i ( 0 .. $#CODE_TO_NAME ) {
+        return $i if $CODE_TO_NAME[$i] eq $name;
+    }
+
+    return undef;
+}
+
+sub error_code_to_name {
+    my ($code) = @_;
+
+    if ( $code !~ m<\A[0-9]+\z> ) {
+        die Cpanel::Exception::create( 'InvalidParameter', '“[_1]” is not a valid numeric error code for [asis,OpenSSL]’s “[_1]” function.', ['verify'] );
+    }
+
+    return $CODE_TO_NAME[$code];
+}
+
+1;

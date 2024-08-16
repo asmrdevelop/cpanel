@@ -1,0 +1,41 @@
+[% USE CPList -%]
+[% USE JSON -%]
+[% WRAPPER 'master_templates/master.tmpl'
+    theme="yui"
+    app_key='show_reseller_accounts'
+    scripts = ['/js/sorttable.js' ]
+    stylesheets = ['/yui/container/assets/container.css']
+-%]
+[% PROCESS '_pkg_hover.tmpl' -%]
+
+<table cellpadding="5" cellspacing="0" width="100%">
+<tr class="tblheader"><th  >Reseller</th><th align="left">User</th><th align="left">Domain</th><th align="left">Package</th></tr>
+
+[%# DISPLAY ROOT FIRST %]
+[% sorted_resellers = [data.root_data]; sorted_resellers = sorted_resellers.merge(data.resellers) %]
+[% FOREACH resellerdata = sorted_resellers %]
+<tr class='tblheader'>
+    <td style='font-weight: bold; text-decoration: underline;'>[% resellerdata.name %]</td>
+    <td></td>
+    <td></td>
+    <td></td>
+</tr>
+[% FOREACH userdata IN resellerdata.accounts %]
+<tr class='[% (loop.index % 2) ? 'tdshade1' : 'tdshade2' %]'>
+    <td></td>
+    <td>[% userdata.name %]</td>
+    <td>[% userdata.domain %]</td>
+[% SET js_plan = userdata.plan || 'undefined'; -%]
+    <td><span style="cursor: crosshair; cursor: help;" onmouseover="hover_pkg(this, [% js_plan.json() FILTER html %]);" onmouseout="dehover_pkg(this, [% js_plan.json() FILTER html %]);">[% userdata.plan || locale.maketext('undefined') FILTER html %]</span></td>
+</tr>
+[% END -%]
+<tr class='tblheader'>
+    <td><em>[% locale.maketext('[quant,_1,Account,Accounts]', resellerdata.count) %]</em></td>
+    <td colspan="3"></td>
+</tr>
+<tr>
+    <td colspan="4"></td>
+</tr>
+[% END -%]
+</table>
+[% END #wrapper -%]

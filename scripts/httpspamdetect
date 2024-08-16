@@ -1,0 +1,80 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/httpspamdetect                  Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+use warnings;
+
+use Cpanel::AcctUtils::DomainOwner::Tiny ();
+use Cpanel::SafeRun::Simple              ();
+use Socket;
+
+my %HTTPPIDS;
+my %HTTPVHOSTS;
+my %HTTPURL;
+my %HTTPOWNER;
+my %PCOUNT;
+
+eval {
+    $SIG{'ALRM'} = sub {
+        die;
+    };
+    alarm(30);
+    my $proto = getprotobyname('tcp');
+    socket( WHMS, AF_INET, SOCK_STREAM, $proto );
+    my $iaddr = inet_aton("127.0.0.1");
+    my $port  = getservbyname( 'http', 'tcp' );
+    my $sin   = sockaddr_in( $port, $iaddr );
+    connect( WHMS, $sin );
+    send WHMS, "GET /whm-server-status HTTP/1.0\r\n\r\n", 0;
+    shutdown( WHMS, 1 );
+
+    while ( my $nline = <WHMS> ) {
+        if ( $nline =~ m/^\<tr bgcolor=\"#ffffff\"\>\<td\>\<b\>\d+/ ) {
+            if ( $nline =~ m/\d+\-\d+\<[^\>]*\>\<[^\>]*\>(\d+)/ ) {
+                my $pid = $1;
+                $nline = <WHMS>;
+                $nline = <WHMS>;
+                if ( $nline =~ m/^\<td[^\>]*\>\<font[^\>]*\>[\d+\.]*\<[^\>]*\><[^\>]*\><[^\>]*\>([^\<]*)\<[^\>]*\>\<[^\>]*\>\<[^\>]*\>([^\<]*)/ ) {
+                    my $vhost = $1;
+                    my $req   = $2;
+                    my $url   = ( split( /\s/, $req, 3 ) )[1];
+                    my $user;
+                    if ( $url && $url =~ m/^\/~([^\/]*)/ ) {
+                        $user = $1;
+                    }
+                    else {
+                        $user = Cpanel::AcctUtils::DomainOwner::Tiny::getdomainowner($vhost);
+                    }
+                    if ($user) {
+                        $HTTPPIDS{$pid}   = 1;
+                        $HTTPVHOSTS{$pid} = $vhost;
+                        $HTTPURL{$pid}    = $url;
+                        $HTTPOWNER{$pid}  = $user;
+                    }
+                }
+            }
+        }
+    }
+    alarm(0);
+};
+alarm(0);
+shutdown( WHMS, 2 );
+close(WHMS);
+
+my @PROCS = Cpanel::SafeRun::Simple::saferun( 'ps', 'axo', 'user,pid,ppid,command' );
+foreach (@PROCS) {
+    my ( $user, $pid, $ppid, $cmd ) = split( /\s+/, $_ );
+    if ( $cmd =~ m/exim/ || $cmd =~ m/mail/ ) {
+        $PCOUNT{ $HTTPOWNER{$ppid} }++;
+        if ( $HTTPPIDS{$ppid} == 1 && $PCOUNT{ $HTTPOWNER{$ppid} } > 6 ) {
+            print "Pid $ppid is mailing using [$cmd]..\n";
+            print "Host: $HTTPVHOSTS{$ppid}\n";
+            print "Url: $HTTPURL{$ppid}\n";
+            print "User: $HTTPOWNER{$ppid}\n\n";
+        }
+    }
+}

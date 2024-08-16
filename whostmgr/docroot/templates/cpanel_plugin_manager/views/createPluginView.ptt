@@ -1,0 +1,480 @@
+[%
+    USE Whostmgr;
+%]
+
+<section>
+    <p class="description">
+        [% locale.maketext("Plugins allow you to add links from the [asis,cPanel] interface to your own applications or to third-party sites.") %]
+    </p>
+    <p class="description">
+        [% locale.maketext("This interface creates plugin files that can contain one or more items. Use the left side of the form to add each of your desired items, then click the Generate button on the right to generate the plugin. You may always find the plugin files in “[output,strong,_1]”. For more information about registering the plugin, read the [output,url,_2,documentation,target,blank].", "/var/cpanel/cpanel_plugin_generator", "https://go.cpanel.net/plugingen") %]
+    </p>
+</section>
+
+<form name="pluginForm" enctype="multipart/form-data" novalidate>
+<section ng-controller="createPluginController" class="pluginSection">
+    <div class="ng-cloak col-xs-12 col-sm-11 col-md-10 col-lg-10" ng-cloak>
+        <cp-alert-list></cp-alert-list>
+    </div>
+    <ng-form name="addItemForm"
+        class="layout-medium"
+        novalidate>
+        <div class="section-body col-xs-12 col-sm-6 col-md-5 col-lg-5 pull-left">
+            <div id="linkInfoSection" class="section-body">
+                <div class="form-group">
+                    <div class="row">
+                        <div class="col-xs-12">
+                            <label for="txtItemId">
+                                [% locale.maketext("Unique Identifier") %]
+                            </label>
+                        </div>
+                        <div class="col-xs-12">
+                        </div>
+                    </div>
+                    <div class="row">
+                        <div class="col-xs-12">
+                            <input type="text" name="txtItemId" id="txtItemId"
+                                    auto-focus="focusOnId"
+                                    required
+                                    ng-pattern="/^[0-9a-z_-]+$/i"
+                                    ng-model="item.id"
+                                    class="form-control"
+                                    placeholder="unique_id"
+                                    ng-change="validateDuplicate()">
+                            <span class="help-block">
+                                [% locale.maketext("Required. Use letters, numbers, hyphens ([asis,-]), and underscores ([asis,_]).") %]
+                            </span>
+                        </div>
+                        <div class="col-xs-12">
+                            <div ng-show="showOverwrite" class="inline-warn-section">
+                                <div class="checkbox">
+                                    <label>
+                                        <input type="checkbox" ng-model="item.overwrite" ng-change="validateOverwrites()">
+                                        [% locale.maketext("Overwrite existing [asis,cPanel] item.") %]
+                                    </label>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-xs-12">
+                            <ul id="valItemId" validation-container field-name="txtItemId">
+                                <validation-item
+                                    field-name="txtItemId"
+                                    validation-name="required">
+                                    [% locale.maketext("Unique Identifier is required.") %]
+                                </validation-item>
+                                <validation-item
+                                    field-name="txtItemId"
+                                    validation-name="pattern">
+                                    [% locale.maketext("Only letters, numbers, hyphens ([asis,-]), and underscores ([asis,_]) are valid.") %]
+                                </validation-item>
+                                <validation-item
+                                    field-name="txtItemId"
+                                    validation-name="unique">
+                                    [% locale.maketext("An item with this [asis,ID] is already added.") %]
+                                </validation-item>
+                                <validation-item
+                                    field-name="txtItemId"
+                                    validation-name="existing">
+                                    [% locale.maketext("An item with this [asis,ID] exists in cPanel.") %]
+                                </validation-item>
+                            </ul>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <div class="row">
+                        <div class="col-xs-12">
+                            <label for="txtItemName">
+                                [% locale.maketext("Name") %]
+                            </label>
+                        </div>
+                        <div class="col-xs-12">
+                        </div>
+                    </div>
+                    <div class="row">
+                        <div class="col-xs-12">
+                            <input type="text" name="txtItemName" id="txtItemName"
+                                    required
+                                    ng-model="item.name"
+                                    class="form-control"
+                                    placeholder="Item name">
+                            <span class="help-block">
+                                [% locale.maketext("Required.") %]
+                            </span>
+                        </div>
+                        <div class="col-xs-12">
+                            <ul id="valItemName" validation-container field-name="txtItemName">
+                                <validation-item
+                                    field-name="txtItemName"
+                                    validation-name="required">
+                                    [% locale.maketext("Item name is required.") %]
+                                </validation-item>
+                            </ul>
+                        </div>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <div class="row">
+                        <div class="col-xs-12">
+                            <div class="checkbox">
+                                 <label>
+                                   <input type="checkbox" ng-model="item.featuremanager">
+                                   <span>[% locale.maketext("Feature Manager Support") %]</span>
+                                 </label>
+                                 <span class="help-block">
+                                    [% locale.maketext("This option adds a new feature with the same name as the plugin. You can then use WHM Feature Manager to control access to the plugin.") %]
+                                 </span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <div class="row">
+                        <div class="col-xs-12">
+                            <label for="">
+                                [% locale.maketext("Group") %]
+                            </label>
+                        </div>
+                        <div class="col-xs-12">
+                        </div>
+                    </div>
+                    <div class="row">
+                        <div class="col-xs-12">
+                            <select id="ddlGroup" name="ddlGroup"
+                                class="form-control groupSelection"
+                                ng-required="!showNewGroup"
+                                ng-model="item.group_id"
+                                ng-options="group.id as group.name for group in groups | orderBy:'name'"
+                                ng-disabled="showNewGroup">
+                                <option value="">[% locale.maketext("[comment,used for highlight in select option]-- Select a group --[comment,used for highlight in select option]") %]</option>
+                            </select>
+                            <button id="btnAddGroup" name="btnAddGroup"
+                                    class="btn btn-default"
+                                    type="button"
+                                    title="Add a new group"
+                                    ng-click="addGroup()"
+                                    ng-disabled="showNewGroup">
+                                <span class='glyphicon glyphicon-plus'></span>
+                            </button>
+                            <span ng-show="!showNewGroup" class="help-block">
+                                [% locale.maketext("Required.") %]
+                            </span>
+                        </div>
+                        <div class="col-xs-12">
+                            <ul id="valItemGroup" validation-container field-name="ddlGroup">
+                                <validation-item
+                                    field-name="ddlGroup"
+                                    validation-name="required">
+                                    [% locale.maketext("Group is required.") %]
+                                </validation-item>
+                            </ul>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="form-group" ng-show="showNewGroup">
+                    <div class="row">
+                        <div class="col-xs-12">
+                            <label for="">
+                                [% locale.maketext("New Group Name") %]
+                            </label>
+                            <span class="glyphicon glyphicon-info-sign"></span>
+                            <span class="info-block">
+                                [% locale.maketext("The new group will be added when the current item is added to the plugin that is to be generated.") %]
+                            </span>
+                        </div>
+                        <div class="col-xs-12">
+                        </div>
+                    </div>
+                    <div class="row">
+                        <div class="col-xs-12">
+                            <input type="text" name="txtItemGroup" id="txtItemGroup"
+                                    auto-focus="showNewGroup"
+                                    ng-model="newGroup"
+                                    ng-required="showNewGroup"
+                                    ng-pattern="/^[a-z_0-9\s-]+$/i"
+                                    ng-disabled="!showNewGroup"
+                                    ng-change="validateGroupNameDuplicate()"
+                                    class="form-control newGroup"
+                                    placeholder="My Group">
+                            <button class="btn btn-link"
+                                    type="button" id="btnCancelNewGroup"
+                                    title="Cancel new group"
+                                    ng-disabled="!showNewGroup"
+                                    ng-click="cancelNewGroup()">
+                                    [% locale.maketext("Cancel") %]
+                            </button>
+                            <span class="help-block">
+                                [% locale.maketext("Required. Use numbers, letters, hyphens ([asis,-]), underscores and whitespace.") %]
+                            </span>
+                        </div>
+
+                        <div class="col-xs-12">
+                            <ul id="valItemNewGroup" validation-container field-name="txtItemGroup">
+                                <validation-item
+                                    field-name="txtItemGroup"
+                                    validation-name="required">
+                                    [% locale.maketext("Group name is required.") %]
+                                </validation-item>
+                                <validation-item
+                                    field-name="txtItemGroup"
+                                    validation-name="pattern">
+                                    [% locale.maketext("Only numbers, letters, hyphens ([asis,-]), underscores and whitespace are valid.") %]
+                                </validation-item>
+                                <validation-item
+                                    field-name="txtItemGroup"
+                                    validation-name="unique">
+                                    [% locale.maketext("This group name already exists.") %]
+                                </validation-item>
+                            </ul>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <div class="row">
+                        <div class="col-xs-12">
+                            <label for="txtPriority">
+                                [% locale.maketext("Priority") %]
+                            </label>
+                        </div>
+                        <div class="col-xs-12">
+                        </div>
+                    </div>
+                    <div class="row">
+                        <div class="col-xs-5 col-sm-3 col-md-3 col-lg-3">
+                            <input type="text" name="txtPriority" id="txtPriority"
+                                    ng-model="item.order"
+                                    required
+                                    positive-integer
+                                    class="form-control"
+                                    placeholder="99">
+                        </div>
+                        <div class="col-xs-12">
+                            <span class="help-block">
+                                [% locale.maketext("Required. Use Positive integer.") %]
+                            </span>
+                        </div>
+                        <div class="col-xs-12">
+                            <ul id="valItemPriority" validation-container field-name="txtPriority">
+                                <validation-item
+                                    field-name="txtPriority"
+                                    validation-name="required">
+                                    [% locale.maketext("Priority is required.") %]
+                                </validation-item>
+                            </ul>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <div class="row">
+                        <div class="col-xs-12">
+                            <label for="txtLinkUri">
+                                [% locale.maketext('[output,acronym,URI,Uniform Resource Identifier]') %]
+                            </label>
+                        </div>
+                        <div class="col-xs-12">
+                        </div>
+                    </div>
+                    <div class="row">
+                        <div class="col-xs-12">
+                            <input type="text" name="txtLinkUri" id="txtLinkUri"
+                                    ng-model="item.uri"
+                                    class="form-control"
+                                    required
+                                    placeholder="index.html">
+                            <span class="help-block">
+                                [% locale.maketext("Required.") %]
+                            </span>
+                        </div>
+                        <div class="col-xs-12">
+                            <ul id="valItemUri" validation-container field-name="txtLinkUri">
+                                <validation-item
+                                    field-name="txtLinkUri"
+                                    validation-name="required">
+                                    [% locale.maketext("[output,acronym,URI,Uniform Resource Identifier] is required.") %]
+                                </validation-item>
+                            </ul>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <div class="row">
+                        <div class="col-xs-12">
+                            <label for="txtLinkUriTarget">
+                                [% locale.maketext('[output,acronym,URI,Uniform Resource Identifier] Target') %]
+                            </label>
+                        </div>
+                    </div>
+                    <div class="row">
+                        <div class="col-xs-12">
+                            <input type="text" name="txtLinkUriTarget" id="txtLinkUriTarget"
+                                    ng-model="item.target"
+                                    ng-pattern="/^[0-9a-z-_]+$/i"
+                                    class="form-control"
+                                    placeholder="_blank">
+                            <span class="help-block">
+                                [% locale.maketext("An optional target for the plugin [output,acronym,URI,Uniform Resource Identifier]") %]
+                            </span>
+                        </div>
+                        <div class="col-xs-12">
+                            <ul id="valLinkUriTarget" validation-container field-name="txtLinkUriTarget">
+                                <validation-item
+                                    field-name="txtLinkUriTarget"
+                                    validation-name="pattern">
+                                    [% locale.maketext("Only letters, numbers, hyphens ([asis,-]), and underscores ([asis,_]) are valid.") %]
+                                </validation-item>
+                            </ul>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <div class="row">
+                        <div class="col-xs-12">
+                            <label for="">
+                                [% locale.maketext("Icon") %]
+                            </label>
+                        </div>
+                        <div class="col-xs-12">
+                        </div>
+                    </div>
+                    <div class="row">
+                        <div class="upload-field col-xs-12">
+                            <span class="btn-wrap">
+                                <input type="file" ng-model="itemIcon"
+                                    file-model="itemIcon"
+                                    file-type="['image/png','image/svg+xml']"
+                                    name="fileIcon" id="fileIcon" />
+                                <span class="btn btn-default" id="fileIconBtnWrap">
+                                    [% locale.maketext("Browse") %]
+                                </span>
+                            </span>
+                            <span trigger-for="fileIcon">
+                                <span class="far fa-image fa-lg"
+                                    ng-show="itemIcon">
+                                </span>
+                                <span id="fileIcon_filename"
+                                    class="filename">
+                                    {{itemIcon.name}}
+                                </span>
+                            </span>
+                            <span class="help-block">
+                                [% locale.maketext("Required. Must be a [list_or,_1] or [list_or,_2] image. Recommended size is [numf,_3][output,abbr,px,pixels] by [numf,_4][output,abbr,px,pixels].", ["<em>.png</em>"], ["<em>.svg</em>"], 48, 48) %]
+                            </span>
+                        </div>
+
+                        <div class="col-xs-12">
+                            <ul id="valItemIcon" class="validation-container"
+                                ng-show="addItemForm.fileIcon.$invalid">
+                                <li class="validation validation-error"
+                                    ng-show="addItemForm.fileIcon.$error.filetype">
+                                    <span class="glyphicon glyphicon-exclamation-sign"></span>
+                                    <span class="validation-message">
+                                        [% locale.maketext('You must select a [list_or,_1] or [list_or,_2] image.', ["<em>.png</em>"], ["<em>.svg</em>"]) %]
+                                    </span>
+                                </li>
+                                <li class="validation validation-error"
+                                    ng-show="addItemForm.fileIcon.$error.filesize">
+                                    <span class="glyphicon glyphicon-exclamation-sign"></span>
+                                    <span class="validation-message">
+                                        [% locale.maketext('Image file cannot be empty.') %]
+                                    </span>
+                                </li>
+                            </ul>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="form-group action-group">
+                    <div class="row">
+                        <div class="col-xs-12">
+                            <button class="btn btn-default" type="button" id="btnAddItem"
+                                title="Add item to the plugin you want to generate"
+                                ng-click="addItemToPlugin()"
+                                ng-disabled="addItemProcessing || addItemForm.$invalid">
+                                [% locale.maketext("Add Item") %]
+                            </button>
+                            <button class="btn btn-link"
+                                    type="button" id="btnClearItem"
+                                    title="Clear the item information"
+                                    ng-click="clearItem()">
+                                    [% locale.maketext("Clear") %]
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div> <!-- END OF ADD LINKS SECTION -->
+        </div> <!-- END OF CREATE PLUGIN SECTION -->
+    </ng-form>
+
+    <ng-form name="createPluginForm"
+        class="layout-medium"
+        novalidate>
+
+        <div id="linkListSection" class="col-xs-12 col-sm-5 col-md-5 col-lg-5 pull-left">
+            <div class="panel panel-default">
+                <div class="panel-heading">
+                    [% locale.maketext("New Plugin Information") %]
+                </div>
+                <div class="panel-body">
+                     <ul ng-show="itemList.length" class="list-group">
+                        <li ng-repeat="item in itemList" class="list-group-item no-border compact-list">
+                            <div class="newItemName">{{item.name}}</div>
+                            <button type="button" id="btnRemoveItem" class="btn btn-link list-item pull-right" ng-click="removeItem(item.id)">[% locale.maketext("Remove") %]</button>
+                        </li>
+                    </ul>
+
+                    <div ng-show="itemList.length" class="form-group">
+                        <label class="sr-only">
+                            [% locale.maketext("Plugin Name") %]
+                        </label>
+                        <div class="row">
+                            <div class="col-xs-12">
+                                <input type="text"  name="txtPluginName" id="txtPluginName"
+                                        maxlength="255"
+                                        ng-model="pluginName"
+                                        class="form-control"
+                                        ng-pattern="/^[0-9a-z_-]+$/"
+                                        required
+                                        placeholder="Plugin Name">
+                                <span class="help-block">
+                                    [% locale.maketext("Use lowercase letters, numbers, hyphens ([asis,-]), and underscores ([asis,_]).") %]</span>
+                            </div>
+                            <div class="col-xs-12">
+                                <ul id="valItemPluginName" validation-container field-name="txtPluginName">
+                                    <validation-item
+                                        field-name="txtPluginName"
+                                        validation-name="required">
+                                        [% locale.maketext("Plugin name is required.") %]
+                                    </validation-item>
+                                    <validation-item
+                                        field-name="txtPluginName"
+                                        validation-name="pattern">
+                                        [% locale.maketext("Only lowercase letters, numbers, hyphens ([asis,-]), and underscores ([asis,_]) are valid.") %]
+                                    </validation-item>
+                                </ul>
+                            </div>
+                        </div>
+                    </div>
+                    <div ng-show="itemList.length">
+                        <button class="btn btn-primary" type="button"
+                            id="btnGenerate" ng-disabled="createPluginForm.$invalid"
+                            cp-action="generatePlugin()">
+                            [% locale.maketext('Generate') %]
+                        </button>
+                    </div>
+
+                    <p ng-show="!itemList.length">
+                        [% locale.maketext("Please use the form on the left to add items to this plugin.") %]
+                    </p>
+                </div>
+            </div>
+        </div>
+    </ng-form>
+</section>
+</form>
+

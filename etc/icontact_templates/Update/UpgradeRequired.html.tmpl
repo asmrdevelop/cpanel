@@ -1,0 +1,77 @@
+[%#
+Variables passed in:
+
+service_name      - The name of the Service that needs to be upgraded.
+days_left         - Number of days left before the service is removed.
+hrs_left          - Number of hours left before the service is removed.
+last_version      - Last version of cPanel & WHM that will support this version of the service.
+failed_to_upgrade - A flag indicating whether the upgrade process was successful or not.
+script_output     - The output of the upgrade script.
+sent_to_root      - A default boolean flag sent to all templates that indicates if the message was sent to 'root'
+
+Optional:
+custom_subject    - A custom subject passed to the template. If it is not passed, then a standard subject will be used.
+-%]
+
+[%
+    PROCESS "include/colors.tmpl";
+    PROCESS "include/styles.tmpl";
+    PROCESS "include/code_block.tmpl";
+
+    WRAPPER 'wrapper/main.html.tmpl';
+
+    IF NOTICE.custom_subject;
+        NOTICE.email_reason = NOTICE.custom_subject;
+    ELSE;
+        IF NOTICE.days_left.defined && NOTICE.hrs_left.defined;
+            NOTICE.email_reason = CPANEL.locale.maketext('The service, [_1], needs to be upgraded and will be upgraded automatically in [quant,_2,day,days] and [quant,_3,hour,hours].', NOTICE.service_name, NOTICE.days_left, NOTICE.hrs_left);
+        ELSE;
+            IF NOTICE.failed_to_upgrade;
+                NOTICE.email_reason = CPANEL.locale.maketext('Failed to automatically upgrade “[_1]” on the server.', NOTICE.service_name);
+            ELSE;
+                NOTICE.email_reason = CPANEL.locale.maketext('The system upgraded the service: “[_1]”.', NOTICE.service_name);
+            END;
+        END;
+    END;
+-%]
+
+
+<p>
+[% IF NOTICE.days_left.defined && NOTICE.hrs_left.defined %]
+    <p>
+    [% CPANEL.locale.maketext('The [asis,cPanel amp() WHM] will be automatically upgrading the following service: “[_1]” in [quant,_2,day,days] and [quant,_3,hour,hours]',
+        NOTICE.service_name, NOTICE.days_left, NOTICE.hrs_left ) %]
+    </p>
+
+    <p>
+    [% CPANEL.locale.maketext('Until “[_1]” has been upgraded, [asis,cPanel] will be unable to upgrade to the next major version.', NOTICE.service_name ) %]
+    </p>
+
+    <p>
+        [% CPANEL.locale.maketext('[asis,cPanel amp() WHM] version “[_1]” will be the last [output,abbr,LTS,Long Term Support] version to support this outdated version of “[_2]”.', NOTICE.last_version, NOTICE.service_name ) %]
+    </p>
+
+    <p>
+        [% CPANEL.locale.maketext('To continue using [_1], you must change your Update Preferences in [asis,WHM] to Long Term Support (LTS).', NOTICE.service_name ) %]
+        [% CPANEL.locale.maketext('By switching to LTS, you will not receive new features and eventually will stop receiving security updates.') %]
+    </p>
+    <p>
+        [% CPANEL.locale.maketext('For more information about Long Term Support, read the following: [output,url,_1,target,_2]', 'https://go.cpanel.net/longtermsupport','_blank') %]
+        <br>
+        <br>
+    </p>
+[% ELSE %]
+    [% IF NOTICE.failed_to_upgrade %]
+        [% CPANEL.locale.maketext('Failed to upgrade the service, [_1], automatically.', NOTICE.service_name) %]
+    [% ELSE %]
+        [% CPANEL.locale.maketext('[_1], has been upgraded. No further action is required on your behalf.', NOTICE.service_name ) %]
+    [% END %]
+    <br>
+    <br>
+    [%~ IF NOTICE.script_output ~%]
+        [% code_block(formatted_code=NOTICE.script_output, title=CPANEL.locale.maketext('Below is the log for further details if you wish to review:')) %]
+    [%~ END ~%]
+[% END %]
+</p>
+
+[% END %]

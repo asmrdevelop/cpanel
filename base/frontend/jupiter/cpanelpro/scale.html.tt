@@ -1,0 +1,226 @@
+[%
+    SET CPANEL.CPVAR.dprefix = "../";
+
+    SET full_filename = RAW_FORM.dir _  RAW_FORM.file;
+    SET file_info = execute("Fileman", "get_file_information", {
+        'path' => full_filename,
+        'include_mime' => 1
+    });
+
+    Api1.pre_exec("ImageManager", "hdimension");
+    SET hdim_result = Api1.exec("ImageManager", "hdimension", [RAW_FORM.dir, RAW_FORM.file]);
+    Api1.post_exec("ImageManager", "hdimension");
+
+    Api1.pre_exec("ImageManager", "wdimension");
+    SET wdim_result = Api1.exec("ImageManager", "wdimension", [RAW_FORM.dir, RAW_FORM.file]);
+    Api1.post_exec("ImageManager", "wdimension");
+
+    Api1.pre_exec("ImageManager", "dimensions");
+    SET dim_result = Api1.exec("ImageManager", "dimensions", [RAW_FORM.dir, RAW_FORM.file]);
+    Api1.post_exec("ImageManager", "dimensions");
+%]
+
+[% js_code = PROCESS js_block %]
+[% WRAPPER '_assets/master.html.tt'
+    page_js = js_code
+    app_key = 'images'
+    page_sub_heading = locale.maketext("Scaler")
+ -%]
+
+<div class="body-content">
+    [% IF file_info.status && !file_info.data.rawmimetype.match('^image/(?!svg)\S+$') %]
+        <div class="alert alert-danger" role="alert">
+            <span class="glyphicon glyphicon-remove-sign" aria-hidden="true"></span>
+            <div class="alert-message">
+                <strong class="alert-title">
+                    [% locale.maketext('Error:') %]
+                </strong>
+                <span class="alert-body">
+                    <span id="error-mimetype">
+                        [% locale.maketext("You can only perform this operation on raster images.") %]
+                    </span>
+                </span>
+            </div>
+        </div>
+    [% ELSIF !hdim_result || !wdim_result %]
+        <div class="alert alert-danger" role="alert">
+            <span class="glyphicon glyphicon-remove-sign" aria-hidden="true"></span>
+            <div class="alert-message">
+                <strong class="alert-title">
+                    [% locale.maketext('Error:') %]
+                </strong>
+                <span class="alert-body">
+                    <span id="error-read %]">
+                        [% locale.maketext("The system cannot read the image’s dimensions.") %]
+                    </span>
+                </span>
+            </div>
+        </div>
+    [% ELSE %]
+    <div class="section">
+
+        <form name="sff" action="doscale.html">
+            <p id="descFileToScale">
+                [% locale.maketext("We will be scaling “[_1]”.", full_filename.html()) %]
+            </p>
+            <p id="descCurrentFileDimensions">
+                [% locale.maketext("Current Dimensions: [_1]",dim_result) %]
+            </p>
+
+            <div class="form-group">
+                <label id="lblNewDimensionsWidth" for="width">
+                    [% locale.maketext("New Dimensions:") %]
+                </label>
+                <div class="row">
+                    <div class="col-xs-2">
+                        <input id="width" type="text" class="form-control" name="width" value="[% wdim_result %]" size="3" onchange="checkhdim();" />
+                    </div>
+                    <div class="col-xs-1"><span>x</span></div>
+                    <div class="col-xs-2">
+                        <input id="height" type="text" class="form-control" name="height" value="[% hdim_result %]" size="3" onchange="checkwdim();" />
+                    </div>
+                </div>
+            </div>
+
+            <div class="form-group">
+                <label id="lblScalePercentage" for="widthpercent">
+                    [% locale.maketext("Percent") %]
+                </label>
+                <div class="row">
+                    <div class="col-xs-2">
+                        <div class="input-group">
+                            <input id="widthpercent" type="text" class="form-control" name="widthpercent" size="3" value="100" onchange="checkwpdim();" />
+                            <span class="input-group-addon">%</span>
+                        </div>
+                    </div>
+                    <div class="col-xs-1"><span>x</span></div>
+                    <div class="col-xs-2">
+                        <div class="input-group">
+                            <input id="heightpercent" type="text" class="form-control" name="heightpercent" size="3" value="100" onchange="checkhpdim();" />
+                            <span class="input-group-addon">%</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="form-group">
+                <div class="checkbox">
+                    <label id="lblKeepAspectRatio">
+                        <input id="ckbKeepAspectRatio" type="checkbox" name="aspect" value="1" checked  />
+                        [% locale.maketext("Keep Aspect Ratio") %]
+                    </label>
+                </div>
+            </div>
+            <div id="apiOutputViewFile">
+
+                [% IF file_info.status %]
+                    <h3>
+                        <img src="../mimeicons/[% file_info.data.mimename.html %].png" alt="[% file_info.data.rawmimetype.html %]"> [% file_info.data.file.html %]
+                        <small> [% locale.maketext('File Type: [_1]', file_info.data.rawmimetype.html) %] </small>
+                    </h3>
+                    <div>
+                        <img name="fmfile" src="[% CPANEL.ENV.cp_security_token %]/viewer/[% file_info.data.fullpath.uri %]">
+                    </div>
+                [% ELSE %]
+                    [% FOREACH message IN file_info.errors %]
+                        <div class="alert alert-danger" role="alert">
+                            <span class="glyphicon glyphicon-remove-sign" aria-hidden="true"></span>
+                            <div class="alert-message">
+                                <strong class="alert-title">
+                                    [% locale.maketext('Error:') %]
+                                </strong>
+                                <span class="alert-body">
+                            <span id="error-[% loop.index() %]">
+                                [% message.html() %]
+                            </span>
+                        </span>
+                            </div>
+                        </div>
+                    [% END %]
+                [% END %]
+            </div>
+            <div class="form-group">
+                <div class="checkbox">
+                    <label id="lblRetainCopy">
+                        <input id="ckbRetainCopy" type="checkbox" name="retain" value="1" checked  />
+                        [% locale.maketext("Retain a copy of the old image as:") %]
+                    </label>
+                </div>
+                <div class="row">
+                    <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                        [%
+                            SET path = RAW_FORM.dir _ '/old-' _ RAW_FORM.file;
+                            path = path.replace('//', '/');
+                        %]
+                        <input id="txtOldImage" type="text" size="70" class="form-control" name="oldimage" value="[% path.html %]"  />
+                    </div>
+                </div>
+            </div>
+
+            <input id="hidDirectory" type="hidden" name="dir" value="[% FORM.dir %]" />
+            <input id="hidFileName" type="hidden" name="file" value="[% FORM.file %]" />
+
+            <div class="form-group">
+                <input id="btnScale" class="btn btn-primary" type="submit" value="[% locale.maketext("Scale Image") %]"  />
+                <input id="btnReset" class="btn btn-default" type="button" value="[% locale.maketext("Reset Dimensions") %]" onclick="document.sff.reset();imagescale(document.sff.width.value,document.sff.height.value);"  />
+            </div>
+        </form>
+    </div>
+    [% END %]
+
+    [% INCLUDE _assets/return_link.html.tt return_location="images.html" return_link_text=locale.maketext("Go Back") %]
+</div>
+
+[% BLOCK js_block %]
+<script type="text/javascript">
+
+imagescale(document.sff.width.value,document.sff.height.value);
+
+function imagescale(w,h) {
+    document.images.fmfile.width = w;
+    document.images.fmfile.height = h;
+}
+
+parseInt('[% sendcontact_success %]', 10);
+
+var hdim = parseInt([% hdim_result %]);
+
+var wdim = parseInt([% wdim_result %]);
+
+function checkhpdim() {
+    if (document.sff.aspect.checked == true) {
+        document.sff.widthpercent.value = document.sff.heightpercent.value;
+    }
+    document.sff.width.value = (wdim * (document.sff.widthpercent.value/100));
+    document.sff.height.value = (hdim * (document.sff.heightpercent.value/100));
+    imagescale(document.sff.width.value,document.sff.height.value);
+}
+function checkwpdim() {
+    if (document.sff.aspect.checked == true) {
+        document.sff.heightpercent.value = document.sff.widthpercent.value;
+    }
+    document.sff.width.value = (wdim * (document.sff.widthpercent.value/100));
+    document.sff.height.value = (hdim * (document.sff.heightpercent.value/100));
+    imagescale(document.sff.width.value,document.sff.height.value);
+}
+
+function checkhdim() {
+    if (document.sff.aspect.checked == true) {
+        document.sff.height.value = (document.sff.width.value * (hdim/wdim));
+    }
+    document.sff.widthpercent.value = ((document.sff.width.value/wdim)*100);
+    document.sff.heightpercent.value = ((document.sff.height.value/hdim)*100);
+    imagescale(document.sff.width.value,document.sff.height.value);
+}
+function checkwdim() {
+    if (document.sff.aspect.checked == true) {
+        document.sff.width.value = (document.sff.height.value * (wdim/hdim));
+    }
+    document.sff.heightpercent.value = ((document.sff.height.value/hdim)*100);
+    document.sff.widthpercent.value = ((document.sff.width.value/wdim)*100);
+    imagescale(document.sff.width.value,document.sff.height.value);
+}
+</script>
+[% END %]
+
+[% END #wrapper -%]

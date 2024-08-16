@@ -1,0 +1,838 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/cpanelsync                      Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package Scripts::cpanelsync;
+
+## "grep '###' cpanelsync" gives an overview of the logic and files downloaded
+
+BEGIN {
+    my $running_in_debugger = exists $INC{'perl5db.pl'};
+    if ($running_in_debugger) {
+        $ENV{'LANG'} = 'C';
+    }
+
+    if ( defined $ENV{'LANG'} && $ENV{'LANG'} ne 'C' && !$^C ) {
+        $ENV{'LANG'} = 'C';
+        exec $0, @ARGV;
+        die 'Failed to recreate self in a sane env';
+    }
+}
+
+use strict;
+use warnings;
+
+use Socket;
+use Cpanel::Tar                  ();
+use Cpanel::HttpRequest          ();
+use Cpanel::SafeDir::MK          ();
+use Cpanel::Sync::Common         ();
+use Cpanel::Sync::Digest         ();
+use Cpanel::Usage                ();
+use Cpanel::Crypt::GPG::Settings ();
+
+exit __PACKAGE__->script(@ARGV) unless caller();
+
+sub script {
+    my ( $package, @argv ) = @_;
+
+    local $| = 1;
+    $SIG{'INT'} = 'IGNORE';
+
+    my ( $exit_code, $options, $host, $url, $root ) = _parse_argv( \@argv );
+
+    if ( defined $exit_code ) {
+        return $exit_code;
+    }
+    else {
+        $exit_code = 0;
+    }
+
+    eval {
+        no warnings;
+        local $SIG{'__DIE__'};
+        local $SIG{'__WARN__'};
+        require Cpanel::Carp;
+        local $SIG{'__DIE__'};
+        local $SIG{'__WARN__'};
+        Cpanel::Carp::enable();
+        $Cpanel::Carp::OUTPUT_FORMAT = 'suppress';
+    };
+
+    # setup httpclient with keyring
+    my $httpClient = Cpanel::HttpRequest->new(
+        categories => $options->{categories},
+        vendor     => $options->{vendor},
+        hideOutput => $options->{quiet},
+    );
+
+    if ( !-d $root ) {
+        Cpanel::SafeDir::MK::safemkdir( $root, '0755', 2 );
+        if ( !-d $root ) {
+            die "Unable to create directory $root";
+        }
+    }
+
+    _wait_for_mirror_lock( $httpClient, $host, $url, $options );
+
+    ### "$url/.cpanelsync.version",
+    if ( $options->{repo} ) {
+
+        # The intent with the unchecked exit code is apparently that the repo version needs to
+        # be updated at the start of the cpanelsync run so that it can be compared to the state
+        # at the end of the cpanelsync run.
+        $exit_code = check_repo_version( $options->{repo}, $httpClient, $host, $url );
+    }
+
+    my $dotcpanelsync = "$root/.cpanelsync";
+
+    my %OLDFILES;
+    my %NEWFILES;
+    if ( !-e $dotcpanelsync ) {    ###
+        ## if .cpanelsync does not exist, download/extract the .tar.bz2
+        my $basedir = $root;
+        my @DIRS    = split m{ [/] }xms, $basedir;
+        pop @DIRS;
+        $basedir = join '/', @DIRS;
+
+        my $basename = $url;
+        my @BDIR     = split m{ [/] }xms, $basename;
+        $basename = pop @BDIR;
+
+        if ( $basedir eq '' ) { $basedir = '/'; }
+
+        my $tarball = "$basedir/$basename.tar";
+        my $bz2     = "$tarball.bz2";
+        unlink $bz2;
+
+        ### "http://${host}${url}.tar.bz2"
+
+        if ( eval { downloadfile( $httpClient, "http://${host}${url}.tar.bz2", $bz2, $options->{signed} ) } ) {
+            my $tarcfg = Cpanel::Tar::load_tarcfg();
+            system( $tarcfg->{'bin'}, '-x', '-p', $tarcfg->{'no_same_owner'}, '-j', '-v', '-C', $basedir, '-f', $bz2 );
+            unlink $bz2;
+        }
+
+        ## TODO?: take the md5sums of the new files, and manipulate %OLDFILES (or %MD5LIST?)
+    }
+    else {
+        if ( open my $cpsync_fh, '<', $dotcpanelsync ) {
+            no warnings;    # we will discard undef in our delete
+            local $/;
+            %OLDFILES = map { reverse( ( split( /===/, $_ ) )[ 0, 1 ] ) } split( /\n/, readline($cpsync_fh) );
+            delete @OLDFILES{''};
+            $OLDFILES{'.'} = 'd';
+            close $cpsync_fh;
+        }
+    }
+
+    my @FILELIST;
+    my $trycount = 0;
+    my $usebz2   = 1;
+    my $skipbz2  = 0;
+
+    # Download file list to sync
+    while (1) {    ###
+        $trycount++;
+
+        if   ( $trycount % 2 == 0 ) { $usebz2 = 0; }
+        else                        { $usebz2 = 1; }
+
+        my $target_url        = "${url}/.cpanelsync";
+        my $staged_destfile   = "${dotcpanelsync}.staged";
+        my $download_destfile = $staged_destfile;
+
+        if ( !$skipbz2 && $usebz2 ) {
+            $target_url        .= '.bz2';
+            $download_destfile .= '.bz2';
+        }
+
+        eval { $httpClient->request( 'host' => $host, 'url' => $target_url, 'protocol' => 1, 'destfile' => $download_destfile, 'signed' => $options->{signed} ); };
+
+        # Note: signed requests will automatically unbzip the target to verify signatures
+        if ( !$@ && -e $staged_destfile ) {
+            if ( rename( $staged_destfile, $dotcpanelsync ) ) {
+                if ( open( my $cpanelsync_fh, $dotcpanelsync ) ) {
+                    local $/;
+                    @FILELIST = split( /\n/, readline($cpanelsync_fh) );
+                    close($cpanelsync_fh);
+                }
+            }
+            else {
+                print "Failed to overwrite $dotcpanelsync: $!\n";
+            }
+        }
+
+        if ( -e "$dotcpanelsync.bz2" ) {
+            unlink "$dotcpanelsync.bz2";
+            $skipbz2 = 1;
+        }
+
+        last if ( @FILELIST && $FILELIST[-1] eq '.' );
+
+        if ( $trycount > 1 ) {
+            if ( $trycount == 10 ) {
+                print "Tried to download the sync file 10 times and failed!\n";
+                return 1;
+            }
+            downloadfailed($httpClient);
+        }
+    }
+
+    # Global excludes for handling excluded files from update or permission checks
+    my @excludes       = Cpanel::Sync::Common::get_excludes($Cpanel::Sync::Common::cpanelsync_excludes);
+    my @chmod_excludes = Cpanel::Sync::Common::get_excludes($Cpanel::Sync::Common::cpanelsync_chmod_excludes);
+
+    my %MD5LIST;
+    loadmd5s( \%MD5LIST, $root ) if -e "$dotcpanelsync.md5s";
+    my @allowed_digests = Cpanel::Crypt::GPG::Settings::allowed_digest_algorithms();
+
+    foreach my $fileinfo (@FILELIST) {    ###
+        chomp $fileinfo;
+        next if ( $fileinfo eq '.' );
+
+        ## note: appending 'r' to these vars to denote that they represent info on the
+        ##   remote (incoming) resource. Ideally, they should be packaged in a hash,
+        ##   similar to how $target is handled.
+        ## $rextra is either an md5 for 'file' $ftype, or symlink destination
+        ## $rsha is only valid for 'file' types, and will contain a SHA512 digest for the file.
+
+        my ( $rtype, $rfile, $rperm, $rextra, $rsha ) = split( /===/, $fileinfo );
+
+        my $target_info = lstat_target( $root, $rfile );
+
+        ## using %04d as $rperm is a string (comes from the .cpanelsync file)
+        $rperm = sprintf( "%04d", $rperm );
+
+        prune_OLDFILES( \%OLDFILES, $rfile, $rtype );
+
+        next if ( @excludes && is_excluded( \@excludes, $root, $rfile ) );
+
+        if ( $rtype eq 'f' ) {
+            $exit_code = handle_file( $target_info, \%MD5LIST, $root, $rfile, $rextra, $rsha, \@allowed_digests, $skipbz2, $httpClient, $host, $url, $Cpanel::Sync::Common::hasbzip2, $exit_code, $options->{repo}, \@chmod_excludes, $rperm, \%NEWFILES );
+            return $exit_code if ( $exit_code != 0 );
+        }
+        elsif ( $rtype eq 'd' ) {
+            handle_dir( $target_info, \@chmod_excludes, $root, $rfile, $rperm );
+        }
+        elsif ( $rtype eq 'l' ) {
+            handle_symlink( $target_info, $rextra );
+        }
+    }
+
+    my $saferoot = $root;
+    $saferoot =~ s/\.\///g;
+
+    handle_deletes( \@FILELIST, \%OLDFILES, $saferoot );
+
+    write_newlist( \%NEWFILES, $saferoot );
+
+    writemd5s( \%MD5LIST, $saferoot );
+
+    ### "$url/.cpanelsync.version",
+    if ( $exit_code == 0 && $options->{repo} ) {
+        $exit_code = check_repo_version( $options->{repo}, 0, $httpClient, $host, $url );
+    }
+
+    if ( -x '/usr/local/cpanel/scripts/cpanelsync_postprocessor' ) {
+        system '/usr/local/cpanel/scripts/cpanelsync_postprocessor', $saferoot;
+    }
+    if ( -x '/usr/local/cpanel/scripts/cpanelsync_postprocessor.custom' ) {
+        system '/usr/local/cpanel/scripts/cpanelsync_postprocessor.custom', $saferoot;
+    }
+
+    return $exit_code;
+}
+
+sub downloadfile {
+    my ( $httpClient, $file, $where, $signed ) = @_;
+
+    $file =~ m!http://([^/]+)(.*)!;
+
+    my $host = $1;
+    my $url  = $2;
+
+    $httpClient->request(
+        'host'     => $1,
+        'url'      => $2,
+        'protocol' => 1,
+        'destfile' => $where,
+        'signed'   => $signed,
+    );
+
+}
+
+sub loadmd5s {
+    my ( $hr_MD5LIST, $dir ) = @_;
+
+    if ( open( my $md5_fh, '<', $dir . '/.cpanelsync.md5s' ) ) {
+        local $/;
+        %{$hr_MD5LIST} = map { $_ = [ split( /:::/, $_, 4 ) ]; $_->[0] => { 'size' => $_->[1], 'mtime' => $_->[2], 'md5' => $_->[3] } } split( /\n/, readline($md5_fh) );
+        close($md5_fh);
+    }
+
+    return;
+}
+
+sub write_newlist {
+    my ( $hr_NEWFILES, $dir ) = @_;
+
+    $dir =~ s/\/$//g;
+    open( my $new_fh, '>', $dir . '/.cpanelsync.new' ) || do {
+        warn "Could not write new list: " . $dir . '/.cpanelsync.new';
+        return;
+    };
+    print {$new_fh} join( "\n", keys %$hr_NEWFILES ) . ( scalar keys %$hr_NEWFILES ? "\n" : '' );    # as we did before
+    close($new_fh);
+}
+
+sub writemd5s {
+    my ( $hr_MD5LIST, $dir ) = @_;
+
+    $dir =~ s/\/$//g;
+    open( MD5, '>', $dir . '/.cpanelsync.md5s' ) || do {
+        warn "Could not write md5 cache: " . $dir . '/.cpanelsync.md5s';
+        return;
+    };
+    foreach my $filename ( keys %$hr_MD5LIST ) {
+        next if ( !$hr_MD5LIST->{$filename}{'used'} || substr( $filename, 0, 1 ) eq '/' );
+        print MD5 join( ':::', $filename, $hr_MD5LIST->{$filename}{'size'}, $hr_MD5LIST->{$filename}{'mtime'}, $hr_MD5LIST->{$filename}{'md5'} ) . "\n";
+    }
+    close(MD5);
+}
+
+sub downloadfailed {
+    my ($httpClient) = @_;
+    print 'Download Failed... trying again...in..';
+    if ($httpClient) {
+        $httpClient->disconnect();
+    }
+    my $sleepsecs = 60;
+    for ( my $i = $sleepsecs; $i > 0; $i-- ) {
+        print '..' . $i . '..';
+        sleep 1;
+    }
+}
+
+sub check_repo_version {
+    my ( $repo, $httpClient, $host, $url ) = @_;
+    my $local_repo_v;
+    if ( !-e '/var/cpanel' )            { mkdir( '/var/cpanel',            0755 ); }
+    if ( !-e '/var/cpanel/cpanelsync' ) { mkdir( '/var/cpanel/cpanelsync', 0755 ); }
+    if ( !-e '/var/cpanel/cpanelsync/repoversions' ) {
+        mkdir( '/var/cpanel/cpanelsync/repoversions', 0755 );
+    }
+    my $repo_fh;
+    open( $repo_fh, '<', '/var/cpanel/cpanelsync/repoversions/' . $repo ) && do {
+        $local_repo_v = readline($repo_fh);
+        chomp($local_repo_v);
+        close($repo_fh);
+    };
+    my ( $remote_repo_v, $status ) = $httpClient->request(
+        'exitOn404' => 0,
+        'host'      => $host,
+        'url'       => "$url/.cpanelsync.version",
+        'protocol'  => 1,
+    );
+    if ($remote_repo_v) {
+        if ( !$local_repo_v || $remote_repo_v ne $local_repo_v ) {
+            open( my $repo_fh, '>', '/var/cpanel/cpanelsync/repoversions/' . $repo );
+            print {$repo_fh} $remote_repo_v;
+            close($repo_fh);
+            if ($local_repo_v) {
+                print "Repo: $repo : version changed from $local_repo_v to $remote_repo_v in mid sync.  Sync needs to be restarted.\n";
+                return 16;
+            }
+            else {
+                print "Repo: $repo : learned new version: $remote_repo_v\n";
+            }
+        }
+        else {
+            print "Repo: $repo : check passed : local=$local_repo_v & remote=$remote_repo_v\n";
+        }
+    }
+    return 0;
+}
+
+sub is_excluded {
+    my ( $ar_excludes, $root, $rfile ) = @_;
+
+    if ( @{$ar_excludes} ) {
+        my $clean_rfile = $rfile;
+        $clean_rfile =~ s!^\./!!;
+        my $absfile = $root . '/' . $clean_rfile;
+        $absfile =~ tr{/}{}s;
+        $absfile =~ s{ [/] \z }{}xmsg;
+
+        ## Note: to take advantage of the "implicit" exclusion of a directory's contents, as written
+        ##   the explicitly listed exclude directory must exist at the installation site.
+        if ( grep { $_ eq $absfile || ( -d $_ && $absfile =~ m/^\Q$_\E\// ) } @{$ar_excludes} ) {
+            print "Skipping sync of $absfile (check /etc/cpanelsync.exclude)\n";
+            return 1;
+        }
+
+        ## Maintain support for old broken behavior --------------
+        $absfile = $root . '/' . $rfile;
+        $absfile =~ tr{/}{}s;
+        $absfile =~ s{ [/] \z }{}xmsg;
+        if ( grep { $_ eq $absfile } @{$ar_excludes} ) {
+            print "Skipping sync of $absfile (check /etc/cpanelsync.exclude)\n";
+            return 1;
+        }
+        ## -------------------------------------------------------
+    }
+    return;
+}
+
+sub in_chmod_excludes {
+    my ( $ar_chmod_excludes, $root, $rfile ) = @_;
+    if (@$ar_chmod_excludes) {
+        my $clean_rfile = $rfile;
+        $clean_rfile =~ s/^\.\///;
+        my $absfile = $root . '/' . $clean_rfile;
+        $absfile =~ tr{/}{}s;
+        $absfile =~ s{ [/] \z }{}xmsg;
+        return 1 if ( grep { $_ eq $absfile } @$ar_chmod_excludes );
+    }
+    return;
+}
+
+sub handle_symlink {
+    my ( $target, $rextra ) = @_;
+
+    my $dolink = 0;
+    if ( !$target->{'exists'} ) {
+        $dolink = 1;
+    }
+    elsif ( $target->{'islnk'} ) {
+        if ( readlink $target->{'path'} ne $rextra ) {
+            unlink $target->{'path'};
+            $dolink = 1;
+        }
+    }
+    elsif ( $target->{'isnormfile'} ) {
+        unlink $target->{'path'};
+        $dolink = 1;
+    }
+    elsif ( $target->{'isdir'} ) {
+        system 'rm', '-rf', '--', $target->{'path'};
+        $dolink = 1;
+    }
+
+    if ($dolink) {
+        if ( symlink( $rextra, $target->{'path'} ) ) {
+            print "Created symlink $target->{'path'} -> $rextra successfully\n";
+        }
+        else {
+            print "Failed to create symlink $target->{'path'} -> $rextra: $!\n";
+        }
+    }
+
+    return;
+}
+
+sub handle_dir {
+    my ( $target, $ar_chmod_excludes, $root, $rfile, $rperm ) = @_;
+    ## note: $rperm is an octal string (e.g. '0751')
+
+    if ( $target->{'islnk'} || $target->{'isnormfile'} ) {
+        unlink $target->{'path'};
+        $target->{'exists'} = 0;
+    }
+
+    if ( !$target->{'exists'} ) {
+        ## FIX: used to be created with a hardcoded mode of '0755'. The only case this
+        ##   will not account for is a new directory that is also in chmod_excludes. I believe
+        ##   this to be a very edge case.
+        if ( Cpanel::SafeDir::MK::safemkdir( $target->{'path'}, $rperm, 2 ) ) {
+            print "Created directory $target->{'path'} successfully\n";
+        }
+    }
+    elsif ( ( !@$ar_chmod_excludes || !in_chmod_excludes( $ar_chmod_excludes, $root, $rfile ) )
+        && sprintf( "%04o", ( $target->{'perm'} & 07777 ) ) ne $rperm ) {
+        if ( chmod( oct($rperm), $target->{'path'} ) ) {
+            print "Directory $target->{'path'} verified\n";
+        }
+        else {
+            print "Failed to update permissions on directory $target->{'path'}: $!";
+        }
+    }
+}
+
+sub handle_file {    ###
+    my ( $target, $hr_MD5LIST, $root, $rfile, $rextra, $rsha, $allowed_digests_ar, $skipbz2, $httpClient, $host, $url, $hasbzip2, $exit_code, $repo, $ar_chmod_excludes, $rperm, $newfiles_ref ) = @_;
+
+    if ( $target->{'isdir'} ) {
+        system 'rm', '-rf', '--', $target->{'path'};
+    }
+    elsif ( $target->{'islnk'} ) {
+        unlink $target->{'path'};
+    }
+
+    my $local_digest = Cpanel::Sync::Common::get_digest_from_cache( $hr_MD5LIST, $target );
+    $local_digest ||= Cpanel::Sync::Digest::digest( $target->{'path'} );
+
+    if ( ( $target->{'isdir'} || $target->{'islnk'} || !$target->{'exists'} ) || ( $local_digest ne $rextra ) ) {
+        my $dfile = $rfile;
+        $dfile =~ s/^\.//g;
+
+        my $trycount = 0;
+        my $goodfile = 1;
+        my $usebz2   = 1;
+        my $pathtemp = $target->{'path'} . '-cpanelsync';
+
+      DOWNLOAD:
+        while (1) {    ###
+            $trycount++;
+            if   ( $trycount % 2 == 0 ) { $usebz2 = 0; }
+            else                        { $usebz2 = 1; }
+
+            unlink($pathtemp);
+            ### "http://${host}${url}${dfile}.bz2"  -or-
+            ### "http://${host}${url}${dfile}"
+            if ( !$skipbz2 && $usebz2 && $dfile !~ m/\.bz2$/ ) {
+                downloadfile( $httpClient, "http://${host}${url}${dfile}.bz2", "$pathtemp.bz2" );
+                my $size = ( stat("$pathtemp.bz2") )[7];
+                if ( $size && $size > 0 ) {
+                    Cpanel::Sync::Common::unbzip2("$pathtemp.bz2");
+                }
+                if ( -e "$pathtemp.bz2" ) {
+                    ## TODO: meaning what exactly? test with dashk
+                    ### TODO: I have no idea myself. Maybe someone else will figure it out.
+                    print "$pathtemp.bz2 still exists\n";
+                    unlink "$pathtemp.bz2";
+                    $skipbz2 = 1;
+                    next;
+                }
+            }
+            else {
+                downloadfile( $httpClient, "http://${host}${url}${dfile}", $pathtemp );
+            }
+
+            my $size = ( stat( $rfile . '-cpanelsync' ) )[7] || 0;
+
+            my %expected_digests = (
+                'md5'    => $rextra,
+                'sha512' => $rsha,
+            );
+
+            for my $algo (@$allowed_digests_ar) {
+                my $expected_digest = $expected_digests{$algo};
+                my $real_digest     = Cpanel::Sync::Digest::digest( $target->{'path'} . '-cpanelsync', { algo => $algo } );
+
+                if ( $real_digest && $expected_digest ) {
+                    if ( $real_digest eq $expected_digest ) {
+                        last DOWNLOAD;
+                    }
+                    else {
+                        print "Digest mismatch (actual: $real_digest) (expected: $expected_digest) (size: $size)\n";
+                    }
+                }
+            }
+
+            print "No valid digest found\n";
+
+            if ( $trycount > 1 ) {
+                if ( $trycount % 3 == 0 ) { $httpClient->skiphost(); }
+                if ( $trycount == 10 ) {
+                    print "Tried to download the file $rfile 10 times and failed!\n";
+                    if ($repo) {
+                        return 16;
+                    }
+                    $goodfile = 0;
+                    last;
+                }
+
+                ### "$url/.cpanelsync.version",
+                if ($repo) {
+                    $exit_code = check_repo_version( $repo, 0, $httpClient, $host, $url );
+                    if ( $exit_code != 0 ) {
+                        return $exit_code;
+                    }
+                }
+
+                downloadfailed($httpClient);
+            }
+        }
+        if ($goodfile) {
+            print "Got file $rfile ok (digest matched)\n";
+            _goodfile_handle_chmod(
+                $ar_chmod_excludes, $root, $rfile, $target->{'perm'},
+                $pathtemp,          $rperm
+            );
+            _goodfile_handle_rename( $target->{'path'} );
+            $newfiles_ref->{ $target->{'path'} } = 1;
+            $hr_MD5LIST->{$rfile} = $hr_MD5LIST->{ $rfile . '-cpanelsync' };
+            delete $hr_MD5LIST->{ $rfile . '-cpanelsync' };
+        }
+        else {
+            unlink $pathtemp;
+        }
+    }
+    else {
+        if (   ( !@$ar_chmod_excludes || !in_chmod_excludes( $ar_chmod_excludes, $root, $rfile ) )
+            && $target->{'exists'}
+            && ( sprintf( "%04o", ( $target->{'perm'} & 07777 ) ) ne $rperm ) ) {
+            chmod( oct($rperm), $target->{'path'} );
+        }
+    }
+    return 0;
+}
+
+sub _goodfile_handle_chmod {
+    my ( $ar_chmod_excludes, $root, $rfile, $origperm, $pathtemp, $rperm ) = @_;
+    ## if file matches the chmod exclude list, chmod the new temp file with
+    ##   the mode from the old file
+    if ( @$ar_chmod_excludes && in_chmod_excludes( $ar_chmod_excludes, $root, $rfile ) && $origperm ) {
+        my $real_origperm = sprintf( "%04o", ( $origperm & 07777 ) );
+        chmod( oct($real_origperm), $pathtemp );
+    }
+    else {
+        chmod( oct($rperm), $pathtemp );
+    }
+}
+
+sub _goodfile_handle_rename {
+    my ($path) = @_;
+    unlink $path;
+    if ( -e $path ) {
+        if ( rename( $path, $path . '.unlink' ) ) {
+            unlink $path . '.unlink';
+        }
+        else {
+            unlink $path;
+        }
+    }
+    ## the "rename || unlink" clause ideally should warn the user that the file did not make it to
+    ##   its production location. but this, as this runs as root, is hard-to-replicate.
+    rename( $path . '-cpanelsync', $path ) || unlink( $path . '-cpanelsync' );
+    return;
+}
+
+sub prune_OLDFILES {
+    my ( $hr_OLDFILES, $rfile, $rtype ) = @_;
+    if ( exists $hr_OLDFILES->{$rfile} ) {
+
+        # Handle transition from directory to a symlink
+        if ( $rtype eq 'l' && $hr_OLDFILES->{$rfile} ne 'l' ) {
+            foreach my $old_file ( keys %$hr_OLDFILES ) {
+                ## delete from hash all subdirs of $rfile, which is becoming a link
+                if ( $old_file =~ m/^\Q$rfile\E\// ) {
+                    delete $hr_OLDFILES->{$old_file};
+                }
+            }
+        }
+        delete $hr_OLDFILES->{$rfile};
+    }
+    return;
+}
+
+sub handle_deletes {
+    my ( $ar_FILELIST, $hr_OLDFILES, $saferoot ) = @_;
+    my @olddirectories;
+    my %EXCLUDE_DELETE;
+
+    if ( -e $saferoot . '/.cpanelsync.delete.exclude' && open( my $exc_fh, '<', $saferoot . '/.cpanelsync.delete.exclude' ) ) {
+        %EXCLUDE_DELETE = map { chomp($_); $_ => undef } (<$exc_fh>);
+        close($exc_fh);
+    }
+
+    ## note: loop on @FILELIST to prevent mass deletion on an inadvertantly empty .cpanelsync
+    if ( scalar @$ar_FILELIST ) {
+        ## adding 'sort' to guarantee an order for keys()
+        foreach my $oldfile ( sort keys %$hr_OLDFILES ) {
+            $oldfile =~ s/^\.\///g;
+
+            my @BASEDIR = split( /\//, $saferoot . '/' . $oldfile );
+            pop(@BASEDIR);
+            my $basedir = join( '/', @BASEDIR );
+
+            if ( -l $basedir ) {
+                print "Skipping cleanse of $saferoot/$oldfile (within symlinked directory)\n";
+                next;
+            }
+
+            if ( exists $EXCLUDE_DELETE{ $saferoot . '/' . $oldfile } ) {
+                print "Excluding file removal from previous tree: $saferoot/$oldfile\n";
+                next;
+            }
+
+            if ( -l $saferoot . '/' . $oldfile ) {
+                ## ???: what sets the .keep files?
+                next if -e $saferoot . '/' . $oldfile . '.keep';
+                print "Removing symlink from previous tree: $saferoot/$oldfile\n";
+                unlink $saferoot . '/' . $oldfile or print "Unable to remove deprecated symlink $saferoot/$oldfile: $!\n";
+            }
+            elsif ( -d $saferoot . '/' . $oldfile ) {
+                push @olddirectories, $saferoot . '/' . $oldfile;
+            }
+            elsif ( -e _ ) {
+                ## ???: what sets the .keep files?
+                next if -e $saferoot . '/' . $oldfile . '.keep';
+                print "Removing file from previous tree: $saferoot/$oldfile\n";
+                unlink $saferoot . '/' . $oldfile or print "Unable to remove deprecated file $saferoot/$oldfile: $!\n";
+            }
+        }
+    }
+    foreach my $dir ( reverse sort @olddirectories ) {
+        print "Removing directory from previous tree: $dir\n";
+        rmdir $dir or print "Unable to remove deprecated directory $dir: $!\n";
+    }
+
+    return;
+}
+
+sub lstat_target {
+    my ( $root, $rfile ) = @_;
+    my %target;
+
+    $target{'path'} = $root . '/' . $rfile;
+    $target{'path'} =~ s/^\.\///;
+    $target{'path'} =~ s/\/(?:\.\/)+/\//g;
+    $target{'path'} =~ s/\/{2,}/\//g;
+
+    my @_lstat = lstat( $target{'path'} );
+    ## two slices to assign @_lstat indexes into %target
+
+    #'S_IFDIR', 0040000 == Directory
+    #'S_IFREG', 0100000 == Regular file
+    #'S_IFLNK', 0120000 == Symbolic link
+
+    @target{ 'perm', 'size', 'mtime', 'isdir', 'exists', 'isnormfile', 'islnk' } = (
+        @_lstat[ 2, 7, 9 ],                                                   #perm,size,mtime
+        ( defined $_lstat[2] && $_lstat[2] & 0170000 ) == 0040000 ? 1 : 0,    #isdir
+        defined $_lstat[2]                                        ? 1 : 0,    #exists
+        ( defined $_lstat[2] && $_lstat[2] & 0170000 ) == 0100000 ? 1 : 0,    #isnormfile
+        ( defined $_lstat[2] && $_lstat[2] & 0170000 ) == 0120000 ? 1 : 0     #islnk
+    );
+
+    return \%target;
+}
+
+sub _usage {
+    print <<EO_USAGE;
+Usage: cpanelsync [options] <host> [url] [root]
+
+    Options:
+      --help              Brief help message
+      --nfok=[1|0]        Exit on a 404 response from the mirror. Defaults off.
+      --repo=<name>       Treats the sync source as a named repo that supports versioning.
+      --signed=[1|0]      Enforce GPG signature verificaiton for the .cpanelsync files.
+      --vendor=<name>     Specifies the vendor to use with GPG signature verification.
+                          Defaults to 'cpanel'
+      --categories=<name> Specifies the vendor keyring to use with GPG signature verification.
+                          Defaults based on the globally configured TweakSetting.
+      --quiet=1           Suppress HttpRequest output.
+
+    Arguments:
+      host                The mirror to download from. Normally httpupdate.cpanel.net
+      url                 The mirror URL that represents the base of the cpanelsync repo.
+                          Defaults to '/'
+      root                The local directory that is being synced. Defaults to '/'.
+
+    Notes:
+
+      This script no longer supports syncing directly against named cPanel tier targets
+      such as RELEASE or STABLE. The cPanel update system in all releases after 11.30
+      uses a separate cpanelsync v2 system and should be updated using upcp or updatenow.
+
+EO_USAGE
+    return 1;
+}
+
+sub _parse_argv {
+    my $argv_ar = shift;
+    my %options = (
+        nfok       => 0,
+        repo       => undef,
+        signed     => 0,
+        categories => undef,
+        vendor     => undef,
+        help       => 0,
+        quiet      => 0,
+    );
+
+    my $usage_flags = {};
+    foreach my $option_name ( keys %options ) {
+        $usage_flags->{$option_name} = \$options{$option_name};
+    }
+
+    my $help_called = 0;
+    my $usage_cr    = sub { $help_called = 1; _usage(); };
+
+    Cpanel::Usage::wrap_options( { remove => 1 }, $argv_ar, $usage_cr, $usage_flags );
+    return 0 if ($help_called);
+
+    if ( $argv_ar->[0] && $argv_ar->[0] =~ m/404/ ) {
+        $options{nfok} = 1;
+        shift @$argv_ar;
+    }
+    my $host = $argv_ar->[0] || '';
+    my $url  = $argv_ar->[1] || '/';
+    my $root = $argv_ar->[2] || '/';
+
+    if ( !$host || $host eq '' ) {
+        return _usage();
+    }
+
+    # Block accidental legacy use of cpanelsync to sync /scripts /usr/local/cpanel paths
+    # Only block if coming from cpanel servers so we don't break 3rd party addons
+    if (   $host =~ m{^httpupdate\w*.cpanel.net$}i
+        && $url =~ m{^/cpanelsync/(BETA|CURRENT|DEMO|DNSONLY|EDGE|RELEASE|STABLE)} ) {
+        print "The use of cpanelsync to sync /scripts and/or most /usr/local/cpanel trees is unsupported in 11.30+\n";
+        print "Please run /usr/local/cpanel/scripts/upcp --force instead.\n";
+        return 1;
+    }
+    return ( undef, \%options, $host, $url, $root );
+}
+
+sub _wait_for_mirror_lock {
+    my ( $httpClient, $host, $url, $options ) = @_;
+    my $lock = 'locked';
+
+    my $sleep      = 30;
+    my $lock_count = 0;
+    my $trycount   = 0;
+
+    # Check for Locked file
+    ### "$url/.cpanelsync.lock",
+    while ( $lock =~ m/locked/i ) {
+
+        # Unsigned request: no trust anchor, content is not sensitive
+        my ( $lock, $status ) = $httpClient->request(
+            'exitOn404' => $options->{nfok},
+            'host'      => $host,
+            'url'       => "$url/.cpanelsync.lock",
+
+            #http 1.1 on the first request, but drop the connection on the
+            #second one to not tie up the server
+            'protocol' => ( $lock_count == 0 ? 1 : 0 )
+        );
+        return 0 if ( $status == 0 );
+        last     if ( !$lock || $lock !~ m/locked/i );
+        $lock_count++;
+        if ( $lock_count > 20 ) {
+            $sleep += 30;
+        }
+        elsif ( $lock_count == 20 ) {
+            $sleep = 120;
+        }
+
+        print "The update server is currently updating its files.\n";
+        print "It may take up to 30 minutes before access can be obtained.\n";
+        print "Waiting $sleep seconds for access to the update server......\n";
+
+        $httpClient->disconnect();    #do not leave the connection open
+
+        if ( ++$trycount % 30 == 0 ) { $httpClient->skiphost(); }
+        sleep $sleep;
+        print "Checking again....\n";
+
+    }
+    return;
+}
+
+1;

@@ -1,0 +1,39 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/killdns-dnsadmin                Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+use warnings;
+
+use Cpanel::DnsUtils::AskDnsAdmin ();
+
+local $SIG{'PIPE'} = 'IGNORE';
+local $SIG{'HUP'}  = 'IGNORE';
+local $SIG{'ALRM'} = 'IGNORE';
+
+if ( $ENV{'KILLDNS_ENTRY'} && $ENV{'KILLDNS_ENTRY'} eq '1' ) {
+    print "Loop prevented.  Are your /usr/local/cpanel/scripts out of sync with your cPanel version in /usr/local/cpanel? Try running /usr/local/cpanel/scripts/upcp --sync\n";
+    exit 1;
+}
+$ENV{'KILLDNS_ENTRY'} = 1;    #prevent looping
+
+my $domain = @ARGV ? $ARGV[0] : '';
+
+if ( $domain eq '' && -t STDIN ) {
+    print 'Enter the zone to delete? ';
+    chomp( $domain = <STDIN> );
+}
+
+if ( $domain eq '' ) {
+    print "Error: No zone specified\n";
+    exit;
+}
+
+$domain =~ s/\///g;
+
+local $0 = "killdns - $domain";
+
+print Cpanel::DnsUtils::AskDnsAdmin::askdnsadmin( 'REMOVEZONE', 0, $domain );

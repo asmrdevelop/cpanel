@@ -1,0 +1,42 @@
+[%
+    USE Whostmgr;
+    USE JSON;
+
+    SET stylesheets = CPANEL.is_debug_mode_enabled() ?
+        [ Whostmgr.find_file_url('/templates/configure_cpanel_analytics/index.css') ]:
+        [ Whostmgr.find_file_url('/templates/configure_cpanel_analytics/index.min.css') ];
+
+    SET PAGE_BASE = '/scripts6/configure_cpanel_analytics/';
+
+    WRAPPER 'master_templates/master.tmpl'
+        app_key               = 'configure_cpanel_analytics',
+        base                  = PAGE_BASE,
+        stylesheets           = stylesheets,
+        CJT2_EXCLUSIVE        = 1,
+        theme                 = 'bootstrap';
+        breadcrumburl         = '/scripts6/configure_cpanel_analytics';
+%]
+
+<div id="content" class="configure-analytics-content-container">
+    <div ng-view></div>
+
+    <script type="text/ng-template" id="configure_cpanel_analytics/views/mainView.ptt">
+        [% PROCESS 'configure_cpanel_analytics/views/mainView.ptt' %]
+    </script>
+
+    <cp-alert-list></cp-alert-list>
+</div>
+
+<script type="text/javascript">
+    var PAGE = {
+        isUserChoiceEnabled: [% data.is_user_choice_enabled ? 'true' : 'false' %],
+        isTrialLicense:      [% data.is_trial_license ?       'true' : 'false' %],
+        isEnabledForUser:    [% data.is_enabled_for_user ?    'true' : 'false' %],
+        defaultToOn:         [% data.default_to_on ?          'true' : 'false' %],
+        isRootUser:          [% data.is_root_user ?           'true' : 'false' %],
+    };
+</script>
+
+[% PROCESS 'master_templates/cjt2_header_include.tt' %]
+
+[% END # WRAPPER %]

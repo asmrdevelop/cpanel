@@ -1,0 +1,28 @@
+[% WRAPPER 'master_templates/master.tmpl' theme="yui"
+    header = locale.maketext('Setup/Edit Domain Forwarding')
+    breadcrumburl = '/scripts/domainfwd'
+%]
+    [% IF data.already %]
+        [% locale.maketext("A domain forwarder already exists in the “[_1]” file.","/var/cpanel/domainfwdip") %] [% locale.maketext("You can only configure a single domain forwarder at any given time.") %]
+    [% ELSIF data.is_empty%]
+        [% locale.maketext("The system could not find an [output,acronym,IP,Internet Protocol] address. Add [output,acronym,IP,Internet Protocol] addresses to this server under the [output,em,Add a New IP Address] heading.") %]
+    [% ELSIF data.invalid_ip %]
+        [% locale.maketext("The system could not find a valid available [output,acronym,IP,Internet Protocol] address.") %]
+        [% locale.maketext("Check to ensure that available reserved [output,acronym,IP,Internet Protocol] addresses exist on the server.") %]
+    [% ELSIF ! data.open_domainfwdip %]
+        [% locale.maketext("The system cannot open the “[_1]” file to write to it: [_2]","/var/cpanel/domainfwdip", data.error) %]
+    [% ELSIF ! data.open_reservedips %]
+         [% locale.maketext("The system cannot write to the “[_1]” file: [_2]","/etc/reservedips", data.error) %]
+    [% ELSE %]
+        [% IF ! data.open_reasons %]
+            [% locale.maketext("WARNING: The system cannot write to the “[_1]” file: [_2]","/etc/reservedipreasons", data.reserved_error) %]
+        [% END %]
+        [% IF ! data.open_htlock %]
+            [% locale.maketext("WARNING: The system cannot write to the “[_1]” file.", data.httpdconf ) %]
+        [% END %]
+        <h3>[% locale.maketext("The system successfully created the domain forwarder.") %]</h3>
+        <form action=[% cp_security_token %]/scripts/domainfwd>
+            <input type="submit" class="btn-primary" value="[% locale.maketext('Set Up Forwarders') %]" />
+        </form>
+    [% END %]
+[% END -%]

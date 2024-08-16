@@ -1,0 +1,49 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - bin/ror_setup                           Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package bin::ror_setup;
+
+use strict;
+use warnings;
+
+use Cpanel::Init ();
+
+__PACKAGE__->script() unless caller();
+
+sub script {
+
+    # TODO: This modulino needs to have its core functionality moved to
+    # a module and have its test coverage improved.  Once done the
+    # install/* scripts should call the module directly instead of
+    # loading this modulino.
+    my $init = Cpanel::Init->new();
+
+    $init->generate_scripts(
+        {
+            'service'  => 'ror',
+            'commands' => {
+                'start' => {
+
+                    'exec'       => [ '/usr/local/cpanel/bin/rormgr', '--startboot' ],
+                    'showoutput' => 1
+                },
+                'stop' => {
+                    'exec'       => [ '/usr/local/cpanel/bin/rormgr', '--stopall' ],
+                    'showoutput' => 1
+                },
+                'status' => {
+                    'exec'       => [ '/usr/local/cpanel/bin/rormgr', '--statusall' ],
+                    'showoutput' => 1
+                }
+            },
+            start_prio => 96,    # case 61499
+        }
+    );
+
+    $init->checkinstall('ror');
+    return;
+}

@@ -1,0 +1,20 @@
+sub get_suspended_shell {
+    my ($user) = @_;
+    my $passwd_file_shell = Exim::expand_string( '${extract{6}{:}{${lookup passwd{' . Cpanel::Encoder::Exim::unquoted_encode_string_literal($user) . '}}}}' );
+    if ( !length($passwd_file_shell) ) {
+        return '';
+    }
+    if ( $passwd_file_shell ne '/bin/false' ) {
+        return $passwd_file_shell;
+    }
+    if ( open my $fh, '<', "/var/cpanel/suspendinfo/${user}" ) {
+        while ( my $ln = readline($fh) ) {
+            if ( $ln =~ m{\Ashell=\s*(\S+)} ) {
+                close $fh;
+                return $1;
+            }
+        }
+        close $fh;
+    }
+    return '/usr/local/cpanel/bin/noshell';
+}

@@ -1,0 +1,30 @@
+[%#
+Variables passed in:
+
+action       - The configuration reset action
+
+For more information about how to customize notification templates, read our documentation at https://go.cpanel.net/notificationtemplates
+
+-%]
+
+[%
+    PROCESS "include/colors.tmpl";
+    PROCESS "include/styles.tmpl";
+    WRAPPER 'wrapper/main.html.tmpl';
+    PROCESS "include/code_inline.tmpl";
+
+    IF NOTICE.action == "reset_pass_successful";
+      NOTICE.email_reason =  CPANEL.locale.maketext('[asis,MySQL]/[asis,MariaDB] server access restored.');
+    ELSIF NOTICE.action == "reset_pass_failed";
+      NOTICE.email_reason = CPANEL.locale.maketext('[asis,MySQL]/[asis,MariaDB] authentication failed, and the system could not reset the [asis,MySQL]/[asis,MariaDB] [asis,root] password');
+    ELSIF NOTICE.action == "cannot_reset_remote_pass";
+      NOTICE.email_reason = CPANEL.locale.maketext('[asis,MySQL]/[asis,MariaDB] authentication failed. The system could not reset the remote [asis,MySQL]/[asis,MariaDB] [asis,root] password');
+    ELSE;
+      NOTICE.email_reason = CPANEL.locale.maketext('The system could not connect to the [asis,MySQL]/[asis,MariaDB] server because of an unknown error.');
+    END;
+%]
+
+  [% SET include_file = "Check/includes/MysqlConnection." _ NOTICE.action _ ".html.tmpl" %]
+  [% PROCESS $include_file %]
+
+[% END %]

@@ -1,0 +1,25 @@
+[% USE CPSort -%]
+[% USE Net -%]
+[% WRAPPER 'master_templates/master.tmpl'
+    theme="yui"
+    app_key='manage_resellers_ip_delegation'
+    breadcrumburl = '/scripts2/delegateips'
+-%]
+[% IF ! data.accountexists -%]
+Invalid user ([% data.user %])!
+[% ELSIF data.ok -%]
+    [% IF data.exists('dedicatedips') -%]
+        <h3 class="simpleheading">Saved Delegated IPs for [% data.user %]:</h3>
+        <ul>
+        [% FOR ip = data.ips.cpsort( { 'code' => \Net.inet_aton, 'num' => 1 } ) -%]
+        <li>[% ip %][%- IF data.dedicatedips.$ip -%] (dedicated to [% data.dedicatedips.$ip %])[%- END -%]</li>
+        [% END -%]
+        </ul>
+    [% ELSE -%]
+        <h3 class="simpleheading">[% locale.maketext('The reseller “[_1]” now has access to any free IP addresses on the server.', data.user.html() ) %]</h3>
+    [% END -%]
+[% ELSE #not ok -%]
+<h3 class="simpleheading">Error Saving IPs for [% data.user %]:</h3>
+[% data.error -%]
+[% END -%]
+[% END -%]

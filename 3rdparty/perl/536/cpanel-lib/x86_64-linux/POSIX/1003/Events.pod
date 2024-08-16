@@ -1,0 +1,106 @@
+=encoding utf8
+
+=head1 NAME
+
+POSIX::1003::Events - POSIX for the file-system
+
+=head1 SYNOPSIS
+
+  use POSIX::1003::Events;
+
+=head1 DESCRIPTION
+
+=head1 FUNCTIONS
+
+=head2 Standard POSIX
+
+=over 4
+
+=item B<FD_CLR>($fd, $set)
+
+Remove the file descriptor $fd from the $set. If $fd is not a member of
+this set, there shall be no effect on the set, nor will an error be
+returned.
+
+=item B<FD_ISSET>($fd, $set)
+
+Returns true if the file descriptor $fd is a member of the $set
+
+=item B<FD_SET>($fd, $set)
+
+Add the file descriptor $fd to the $set
+If the file descriptor $fd is already in this set, there
+is no effect on the set, nor will an error be returned.
+
+=item B<FD_ZERO>($set)
+
+Clear the set
+
+=item B<poll>( HASH, [$timeout] )
+
+If $timeout is not defined, the poll will wait until something
+happend.  When C<undef> is returned, then there is an error.
+With an empy HASH returned, then the poll timed out.  Otherwise,
+the returned HASH contains the FDs where something happened.
+
+=item B<select>( $rbits, $wbits, $ebits, [$timeout] )
+
+Perl core contains two functions named C<select>.  The second is the
+one we need here.  Without $timeout, the select will wait until an event
+emerges (or an interrupt).
+
+In the example below, C<$rin> is a bit-set indicating on which
+file-descriptors should be listed for read events (I<data available>)
+and C<$rout> is a sub-set of that. The bit-sets can be manipulated
+with the C<FD_*> functions also exported by this module.
+
+  my ($nfound, $timeleft) =
+    select($rout=$rin, $wout=$win, $eout=$ein, $timeout);
+
+  my $nfound = select($rout=$rin, $wout=$win, $eout=$ein);
+
+The C<select> interface is inefficient when used with many filehandles.
+You can better use L<poll()|POSIX::1003::Events/"Standard POSIX">.
+
+=back
+
+=head2 Additional
+
+=over 4
+
+=item B<events_names>()
+
+Returns a list with all known names, unsorted.
+
+=back
+
+=head1 CONSTANTS
+
+The following constants where detected on your system when the
+module got installed.  The second column shows the value which
+where returned at that time.
+
+=for comment
+#TABLE_POLL_START
+
+   If you install the module, the table will be filled-in here
+
+=for comment
+#TABLE_POLL_END
+
+=head1 SEE ALSO
+
+This module is part of POSIX-1003 distribution version 1.02,
+built on November 10, 2020. Website: F<http://perl.overmeer.net/CPAN>.  The code is based on L<POSIX>, which
+is released with Perl itself.  See also L<POSIX::Util> for
+additional functionality.
+
+=head1 COPYRIGHTS
+
+Copyrights 2011-2020 on the perl code and the related documentation
+ by [Mark Overmeer]. For other contributors see ChangeLog.
+
+This program is free software; you can redistribute it and/or modify it
+under the same terms as Perl itself.
+See F<http://dev.perl.org/licenses/>
+

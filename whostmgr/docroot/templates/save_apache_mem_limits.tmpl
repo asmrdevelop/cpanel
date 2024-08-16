@@ -1,0 +1,42 @@
+[% USE Whostmgr %]
+[% WRAPPER 'master_templates/master.tmpl'
+    header = locale.maketext('Configure [asis,Apache] [asis,RLimits]'),
+    breadcrumburl = '/scripts2/edit_apache_mem_limits',
+    theme = 'bootstrap'
+-%]
+<h4>[% locale.maketext('Updating [asis,Apache] [asis,RLimits] …') %]</h4>
+[% IF data.status -%]
+[% IF data.message -%]
+<div class="alert alert-success alert-dismissable">
+    <span class="glyphicon glyphicon-ok-sign"></span>
+    <div class="alert-message">
+        <strong>[% locale.maketext("Success:") %]</strong> [%- data.message -%]
+    </div>
+</div>
+[% END %]
+[% IF data.ap_restart_error -%]
+<div class="alert alert-warning">
+    <span class="glyphicon glyphicon-exclamation-sign"></span>
+    <div class="alert-message">
+        <strong>[% locale.maketext("Warning:") %]</strong> [%- data.ap_restart_error -%]
+        [% locale.maketext("If you want the changes to take effect, [output,url,_1,_2] manually.", cp_security_token _ "/scripts/reshttpd", "restart Apache")
+  %]
+    </div>
+</div>
+[% ELSIF data.ap_restart_message -%]
+<div class="alert alert-success alert-dismissable">
+    <span class="glyphicon glyphicon-ok-sign"></span>
+    <div class="alert-message">
+        <strong>[% locale.maketext("Success:") %]</strong> [%- data.ap_restart_message -%]
+    </div>
+</div>
+[% END -%]
+[% ELSE -%]
+<div class="alert alert-danger">
+    <span class="glyphicon glyphicon-remove-sign"></span>
+    <div class="alert-message">
+        <strong>[% locale.maketext("Error:") %]</strong> [%- data.error -%]
+    </div>
+</div>
+[% END -%]
+[% END -%]

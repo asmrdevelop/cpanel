@@ -1,0 +1,99 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/clear_orphaned_virtfs_mounts    Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+use warnings;
+use Cpanel::Config::LoadUserDomains ();
+use Getopt::Param                   ();
+use Cpanel::Filesys::Virtfs         ();
+use Cpanel::PwCache::Get            ();
+use Cpanel::CloudLinux::CageFS      ();
+
+my $prm = Getopt::Param->new(
+    {
+        'help_coderef' => sub {
+            print <<"END_USAGE";
+Unmount any virtfs mounts whose users no longer exist or whose shell is not currently jailshell/noshell
+
+$0 [--help] [--errorsonly] [--inactiveonly] [--clearall] [--user=<user>]
+
+  $0 --help         - this screen
+  $0 --user=<user>  - Only cleanup the specified user
+  $0 --errorsonly   - Do not have any output unless there are errors
+  $0 --inactiveonly - Only cleanup for users with no running processes
+  $0 --clearall     - Unmount all virtfs mounts regardless of user's jailshell/noshell status
+
+END_USAGE
+            exit;
+        },
+    }
+);
+
+my %user_map     = %{ Cpanel::Config::LoadUserDomains::loaduserdomains( undef, 0, 1 ) };
+my $errorsonly   = $prm->get_param('errorsonly')   ? 1 : 0;
+my $clear_all    = $prm->get_param('clearall')     ? 1 : 0;
+my $inactiveonly = $prm->get_param('inactiveonly') ? 1 : 0;
+my $user         = $prm->get_param('user');
+
+if ($inactiveonly) {
+    Cpanel::Filesys::Virtfs::cleanup_inactive_virtfs();
+    Cpanel::Filesys::Virtfs::cleanup_unmounts_virtfs_for_dead_users( verbose => !$errorsonly );
+    exit(0);
+}
+
+clear_orphaned_virtfs_mounts();
+Cpanel::Filesys::Virtfs::cleanup_unmounts_virtfs_for_dead_users( verbose => !$errorsonly, user => $user );
+
+sub clear_orphaned_virtfs_mounts {
+
+    my %processed_users;
+    my %cagefs_users = map { $_ => 1 } Cpanel::CloudLinux::CageFS::enabled_users();
+
+    for my $mount ( Cpanel::Filesys::Virtfs::get_virtfs_mounts() ) {
+        my $username = Cpanel::Filesys::Virtfs::get_username_from_virtfs_mount_string($mount);
+        next if length $user && $username ne $user;
+        next if exists $processed_users{$username};
+
+        print "-- Begin user '$username' --\n" unless $errorsonly;
+
+        my $umount = 0;
+        if ( !exists $user_map{$username} ) {
+            print "User no longer exists, cleaning orphan...\n" unless $errorsonly;
+            $umount++;
+        }
+        elsif ( $clear_all || Cpanel::PwCache::Get::getshell($username) !~ m{(?:no|jail)shell} ) {
+            print "User no longer has jailshell or noshell, cleaning orphan...\n" unless ( $errorsonly || $clear_all );
+            $umount++;
+        }
+        elsif ( $cagefs_users{$username} ) {
+            print "User has CageFS enabled, cleaning orphan...\n" unless $errorsonly;
+            $umount++;
+        }
+        else {
+            print "No action needed\n" unless $errorsonly;
+        }
+
+        if ($umount) {
+            print "Cleaning virtfs mounts (if any)\n" unless $errorsonly;
+            my ( $rc, @errors ) = Cpanel::Filesys::Virtfs::remove_user_virtfs($username);
+            if ($rc) {
+                print "Done\n" unless $errorsonly;
+                $processed_users{$username}++;
+            }
+            else {
+                print "Failed\n" . join( "\t", @errors ) . "\n";
+            }
+        }
+        else {
+            $processed_users{$username}++;
+        }
+
+        print "-- End user '$username' -- \n\n" unless $errorsonly;
+    }
+
+    return;
+}

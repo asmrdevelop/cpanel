@@ -1,0 +1,43 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/expunge_expired_transfer_sessions
+#                                                  Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+
+package scripts::expunge_expired_transfer_sessions;
+
+use Whostmgr::Transfers::SessionDB ();
+
+if ( !caller() ) {
+    run(@ARGV);
+
+    exit 0;
+}
+
+sub run {
+
+    my $expunge = scripts::expunge_expired_transfer_sessions->new();
+    return $expunge->script();
+}
+
+sub new {
+    my $self = bless {}, __PACKAGE__;
+
+    return $self;
+}
+
+sub script {
+    my ( $self, $dbh ) = @_;
+
+    my $session_db = $dbh ? Whostmgr::Transfers::SessionDB->new( 'master_dbh' => $dbh ) : Whostmgr::Transfers::SessionDB->new();
+    $session_db->expunge_expired_sessions();
+    $session_db->disconnect() if !$dbh;    # TP TASK 20767 disconnect before global destruct
+
+    return 1;
+}
+
+1;

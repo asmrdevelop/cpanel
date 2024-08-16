@@ -1,0 +1,36 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - etc/init/stopstunnel                    Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+# to remove in version 11.60
+
+use Cpanel::Kill ();
+
+# First kill by pid
+my $pid_file = '/usr/local/cpanel/var/run/stunnel/stunnel.pid';
+if ( -e $pid_file ) {
+    if ( open my $stunnelpid_fh, '<', $pid_file ) {
+        my $pid;
+        while (<$stunnelpid_fh>) {
+            if (m/^\s*(\d+)\s*$/) {
+                $pid = $1;
+                last;
+            }
+        }
+        close $stunnelpid_fh;
+        if ($pid) {
+            kill 15, $pid;
+            if ( kill( 0, $pid ) ) {
+                sleep 1;
+                kill 9, $pid;
+            }
+        }
+    }
+    unlink $pid_file;
+}
+
+# Kill by process name
+Cpanel::Kill::safekill( qr/^(?:stunnel$|stunnel-[0-9\.]+local)/, $Cpanel::Kill::VERBOSE );

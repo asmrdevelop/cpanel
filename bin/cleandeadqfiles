@@ -1,0 +1,39 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - bin/cleandeadqfiles                     Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+use Cpanel::ConfigFiles                  ();
+use Cpanel::AccessIds::ReducedPrivileges ();
+
+Cpanel::AccessIds::ReducedPrivileges::call_as_user(
+    sub {
+        opendir( QF, "$Cpanel::ConfigFiles::MAILMAN_ROOT/qfiles" );
+        my @QDS = readdir(QF);
+        closedir(QF);
+
+        @QDS = grep( !/^\./, @QDS );
+
+        foreach my $qf (@QDS) {
+            next if ( $qf =~ /\.\./ );
+            next if ( !-d "$Cpanel::ConfigFiles::MAILMAN_ROOT/qfiles/${qf}" );
+            opendir( QF, "$Cpanel::ConfigFiles::MAILMAN_ROOT/qfiles/${qf}" );
+            my @QFS = readdir(QF);
+            @QFS = grep( /\.db$/, @QFS );
+            @QFS = grep( !/^\./,  @QFS );
+            closedir(QF);
+            foreach my $qfile (@QFS) {
+                next if ( $qfile =~ /\.\./ );
+                if ( ( stat("$Cpanel::ConfigFiles::MAILMAN_ROOT/qfiles/${qf}/${qfile}") )[7] == 0 ) {
+                    print "Removing dead qfile $Cpanel::ConfigFiles::MAILMAN_ROOT/qfiles/${qf}/${qfile}\n";
+                    unlink("$Cpanel::ConfigFiles::MAILMAN_ROOT/qfiles/${qf}/${qfile}");
+                }
+            }
+        }
+
+    },
+    'mailman'
+);

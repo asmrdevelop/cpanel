@@ -1,0 +1,373 @@
+<h4 class="section-heading">[% locale.maketext('[asis,SFTP] Destination') %]</h4>
+<form name="sftp_transport_config" ng-if="!destinationState.fetching_data" ng-disabled="destinationState.savingDestination || destinationState.validatingDestination" novalidate>
+    <div class="section-body">
+        <div class="form-group">
+            <div class="row">
+                <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                    <label for="sftp_name">[% locale.maketext('Destination Name') %]</label>
+                    <span class="info-block">[% locale.maketext('Enter a name for this destination.') %]</span>
+                </div>
+            </div>
+            <div class="row">
+                <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                    <input
+                        ng-model="destinationState.destination.sftp.name"
+                        type="text"
+                        name="name"
+                        id="sftp_name"
+                        class="form-control"
+                        minlength="1"
+                        ng-maxlength="256"
+                        required/>
+                </div>
+                <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6" >
+                    <ul validation-container field-name="name">
+                        <validation-item
+                            field-name="name"
+                            validation-name="required">[% locale.maketext('You must enter a destination name.') %]
+                        </validation-item>
+                        <validation-item
+                            field-name="name"
+                            validation-name="maxlength">[% locale.maketext('The destination name must contain between [numf,1] and [numf,256] characters.') %]
+                        </validation-item>
+                    </ul>
+                </div>
+            </div>
+        </div>
+        <div class="form-group">
+            <div class="row">
+                <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                    <input
+                        ng-model="destinationState.destination.sftp.upload_system_backup"
+                        type="checkbox"
+                        name="upload_system_backup"
+                        id="sftp_system"/>
+                    <label for="sftp_system">[% locale.maketext('Transfer System Backups to this Destination') %]</label>
+                    <div class="callout callout-warning">
+                        <span>[% locale.maketext('[output,strong,Warning:] System Backups contain sensitive security details.') %] [% locale.maketext('You should transfer System Backups over encrypted methods.') %]</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="form-group">
+            <div class="row">
+                <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                    <input
+                        ng-model="destinationState.destination.sftp.only_used_for_logs"
+                        type="checkbox"
+                        name="only_used_for_logs"
+                        id="sftp_logsonly"/>
+                    <label for="sftp_logsonly">[% locale.maketext('Only use this destination for log file transfers[comment,title of option like one above, but looks wrong title cased]') %]</label>
+                    <div class="callout callout-warning">
+                        <span>[% locale.maketext('[output,strong,Warning:] Enabling this option will prevent it from being used for account and/or system backups.') %] [% locale.maketext('Only enable this option if this destination will only be used for log backups. If it will be used for all backups, leave this unchecked.') %]</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="form-group">
+            <div class="row">
+                <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                    <label for="sftp_path">[% locale.maketext('Backup Directory') %]</label>
+                    <span class="info-block">[% locale.maketext('Optional. Specify the path, relative to the account’s home directory, where the system stores backups.') %]</span>
+                </div>
+            </div>
+            <div class="row">
+                <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                    <input
+                        ng-model="destinationState.destination.sftp.path"
+                        type="text"
+                        name="path"
+                        id="sftp_path"
+                        class="form-control"
+                        backup-location/>
+                </div>
+                <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6" >
+                    <ul validation-container field-name="path">
+                    </ul>
+                </div>
+            </div>
+        </div>
+        <div class="form-group">
+            <div class="row">
+                <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                    <label for="sftp_host">[% locale.maketext('Remote Host') %]</label>
+               <span class="info-block">[% locale.maketext('Enter the remote server’s address.') %] [% locale.maketext('The address should not include [asis,http]://, [asis,https]://, a trailing port, or path information.') %]</span>
+		 </div>
+            </div>
+            <div class="row">
+                <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                    <input
+                        ng-model="destinationState.destination.sftp.host"
+                        type="text"
+                        name="host"
+                        id="sftp_host"
+                        class="form-control"
+                        remote-host
+                        required/>
+                </div>
+                <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                    <ul validation-container field-name="host">
+                        <validation-item
+                            field-name="host"
+                            validation-name="required">[% locale.maketext('You must enter a remote host.') %]
+                        </validation-item>
+                    </ul>
+                </div>
+            </div>
+        </div>
+        <div class="form-group">
+            <div class="row">
+                <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                    <label for="sftp_port">[% locale.maketext('Port') %]</label>
+                    <span class="info-block">[% locale.maketext('The port that the system uses to communicate with the remote server.') %] [% locale.maketext('By default, [asis,SFTP] destinations use port 22.') %]</span>
+                </div>
+            </div>
+            <div class="row">
+                <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                    <input
+                        ng-model="destinationState.destination.sftp.port"
+                        type="number"
+                        name="port"
+                        id="sftp_port"
+                        class="form-control"
+                        min="1"
+                        max="65535"
+                        ng-keydown="noDecimalPoints($event)"
+                        ng-paste="onlyNumbers($event)" />
+                </div>
+                <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                    <ul validation-container field-name="port">
+                        <validation-item
+                            field-name="port"
+                            validation-name="number">[% port_validation_message %]
+                        </validation-item>
+                        <validation-item
+                            field-name="port"
+                            validation-name="min">[% port_validation_message %]
+                        </validation-item>
+                        <validation-item
+                            field-name="port"
+                            validation-name="max">[% port_validation_message %]
+                        </validation-item>
+                    </ul>
+                </div>
+            </div>
+        </div>
+        <div class="form-group">
+            <div class="row">
+                <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                    <label for="username">[% locale.maketext('Remote Account Username') %]</label>
+                </div>
+            </div>
+            <div class="row">
+                <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                    <input
+                        ng-model="destinationState.destination.sftp.username"
+                        type="text"
+                        name="username"
+                        id="sftp_username"
+                        class="form-control"
+                        ng-minlength="1"
+                        ng-maxlength="128"
+                        required/>
+                </div>
+                <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                    <ul validation-container field-name="username">
+                        <validation-item
+                            field-name="username"
+                            validation-name="required">[% locale.maketext('You must enter a remote account username.') %]
+                        </validation-item>
+                        <validation-item
+                            field-name="username"
+                            validation-name="maxlength">[% locale.maketext('The username must contain between [numf,1] and [numf,128] characters.') %]
+                        </validation-item>
+                    </ul>
+                </div>
+            </div>
+        </div>
+        <div class="form-group">
+            <div class="row">
+                <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                    <label>[% locale.maketext('Authentication Type') %]</label>
+                    <div class="callout callout-info">
+                        <span>[% locale.maketext('The authentication type the system will use to connect to the remote server.') %] [% locale.maketext('For enhanced security, we recommend that you use key authentication.') %]</span>
+                    </div>
+                </div>
+            </div>
+            <div class="row">
+                <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                    <label for="key_auth_type_yes" class="radio-inline">
+                        <input ng-model="destinationState.destination.sftp.authtype" ng-disabled="destinationState.showKeyGenerationForm" type="radio" name="authtype" id="key_auth_type_yes" value="key"> [% locale.maketext('Key Authentication') %]
+                    </label>
+                    <label for="password_auth_type_yes" class="radio-inline">
+                        <input ng-model="destinationState.destination.sftp.authtype" ng-disabled="destinationState.showKeyGenerationForm" type="radio" name="authtype" id="password_auth_type_yes" value="password"> [% locale.maketext('Password Authentication') %]
+                    </label>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div id="key_auth_type_options" ng-if="destinationState.destination.sftp.authtype === 'key' && !destinationState.showKeyGenerationForm">
+        <h5 class="section-header">[% locale.maketext('Key Authentication Options') %]</h5>
+        <div class="form-group">
+            <div class="row">
+                <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                    <label for="private_key">[% locale.maketext('Private Key') %]</label>
+                    <span class="info-block">[% locale.maketext('The full path of the private key on this server.') %] [% locale.maketext('Click the button below to generate a new key.') %]</span>
+                </div>
+            </div>
+            <div class="row">
+                <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                    <input
+                        ng-model="destinationState.destination.sftp.privatekey"
+                        type="text"
+                        name="privatekey"
+                        id="private_key"
+                        class="form-control"
+                        ng-required="destinationState.destination.sftp.authtype === 'key' && destinationState.newMode"
+                        full-path />
+                </div>
+                <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                    <ul validation-container field-name="privatekey">
+                        <validation-item
+                            field-name="privatekey"
+                            validation-name="required">[% locale.maketext('You must enter a valid path.') %]
+                        </validation-item>
+                    </ul>
+                </div>
+            </div>
+            <div class="row">
+                <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                    <div class="panel panel-default">
+                        <div class="panel-heading">
+                            <h3 class="panel-title">[% locale.maketext('Private Keys') %]</h3>
+                        </div>
+                        <div cp-loading-panel class="loading_panel" id="ssh_key_list_loading_panel" ng-if="!destinationState.sshKeyListLoaded">
+                            [% locale.maketext("Loading …") %]
+                        </div>
+                        <ul class="list-group" ng-if="destinationState.sshKeyListLoaded">
+                            <li ng-repeat="key in destinationState.sshKeyList track by $index" class="list-group-item sshKey" ng-click="setPrivateKey(key)">{{key}}</button>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+            <div class="row">
+                <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                    <button type="button" title="[% locale.maketext('Generate a New Key') %]" id="show_save_key" class="btn btn-default" ng-click="toggleKeyGenerationForm()">
+                        [% locale.maketext('Generate a New Key') %]
+                    </button>
+                </div>
+            </div>
+        </div>
+        <div class="form-group">
+            <div class="row">
+                <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                    <label for="sftp_passphrase">[% locale.maketext('Passphrase') %]</label>
+                   <span class="info-block">[% locale.maketext('The private key’s passphrase.') %] [% locale.maketext('For security reasons, you will not see the passphrase.') %] [% locale.maketext('Only enter the passphrase when you create this destination, or when you change the passphrase.') %]</span>
+        </div>
+            </div>
+            <div class="row">
+                <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                    <input
+                        ng-model="destinationState.destination.sftp.passphrase"
+                        type="password"
+                        name="passphrase"
+                        id="sftp_passphrase"
+                        class="form-control"
+                        ng-minlength="5"
+                        ng-maxlength="128" />
+                </div>
+                [% sftp_passphrase_error_message = locale.maketext('You must enter a passphrase between [numf,5] and [numf,128] characters.') %]
+                <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                    <ul validation-container field-name="passphrase">
+                        <validation-item
+                            field-name="passphrase"
+                            validation-name="minlength">[% sftp_passphrase_error_message %]
+                        </validation-item>
+                        <validation-item
+                            field-name="passphrase"
+                            validation-name="maxlength">[% sftp_passphrase_error_message %]
+                        </validation-item>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div id="password_auth_type_options" ng-if="destinationState.destination.sftp.authtype === 'password' && !destinationState.showKeyGenerationForm">
+        <h5 class="section-header">[% locale.maketext('Password Authentication Options') %]</h5>
+        <div class="form-group">
+            <div class="row">
+                <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                    <label for="sftp_password">[% locale.maketext('Remote Password') %]</label>
+                    <span class="info-block">[% locale.maketext('The password of the account on the remote server.') %] [% locale.maketext('For security reasons, you will not see the password.') %] [% locale.maketext('Only enter the password when you create this destination, or when you change the password.') %]</span>
+                </div>
+            </div>
+            <div class="row">
+                <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                    <input
+                        ng-model="destinationState.destination.sftp.password"
+                        type="password"
+                        name="password"
+                        id="sftp_password"
+                        class="form-control"
+                        ng-required="destinationState.destination.sftp.authtype === 'password' && destinationState.newMode" />
+                </div>
+                <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                    <ul validation-container field-name="password">
+                        <validation-item
+                            field-name="password"
+                            validation-name="required">[% locale.maketext('You must enter a password.') %]
+                        </validation-item>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+    <ng-include ng-show="destinationState.showKeyGenerationForm" src="'views/SSHKeyGen.ptt'"></ng-include>
+    <div class="form-group" ng-if="!destinationState.showKeyGenerationForm">
+        <div class="row">
+            <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                <label for="sftp_timeout">[% locale.maketext('Timeout') %]</label>
+                <span class="info-block">[% locale.maketext('The number of seconds that the system will wait for a response from the remote server.') %]</span>
+            </div>
+        </div>
+        <div class="row">
+            <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                <input
+                    type="number"
+                    name="timeout"
+                    id="sftp_timeout"
+                    class="form-control"
+                    min="30"
+                    max="300"
+                    positive-integer
+                    ng-keydown="noDecimalPoints($event)"
+                    ng-paste="onlyNumbers($event)"
+                    ng-model="destinationState.destination.sftp.timeout" />
+            </div>
+            <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                <ul validation-container field-name="timeout">
+                    <li validation-item field-name="timeout" validation-name="number">
+                        [% std_timeout_number_message %]
+                    </li>
+                     <li validation-item field-name="timeout" validation-name="min">
+                        [% std_timeout_validation_message %]
+                    </li>
+                    <li validation-item field-name="timeout" validation-name="max">
+                        [% std_timeout_validation_message %]
+                    </li>
+                </ul>
+            </div>
+        </div>
+    </div>
+    <div class="form-group" ng-if="!destinationState.showKeyGenerationForm"
+        <div class="row">
+            <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                <div id="save_config">
+                    <button type="submit" id="save_destination_btn" cp-action="saveDestination(destinationState.destination)" ng-disabled="sftp_transport_config.$pristine || sftp_transport_config.$invalid || destinationState.savingDestination || destinationState.validatingDestination">[% locale.maketext('Save Destination') %]</button>
+                    <button type="button" id="save_and_validate_destination" button-class="btn-default" cp-action="saveAndValidateDestination(destinationState.destination)" ng-disabled="sftp_transport_config.$pristine || sftp_transport_config.$invalid || destinationState.savingDestination || destinationState.validatingDestination">[% locale.maketext('Save and Validate Destination') %]</button>
+                    <button type="button" class="btn btn-link" id="cancel_destination" ng-click="cancelDestination()" ng-disabled="destinationState.savingDestination || destinationState.validatingDestination">[% locale.maketext('Cancel') %]</button>
+                </div>
+            </div>
+        </div>
+    </div>
+</form>

@@ -1,0 +1,196 @@
+#!/usr/bin/perl
+
+# cpanel - scripts/realperlinstaller               Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+BEGIN {
+    eval { require CPAN::Config; };
+    if ($@) {
+        $CPAN::Config = {};    # Initialize the $CPAN::Config hash so that it can be updated
+    }
+    unshift @INC, '/usr/local/cpanel';
+}
+
+$| = 1;
+
+#PERL SSL MODULE BROKENESS FIX
+symlink '..', '/usr/local/ssl' if ( !-e '/usr/local/ssl' );
+
+alarm(1200);
+
+umask(0022);
+
+use Cpanel::cPCPAN         ();
+use Cpanel::cPCPAN::Config ();    # PPI USE OK - provide fetch_config
+require Config;
+use CPAN;
+
+if ( !$ENV{'FROM_PERLINSTALLER'} ) {
+    print STDERR "\n*** $0 should not be invoked directly ***\n" . "\nUsage: /usr/local/cpanel/scripts/perlinstaller " . join( " ", @ARGV ) . "\n" . "\nNOT RECOMMENDED: this restriction can be bypassed by setting FROM_PERLINSTALLER=1\n\n";
+    exit 1;
+}
+
+my $argv = join( ' ', @ARGV );
+my @ARGS = split( /\s+/, $argv );
+
+my $cPCPAN = Cpanel::cPCPAN->new();
+
+if ( $ARGS[0] eq '--preferMB' ) {
+    @ARGS                                = grep( !/^--preferMB/, @ARGS );
+    $Cpanel::cPCPAN::PREFER_MODULE_BUILD = 1;
+}
+
+my $force = 0;
+if ( $ARGS[0] eq '--force' ) {
+    shift @ARGS;
+    $force = 1;
+}
+
+{
+    no warnings 'redefine';
+
+    sub CPAN::Distribution::test {
+        my ($self) = @_;
+        $self->make;
+    }
+}
+
+my $MyConfig = $cPCPAN->fetch_config( 'prefer_cache' => 1 );
+if ( $> != 0 ) {
+    require Cpanel::PwCache;
+    my $homedir = ( Cpanel::PwCache::getpwuid($>) )[7];
+    my @ADDINC;
+    foreach my $inc (@INC) {
+        if ( $inc =~ m/^\Q$Config::Config{'installprefix'}\E/o ) {
+            unshift @ADDINC, $homedir . '/perl' . $inc;
+        }
+    }
+    if (@ADDINC) {
+        unshift @INC, @ADDINC;
+    }
+}
+if ( -e '/usr/lib64' ) {
+    if ( -x '/usr/local/cpanel/scripts/cpan_sandbox/x86_64/perl' ) {
+        $CPAN::Perl = '/usr/local/cpanel/scripts/cpan_sandbox/x86_64/perl';
+    }
+    foreach my $key ( 'makepl_arg', 'make_arg', 'make_install_arg', 'mbuildpl_arg' ) {
+        my @c = split( /\s+/, $MyConfig->{$key} );
+        push( @c, 'OTHERLDFLAGS=-L/usr/lib64' );
+        push( @c, 'LDFLAGS=-L/usr/lib64' );
+        push( @c, 'EXTRALIBDIR=/usr/lib64' );
+        $MyConfig->{$key} = join( ' ', @c );
+    }
+
+}
+
+mergeconfig( $MyConfig, $CPAN::Config );
+
+# Determine if path to CPAN/Config.pm is set
+# (won't be set if Config.pm does not exist)
+my $config_path =
+  exists $INC{'CPAN/Config.pm'}
+  ? $INC{'CPAN/Config.pm'}
+  : $INC{'CPAN.pm'};
+
+# Set path in %INC so commit will know where to save Config.pm
+# If $INC{'CPAN/Config.pm'} is not set then CPAN dies violently
+if ( $config_path eq $INC{'CPAN.pm'} ) {
+    $config_path =~ s{ [.]pm \z }{}xms;
+    $config_path .= '/Config.pm';
+    $INC{'CPAN/Config.pm'} = $config_path;
+}
+
+# Sets path for Config.pm system apps
+# Called twice to set paths for newly installed apps
+loaditems();
+
+if ( $> == 0 ) {
+
+    # Commit config (the completely safe way)
+    CPAN::Shell->o( 'conf', 'commit' );
+}
+
+eval 'sub CPAN::FTP::_recommend_url_for { return; }';
+
+foreach my $module (@ARGS) {
+
+    # Detect and skip Core modules so Perl is never reinstalled by CPAN
+    my $requested_module = CPAN::Shell->expand( 'Module', $module );
+    if ( $requested_module->{'RO'}{'CPAN_FILE'} =~ m{ / perl- \d \. [\d.]+ \. tar \. gz \z }xms || ( exists $requested_module->{'CPAN_COMMENT'} && $requested_module->{'CPAN_COMMENT'} =~ m/isa_perl\(.+?\)/ ) ) {
+        print "cPCPAN: Core module \"$requested_module->{'ID'}\" detected. Skipped.\n";
+        next;
+    }
+
+    mergeconfig( $MyConfig, $CPAN::Config );
+
+    require Cpanel::cPCPAN::MirrorSearch;
+    if ( $CPAN::VERSION < 1.80 ) {
+        if ( $> == 0 ) {
+            alarm(900);
+            CPAN::Shell->install('Bundle::CPAN') if !Cpanel::cPCPAN::MirrorSearch::checkedcpan();
+        }
+        alarm(1200);
+        $force
+          ? CPAN::Shell->force( 'install', $module )
+          : CPAN::Shell->install($module);
+    }
+    else {
+        if ( $> == 0 ) {
+            alarm(900);
+            CPAN::Shell->notest( 'install', 'Bundle::CPAN' ) if !Cpanel::cPCPAN::MirrorSearch::checkedcpan();
+        }
+        alarm(1200);
+        $force
+          ? CPAN::Shell->force( 'notest', 'install', $module )
+          : CPAN::Shell->notest( 'install', $module );
+    }
+}
+
+print "perlmod--Install done\n";
+if ( $ENV{'CPCPAN_UPDATE'} ) {
+    $cPCPAN->save_version_updates();
+}
+exit 0;
+
+sub mergeconfig {
+    my ( $r1, $r2 ) = @_;
+    foreach ( keys %{$r1} ) {
+        $r2->{$_} = $r1->{$_};
+    }
+}
+
+sub loaditems {
+    my @ENSUREITEMS;
+    my @BINPATH = qw(/bin /usr/bin /usr/local/bin);
+    my @SITEMS  = qw(unzip wget tar gzip pager make ftp);
+  ITEM:
+    foreach my $item (@SITEMS) {
+        next if -x $CPAN::Config->{$item};
+      PATH:
+        foreach my $path (@BINPATH) {
+            my $exec = $item;
+            if ( $item eq 'pager' ) { $exec = 'less' }
+            if ( -e "$path/$exec" ) {
+                $CPAN::Config->{$item} = "$path/$exec";
+                last PATH;
+            }
+        }
+        push( @ENSUREITEMS, $item ) if !-e $CPAN::Config->{$item};
+    }
+
+    if ( $#ENSUREITEMS >= 0 ) {
+        return if $ENV{'CPANEL_BASE_INSTALL'};
+        print 'Attempting to install missing CPAN items: ' . join( ',', @ENSUREITEMS ) . "\n";
+        require Cpanel::SysPkgs;
+        my $syspkgobj = Cpanel::SysPkgs->new();
+        if ( !$syspkgobj ) {
+            print "Could not create SysPkgs object, don't expect success\n";
+            return;
+        }
+        $syspkgobj->install( 'pkglist' => \@ENSUREITEMS );
+        return 1;
+    }
+    return 0;
+}

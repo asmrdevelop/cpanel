@@ -1,0 +1,321 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - bin/chkservd-install                    Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+use warnings;
+
+use Cpanel::Kill            ();
+use Cpanel::SafetyBits      ();
+use Cpanel::SafeRun::Errors ();
+use Cpanel::Server::Type    ();
+use Cpanel::FileUtils::Copy ();
+use Cpanel::LoadFile        ();
+use Cpanel::Pkgr            ();
+
+my $app          = 'chkservd';
+my $appversion   = '10.5';
+my $initdir      = '/etc/init.d';
+my $chkservdconf = '/etc/chkserv.d/chkservd.conf';
+my $is_dnsonly   = Cpanel::Server::Type::is_dnsonly();
+
+my @dirs           = qw( /var/cpanel/version /etc/chkserv.d  /var/run/chkservd );
+my $appinstall     = 0;
+my $restartimapftp = 0;
+
+my $debug = 0;
+if ( $#ARGV != -1 && $ARGV[0] eq '--debug' ) {
+    $debug = 1;
+}
+
+foreach my $dir (@dirs) {
+    if ( !-d $dir ) {
+        if ( -e $dir ) {
+            unlink $dir;
+        }
+        print "Making dir $dir\n" if $debug;
+        mkdir $dir, 0755;
+    }
+}
+
+if ( -e '/var/cpanel/version/' . $app ) {
+    print "Chkservd version file found.\n" if $debug;
+    if ( open my $appversion_fh, '<', '/var/cpanel/version/' . $app ) {
+        my $installedversion = q{};
+        while ( my $line = <$appversion_fh> ) {
+            next if ( $line !~ /^\s*VERSION\s*\=\s*[\d.]+\s*/ );
+            ($installedversion) = $line =~ /([\d.]+)/;
+        }
+        close $appversion_fh;
+        if ( $installedversion ne $appversion ) {
+            $appinstall = 1;
+            print "Installed version ne new version.\n" if $debug;
+            if ( $installedversion < 10.0 ) {
+                $restartimapftp = 1;
+            }
+        }
+    }
+    else {
+        die "Unable to open /var/cpanel/version/$app: $!";
+    }
+}
+else {
+    $appinstall = 1;
+}
+
+my @services_always_monitored = $is_dnsonly ? qw( cpsrvd dnsadmin queueprocd ) : qw( cpsrvd dnsadmin queueprocd cpanellogd);
+
+# Update individual chkservd scripts
+my @drivers;
+if ( opendir my $dir_dh, '/usr/local/cpanel/src/chkservd/chkserv.d' ) {
+    while ( my $item = readdir $dir_dh ) {
+        next if $item =~ m/^[.]/;
+        next if $item =~ m{-cpanelsync$};    # CPANEL-5659: light defense for -cpanelsync files until this can be refactored
+        next if $item =~ m{\.rpm[^\.]+$};    # CPANEL-5659: light defense for .rpmorig, .rpmsave files until this can be refactored
+        push @drivers, $item;
+    }
+    closedir $dir_dh;
+
+    foreach my $item ( sort @drivers ) {
+        if ( !-e '/etc/chkserv.d/' . $item ) {
+            next unless grep { $item eq $_ } @services_always_monitored;
+            system 'cp', '/usr/local/cpanel/src/chkservd/chkserv.d/' . $item, '/etc/chkserv.d/' . $item;
+            $appinstall = 1;
+            next;
+        }
+        print "Checking $item\n" if $debug;
+        my $source_driver = -e '/var/cpanel/chkservd/drivers/' . $item ? '/var/cpanel/chkservd/drivers/' . $item : '/usr/local/cpanel/src/chkservd/chkserv.d/' . $item;
+        my $new_contents  = Cpanel::LoadFile::loadfile($source_driver);
+        my $cur_contents  = Cpanel::LoadFile::loadfile( '/etc/chkserv.d/' . $item );
+        next if $new_contents eq $cur_contents;
+        print "Updating $item from $source_driver\n";
+        system 'cp', '-f', $source_driver, '/etc/chkserv.d/' . $item;
+        $appinstall = 1;
+    }
+
+}
+
+if ($appinstall) {
+    print "Performing install.\n" if $debug;
+    ############################################################################
+    print "Gather service info and write new conf\n" if $debug;
+
+    my %SERVICES;
+
+    # System already updated
+    if ( -e $chkservdconf ) {
+        print "Located new style config file $chkservdconf\n" if $debug;
+        if ( open my $chkservdconf_fh, '<', $chkservdconf ) {
+            while (<$chkservdconf_fh>) {
+                chomp;
+                my ( $service, $status ) = split( /\s*:\s*/, $_ );
+                next if ( !defined($service) || $service eq '' );
+                next if ( !defined($status)  || $status eq '' );
+                next if ( !-e '/etc/chkserv.d/' . $service );
+                next if ( $service =~ /[.]/ );
+                $status = int $status;
+                $SERVICES{$service}{'monitor'} = $status;
+            }
+            close $chkservdconf_fh;
+
+            # Just in case
+            if ( -e '/var/run/chkservd/monitor' ) {
+                print "Removing /var/run/chkservd/monitor dir.\n" if $debug;
+                system( 'rm', '-rf', '/var/run/chkservd/monitor' );
+            }
+        }
+        else {
+            die "Unable to read $chkservdconf: $!";
+        }
+
+        $SERVICES{'dnsadmin'}{'monitor'}   = 1 unless exists $SERVICES{'dnsadmin'};
+        $SERVICES{'queueprocd'}{'monitor'} = 1;                                       # Always monitor queueprocd
+        $SERVICES{'cpanellogd'}{'monitor'} = 1 if !$is_dnsonly;                       # Always monitor cpanellogd
+
+        if ( open my $chkservdconf_fh, '>', $chkservdconf ) {
+            print "Writing new $chkservdconf ... \n" if $debug;
+            foreach my $service ( sort keys %SERVICES ) {
+                if (   -e '/etc/' . $service . 'disable'
+                    || -e '/etc/' . $service . 'isevil' ) {
+                    $SERVICES{$service}{'monitor'} = 0;
+                }
+                print "\t$service $SERVICES{$service}{'monitor'}\n" if $debug;
+                print {$chkservdconf_fh} $service . ':' . $SERVICES{$service}{'monitor'} . "\n";
+            }
+            close $chkservdconf_fh;
+        }
+        else {
+            die "Unable to write $chkservdconf: $!";
+        }
+
+        # Don't continue if we can't write config file
+    }
+    elsif ( open my $chkservdconf_fh, '>', $chkservdconf ) {
+        print "Creating new config file $chkservdconf\n" if $debug;
+        my $forceservices = 0;
+
+        # Update chkservd to new style
+        opendir my $chkservddir, '/etc/chkserv.d';
+        my @services = readdir($chkservddir);
+        closedir $chkservddir;
+        @services = grep( !/\./,            @services );
+        @services = grep( !m{-cpanelsync$}, @services );    # CPANEL-5659: light defense for -cpanelsync files until this can be refactored
+        @services = grep( !m{\.rpm[^\.]+$}, @services );    # CPANEL-5659: light defense for .rpmorig, .rpmsave files until this can be refactored
+
+        foreach my $service (@services) {
+            my $newservice;
+            if ( !-e '/usr/local/cpanel/src/chkservd/chkserv.d/' . $service ) {
+                $newservice = servicefixup($service);
+                print "Updated $service to $newservice\n" if $debug;
+            }
+            else {
+                $newservice = $service;
+            }
+            $SERVICES{$newservice}{'monitor'} = 0;
+        }
+        $SERVICES{'dnsadmin'}{'monitor'}   = 1;                    # Always monitor dnsadmin on install
+        $SERVICES{'queueprocd'}{'monitor'} = 1;                    # Always monitor queueprocd
+        $SERVICES{'cpanellogd'}{'monitor'} = 1 if !$is_dnsonly;    # Always monitor cpanellogd
+
+        # Get chkservd's current settings
+        if ( -d '/var/run/chkservd/monitor' ) {
+            print "Located old /var/run/chkservd/monitor dir.\n" if $debug;
+            if ( opendir my $monitor_dh, '/var/run/chkservd/monitor' ) {
+                my @monitored = readdir($monitor_dh);
+                closedir $monitor_dh;
+                @monitored = grep( !/\./, @monitored );
+
+                if ( $#monitored != -1 ) {
+                    foreach my $monitor (@monitored) {
+                        next                                       if ( !exists( $SERVICES{$monitor} ) );
+                        print "Enabling monitoring for $monitor\n" if $debug;
+                        $SERVICES{$monitor}{'monitor'} = 1;
+                        unlink( '/var/run/chkservd/monitor/' . $monitor );
+                    }
+                }
+                else {
+                    print "No services located in /var/run/chkservd/monitor, bug fix in action.\n" if $debug;
+                    $forceservices = 1;
+                }
+                print "Removing old /var/run/chkservd/monitor dir.\n" if $debug;
+                system( 'rm', '-rf', '/var/run/chkservd/monitor' );
+            }
+            else {
+                warn "Unable to read dir contents: $!";
+                $forceservices = 1;
+            }
+        }
+        else {
+            print "Updating original chkservd system (Force enable monitoring).\n";
+            $forceservices = 1;
+        }
+
+        if ($forceservices) {
+            print "Force services enabled\n" if $debug;
+            foreach my $service ( keys %SERVICES ) {
+                $SERVICES{$service}{'monitor'} = 1;
+            }
+        }
+
+        print "Writing new $chkservdconf ... \n" if $debug;
+        foreach my $service ( sort keys %SERVICES ) {
+            if (   -e '/etc/' . $service . 'disable'
+                || -e '/etc/' . $service . 'isevil' ) {
+                $SERVICES{$service}{'monitor'} = 0;
+            }
+            print "\t$service $SERVICES{$service}{'monitor'}\n" if $debug;
+            print {$chkservdconf_fh} $service . ':' . $SERVICES{$service}{'monitor'} . "\n";
+        }
+        close $chkservdconf_fh;
+        print "Done.\n" if $debug;
+    }
+    else {
+        die "Unable to write $chkservdconf: $!";
+    }
+    print "Finished gathering service info and updating $chkservdconf\n" if $debug;
+    ############################################################################
+
+    my $appscript = $app;
+
+    #Stop chkservd
+    Cpanel::SafeRun::Errors::saferunallerrors( $initdir . '/' . $appscript, 'stop' );
+    Cpanel::Kill::safekill('chkservd');    # just in case
+
+    Cpanel::Pkgr::remove_packages_nodeps($app);
+
+    if ( -e '/usr/sbin/' . $app ) {
+        unlink( '/usr/sbin/' . $app );
+    }
+    if ( -e '/etc/init.d/' . $app ) {
+        unlink( '/etc/init.d/' . $app );
+    }
+
+    # not started though init , started though tailwatchd
+    if ( open my $appversion_fh, '>', '/var/cpanel/version/' . $app ) {
+        print {$appversion_fh} 'VERSION=' . $appversion;
+        close $appversion_fh;
+        Cpanel::SafetyBits::safe_chmod( 0600, '/var/cpanel/version/' . $app );
+    }
+    else {
+        warn "Unable to write to /var/cpanel/version/$app for version $appversion: $!";
+    }
+
+    #}
+    #else {
+    #    warn "Unable to add $app to run level system.";
+    #}
+
+    Cpanel::SafeRun::Errors::saferunallerrors( '/usr/local/cpanel/libexec/tailwatchd', '--restart=0', '--enable=Cpanel::TailWatch::ChkServd' );
+
+    # Restart tailwatchd via the service manager; restarting it outside of the service manager confuses systemd
+    Cpanel::SafeRun::Errors::saferunallerrors('/usr/local/cpanel/scripts/restartsrv_tailwatchd');
+
+    if ($restartimapftp) {
+        system '/usr/local/cpanel/scripts/restartsrv_imap';
+        system '/usr/local/cpanel/scripts/restartsrv_ftpserver';
+    }
+
+}
+
+sub servicefixup {
+    my $service     = shift;
+    my $newservice  = $service;
+    my $srcdir      = '/usr/local/cpanel/src/chkservd/chkserv.d/';
+    my $chkservddir = '/etc/chkserv.d/';
+
+    if ( !defined($service) || $service eq '' ) {
+        warn "Invalid service!";
+        return;
+    }
+
+    if    ( $service eq 'apache' )                                                       { $newservice = 'httpd'; }
+    elsif ( $service eq 'bind' )                                                         { $newservice = 'named'; }
+    elsif ( $service eq 'postgres' )                                                     { $newservice = 'postgresql'; }
+    elsif ( $service eq 'cpimap' )                                                       { $newservice = 'imap'; }
+    elsif ( $service eq 'pureftpd' || $service eq 'pure-ftpd' || $service eq 'proftpd' ) { $newservice = 'ftpd'; }
+
+    if ( $service ne $newservice ) {
+        print "Updating chkservd $service to $newservice\n";
+
+        if ( !Cpanel::FileUtils::Copy::safecopy( $srcdir . $newservice, $chkservddir ) ) {
+            warn "Unable to copy $newservice file to $chkservddir: $!";
+        }
+        else {
+            unlink( $chkservddir . $service );
+        }
+
+        if ( -e '/etc/' . $service . 'disable' ) {
+            if ( open my $service_fh, '>', '/etc/' . $newservice . 'disable' ) {
+                close $service_fh;
+                unlink( '/etc/' . $service . 'disable' );
+            }
+            else {
+                warn "Unable to create disable file /etc/${newservice}disable: $!";
+            }
+        }
+    }
+    return $newservice;
+}

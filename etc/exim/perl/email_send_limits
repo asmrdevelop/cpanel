@@ -1,0 +1,194 @@
+our $DEFAULT_EMAIL_SEND_LIMITS_DEFER_CUTOFF_PERCENTAGE = 125;
+
+sub getmaxemailsperhour {
+    my $domain = shift;
+
+    return 0 if $domain eq '-system-';
+
+    $domain =~ s/\///g;    #jic
+
+    my $maxemails = 0;     # Defaults to "unlimited"
+
+    my $master_email_send_limits_mtime = ( stat('/etc/email_send_limits') )[9];
+    my $max_fh;
+
+    if ( open( $max_fh, '<', '/var/cpanel/email_send_limits/cache/' . $domain ) && ( stat($max_fh) )[9] > $master_email_send_limits_mtime ) {    # This is the user's main domain. All user's domains are aggregated here
+        $maxemails = readline $max_fh;
+        close $max_fh;
+        return 0 if !$maxemails || $maxemails eq 'unlimited';
+        return ( $maxemails ? int($maxemails) : 0 );
+    }
+
+    my $search_regex          = qr/^\Q$domain\E:/;
+    my $search_wildcard_regex = qr/^\Q*\E:/;
+
+    _check_cache_dir();
+
+    my $old_umask = umask();
+    umask(0027);
+
+    #format DOMAIN: MAX_EMAIL_PER_HOUR,MAX_DEFER_FAIL_PERCENTAGE,MIN_DEFER_FAIL_TO_TRIGGER_PROTECTION
+    if ( open( my $max_fh, '>', '/var/cpanel/email_send_limits/cache/.' . $domain ) ) {
+        umask($old_umask);
+        if ( open( my $email_limits_fh, '<', '/etc/email_send_limits' ) ) {
+            while ( readline($email_limits_fh) ) {
+                if ( $_ =~ $search_regex ) {
+                    $maxemails = ( split( /\,/, ( split( /:\s+/, $_ ) )[1] ) )[0];
+                    last if $maxemails || $maxemails eq '0';    # case 51568: if there is no value we use the wildcard
+                }
+                elsif ( $_ =~ $search_wildcard_regex ) {
+                    $maxemails = ( split( /\,/, ( split( /:\s+/, $_ ) )[1] ) )[0];
+                    last;
+                }
+            }
+        }
+        chomp $maxemails;
+        print {$max_fh} $maxemails;
+        close($max_fh);
+        rename( '/var/cpanel/email_send_limits/cache/.' . $domain, '/var/cpanel/email_send_limits/cache/' . $domain );    #rename is atomic and will overwrite the file
+        return int $maxemails;                                                                                            # case 51568: must transform 'unlimited' to 0
+    }
+    else {
+        umask($old_umask);
+    }
+    return 0;
+}
+
+sub increment_max_emails_per_hour {
+    my ( $domain, $time, $msgid ) = @_;
+    $domain =~ s/\///g;                                                                                                   #jic
+
+    _check_tracker_dir($domain);
+
+    $time ||= time();
+
+    Exim::log_write( "SMTP connection outbound $time $msgid $domain " . Exim::expand_string('$local_part') . '@' . Exim::expand_string('$domain') );
+
+    if ( open( my $emailt_fh, '>>', "/var/cpanel/email_send_limits/track/$domain/" . join( '.', ( gmtime($time) )[ 2, 3, 4, 5 ] ) ) ) {
+
+        print {$emailt_fh} '1';
+        close($emailt_fh);
+    }
+
+    # !DEBUG!
+    #   if ( open( my $emailt_fh, '>>', "/var/cpanel/email_send_limits/track/$domain/msgids_" . join( '.', ( gmtime( $time ) )[ 2, 3, 4, 5 ] ) ) ) {
+    #
+    #       print {$emailt_fh} $msgid . "\n";
+    #       close($emailt_fh);
+    #  }
+
+}
+
+sub _check_cache_dir {
+    mkdir( '/var/cpanel/email_send_limits/cache', 0750 ) if !-e '/var/cpanel/email_send_limits/cache';
+}
+
+sub _check_tracker_dir {
+    my $domain = shift;
+    $domain =~ s/\///g;    #jic
+
+    if ( !-e '/var/cpanel/email_send_limits/track/' . $domain ) {
+        mkdir( '/var/cpanel/email_send_limits',                  0751 );
+        mkdir( '/var/cpanel/email_send_limits/track',            0750 );
+        mkdir( '/var/cpanel/email_send_limits/track/' . $domain, 0750 );
+    }
+}
+
+sub get_current_emails_per_hour {
+    ( ( stat( "/var/cpanel/email_send_limits/track/$_[0]/" . join( '.', ( gmtime( $_[1] || time() ) )[ 2, 3, 4, 5 ] ) ) )[7] || 0 );
+}
+
+sub get_current_emails_per_day {
+    my $domain = shift;
+    $domain =~ s/\///g;    #jic
+
+    return 0 if ( !-e '/var/cpanel/email_send_limits/track/' . $domain );
+    my $total_size = 0;
+    if ( opendir( my $domain_track_fh, '/var/cpanel/email_send_limits/track/' . $domain ) ) {
+        while ( my $domaintime = readdir($domain_track_fh) ) {
+            next if ( $domaintime =~ /^\.\.?$/ );
+            my $tracker_file_size = ( stat("/var/cpanel/email_send_limits/track/$domain/$domaintime") )[7];
+            $total_size += $tracker_file_size;
+        }
+    }
+    return $total_size;
+}
+
+sub reached_max_emails_per_hour {
+    my $domain = shift;
+    $domain =~ s/\///g;    #jic
+    my $max_allowed = int( shift || 0 );
+    my $time = shift || time();
+
+    if ($max_allowed) {
+
+        # AKA number_of_emails_sent >= $max_allowed
+        if ( get_current_emails_per_hour( $domain, $time ) >= $max_allowed ) {
+            return 1;
+        }
+        else {
+            return 0;
+        }
+    }
+    return 0;
+}
+
+#
+# This converse function for reference only
+#
+#sub set_email_send_limits_defer_cutoff {
+#	my $percentage = int shift ;
+#
+#	# The value is the size of the file so we can avoid the open/close overhead (just a stat)
+#	if ( open(my $cut_off_percentage_fh,'>','/var/cpanel/email_send_limits/defer_cutoff') ) {
+#		print {$cut_off_percentage_fh} 'x' x $percentage;
+#		return 1;
+#	}
+#
+#	return 0;
+# }
+
+sub get_email_send_limits_defer_cutoff {
+
+    # The value is the size of the file so we can avoid the open/close overhead (just a stat)
+
+    my $cut_off_percentage = ( stat('/var/cpanel/email_send_limits/defer_cutoff') )[7];
+    if ( !defined $cut_off_percentage ) { $cut_off_percentage = $DEFAULT_EMAIL_SEND_LIMITS_DEFER_CUTOFF_PERCENTAGE; }
+    return $cut_off_percentage;
+}
+
+#
+# This converse function for reference only
+#
+# sub set_email_daily_limit_notify {
+#	my $limit = int shift ;
+#       if ( $limit == 0 ) {
+#           unlink '/var/cpanel/email_send_limits/daily_limit_notify';
+#           return 1;
+#       }
+#	# The value is the size of the file so we can avoid the open/close overhead (just a stat)
+#	if ( open(my $daily_limit_fh,'>','/var/cpanel/email_send_limits/daily_limit_notify') ) {
+#		print {$daily_limit_fh} 'x' x $limit;
+#		return 1;
+#	}
+#	return 0;
+# }
+
+sub get_email_daily_limit_notify {
+
+    # The value is the size of the file so we can avoid the open/close overhead (just a stat)
+    my $limit = ( stat('/var/cpanel/email_send_limits/daily_limit_notify') )[7];
+    if ( !defined $limit ) { $limit = 0; }
+    return $limit;
+}
+
+sub create_daily_notify_touchfile {
+
+    my $domain = shift;
+    $domain =~ s/\///g;    #jic
+    mkdir( '/var/cpanel/email_send_limits/daily_notify', 0750 ) if !-e '/var/cpanel/email_send_limits/daily_notify';
+    if ( open( my $daily_limit_fh, '>', '/var/cpanel/email_send_limits/daily_notify/' . $domain ) ) {
+        close $daily_limit_fh;
+    }
+    return undef;
+}

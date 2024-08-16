@@ -1,0 +1,29 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - bin/migrate_legacy_cpdavd_config        Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+use warnings;
+
+use Cpanel::CachedDataStore       ();
+use Cpanel::Config::FlushConfig   ();
+use Cpanel::AdvConfig             ();
+use Cpanel::ServiceConfig::cpdavd ();
+
+if ( -e "/var/cpanel/conf/cpdavd/main" ) {
+    my $srv_config_hr = Cpanel::CachedDataStore::fetch_ref("/var/cpanel/conf/cpdavd/main");
+    my $configfile    = '/var/cpanel/conf/cpdavd/ssl_socket_args';
+    if ( !$srv_config_hr->{'VERSION'} ) {
+        if ( exists $srv_config_hr->{'ssl_socket_args'} && ref $srv_config_hr->{'ssl_socket_args'} eq 'HASH' ) {
+            Cpanel::Config::FlushConfig::flushConfig( $configfile, $srv_config_hr->{'ssl_socket_args'}, '=' );
+            if ( exists $srv_config_hr->{'ssl_socket_args'}{'SSL_cipher_list'} ) {
+                $srv_config_hr->{'SSLCipherList'} = $srv_config_hr->{'ssl_socket_args'}{'SSL_cipher_list'};
+            }
+        }
+        $srv_config_hr->{'VERSION'} = $Cpanel::ServiceConfig::cpdavd::VERSION;
+        Cpanel::AdvConfig::save_app_conf( 'cpdavd', 0, $srv_config_hr );
+    }
+}

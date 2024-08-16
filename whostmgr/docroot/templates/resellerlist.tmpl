@@ -1,0 +1,227 @@
+[% USE Whostmgr; -%]
+[% WRAPPER 'master_templates/master.tmpl'
+  theme = 'bootstrap'
+  app_key = 'reseller_center'
+-%]
+
+[% hasreseller = 0 ;
+  FOR userdata = data.userdomains;
+    IF userdata.is_reseller ;
+    hasreseller = 1 ;
+    LAST ;
+  END ;
+END -%]
+
+
+<script type="text/javascript">
+    [% Whostmgr.find_file_and_insert('js2-min/resellerlist.js') %]
+</script>
+
+<style type="text/css">[% Whostmgr.find_file_and_insert('css2-min/resellerlist.css') %]</style>
+
+<div class="callout callout-info">
+  <i>[% locale.maketext('Note: All functions found on this menu are now available via the main WHM menu.') %]</i>
+    [% IF !hasreseller -%]
+      <br><i>[% locale.maketext('This interface will display additional functions after you add reseller privileges to an account.') %]</i>
+    [% END -%]
+</div>
+
+<div class="row">
+    [%
+        SET resellers = [];
+        SET non_resellers = [];
+        FOR userdata = data.userdomains;
+            IF userdata.is_reseller;
+                resellers.push(userdata);
+            ELSE;
+                IF userdata.is_demo_user == 1;
+                    NEXT;
+                END;
+                IF userdata.has_workloads == 1;
+                    NEXT;
+                END;
+                non_resellers.push(userdata);
+            END;
+        END;
+    -%]
+
+    [% IF non_resellers.size -%]
+        <div class="col-md-6">
+            <div class="panel panel-default privileges-panel">
+                <div class="panel-heading">
+                    <h3 class="panel-title">[% locale.maketext('Add Reseller Account Privileges') %] </h3>
+                </div>
+                <div class="panel-body">
+                    <form action="[% cp_security_token %]/scripts/addres" class="form-inline" method="POST">
+                        <select name="res" id="addres" class="form-control domain-select">
+                            [% FOR userdata = non_resellers -%]
+                                <option value="[% userdata.name FILTER html %]">[% userdata.name FILTER html %] [% IF userdata.domain %]([% userdata.domain FILTER html %])[% END %]</option>
+                            [% END -%]
+                        </select>
+                        <input type="submit" class="btn btn-primary" value="[% locale.maketext('Add') %]"><br />
+                        <div class="checkbox cowner-checkbox">
+                            <label for="cowner">
+                                <input id="cowner" type="checkbox" name="cowner" value="1" checked="checked">
+                                <span>[% locale.maketext('Make the new reseller own their own account.') %]</span>
+                            </label>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+    [% END -%]
+
+    [% IF resellers.size %]
+        <div class="col-md-6">
+            <div class="panel panel-default privileges-panel">
+                <div class="panel-heading">
+                    <h3 class="panel-title">[% locale.maketext('Remove Reseller Account Privileges') %] </h3>
+                </div>
+                <div class="panel-body">
+                    <form method="POST" action="[% cp_security_token %]/scripts/delres" class="form-inline">
+                        <select name="res" id="delres" class="form-control domain-select">
+                            [% FOR userdata = resellers -%]
+                                <option value="[% userdata.name FILTER html %]">[% userdata.name FILTER html %] [% IF userdata.domain %]([% userdata.domain FILTER html %])[% END %]</option>
+                            [% END -%]
+                        </select>
+                        <input type="submit" class="btn btn-primary" value="[% locale.maketext('Remove') %]">
+                    </form>
+                </div>
+            </div>
+        </div>
+    [% END -%]
+</div>
+
+[% IF hasreseller -%]
+
+[% IF Whostmgr.has_multiuser %]
+    <div class="row">
+        <div class="col-md-12">
+            <div class="panel panel-default">
+                <div class="panel-heading">
+                    <h3 class="panel-title">[% locale.maketext('Change Account Ownership/Email Resellers') %] </h3>
+                </div>
+                <div class="panel-body">
+                    <a class="btn btn-link" id="change-owner" href="[% cp_security_token %]/scripts/edituser">
+                        <img class="reseller-action-icon" src="[% MagicRevision( Whostmgr.find_file_url('icons/change_ownership_of_an_account.png') ) %]" border="0">
+                        <span>[% locale.maketext('Change Ownership of an Account') %]</span>
+                    </a>
+
+                    <a class="btn btn-link" id="email-all" href="[% cp_security_token %]/scripts/emailall?resellers=1">
+                        <img class="reseller-action-icon" src="[% MagicRevision( Whostmgr.find_file_url('icons/email_all_resellers.png') ) %]" border="0">
+                        <span>[% locale.maketext('Email All Resellers') %]</span>
+                    </a>
+
+                    <a class="btn btn-link" id="reset-perm" href="[% cp_security_token %]/scripts/resetresellers">
+                        <img class="reseller-action-icon" src="[% MagicRevision( Whostmgr.find_file_url('icons/reset_resellers.png') ) %]" border="0">
+                        <span>[% locale.maketext('Reset Resellers’ Permissions') %]</span>
+                    </a>
+                </div>
+            </div>
+        </div>
+    </div>
+[% END %]
+
+<div class="row">
+    <div class="col-md-12">
+        <div class="panel panel-default">
+            <div class="panel-heading form-inline" >
+                <h3 class="panel-title">
+                    [% locale.maketext('Reseller Actions for [_1]', '<span id="reseller_actions_select_placeholder"></span>') %]
+                </h3>
+            </div>
+            <div class="panel-body">
+                <div style="display:none;" id="reseller_redirect_actions">
+                    <form id="reseller_actions_delegateip" action="../scripts2/delegatemainip" method="GET"><input type="hidden" name="user" id="reseller_actions_delegateip_user"></form>
+                    <form id="reseller_actions_xferwhm" action="../xferwhm/%user%" target="_blank" method="GET"></form>
+                    <form id="reseller_actions_xfercpanel" action="../xfercpanel/%user%" target="_blank" method="GET"></form>
+                </div>
+
+                <div class="reseller_actions [% Whostmgr.has_multiuser && 'multiuser' %]">
+                    [% SET reseller_action_links = [
+                        {
+                            href => '../scripts2/editres?res=',
+                            img_src => 'icons/edit_reseller_name_servers_and_privileges.png',
+                            label => locale.maketext('Edit Reseller Nameservers and Privileges'),
+                            id => 'edit-privileges',
+                        },
+                        {
+                            multiuser_required => 1,
+                            href => '../scripts2/multichangeowner?newowner=',
+                            img_src => 'icons/change_ownership_of_multiple_accounts.png',
+                            label => locale.maketext('Change Ownership of Multiple Accounts'),
+                            id => 'change-owner-multiple',
+                        },
+                        {
+                            multiuser_required => 1,
+                            href => '../scripts2/statres?res=',
+                            img_src => 'icons/view_reseller_usage_and_manage_account_status.png',
+                            label => locale.maketext('View Reseller Usage and Manage Account Status'),
+                            id => 'view-usage',
+                        },
+                        {
+                            multiuser_required => 1,
+                            href => '../scripts2/delegateips?user=',
+                            img_src => 'icons/manage_resellers_ip_delegation.png',
+                            label => locale.maketext('Manage [output,abbr,IP,Internet Protocol] Address Delegation'),
+                            id => 'manage-ip',
+                        },
+                        {
+                            multiuser_required => 1,
+                            href => '../scripts2/delegatemainip?user=',
+                            img_src => 'icons/manage_resellers_shared_ip.png',
+                            label => locale.maketext('Manage Reseller’s Shared [output,abbr,IP,Internet Protocol] Address'),
+                            id => 'manage-shared-ip',
+                        },
+                        {
+                            onclick => "return handle_reseller_redirect_action('xferwhm')",
+                            img_src => 'icons/web_host_manager.png',
+                            label => locale.maketext('Log in to [asis,WHM]'),
+                            id => 'login-whm',
+                        },
+                        {
+                            onclick => "return handle_reseller_redirect_action('xfercpanel')",
+                            img_src => 'images/cpanel.png',
+                            label => locale.maketext('Log in to [asis,cPanel]'),
+                            id => 'login-cpanel',
+                        },
+                    ] %]
+                    [% FOR ra = reseller_action_links -%]
+                        [% NEXT IF ra.multiuser_required && !Whostmgr.has_multiuser -%]
+                        <div class="reseller_action">
+                            <a id="[% ra.id %]" class="btn btn-link" [% ra.onclick && "onclick=\"${ra.onclick}\"" %] href="[% ra.href || 'javascript:void(0)' %]">
+                                <img class="reseller-action-icon" src="[% MagicRevision( Whostmgr.find_file_url(ra.img_src) ) %]" style="margin:5px 5px 5px 0">
+                                <span>[% ra.label %]</span>
+                            </a>
+                        </div>
+                    [% END -%]
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+<!-- this gets moved into the localized text -->
+<select name="res" id="reseller_actions_select" class="form-control domain-select" onchange="handle_reseller_select_update(this)" style="display:none">
+    [% FOR userdata = data.userdomains -%]
+        [% NEXT IF !userdata.is_reseller -%]
+        <option value="[% userdata.name FILTER html %]">[% userdata.name FILTER html %] [% IF userdata.domain %]([% userdata.domain FILTER html %])[% END %]</option>
+    [% END -%]
+</select>
+<script type="text/javascript">
+    // //<![CDATA[
+    /* injects select into the appropriate place in the translated text */
+    window.onload = function(){
+        var holder = document.getElementById("reseller_actions_select_placeholder");
+        var select = document.getElementById("reseller_actions_select");
+        if (holder) {
+            holder.appendChild(select);
+            select.style.display = "inline-block";
+        }
+
+        handle_reseller_select_update( document.getElementById("reseller_actions_select") );
+    };
+    // ]]>
+</script>
+[% END #hasreseller check for reseller actions block -%]
+
+[% END #wrapper -%]

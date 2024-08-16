@@ -1,0 +1,189 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/cleansessions                   Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::cleansessions;
+
+use strict;
+use warnings;
+
+use Getopt::Long           ();
+use Cpanel::PwCache        ();
+use Cpanel::PwCache::Build ();
+use Cpanel::Locale 'lh';
+
+# Constants
+use constant ONEDAY => 60 * 60 * 24;    # 24 hours - time in seconds
+
+use constant MAX_PHP_SESSION_AGE => ONEDAY;    # 24 hours
+
+use constant MAX_PASSRESET_SESSION_AGE => ONEDAY * 2;                            # 48 hours
+use constant MAX_PASSRESET_FLOOD_AGE   => MAX_PASSRESET_SESSION_AGE + ONEDAY;    # 72 hours
+
+use constant MAX_INVITE_SESSION_AGE => ONEDAY * 2;                               # 48 hours
+use constant MAX_INVITE_FLOOD_AGE   => MAX_INVITE_SESSION_AGE + ONEDAY;          # 72 hours
+
+our $flood_pattern = qr/^\.floodprotect-/;
+
+sub RESET_DIR       { return '/var/cpanel/passreset' }
+sub INVITE_DIR      { return '/var/cpanel/invites' }
+sub TEAM_INVITE_DIR { return '/var/cpanel/team_invites' }
+
+# Application state
+our $VERBOSE = 0;
+our $HELP    = 0;
+
+run(@ARGV) unless caller;
+
+sub run {
+    my (@args) = @_;
+    Getopt::Long::GetOptionsFromArray(
+        \@args,
+        verbose => \$VERBOSE,
+        help    => \$HELP
+    ) or _die_usage();
+
+    _die_usage() if $HELP;
+
+    Cpanel::PwCache::Build::init_passwdless_pwcache();
+
+    clean_php_app_sessions();
+
+    clean_password_reset_sessions();
+
+    clean_invite_sessions();
+
+    print "Done\n" if $VERBOSE;
+
+    return;
+}
+
+sub clean_php_app_sessions {
+    my $now = time();
+
+    my @APPS = qw( phpmyadmin phppgadmin roundcube );
+    foreach my $app (@APPS) {
+        print lh()->maketext( 'Searching for “[_1]” sessions more than [quant,_2,day,days] old …', $app, MAX_PHP_SESSION_AGE / ONEDAY ) . "\n" if $VERBOSE;
+
+        ## The correct name is e.g. cpanelroundcube without the dash.
+        my $homedir = _gethomedir( 'cpanel' . $app );
+        next if !$homedir;
+
+        my $tmpdir = $homedir . '/tmp';
+
+        opendir( my $session_files, $tmpdir )
+          or next;
+
+        while ( my $qf = readdir($session_files) ) {
+            $qf =~ s/\///g;    #not really possible
+            next if ( $qf !~ /^sess/ );
+            my $abs_path = $tmpdir . '/' . $qf;
+            my $mtime    = ( stat($abs_path) )[9];
+
+            if ( $now - $mtime > MAX_PHP_SESSION_AGE() ) {
+                remove($abs_path);
+            }
+        }
+        closedir $session_files;
+    }
+    return;
+}
+
+sub clean_password_reset_sessions {
+    print lh()->maketext( 'Searching for reset password sessions more than [quant,_1,day,days] old …', MAX_PASSRESET_SESSION_AGE / ONEDAY ) . "\n" if $VERBOSE;
+
+    # Clean the session files: anything not matching .floodprotect-
+    clean_expired_files( RESET_DIR, $flood_pattern, 1, MAX_PASSRESET_SESSION_AGE );
+
+    print lh()->maketext( 'Searching for reset password flood control files more than [quant,_1,day,days] old …', MAX_PASSRESET_FLOOD_AGE / ONEDAY ) . "\n" if $VERBOSE;
+
+    # Clean the flood control files: : anything matching .floodprotect-
+    clean_expired_files( RESET_DIR, $flood_pattern, 0, MAX_PASSRESET_FLOOD_AGE );
+
+    return;
+}
+
+sub clean_invite_sessions {
+
+    print lh()->maketext( 'Searching for invitation sessions more than [quant,_1,day,days] old …', MAX_INVITE_SESSION_AGE / ONEDAY ) . "\n" if $VERBOSE;
+
+    # Clean the session files: anything not matching .floodprotect-
+    clean_expired_files( INVITE_DIR,      $flood_pattern, 1, MAX_INVITE_SESSION_AGE );
+    clean_expired_files( TEAM_INVITE_DIR, $flood_pattern, 1, MAX_INVITE_SESSION_AGE );
+
+    print lh()->maketext( 'Searching for invitation flood control files more than [quant,_1,day,days] old …', MAX_INVITE_FLOOD_AGE / ONEDAY ) . "\n" if $VERBOSE;
+
+    # Clean the flood control files: : anything matching .floodprotect-
+    clean_expired_files( INVITE_DIR,      $flood_pattern, 0, MAX_INVITE_FLOOD_AGE );
+    clean_expired_files( TEAM_INVITE_DIR, $flood_pattern, 0, MAX_INVITE_FLOOD_AGE );
+
+    return;
+}
+
+sub clean_expired_files {
+    my ( $dir, $match, $not, $max_age ) = @_;
+    my $now = time();
+    if ( opendir my $dh, $dir ) {
+        while ( my $item = readdir $dh ) {
+
+            # skip these items, which are not sessions:
+            #   . and ..
+            next if $item =~ /^\.$|^\.\.$/;
+
+            my $check = $not ? $item !~ $match : $item =~ $match;
+            if ($check) {
+
+                my $abs_path = $dir . '/' . $item;
+                my $mtime    = ( stat $abs_path )[9];
+                if ( $now - $mtime > $max_age ) {
+                    remove($abs_path);
+                }
+            }
+        }
+        closedir $dh;
+    }
+}
+
+sub remove {
+    my ($abs_path) = @_;
+    my $ok         = unlink $abs_path;
+    my $err        = $!;
+    if ( $ok && $VERBOSE ) {
+        print "    " . lh()->maketext( 'The system removed “[_1]”.', $abs_path ) . "\n";
+    }
+    elsif ( !$ok ) {
+        print STDERR "    " if $VERBOSE;
+        print STDERR lh()->maketext( 'The system failed to remove “[_1]” because of the following error: [_2]', $abs_path, $err ) . "\n";
+    }
+    return;
+}
+
+sub _gethomedir {
+    my ($user) = @_;
+    return Cpanel::PwCache::gethomedir($user);
+}
+
+sub _die_usage {
+    die <<EOF;
+usage: $0 [--verbose] [--help]
+
+Cleans up the various session files for the following:
+
+ * application session files for the following apps if installed:
+    - phpmyadmin
+    - phppgadmin
+    - roundcube
+
+ * expired cPanel Password Reset session files and flood protection files.
+
+ * expired cPanel Subaccount Invitation session files and flood protection files.
+
+If you specify --verbose, you will get detailed output indicating what files were
+removed from the system.
+
+If you specify --help, you will get this help output.
+EOF
+}

@@ -1,0 +1,202 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/check_valid_server_hostname     Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+#
+
+package scripts::check_valid_server_hostname;
+
+use strict;
+use warnings;
+
+use Cpanel::Locale                  ();
+use Cpanel::Usage                   ();
+use Cpanel::Config::LoadWwwAcctConf ();
+use Cpanel::Sys::Hostname           ();
+use Cpanel::Redirect                ();
+use Cpanel::DIp::MainIP             ();
+use Socket                          ();
+
+my $HOSTNAME_OK            = 0;
+my $GENERIC_HOSTNAME_ERROR = 1;
+my $NEEDS_SET_HOSTNAME     = 2;
+
+sub script {
+    my $self = shift;
+    my $argv = shift;
+    my $lc   = Cpanel::Locale->get_handle();
+    my %opts = (
+        notify => 0,
+        quiet  => 0,
+    );
+
+    Cpanel::Usage::wrap_options(
+        $argv,
+        \&usage,
+        { 'notify' => \$opts{'notify'}, 'quiet' => \$opts{'quiet'} },
+    );
+
+    my $hostname = Cpanel::Sys::Hostname::gethostname();
+
+    if ( my $is_manual_hostname = $self->is_manual_hostname( $hostname, \%opts ) ) {
+        if ( $is_manual_hostname == $NEEDS_SET_HOSTNAME ) {
+            require Whostmgr::Hostname;
+            my ( $status, $statusmsg, $msgref, $errref ) = Whostmgr::Hostname::sethostname( $hostname, 1 );
+            unless ( $opts{'quiet'} ) {
+                if ( $msgref && ref $msgref ) {
+                    print "$_\n" for @$msgref;
+                }
+
+                if ( !$status ) {
+                    warn $statusmsg;
+                    if ( $errref && ref $errref ) {
+                        warn "$_" for @$errref;
+                    }
+                }
+            }
+            exit 1 if !$status;
+        }
+        else {
+            exit 1;
+        }
+    }
+    exit 1 unless $self->is_resolv_hostname( $hostname, \%opts );
+
+    print $lc->maketext(q{OK}), "\n" unless $opts{'quiet'};
+
+    exit 0;
+}
+
+sub usage {
+    my $lc = Cpanel::Locale->get_handle();
+
+    print $lc->maketext(q{This tool verifies the server hostname configuration.}), "\n\n";
+    print $lc->maketext( q{Usage: [_1][comment,a program name] ~[options~]}, $0 ), "\n\n";
+    print $lc->maketext(q{Options:}),                                              "\n";
+    print "\t--help     ",                                                         $lc->maketext(q{Display this help message.}),                                               "\n";
+    print "\t--notify   ",                                                         $lc->maketext(q{Send a failure notification to the system administrator.}),                 "\n";
+    print "\t--quiet    ",                                                         $lc->maketext(q{Do not display output, and instead set the [output,asis,UNIX] exit code.}), "\n\n";
+
+    exit 0;
+}
+
+# Do not use Cpanel::Hostname::gethostname().  The purpose of this routine
+# is to reliably detect from the definitive source on Linux, what it thinks
+# it's running as.  That is then compared to the WHM setting.
+sub is_manual_hostname {
+    my $self     = shift;
+    my $hostname = shift;
+    my $opts     = shift;
+    my $conf     = Cpanel::Config::LoadWwwAcctConf::loadwwwacctconf();
+    my $lc       = Cpanel::Locale->get_handle();
+    my $old      = $lc->set_context_plain();
+    my $ip       = Cpanel::DIp::MainIP::getmainip();
+
+    unless ($conf) {
+        my $reason   = $lc->maketext(q{The system is unable to retrieve the [output,asis,WHM] hostname configuration information.});
+        my $solution = $lc->maketext( q{Verify the file system permissions of the “[_1]” file on your server.}, q{/etc/wwwacct.conf} );
+        $self->send_failure_notification( $opts, { 'status' => 'cannot_read_conf', 'reason' => $reason, 'solution' => $solution, 'hostname' => $hostname, 'ip' => $ip } );
+        $lc->set_context($old);
+        return $GENERIC_HOSTNAME_ERROR;
+    }
+
+    my $url      = sprintf( 'http://%s:2087/scripts2/changehostname', Cpanel::Redirect::getserviceSSLdomain('whm') );
+    my $solution = $lc->maketext( q{The system will attempt to synchronize the current hostname “[_1]” to the system configuration.}, $hostname ) . ' ' . $lc->maketext( q{In the future, update your hostname in [output,url,_1,WHM’s] interface (Home » Networking Setup » Change Hostname).}, $url );
+
+    unless ( $conf->{'HOST'} ) {
+        my $reason = $lc->maketext(q{The system hostname is not configured in [output,asis,WHM].});
+        $self->send_failure_notification( $opts, { 'status' => 'host_missing', 'reason' => $reason, 'solution' => $solution, 'hostname' => $hostname, 'ip' => $ip } );
+        $lc->set_context($old);
+        return $NEEDS_SET_HOSTNAME;
+    }
+
+    unless ( $hostname eq $conf->{'HOST'} ) {
+        my $reason = $lc->maketext(q{[output,asis,WHM] has detected a manual hostname change.});
+        $self->send_failure_notification( $opts, { 'status' => 'hostname_host_mismatch', 'reason' => $reason, 'solution' => $solution, 'hostname' => $hostname, 'ip' => $ip } );
+        $lc->set_context($old);
+        return $NEEDS_SET_HOSTNAME;
+    }
+
+    $lc->set_context($old);
+
+    return $HOSTNAME_OK;
+}
+
+# This uses gethostbyname(), because Apache does.  If Apache is unable to resolve the
+# hostname on the machine using the standard default EasyApache profile, then it won't
+# start (due to mod_unique_id).
+sub is_resolv_hostname {
+    my $self     = shift;
+    my $hostname = shift;
+    my $opts     = shift;
+    my $lc       = Cpanel::Locale->get_handle();
+    my $old      = $lc->set_context_plain();
+    my $solution = $lc->maketext( q{Update your system “[_1]” file and/or [output,asis,DNS] server.}, q{/etc/hosts} );
+    my $ip       = Cpanel::DIp::MainIP::getmainip();
+
+    my $resolved = gethostbyname($hostname);
+
+    unless ($resolved) {
+        my $reason = $lc->maketext( q{The system was unable to resolve the system hostname “[_1]” to an [output,asis,IP] address.}, $hostname );
+        $self->send_failure_notification( $opts, { 'status' => 'cannot_resolve_hostname', 'reason' => $reason, 'solution' => $solution, 'hostname' => $hostname, 'ip' => $ip } );
+        $lc->set_context($old);
+        return 0;
+    }
+
+    $lc->set_context($old);
+
+    return 1;
+}
+
+sub send_failure_notification {
+    my $self = shift;
+    my $opts = shift;
+    my $args = shift;
+
+    my $lc  = Cpanel::Locale->get_handle();
+    my $old = $lc->set_context_plain();
+
+    print STDERR $lc->maketext('ERROR:'), " $args->{'reason'}\n" unless $opts->{'quiet'};
+    print STDERR "\n$args->{'solution'}\n" if $args->{'solution'};
+
+    unless ( $opts->{'notify'} ) {
+        $lc->set_context($old);
+        return 1;
+    }
+
+    require Cpanel::Notify;
+    Cpanel::Notify::notification_class(
+        'class'            => 'Check::ValidServerHostname',
+        'application'      => 'server_hostname_validator',
+        'status'           => $args->{'status'},
+        'interval'         => 86400 * 7,
+        'constructor_args' => [
+            'origin'   => 'server_hostname_validator',
+            'reason'   => $args->{'reason'},
+            'solution' => $args->{'solution'},
+            'ip'       => $args->{'ip'},
+        ]
+    );
+
+    $lc->set_context($old);
+
+    return 1;
+}
+
+__PACKAGE__->script( \@ARGV ) unless caller;
+
+__END__
+
+=head1 NAME
+
+check_valid_server_hostname - Verifies proper configuration of hostname
+
+=head1 DESCRIPTION
+
+This script checks the hostname of the machine and verifies that the user has
+properly configured it in cPanel & WHM.  Additionally, it performs a DNS check
+on the hostname.  Both of these verifications, in tandem, help to ensure the
+user has a properly configured and functioning server.

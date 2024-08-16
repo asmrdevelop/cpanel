@@ -1,0 +1,83 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/disablefileprotect              Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::disablefileprotect;
+
+use cPstrict;
+
+BEGIN {
+    if ( $ENV{PERL5LIB} ) {
+        local $ENV{PERL5LIB} = '';
+        exec $0, @ARGV;
+    }
+}
+
+use parent qw( Cpanel::HelpfulScript );
+
+use Cpanel::Autodie                ();
+use Cpanel::FileProtect            ();
+use Cpanel::FileProtect::Constants ();
+use Cpanel::FileProtect::Sync      ();
+use Cpanel::Filesys::Home          ();
+use Cpanel::UserIterator           ();
+
+use Try::Tiny;
+
+use constant _OPTIONS => ();
+
+__PACKAGE__->new(@ARGV)->run() if !caller;
+
+sub run ($self) {
+
+    if ( Cpanel::FileProtect->is_on() ) {
+        Cpanel::FileProtect->set_off() or die "Error while setting Fileprotect flag to off: $!";
+    }
+
+    for my $mount ( Cpanel::Filesys::Home::get_all_homedirs() ) {
+
+        # "homedir" in this context is "/home", "/home2", etc.
+        my $perms = Cpanel::FileProtect::Constants::DEFAULT_MOUNT_PERMS();
+        printf "Setting %s permissions to %#o … \n", $mount, $perms;
+        try {
+            Cpanel::Autodie::chmod( $perms, $mount );
+        }
+        catch {
+            warn $_;
+        };
+    }
+
+    print "Setting permissions for users …\n";
+
+    my $user_iter = Cpanel::UserIterator->new( 'cpanel_only' => 1 );
+    while ( my $user = $user_iter->user() ) {
+        print "$user …\n";
+        try {
+            warn $_->to_string() for Cpanel::FileProtect::Sync::sync_user_homedir($user);
+        }
+        catch {
+            warn "Skipping $user because of an error: $_\n";
+        };
+        $user_iter->next();
+    }
+
+    print "… Done\n";
+    return;
+}
+
+sub full_help {
+    return <<~"EO_HELP";
+        Usage: $0 [--help]
+        Unprotect the public_html directory of each user account so that all users may view its
+        contents.  Use the enablefileprotect script to reverse the process.
+
+        Options:
+        --help - this screen
+
+        EO_HELP
+}
+
+1;

@@ -1,0 +1,47 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+# cpanel - scripts/hook                            Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+# This script is provided as an abstraction/sanity layer around Cpanel::Hooks.
+# This is used to ensure that critical subsystems cannot break if Cpanel::Hooks does.
+
+use Cpanel::Hooks ();
+use Cpanel::Usage ();
+
+my ( $category, $event, $stage );
+
+Cpanel::Usage::wrap_options( \@ARGV, \&usage, { 'category' => \$category, 'event' => \$event, 'stage' => \$stage } );
+
+unless ( $category && $event && $stage ) {
+    usage(1);
+}
+
+my ( $result, $msgs ) = Cpanel::Hooks::hook(
+    {
+        'category' => $category,
+        'event'    => $event,
+        'stage'    => $stage,
+    },
+    {},
+);
+my $hooks_msg = int @{$msgs} ? join "\n", @{$msgs} : '';
+print $hooks_msg;
+exit( $result ? 0 : 2 );
+
+sub usage {
+    my $exit_code = shift || 0;
+    print <<EO_USAGE;
+hook --category=<category> --event=<event> --stage=<stage>
+
+  Executes any hooks that would be called normally in the specified context.
+
+    Options:
+      --category  Category of hook to execute (Example: System)
+      --event     Event that the hook is for (Example: upcp)
+      --stage     Stage of event for the hook (Example: pre)
+
+EO_USAGE
+    exit $exit_code;
+}

@@ -1,0 +1,93 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+my $hasnetsslftp;
+eval {
+    require Net::FTPSSL;
+    $hasnetsslftp = 1;
+};
+die if ( !$hasnetsslftp );
+
+my (%ARGS) = parseargv();
+
+if ( $ARGS{user} eq "" ) {
+    die "Sorry, you must specify a user to login to the remote server as.";
+}
+if ( $ARGS{host} eq "" ) {
+    die "Sorry, you must specify a remote server.";
+}
+if ( $ARGS{srcfile} eq "" ) {
+    die "Sorry you must specify a source file.\n";
+}
+if ( $ARGS{destfile} eq "" ) {
+    die "Sorry you must specify a destfile file.\n";
+}
+if ( $ARGS{port} eq "22" ) {
+    print "Assuming port 21 since 22 was specified!\n";
+    $ARGS{port} = 21;
+}
+
+my $pass = <STDIN>;
+chomp($pass);
+
+if ( my $pid = fork() ) {
+    while ( waitpid( $pid, 1 ) != -1 ) {
+        print ".\n";
+        sleep(1);
+    }
+}
+else {
+    my $ftp;
+    if ( $ARGS{'port'} ne "" ) {
+        $ftp = Net::FTPSSL->new( $ARGS{host}, Debug => 1, Passive => 1, Port => $ARGS{'port'}, encryption => 'E' )
+          || die "Cannot connect to $ARGS{host}:$ARGS{port} $@";
+    }
+    else {
+        $ftp = Net::FTPSSL->new( $ARGS{host}, Debug => 1, Passive => 1, Port => 21, encryption => 'E' )
+          || die "Cannot connect to $ARGS{host}:21:  $@";
+    }
+    $ftp->login( $ARGS{user}, $pass ) || die "Cannot login ", $ftp->last_message;
+    my (@FINFO) = split( /\//, $ARGS{srcfile} );
+    my $file;
+    my $dir;
+    if ( $ARGS{srcfile} =~ /^\// ) {
+        shift(@FINFO);    #/
+        shift(@FINFO);    #home
+        shift(@FINFO);    #user
+    }
+    $file = pop(@FINFO);
+    $dir  = join( "/", @FINFO );
+    $ftp->cwd($dir) || die "Cannot change working directory ", $ftp->last_message;
+
+    my (@DEST)   = split( /\//, $ARGS{destfile} );
+    my $destfile = pop(@DEST);
+    my $destdir  = join( "/", @DEST );
+    if ( $destdir ne "" ) {
+        chdir($destdir);
+    }
+    if ( $destfile ne '.' ) {
+        $ftp->get( $file, $destfile ) || die "get failed ", $ftp->last_message;
+    }
+    else {
+        $ftp->get($file) || die "get failed ", $ftp->last_message;
+    }
+    $ftp->quit();
+    exit();
+}
+
+sub parseargv {
+    my (%ARGS);
+    while ( $#ARGV != -1 ) {
+        $_ = $ARGV[0];
+        if (/^\-\-/) {
+            my $arg = shift(@ARGV);
+            $arg =~ s/^\-\-//g;
+            $arg =~ tr/[A-Z]/[a-z]/;
+            my $value = shift(@ARGV);
+            $ARGS{$arg} = $value;
+        }
+        else {
+            last;
+        }
+    }
+    return (%ARGS);
+}

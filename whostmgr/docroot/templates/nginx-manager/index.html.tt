@@ -1,0 +1,62 @@
+[%
+# ./apps/nginx-manager/src/index.html.tt
+#                                                  Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+%]
+
+[%
+USE Whostmgr;
+USE JSON;
+
+SET TEMPLATE_PATH = '/templates/nginx-manager/';
+SET breadcrumb_url = '/scripts7/nginx-manager';
+SET ROUTER_PATH   = cp_security_token _ breadcrumb_url;
+SET RESOURCE_PATH = cp_security_token _ TEMPLATE_PATH;
+SET style_sheets  = [];
+SET scripts       = []; # Do not change this name unless it is also changed in the partials below.
+
+# The following content is inserted by underscore-template-loader's require macro.
+#
+#----------------------------------------------------
+# ∨∨∨ THIS IS GENERATED CODE, DO NOT MODIFY IT ∨∨∨
+#----------------------------------------------------
+#
+# Build webpack css bundle list
+style_sheets.push(Whostmgr.find_file_url(TEMPLATE_PATH _ "styles.css"));
+
+# Build webpack javascript bundle list
+scripts.push(Whostmgr.find_file_url(TEMPLATE_PATH _ "runtime.js"));
+scripts.push(Whostmgr.find_file_url(TEMPLATE_PATH _ "vendor.js"));
+scripts.push(Whostmgr.find_file_url(TEMPLATE_PATH _ "polyfills.js"));
+scripts.push(Whostmgr.find_file_url(TEMPLATE_PATH _ "main.js"));
+
+#
+# ^^^ THIS IS GENERATED CODE, DO NOT MODIFY IT ^^^
+#----------------------------------------------------
+
+SET locale_is_rtl = 0;
+
+WRAPPER 'master_templates/master.tmpl'
+    app_key = 'nginx_manager',
+    breadcrumburl = breadcrumb_url,
+    base = RESOURCE_PATH,
+    stylesheets = style_sheets,
+    scripts = scripts,
+    theme = 'bootstrap',
+    CJT2_EXCLUSIVE=1,
+    is_ng = 1
+%]
+<cp-nginx-manager-root></cp-nginx-manager-root>
+<script>
+    window.PAGE = {
+        base: [% ROUTER_PATH.json() %],
+        has_ea_nginx: [% data.has_ea_nginx %] ? true : false,
+        has_ea_nginx_standalone: [% data.has_standalone %] ? true : false,
+        has_external_nginx: [% data.has_external_nginx %] ? true : false,
+        nginx_manager_image_url: [% MagicRevision('/themes/x/images/nginx_manager.svg').json() %],
+        cp_security_token: [% cp_security_token.json() %],
+    }
+</script>
+[% END %]

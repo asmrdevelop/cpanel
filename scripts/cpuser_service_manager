@@ -1,0 +1,337 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/cpuser_service_manager          Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+use warnings;
+
+package scripts::cpuser_service_manager;
+
+use App::CmdDispatch;
+
+my $cmds = {
+    add => {
+        code     => \&add,
+        clue     => "add <service_name> --init-script=<ABS_PATH> (or --ubic-service=<ABS_PATH>)",
+        abstract => "Setup a service",
+        help     => "Setup the given user managed and monitored service",
+    },
+    rem => {
+        code     => \&rem,
+        clue     => "rem <service_name>",
+        abstract => "Remove a service",
+        help     => "Remove the given user managed and monitored service",
+    },
+    list => {
+        code     => \&list,
+        clue     => "list",
+        abstract => "List your services",
+        help     => "List your user managed and monitored services",
+    },
+    info => {
+        code     => sub { my ( $app, @args ) = @_; die "too many arguments\n" if @args; print <DATA> },    # simplify PATH info w/ CPANEL-22345 fix when available
+        clue     => "info",
+        abstract => "Info on this tool/feature",
+        help     => "Information about how this works and what you can do after a service is added",
+    },
+};
+
+my $hint_blurb = "This tool supports the following commands (i.e. $0 {command} …):";
+my $opts       = {
+    'help:pre_hint'  => $hint_blurb,
+    'help:pre_help'  => "Add/Remove/List user managed and monitored services.\n\n$hint_blurb",
+    default_commands => "help",
+    alias            => { remove => "rem" },
+};
+
+run(@ARGV) if !caller;
+
+sub run {
+    my (@argv) = @_;
+    local $ENV{TERM} = $ENV{TERM} || "xterm-256color";    # non-CLI modulino avoid needless: Cannot find termcap: TERM not set at …/Term/ReadLine.pm line 373.
+    return App::CmdDispatch->new( $cmds, $opts )->run(@argv);
+}
+
+################
+#### commands ##
+################
+
+sub add {
+    my ( $app, $service_name, @flags ) = @_;
+
+    eval {
+        require Ubic;                                # this means ubic-admin is installed
+        require Ubic::Service::InitScriptWrapper;    # this means the --init-script setup will work
+    };
+    if ($@) {
+        die "Ubic must be installed to add a service!\n";
+    }
+
+    $service_name = _validated_service_name( $app, $service_name );
+
+    my $service_dir = _get_service_dir();
+
+    if ( -l "$service_dir/$service_name" || -e _ ) {
+        die "The “$service_name” service already exists.\n";
+    }
+
+    # Tiny race here w/ worst case being an error or they over write a file that they just wrote, so no biggy  ¯\_(ツ)_/¯
+
+    my $opts = _validated_add_flags( $app, @flags );
+
+    # would be cool if Cpanel::FindBin (or whatever) did this for us: CPANEL-22345
+    my $real_perl  = readlink("/usr/local/cpanel/3rdparty/bin/perl");
+    my $cp_bin_dir = $real_perl;
+    $cp_bin_dir =~ s{/perl$}{};
+    local $ENV{PATH} = "$cp_bin_dir:$ENV{PATH}";    # not only does this allow it to find our ubic-admin, it allows its env-shebang to pick up our perl
+
+    my $orig_umask = umask(0027);
+    system("ubic-admin setup --batch-mode --local --no-sticky-777") && die "Could not ensure base ubic configuration: $?\n";    # idempotent
+    _cpanelify_ubic_watchdog_cron();
+    _prepend_comment_to_ubic_cnf();
+
+    if ( $opts->{type} eq 'init' ) {
+        _setup_init( $opts->{path}, $service_dir, $service_name );
+    }
+    elsif ( $opts->{type} eq "ubic" ) {
+        symlink( $opts->{path}, "$service_dir/$service_name" ) or die "Could not create “$opts->{path}”: $!\n";
+    }
+    else {
+        umask($orig_umask);
+        _bail( $app, "Something is wrong …" );    # juuuust in case we add a bug …
+    }
+
+    umask($orig_umask);
+    return;
+}
+
+sub rem {
+    my ( $app, $service_name ) = @_;
+    $service_name = _validated_service_name( $app, $service_name );
+
+    my $service_dir  = _get_service_dir();
+    my $service_file = "$service_dir/$service_name";
+
+    if ( !-e $service_file ) {
+        print "The “$service_name” service does not exist.\n";
+        return 1;
+    }
+    else {
+        print "Removing “$service_name” service …\n";
+        unlink($service_file);
+        if ( -e $service_file ) {
+            die "Failed to delete “$service_file”: $!\n";
+        }
+        return 1;
+    }
+
+    return;
+}
+
+sub list {
+    my ($app) = @_;
+    _bail( $app, "“list” does not take any arguments" ) if @_ > 1;
+
+    my $service_dir = _get_service_dir();
+    return if !-d $service_dir;
+    opendir( my $dh, $service_dir ) or die "Could not readdir “$service_dir”: $!\n";
+
+    for my $service ( sort readdir($dh) ) {
+        next if $service eq '.' || $service eq '..';
+        print "$service\n";
+    }
+
+    closedir($dh);
+
+    return;
+}
+
+###############
+#### helpers ##
+###############
+
+sub _get_cmd {
+    return $cmds;
+}
+
+sub _bail {
+    my ( $app, $msg ) = @_;
+    chomp($msg);
+
+    die "$msg\n" if $ENV{ __PACKAGE__ . "::bail_die" };    # for API calls, otherwise:
+
+    warn "$msg\n";
+    $app->help();
+    exit(1);                                               # there is no return()ing from this lol
+}
+
+sub _prepend_comment_to_ubic_cnf {
+
+    # comments crate uninit warnings in ubic's conf parser :/
+    my $ubic_comment  = "IMPORTANT = Do not edit this cPanel User Service Manager generated file!";
+    my $ubic_cnf_path = _get_homedir() . "/.ubic.cfg";
+
+    require Cpanel::LoadFile;
+    my $ubic_cnf = Cpanel::LoadFile::load($ubic_cnf_path);
+    if ( open my $fh, '>', $ubic_cnf_path ) {
+        print {$fh} "$ubic_comment\n";
+        print {$fh} $ubic_cnf;
+        close $fh;
+    }
+    else {
+        warn "Could not prepend “ubic_comment” line to $ubic_cnf_path: $!\n";
+    }
+
+    return;
+}
+
+sub _cpanelify_ubic_watchdog_cron {
+
+    # Cpanel::Cron::Utils::run_crontab(): does not work under jailshell, and can't - under normal shell
+    my @crontab = `crontab -l`;
+    return if !@crontab;
+
+    for my $line (@crontab) {
+        if ( $line =~ m/ubic-watchdog ubic\.watchdog/ ) {
+            $line = "\n# Do not edit the cPanel User Service Manager generated cronjob for Ubic!\n";    # any changes need synced w/ Whostmgr/Accounts/Modify.pm, specifically _update_ubic_conf()
+            $line .= '* * * * * PATH=$(dirname $(readlink /usr/local/cpanel/3rdparty/bin/perl)):$PATH ubic-watchdog ubic.watchdog >>$HOME/ubic/log/watchdog.log 2>>$HOME/ubic/log/watchdog.err.log';
+            $line .= "\n\n";
+        }
+    }
+
+    return _write_crontab_lines( \@crontab );
+}
+
+sub _write_crontab_lines {
+    my ($crontab_ar) = @_;
+
+    open my $fh, '|-', 'crontab -' or die "Can't run 'crontab -': $!\n";
+    print {$fh} @{$crontab_ar} or die "Can't write to crontab pipe: $!\n";
+    close $fh                  or die "Can't close crontab pipe: $!\n";
+
+    return 1;
+}
+
+sub _get_homedir {
+    return ( getpwuid($>) )[7];
+}
+
+sub _get_service_dir {
+    my $homedir = _get_homedir();
+    return "$homedir/ubic/service";    # TODO: get from $homedir/.ubic.cfg {service_dir} if set
+}
+
+sub _validated_service_name {
+    my ( $app, $service_name ) = @_;
+
+    if ( !defined $service_name || $service_name !~ m/^[\w-]+(?:\.[\w-]+)*$/ ) {    # regexp is $service_name_re from Ubic.pm v1.60
+        _bail( $app, "Invalid service name" );
+    }
+
+    return $service_name;
+}
+
+sub _validated_add_flags {
+    my ( $app, @flags ) = @_;
+    _bail( $app, "too many arguments" ) if @flags > 1;
+
+    if ( $flags[0] =~ m/^--init-script=(.+)/ ) {
+        my $init = $1;
+        _check_path( $app, "--init-script", $init );
+        return { path => $init, type => "init" };
+    }
+    elsif ( $flags[0] =~ m/^--ubic-service=(.+)/ ) {
+        my $ubic = $1;
+        _check_path( $app, "--ubic-service", $ubic );
+        return { path => $ubic, type => "ubic" };
+    }
+    else {
+        _bail( $app, "--init-script or --ubic-service is required" );
+    }
+
+    return;
+}
+
+sub _check_path {
+    my ( $app, $flag, $path ) = @_;
+
+    if ( $path !~ m{^/} ) {
+        _bail( $app, "$flag value must be an absolute path" );
+    }
+
+    if ( !-e $path || !-r $path ) {
+        _bail( $app, "$flag value does not exist or is not readable" );
+    }
+
+    return;
+}
+
+sub _setup_init {
+    my ( $abs_path_to_init, $service_dir, $service_name ) = @_;
+
+    if ( open my $fh, ">", "$service_dir/$service_name" ) {
+        my $abs_path_to_init_escaped = $abs_path_to_init;
+        $abs_path_to_init_escaped =~ s/'/\\'/g;
+
+        my $created_by_init_file_flag_value = $abs_path_to_init ne $abs_path_to_init_escaped ? "'$abs_path_to_init_escaped'" : $abs_path_to_init;
+
+        print {$fh} <<"END_UBIC_SERVICE_FILE";
+# Created by `$0 add $service_name --init-file=$created_by_init_file_flag_value`
+use Ubic::Service::InitScriptWrapper;
+Ubic::Service::InitScriptWrapper->new('$abs_path_to_init_escaped');
+END_UBIC_SERVICE_FILE
+
+        print "Installed “$service_name” service.\n";
+        return 1;
+    }
+    else {
+        die "Could not create “$service_dir/$service_name”: $!\n";
+    }
+
+    return;
+}
+
+1;
+
+__DATA__
+____
+A cPanel user managed and monitored service allows users to run daemons as themselves.
+
+Aside from security benefits it is very convenient. The subsystem used to accomplish this is known as Ubic (a “polymorphic service manager”).
+
+This script will setup ubic on your account (if its not already) which includes setting up ~/ubic, ~/.ubic.cfg (do not edit this or things will not work correctly), and a cronjob for a ubic watchdog process that will monitor your service (e.g. to restart it if it stops running or isn’t running because the server just rebooted).
+
+After you have a service setup you can manage it manually w/ the `ubic` command, the most common commands are:
+
+    `ubic status <service_name>`
+    `ubic start <service_name>`
+    `ubic stop <service_name>`
+    `ubic restart <service_name>`
+
+There are others, `man ubic` for details.
+
+Note: If `ubic` is not in your PATH you will need to add it. For example, if you use BASH you could add this to your .bashrc:
+
+    export PATH=$(dirname $(readlink /usr/local/cpanel/3rdparty/bin/perl)):$PATH
+
+This script supports two types of approaches:
+
+1. An existing init script
+
+  This allows you to turn any LSB-compliant init script into a user managed and monitored service.
+
+2. An existing ubic service file.
+
+  This allows you to do things however you like using Ubic::Service based scripts.
+
+  An example to get you started is the SYNOPSIS for a PSGI based app running under Starman: https://metacpan.org/pod/Ubic::Service::Starman
+
+  Let’s say you have an app installed in ~/apps/foo/ and that has ~/apps/foo/bin/ubic.service that uses Ubic::Service::Starman.
+
+  All you have to do is run `$0 add foo --ubic-service=~/apps/foo/bin/ubic.service` and voilà it is ready to go!
+
+  Since, in this case, the ubic entry is a symlink the application can update it code and everything will just keep working!
+––––

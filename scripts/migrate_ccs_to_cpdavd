@@ -1,0 +1,840 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/migrate_ccs_to_cpdavd           Copyright 2024 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+package MigrScr;
+
+# Conversion script from CCS data to CPDAVD
+
+use strict;
+no strict 'refs';    # XXX WHY
+use warnings;
+use DBD::Pg;
+use Digest::MD5;
+use MIME::Base64;
+
+use Data::Dumper;
+
+use Cpanel::JSON                 ();
+use Cpanel::AcctUtils::Lookup    ();
+use Cpanel::PwCache              ();
+use Cpanel::SafeDir::MK          ();
+use Cpanel::DAV::CaldavCarddav   ();
+use Cpanel::FileUtils::TouchFile ();
+use Cpanel::DAV::Defaults        ();
+
+use parent 'Cpanel::HelpfulScript';
+
+sub _OPTIONS {
+    return qw(
+      help
+      overwrite
+      dryrun
+      verbosity=s
+      user=s
+    );
+}
+
+if ( $> != 0 ) {
+    die "This script must be run by the root user\n";
+}
+
+#################################################################################################################################
+# Set defaults
+#################################################################################################################################
+
+my $overwrite_existing = 0;
+my $verbosity          = 1;
+my $dryrun             = 0;
+my $singleuser;
+
+# ++'d every time there is a logmsg with -1 prio
+my $errcnt = 0;
+
+# Save any user that has run into an error while writing ( likely an account being over quota ) and will help cut down on futile attempts
+my %user_has_write_errors;
+
+exit __PACKAGE__->new(@ARGV)->run() if !caller();
+
+sub run {    ## no critic(Subroutines::ProhibitExcessComplexity)
+    my ($self) = @_;
+    #################################################################################################################################
+    # Get arguments to override the defaults
+    #################################################################################################################################
+
+    if ( $self->getopt('overwrite') ) {
+        logmsg( 1, "Overwriting existing entry files" );
+        $overwrite_existing = 1;
+    }
+    if ( $self->getopt('dryrun') ) {
+        logmsg( 1, "Dry run, no changes will be made anywhere" );
+        $dryrun = 1;
+    }
+    if ( defined( my $verbosity = $self->getopt('verbosity') ) ) {
+        logmsg( 1, "Setting verbosity to $verbosity" );
+    }
+    if ( defined( my $singleuser = $self->getopt('user') ) ) {
+        logmsg( 1, "Only processing the single account: $singleuser" );
+    }
+
+    # Map data to a local system and mail user by UIDs
+    if ( !-f '/var/cpanel/ccs/ccs-persistance.json' ) {
+        logmsg( -1, "This server does not appear to have the file /var/cpanel/ccs/ccs-persistance.json , which is critical for converting from CCS to native CPDAVD." );
+        return 1;
+    }
+
+    logmsg( 1, "Starting migration from CCS to native CPDAVD" );
+
+    my $pers_data_hr           = Cpanel::JSON::SafeLoadFile('/var/cpanel/ccs/ccs-persistance.json');
+    my %pers_data_keyed_on_uid = reverse %{ $pers_data_hr->{'users'} };
+
+    # print "\npers_data_hr:\n" . Dumper( $pers_data_hr );
+    # print "\npers_data_keyed_on_uid:\n" . Dumper( \%pers_data_keyed_on_uid );
+
+    #################################################################################################################################
+    # Create a hash that contains all the important known information about the accounts, keyed on CCS UID
+    #################################################################################################################################
+
+    # This hash is our main mapping for account (email or system), the system user that owns the account, and the home directory for the system user.
+    # These are used quite often so it makes sense to build this once.
+    my %user_lookup;
+
+    # Now we have all users known to CCS, both their CCS-UID and the associated user, either a system account or an email address
+    foreach my $uid ( keys %pers_data_keyed_on_uid ) {
+        my $sysuser = eval { Cpanel::AcctUtils::Lookup::get_system_user( $pers_data_keyed_on_uid{$uid} ) };
+
+        #     next if( $singleuser && $singleuser ne $sysuser );
+        if ($@) {
+
+            # Not fatal, but we should warn about it
+            logmsg( 1, "Could not determine sysuser for $pers_data_keyed_on_uid{$uid}, skipping old user" );
+        }
+        else {
+            logmsg( 4, "$uid is  $pers_data_keyed_on_uid{$uid}  on the system account: $sysuser" );
+            $user_lookup{$uid}{'acct'}       = $pers_data_keyed_on_uid{$uid};
+            $user_lookup{$uid}{'sysuser'}    = $sysuser;
+            $user_lookup{$uid}{'syshomedir'} = Cpanel::PwCache::gethomedir($sysuser);
+
+            # Ensure each user has a calendar and addressbook, metadata included
+            logmsg( 4, "Ensuring $pers_data_keyed_on_uid{$uid} has default calendar and address book configured" );
+            eval { Cpanel::DAV::Defaults::create_calendar( $pers_data_keyed_on_uid{$uid} ); };
+            eval { Cpanel::DAV::Defaults::create_addressbook( $pers_data_keyed_on_uid{$uid} ); };
+        }
+    }
+
+    #################################################################################################################################
+    #################################################################################################################################
+    #
+    # This section handles writing out the CCS UID->user %user_lookup mapping per system user, for "translation" by clients already
+    # configured for CCS
+    #
+    #################################################################################################################################
+    #################################################################################################################################
+
+    # Get an array of UIDs, sorted by the system user from the %user_lookup hash. We do this for the sake of efficiency to avoid
+    # a lot of extra file IO
+    my @sorted_uids = sort { $user_lookup{$a}{'sysuser'} cmp $user_lookup{$b}{'sysuser'} } keys %user_lookup;
+
+    my $last_sysuser;
+    my $last_uid;
+    my %data;
+    logmsg( 4, "Going through sorted list of UIDs to write out the user mapping" );
+    foreach my $uid (@sorted_uids) {
+        logmsg( 4, "Processing UID $uid" );
+        if ( !$last_sysuser ) {
+            $last_sysuser = $user_lookup{$uid}{'sysuser'};
+            $last_uid     = $uid;
+            $data{$uid}   = $user_lookup{$uid}{'acct'};
+        }
+        if ( $last_sysuser eq $user_lookup{$uid}{'sysuser'} ) {
+            $data{$uid} = $user_lookup{$uid}{'acct'};
+        }
+        else {
+            # We have moved on to a new user, so load the data for the user we were just working with, merge it with the new data, then
+            # write out the UID map, then start processing this new user
+            my $full_dir_path = $user_lookup{$last_uid}{'syshomedir'} . '/.caldav/';
+            my $file          = '.user_id_table';
+            my $map_hr        = load_uid_mapping( $full_dir_path . $file );
+            my $total_hr      = { %{$map_hr}, %data };
+            my $map_str;
+            foreach my $k ( keys %{$total_hr} ) {
+                $map_str .= "$k $total_hr->{$k}\n";
+            }
+
+            # Ensure 0600 perms when creating this file so we don't leak email addresses
+            # This will be something like /home/user/.caldav/.user_id_table
+            write_data_to_file( 1, $user_lookup{$last_uid}{'acct'}, $user_lookup{$last_uid}{'sysuser'}, $full_dir_path, $file, $map_str );
+
+            # Reset %data et al for new user
+            $last_sysuser = $user_lookup{$uid}{'sysuser'};
+            $last_uid     = $uid;
+            %data         = ();
+            $data{$uid}   = $user_lookup{$uid}{'acct'};
+        }
+    }
+
+    #################################################################################################################################
+    # Connect to CCS pgsql database
+    #################################################################################################################################
+
+    our $ccs_pg_socket_dir = '/opt/cpanel-ccs/data/Data/Database/psqlsocks';
+
+    my $dbh = DBI->connect( "dbi:Pg:dbname=caldav;host=$ccs_pg_socket_dir", 'caldav', undef, { 'RaiseError' => 1 } );
+    if ( !$dbh ) {
+
+        # This is a non-starter
+        my $errstr = "Couldn't connect to Postgres" . ( $DBI::errstr ? ': ' . $DBI::errstr : '' );
+        logmsg( 2, $errstr );
+        die $errstr;
+    }
+
+    #################################################################################################################################
+    #################################################################################################################################
+    #
+    # This section handles dumping the delegation information from CCS to the native delegation system
+    #
+    #################################################################################################################################
+    #################################################################################################################################
+
+    my $query_delegation_string = 'SELECT delegator, delegate, read_write FROM delegates';
+    my $del_ary_ref             = $dbh->selectall_arrayref($query_delegation_string);
+
+    foreach my $entry ( @{$del_ary_ref} ) {
+
+        # $delegator and $delegate are UIDs from CCS. $readwrite is 1 for write access, 0 for read (and delegation by it's mere existence)
+        my ( $delegator, $delegate, $readwrite ) = @{$entry};
+        logmsg( 2, "Found delegation record from $delegator to $delegate , rw = $readwrite" );
+        if ( exists( $user_lookup{$delegator} ) ) {
+            if ( exists( $user_lookup{$delegate} ) ) {
+
+                # We have matched both owner and delegatee to local accounts
+                my $sysuser_delegator = $user_lookup{$delegator}{'sysuser'};
+                my $sysuser_delegate  = $user_lookup{$delegate}{'sysuser'};
+
+                if ( defined $singleuser && ( $sysuser_delegator ne $singleuser && $sysuser_delegate ne $singleuser ) ) {
+                    logmsg( 3, "Skipping delegation record as it does not involve the account: $singleuser" );
+                    next;
+                }
+
+                my %collection_data;
+                $collection_data{'acct_homedir'} = $user_lookup{$delegator}{'syshomedir'};
+                $collection_data{'sys_user'}     = $user_lookup{$delegator}{'sysuser'};
+                $collection_data{'root'}         = $user_lookup{$delegator}{'syshomedir'} . '/.caldav/' . $user_lookup{$delegator}{'acct'};
+                my $collection_obj = Cpanel::DAV::CaldavCarddav->new(%collection_data);
+
+                # Ensure the directory exists before trying to use it, as the user.
+                if ( ( $singleuser && $user_lookup{$delegator}{'sysuser'} ne $singleuser ) && ( !-d $user_lookup{$delegator}{'syshomedir'} . '/.caldav/' ) ) {
+                    my $privs_obj = _drop_privs_if_needed($sysuser_delegator);
+                    logmsg( 3, "Creating dav directory for $sysuser_delegator $user_lookup{$delegator}{'syshomedir'}/.caldav/" );
+                    Cpanel::SafeDir::MK::safemkdir( $user_lookup{$delegator}{'syshomedir'} . '/.caldav/' ) if $dryrun != 1;
+                }
+
+                # Get a hash ref of the sharing config for the user
+                my $sharing_hr = $collection_obj->load_sharing();
+
+                # Make the changes to the hash ref
+                # Using "calendar" until we can figure out how to get the UID for the default calendar at this stage
+                my $section_to_update = $user_lookup{$delegator}{'acct'} . ' calendar';    # the space here is the break between two parts of the section header, don't remove it
+                my $new_perms         = 'r';
+                if ( $readwrite == 1 ) {
+                    $new_perms = 'r,w';
+                }
+                $sharing_hr->{ $user_lookup{$delegator}{'acct'} }{'calendar'}{ $user_lookup{$delegate}{'acct'} } = $new_perms;
+
+                # Save the hashref that includes our changes
+                if ( $dryrun != 1 ) {
+                    my $privs_obj = _drop_privs_if_needed( $user_lookup{$delegator}{'sysuser'} );
+                    $collection_obj->save_sharing($sharing_hr);
+                }
+            }
+            else {
+                logmsg( 3, "Could not find an existing user that matches delegate UID $delegate" );
+            }
+        }
+        else {
+            logmsg( 3, "Could not find an existing user that matches delegator UID $delegator" );
+        }
+    }
+
+    #################################################################################################################################
+    #################################################################################################################################
+    #
+    # This section handles migrating the caldav/carddav data to the correct places on the filesystem
+    #
+    #################################################################################################################################
+    #################################################################################################################################
+
+    # Since CCS only supported 1 calendar and 1 addressbook, we can migrate those events to a default calendar and addressbook for cpdavd
+    # ideally we keep the UID mappings the same ? Another option could be to create the dir by UID and symlink default_* to the UID dir.
+
+    # Run query/queries needed to get all the info needed for dumping the data
+
+    # Process addressbook data
+    my $query_addressbook_object_string = 'SELECT resource_name,vcard_text,vcard_uid,owner_uid FROM addressbook_object INNER JOIN addressbook_home ON addressbook_home.resource_id = addressbook_object.addressbook_home_resource_id';
+    my $card_ar                         = $dbh->selectall_arrayref($query_addressbook_object_string);
+
+    foreach my $entry ( @{$card_ar} ) {
+        my ( $file, $data, $uid, $owneruid ) = @{$entry};
+        $data =~ s/\015\012|[\015\012]/\n/g;
+        my $found_user = 0;
+        if ( exists $user_lookup{$owneruid}{'acct'} ) {
+            $found_user = 1;
+            my $user          = $user_lookup{$owneruid}{'acct'};
+            my $sysuser       = $user_lookup{$owneruid}{'sysuser'};
+            my $user_homedir  = $user_lookup{$owneruid}{'syshomedir'};
+            my $full_dir_path = $user_homedir . '/.caldav/' . $user . '/addressbook/';
+            logmsg( 4, "Calling function to save addressbook entry for $user to ${full_dir_path}${file}" );
+
+            # HBHB TODO - note that the $file might not always be .vcf, some are .vcard , so we need to decide whether to change the file extension
+            # on all files here, or handle non-.vcf file extensions elsewhere.
+            write_data_to_file( $found_user, $user, $sysuser, $full_dir_path, $file, $data );
+
+        }
+        else {
+            if ($singleuser) {
+                logmsg( 3, "Not saving homeless entry due to use of --user=$singleuser" );
+                next;
+            }
+            logmsg( 3, "Could not determine owner ($owneruid) of addressbook entry: $file" );
+
+            # Save to catch-all
+            write_data_to_file( $found_user, 'root', 'root', undef, $file, $data );
+        }
+
+    }
+
+    # Process calendar data
+    # We are mapping this with the following understanding:
+    # calendar_bind.calendar_resource_id = calendar_object.calendar_resource_id
+    # calendar_bind.calendar_home_resource_id = calendar_home.resource_id
+    # calendar_home.resource_id -> calendar_home.owner_uid
+    # The LEFT JOIN to get the attachment_id is so we don't skip records without the match
+    # We aggregate the various attachment data as json, as this allows us to process each event as a single row from the query
+
+    my $query_calendar_object_string = 'SELECT
+                                        calendar_home.owner_uid,
+                                        icalendar_text,
+                                        icalendar_type,
+                                        organizer,
+                                        calendar_resource_name,
+                                        resource_name,
+                                        json_agg(attachment_calendar_object.attachment_id) AS attachment_ids,
+                                        json_agg(attachment_calendar_object.managed_id) AS managed_ids,
+                                        json_agg(attachment.path) AS attachment_paths,
+                                        json_agg(attachment.content_type) AS content_types
+                                    FROM calendar_home
+                                    INNER JOIN calendar_bind
+                                        ON calendar_home.resource_id = calendar_bind.calendar_home_resource_id
+                                    INNER JOIN calendar_object
+                                        ON calendar_object.calendar_resource_id = calendar_bind.calendar_resource_id
+                                    LEFT JOIN attachment_calendar_object
+                                        ON calendar_object.resource_id = attachment_calendar_object.calendar_object_resource_id
+                                    LEFT JOIN attachment
+                                        ON attachment_calendar_object.attachment_id = attachment.attachment_id
+                                    GROUP BY
+                                        calendar_home.owner_uid,
+                                        icalendar_text,
+                                        icalendar_type,
+                                        organizer,
+                                        calendar_resource_name,
+                                        resource_name;
+                                    ';
+    my $cal_ar = $dbh->selectall_arrayref($query_calendar_object_string);
+
+    foreach my $entry ( @{$cal_ar} ) {
+
+        my ( $owner_uid, $data, $type, $organizer, $cal_type, $file, $attachment_ids_json, $managed_ids_json, $attachment_filenames_json, $attachment_mimetypes_json ) = @{$entry};
+
+        # Assign a catch-all for unknown / unhandled event types
+        # Note that using a name like "default_calendar" rather than the UID it has been using breaks the link with existing caldav configurations, so we should
+        # probably find the actual UID of the collection and mark it as default, then handle the default_calendar/default_addressbook path in cpdavd instead, or
+        # just name set the displayname of the UID dir to default in the metadata.
+        my $entry_type_dir = '.unknown';
+        if ( $type eq 'VEVENT' || $type eq 'VTODO' ) {    # Tasks go in with the calendar, currently
+            $entry_type_dir = 'calendar';
+        }
+        elsif ( $type eq 'VCARD' ) {                      # we shouldn't ever see this, but it's a field in the db, sooo
+            $entry_type_dir = 'addressbook';
+            logmsg( 2, "Found a VCARD entry while looking for calendar data? File($file) data($data)" );
+        }
+
+        $data =~ s/\015\012|[\015\012]/\n/g;
+        my $found_user = 0;
+        my $user       = '-';
+        my $sysuser    = '-';
+        my $full_dir_path;
+
+        if ( exists( $user_lookup{$owner_uid}{'acct'} ) ) {
+            $found_user = 1;
+            $user       = $user_lookup{$owner_uid}{'acct'};
+            $sysuser    = $user_lookup{$owner_uid}{'sysuser'};
+
+            # Set the directory to write the file to the correct place in the user's homedir
+            my $user_homedir = $user_lookup{$owner_uid}{'syshomedir'};
+            $full_dir_path = $user_homedir . '/.caldav/' . $user . '/' . $entry_type_dir . '/';
+            logmsg( 3, "Owner for this record is $user" );
+        }
+        else {
+            logmsg( 3, "Falling back to parsing event data to find owner" );
+            my @data_lines = split( /\n/, $data );
+            foreach my $line (@data_lines) {
+                chomp($line);
+                if ( $line =~ m/^X\-CALENDARSERVER\-PERUSER\-UID\:(.+)/ ) {
+                    my $data_uid = $1;
+                    chomp($data_uid);
+                    if ( exists( $user_lookup{$data_uid}{'acct'} ) ) {
+                        $found_user = 1;
+                        $user       = $user_lookup{$data_uid}{'acct'};
+                        $sysuser    = $user_lookup{$data_uid}{'sysuser'};
+
+                        # Set the directory to write the file to the correct place in the user's homedir
+                        my $user_homedir = $user_lookup{$data_uid}{'syshomedir'};
+                        $full_dir_path = $user_homedir . '/.caldav/' . $user . '/' . $entry_type_dir . '/';
+
+                        logmsg( 3, "Owner for this record is $user" );
+                        last;
+                    }
+                    else {
+                        logmsg( 3, "Could not determine owner from /var/cpanel/ccs/ccs-persistance.json by X-CALENDARSERVER-PERUSER-UID ($data_uid) in entry data." );
+                    }
+                    last;
+                }
+            }
+        }
+        if ( !$user_has_write_errors{$sysuser} ) {
+
+            # Write the event data out to its new file
+            write_data_to_file( $found_user, $user, $sysuser, $full_dir_path, $file, $data );
+
+            # If we have attachment data, process it so it stays linked with the event
+            if ( $attachment_ids_json ne '[null]' ) {
+                migrate_attachment( $user, $sysuser, $full_dir_path, $file, $managed_ids_json, $attachment_ids_json, $attachment_filenames_json, $attachment_mimetypes_json );
+            }
+        }
+    }
+
+    #################################################################################################################################
+    #################################################################################################################################
+    #
+    # End of processing. From here we just let anyone watching know that it's done.
+    #
+    #################################################################################################################################
+    #################################################################################################################################
+
+    logmsg( 1, "Migration from CCS to native CPDAVD complete" );
+    Cpanel::FileUtils::TouchFile::touchfile('/var/cpanel/migrate_ccs_to_cpdavd.done');
+    if ($errcnt) {
+        my $errors_string = $errcnt > 1 ? 'errors' : 'error';
+        logmsg( 1, "The migration detected $errcnt $errors_string while processing. Run this script with a higher verbosity (--verbosity=9) to see more details." );
+        if ( scalar( keys %user_has_write_errors ) ) {
+            logmsg( 1, "The following users had errors during write operations. Please ensure users are not over quota and the disk is not full :" );
+            foreach my $user ( keys %user_has_write_errors ) {
+                logmsg( 1, " - $user had write errors : " );
+                foreach my $error ( @{ $user_has_write_errors{$user}{'errors'} } ) {
+                    logmsg( 1, "   - $error" );
+                }
+            }
+        }
+    }
+
+    return 0;
+}
+
+#################################################################################################################################
+#################################################################################################################################
+
+# TODO - maybe send managed_id and attachment_id to write_data_to_file, or just build this out a little more with all the same data and priv dropping ?
+sub migrate_attachment {    ##no critic(Subroutines::ProhibitExcessComplexity Subroutines::ProhibitManyArgs)
+    my ( $user, $sysuser, $full_dir_path, $file, $managed_ids_json, $attachment_ids_json, $attachment_filenames_json, $attachment_mimetypes_json ) = @_;
+
+    my $managed_ids_ar          = Cpanel::JSON::Load($managed_ids_json);
+    my $attachment_ids_ar       = Cpanel::JSON::Load($attachment_ids_json);
+    my $attachment_filenames_ar = Cpanel::JSON::Load($attachment_filenames_json);
+    my $attachment_mimetypes_ar = Cpanel::JSON::Load($attachment_mimetypes_json);
+
+    my $path = $full_dir_path . $file;
+    my @cleaned_ics;
+
+    # Read in the existing file, strip ICS of previous ATTACH lines since they won't make sense with new backend
+    if ( open( my $dav_fh, '<', $path ) ) {
+        my @dav_lines = (<$dav_fh>);
+        close($dav_fh);
+
+        # Remove existing attach line(s), if present
+        my $inside_attach = 0;
+        foreach my $line (@dav_lines) {
+            chomp $line;
+            logmsg( 9, "[ Inside ATTACH: $inside_attach ] LINE($line)" );
+            if ( $line =~ m/^\s+/ ) {
+                logmsg( 9, " - started with space" );
+                if ( $inside_attach == 1 ) {
+                    logmsg( 9, " - line started with space and we are inside the ATTACH block, dropping it" );
+
+                    # skip
+                }
+                else {
+                    # This is not part of the folded ATTACH line we want to remove
+                    logmsg( 9, " - line started with space, but keeping since it is not inside the ATTACH block" );
+                    push( @cleaned_ics, $line . "\n" );
+                }
+            }
+            elsif ( $line =~ m/^ATTACH\;/ ) {
+                logmsg( 9, " - found start of the ATTACH line" );
+                $inside_attach = 1;
+            }
+            else {
+                logmsg( 9, " - line is not the ATTACH line or a starting space line after it, keeping it" );
+                $inside_attach = 0;
+                push( @cleaned_ics, $line . "\n" );
+            }
+        }
+    }
+    else {
+        logmsg( -1, "migrate_attachment: can not read from $path : $!" );
+    }
+
+    # At this point, we have the ATTACH-less version of the .ics file in memory in @cleaned_ics
+    # Now we walk through each attachment, copy the old attachments to their new home, and once it's all done, add our new
+    # ATTACH lines to @cleaned_ics and overwrite the original .ics
+    my @final_attach_lines;
+
+    my $cnt = @{$managed_ids_ar};
+    for ( my $i = 0; $i < $cnt; $i++ ) {
+        my $managed_id          = @{$managed_ids_ar}[$i];
+        my $attachment_id       = @{$attachment_ids_ar}[$i];
+        my $attachment_filename = @{$attachment_filenames_ar}[$i];
+        my $attachment_mimetype = @{$attachment_mimetypes_ar}[$i];
+
+        my $hexed_atid          = Digest::MD5::md5_hex($attachment_id);
+        my $first_sub_dir       = substr( $hexed_atid, 0, 2 );
+        my $second_sub_dir      = substr( $hexed_atid, 2, 2 );
+        my $old_attachment_path = '/opt/cpanel-ccs/data/Data/Attachments/' . $first_sub_dir . '/' . $second_sub_dir . '/' . $hexed_atid;
+        my $base64filename      = MIME::Base64::encode_base64( $attachment_filename, '' );
+
+        # Make sure we can find the source at the expected location, if so, copy it to the new home
+        if ( -f $old_attachment_path ) {
+            my $attachment_destination_path = $full_dir_path . $file . '-attachment-' . $managed_id . '-' . $base64filename;
+            logmsg( 2, "migrate_attachment: Migrating attachment from $old_attachment_path to normal path for event $attachment_destination_path" );
+            if ( $dryrun == 1 ) {
+                logmsg( 2, "migrate_attachment: dryrun in effect, not copying attachment file" );
+            }
+            else {
+                if ( -d $full_dir_path ) {
+                    if ( open( my $old_attachment_fh, '<', $old_attachment_path ) ) {
+                        my $old_attachment_size = ( stat($old_attachment_path) )[7];
+
+                        # Now that we have opened the old attachment to read from as root, drop to the user to do all the file writing
+                        my $privs_obj = _drop_privs_if_needed($sysuser);
+
+                        if ( -e $attachment_destination_path && $overwrite_existing != 1 ) {
+                            logmsg( 2, "migrate_attachment: Not overwriting attachment file $attachment_destination_path since it already exists. Call with --overwrite if needed" );
+                            next;
+                        }
+
+                        # Quota handling is not as reliable/up-to-date as we want for this, so rather than relying on a perfectly working quota
+                        # system, instead we just try to catch errors during writing and move along to the next attachment which might be smaller.
+                        my $error_writing_attachment = 0;
+                        if ( open( my $new_attachment_fh, '>', $attachment_destination_path ) ) {
+                            while (<$old_attachment_fh>) {
+                                last if $error_writing_attachment;    # if we get an error, stop trying to write
+                                local $! = undef;
+                                print $new_attachment_fh $_;
+                                if ($!) {
+                                    $error_writing_attachment = 1;
+                                    push( @{ $user_has_write_errors{$sysuser}{'errors'} }, $! );
+                                    logmsg( -1, "migrate_attachment: Got error while writing data to new attachment file: $!" );
+                                    logmsg( -1, " - the original path is $old_attachment_path and should moved to $attachment_destination_path" );
+                                }
+                            }
+                            close($new_attachment_fh);
+                        }
+                        else {
+                            $error_writing_attachment = 1;
+                            logmsg( -1, "migrate_attachment: Could not open new attachment for writing: $!" );
+                        }
+                        close($old_attachment_fh);
+
+                        if ( $error_writing_attachment == 1 ) {
+                            logmsg( -1, "migrate_attachment: Skipping attachment migration due to fatal errors, this will result in the attachment being removed from the related event." );
+                            return;
+                        }
+
+                        my $new_attachment_size = ( stat($attachment_destination_path) )[7];
+                        logmsg( 4, "migrate_attachment: Original attachment size = $old_attachment_size , new attachment size = $new_attachment_size" );
+                        if ( $old_attachment_size == $new_attachment_size ) {
+
+                            # Normally we build this based on the request, but we don't have that here, so we use the email domain instead. Attachments are only for calendar events for the default/single CCS calendar.
+                            my ( $luser, $domain ) = split( /\@/, $user );
+                            my $url = 'https://' . $domain . ':2080/principals/' . $user . '/calendar/' . $file . '-attachment-' . $managed_id . '-' . $base64filename;
+                            logmsg( 9, "migrate_attachment: URL($url)" );
+                            my $attach_line = "ATTACH;FILENAME=$attachment_filename;FMTTYPE=$attachment_mimetype;SIZE=$new_attachment_size;MANAGED-ID=$managed_id:$url";
+
+                            # Ensure we fold the attach line before 75 bytes
+                            my $chunks_ar = Cpanel::DAV::CaldavCarddav::fold_string( $attach_line, 74 );
+                            $attach_line = join( "\n", @{$chunks_ar} ) . "\n";
+                            logmsg( 9, "migrate_attachment: ATTACH line after folding:\n$attach_line" );
+                            push( @final_attach_lines, $attach_line );
+
+                        }
+                        else {
+                            logmsg( -1, "migrate_attachment: Original attachment size not the same as the new attachment size, assuming quota or disk issue and skipping." );
+                            return;
+                        }
+                    }
+                    else {
+                        logmsg( -1, "migrate_attachment: Could not open $old_attachment_path for reading" );
+                        return;
+                    }
+
+                }
+                else {
+                    logmsg( -1, "migrate_attachment: No directory found at $full_dir_path, skipping attachment migration $old_attachment_path" );
+                }
+            }
+        }
+        else {
+            logmsg( -1, "migrate_attachment: Could not find attachment at expected path, $old_attachment_path : $!" );
+        }
+
+        logmsg( 9, "#############################################################\n" . Dumper( \@cleaned_ics, \@final_attach_lines ) );
+
+        logmsg( 2, "migrate_attachment: Attachment migrated." );
+    }
+
+    # Modify the cleaned ICS data and insert the new attach line(s)
+    my $index = 0;
+
+    if ( @cleaned_ics == 0 ) {
+        logmsg( -1, "migrate_attachment: ics data is empty, likely due to the account being over quota." );
+        return;
+    }
+    if ( !grep m/^BEGIN\:(VEVENT|VCARD)/, @cleaned_ics ) {
+        logmsg( -1, "migrate_attachment: could not find the start of the VEVENT in the ics file, assuming corrupted data (@cleaned_ics)" );
+        return;
+    }
+    $index++ until $cleaned_ics[$index] =~ m/^BEGIN\:(VEVENT|VCARD)/;
+    if (@final_attach_lines) {
+        logmsg( 4, "migrate_attachment: splicing in attach lines at $index (@final_attach_lines)" );
+        splice( @cleaned_ics, $index + 1, 0, @final_attach_lines );
+    }
+
+    if ( $dryrun == 1 ) {
+        logmsg( 2, "migrate_attachment: dryrun in effect, not writing out modified event file" );
+    }
+    else {
+        # Write it back out
+        my $privs_obj = _drop_privs_if_needed($sysuser);
+        if ( open( my $dav_out_fh, '>:encoding(utf8)', $path ) ) {
+            foreach my $line (@cleaned_ics) {
+                local $! = undef;
+                print $dav_out_fh $line;
+                if ($!) {
+                    push( @{ $user_has_write_errors{$sysuser}{'errors'} }, $! );
+                    logmsg( -1, "migrate_attachment: Could not write cleaned ics to $path : $!" );
+                }
+            }
+            close($dav_out_fh);
+            logmsg( 3, "migrate_attachment: wrote modified file to $path" );
+        }
+        else {
+            logmsg( -1, "migrate_attachment: could not open $path for writing : $!" );
+        }
+    }
+    logmsg( 3, "migrate_attachment: Event file updated with new ATTACH lines." );
+
+    return;
+}
+
+# This handles writing calendar and addressbook data to the correct location, or to a catch-all location
+sub write_data_to_file {    ## no critic qw(Subroutines::ProhibitManyArgs)
+    my ( $found_user, $user, $sysuser, $full_dir_path, $file, $data ) = @_;
+    if ( defined $user_has_write_errors{$sysuser} ) {
+        logmsg( 5, "Skipping write attempt for $sysuser to $file due to previous write errors" );
+        return;
+    }
+
+    my $privs_obj;    # Be sure to keep this in scope as long as privs need to be dropped
+
+    if ( $found_user == 1 ) {
+
+        # Now we need to get the user information
+        logmsg( 3, "Considering writing to file $file for $user ($sysuser)" );
+
+        if ( defined $singleuser && ( $singleuser ne $user && $singleuser ne $sysuser ) ) {
+            logmsg( 3, "Skipping $sysuser due to --user=$singleuser argument" );
+            return;
+        }
+
+        # Drop privs to user, make needed directories and write files securely
+        $privs_obj = _drop_privs_if_needed($sysuser);
+
+    }
+    else {
+        # If we get here, it means we found an entry but can not match it to a currently existing user.
+        # This is more than likely abandoned data from terminated users, but we want to save it just in case the UIDs got unsynced.
+        # We save the data in a catch-all location for manual recovery later, so it can simply be copied into the correct place.
+        # We do not drop privs here, using a static full_dir_path where we can safely save homeless entries and only root can read it.
+        # There is a technical possibility for the UIDs to conflict, but so improbable it is not a concern.
+        if ($singleuser) {
+            logmsg( 3, "Skipping saving of homeless entry due to --user=$singleuser argument" );
+            return;
+        }
+
+        $full_dir_path = '/var/cpanel/saved_dav/';
+        logmsg( 1, "Entry can not be mapped to existing user, saving to ${full_dir_path}${file}" );
+    }
+
+    # Ensure the directory exists for the files to be written to
+    if ( !-d $full_dir_path ) {
+        logmsg( 3, "Need to make directory $full_dir_path" );
+        if ( $dryrun != 1 ) {
+            Cpanel::SafeDir::MK::safemkdir($full_dir_path);
+        }
+        else {
+            logmsg( 3, "Dry run in effect, normally would be creating the directory $full_dir_path" );
+        }
+    }
+
+    # Write the content to the file, given correct conditions are met
+    my $full_path = $full_dir_path . $file;
+    if ( -f $full_path && $overwrite_existing != 1 ) {
+        logmsg( 3, "The path $full_path already exists. To overwrite, call this script with the --overwrite argument" );
+        return;
+    }
+    if ( $dryrun != 1 ) {
+        my $orig_umask = umask(0077);
+        if ( open( my $fh, '>:encoding(utf8)', $full_path ) ) {
+            logmsg( 2, "Writing entry data to $full_path" );
+            local $! = undef;
+            print $fh $data;
+            if ($!) {
+                push( @{ $user_has_write_errors{$sysuser}{'errors'} }, $! );
+                logmsg( -1, "Error writing data to $full_path : $!" );
+            }
+            close($fh);
+        }
+        else {
+            logmsg( -1, "Could not open $full_path for writing: $!" );
+
+            # Consider dumping it elsewhere ?
+        }
+        umask($orig_umask);
+    }
+    else {
+        logmsg( 2, "Dry run in effect, normally would be writing entry data to $full_path" );
+    }
+    return;
+}
+
+#################################################################################################################################
+# Misc functions
+#################################################################################################################################
+
+# Log output based on verbosity setting and importance of message. Big Errors should always be -1 and are reported to STDERR explicitly
+sub logmsg {
+    my ( $verb, $msg ) = @_;
+    my $xinfo = '[' . $$ . '] [' . scalar( localtime( time() ) ) . '] ';
+
+    # If requested to be totally silent with --verbosity=0 , respect it.
+    return if $verbosity == 0;
+
+    # Print regular messages to STDOUT, error message ( $verb = -1 ) to STDERR and append "ERROR: " to it to make it clear that this
+    # the message is more than just informational or a warning
+    my $extra = '';
+    my $fh    = *STDOUT;
+    if ( $verb < 0 ) {
+        $errcnt++;
+        $extra = 'ERROR: ';
+        $fh    = *STDERR;
+    }
+
+    if ( $verb >= $verbosity || $extra ) {    # Always report Big Errors
+        print $fh "${xinfo}${extra}${msg}\n";
+    }
+    return;
+}
+
+# Logger from Cpanel::DAV::CaldavCarddav to handle direct 1:1 copies of the functions we use from there
+sub dbg {
+    my ( $pkg, $file, $line, $sub, $hasargs ) = caller();
+    my @args = @_;
+
+    if ( $verbosity >= 4 ) {
+        $file =~ s/^\/usr\/local\/cpanel\///;
+
+        print '[' . $$ . '] [' . scalar( localtime( time() ) ) . "] [$file : $line ]: ";
+        foreach my $what (@args) {
+            my $ref = ref $what;
+            my $nl  = '\n';
+            if ( $ref eq 'HASH' ) {
+                print "(ref=$ref)\n" . Dumper($what);
+            }
+            else {
+                print Dumper($what);
+            }
+        }
+    }
+    return;
+}
+
+# Loads the UID > username mapping into a hash ref. We use this data for translating CCS style URL requests to the native format.
+sub load_uid_mapping {
+    my ($path) = @_;
+    logmsg( 5, "Loading UID mapping from $path" );
+    my %map;
+    if ( open( my $fh, '<', $path ) ) {
+        while (<$fh>) {
+            my ( $uid, $user ) = split( /\s+/, $_ );
+            $map{$uid} = $user;
+        }
+    }
+    else {
+        logmsg( 5, "Could not load UID mapping from $path: $!" );
+    }
+    return \%map;
+}
+
+# Same function as used in a few other scripts to drop privs if requested user is not root
+sub _drop_privs_if_needed {
+    my ($user) = @_;
+    if ( $> == 0 && $user ne 'root' ) {
+        require Cpanel::AccessIds::ReducedPrivileges;
+        return Cpanel::AccessIds::ReducedPrivileges->new($user);
+    }
+    return;
+}
+
+__END__
+
+=head1 NAME
+
+scripts/migrate_ccs_to_cpdavd
+
+=head1 SYNOPSIS
+
+Usage:
+
+    /usr/local/cpanel/scripts/migrate_ccs_to_cpdavd <options>
+
+Examples:
+
+    /usr/local/cpanel/scripts/migrate_ccs_to_cpdavd --verbosity=0 --overwrite
+    /usr/local/cpanel/scripts/migrate_ccs_to_cpdavd --verbosity=6 --overwrite --user=hibdraco
+    /usr/local/cpanel/scripts/migrate_ccs_to_cpdavd --verbosity=3 --dryrun
+
+This script migrates user data from the Calendaring and Contacts plugin to native CPDAVD caldav/carddav.
+This requires the CCS Postgres database server to be running.
+
+Available Options:
+
+    --help: You are here.
+    --verbosity=#: The default is --verbosity=1 . The higher the number, the more debugging output you get.
+    --overwrite: Overwrite any existing files. The default is to not overwrite events.
+    --dryrun: Do a dry run of the script. This will not write any changes to the filesystem.
+    --user=$user: Only process migration for a single account. If this is a system user account, it will process all of the email accounts under it.
+      If the user is an email address, it will only process events for that single user.
+      Note that this option prevents saving homeless entries, UID mapping for other users, etc and should only be used for debugging or recovery.
+
+=cut

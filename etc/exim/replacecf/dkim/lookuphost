@@ -1,0 +1,90 @@
+
+#
+# Lookup host router for remote smtp and ignores verisign site finder 'service'
+# This matches lookup exactly except we look for X-Precedence and Precedence so
+# we can determinte what is an auto responder message in the log.
+# Note: there is nothing to
+# prevent X-Precedence from being added to non-autoresponded messages so this is for
+# logging reasons only
+#
+# Note: Boxtrapper sets Precedence to auto_reply
+#
+autoreply_dkim_lookuphost:
+    driver = dnslookup
+    domains = ! +local_domains
+    condition = "${perl{sender_domain_can_dkim_sign}}"
+    condition = "${if \
+        or { \
+            {match{$h_precedence:}{auto}} \
+            {match{$h_x-precedence:}{auto}} \
+        } \
+        {1}{0} \
+    }"
+    #ignore verisign to prevent waste of bandwidth
+    ignore_target_hosts = +loopback : 64.94.110.0/24
+    headers_add = "${perl{mailtrapheaders}}"
+    transport = dkim_remote_smtp
+
+#
+# Lookup host router for remote smtp and ignores verisign site finder 'service' and uses domain keys
+#
+dkim_lookuphost:
+    driver = dnslookup
+    domains = ! +local_domains
+    condition = "${perl{sender_domain_can_dkim_sign}}"
+    #ignore verisign to prevent waste of bandwidth
+    ignore_target_hosts = +loopback : 64.94.110.0/24
+    headers_add = "${perl{mailtrapheaders}}"
+.ifdef SRSENABLED
+    # if outbound, and forwarding has been done, use an alternate transport
+    transport = ${if eq {$local_part@$domain} \
+                        {$original_local_part@$original_domain} \
+                     {dkim_remote_smtp} {dkim_remote_forwarded_smtp}}
+.else
+    transport = dkim_remote_smtp
+.endif
+
+#
+# Lookup host router for remote smtp and ignores verisign site finder 'service'
+# This matches lookup exactly except we look for X-Precedence and Precedence so
+# we can determinte what is an auto responder message in the log.
+# Note: there is nothing to
+# prevent X-Precedence from being added to non-autoresponded messages so this is for
+# logging reasons only
+#
+# Note: Boxtrapper sets Precedence to auto_reply
+#
+autoreply_lookuphost:
+    driver = dnslookup
+    domains = ! +local_domains
+    condition = "${if \
+        or { \
+            {match{$h_precedence:}{auto}} \
+            {match{$h_x-precedence:}{auto}} \
+        } \
+        {1}{0} \
+    }"
+    #ignore verisign to prevent waste of bandwidth
+    ignore_target_hosts = +loopback : 64.94.110.0/24
+    headers_add = "${perl{mailtrapheaders}}"
+    transport = remote_smtp
+
+#
+# Lookup host router for remote smtp and ignores verisign site finder 'service'
+#
+
+lookuphost:
+    # router from etc/exim/replacecf/dkim/lookuphost
+    driver = dnslookup
+    domains = ! +local_domains
+    #ignore verisign to prevent waste of bandwidth
+    ignore_target_hosts = +loopback : 64.94.110.0/24
+    headers_add = "${perl{mailtrapheaders}}"
+.ifdef SRSENABLED
+    # if outbound, and forwarding has been done, use an alternate transport
+    transport = ${if eq {$local_part@$domain} \
+                        {$original_local_part@$original_domain} \
+                     {remote_smtp} {remote_forwarded_smtp}}
+.else
+    transport = remote_smtp
+.endif

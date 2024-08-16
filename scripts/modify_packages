@@ -1,0 +1,137 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/modify_packages                 Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+use warnings;
+
+use Cpanel::Config::Constants ('DEFAULT_CPANEL_THEME');
+use Cpanel::Logger        ();
+use Cpanel::SafeFile      ();
+use Cpanel::Themes::Utils ();
+
+use Whostmgr::ACLS            ();
+use Whostmgr::Packages::Fetch ();
+use Whostmgr::Packages::Load  ();
+
+use Getopt::Long ();
+
+my $logger = Cpanel::Logger->new();
+
+$| = 1;
+
+if ( $> != 0 ) {
+    $logger->die("Sorry, only root can use this script.");
+}
+
+my ( $theme, $packages, $help, $all_packages );
+
+Getopt::Long::GetOptions(
+    'help'         => \$help,
+    'theme=s'      => \$theme,
+    'all-packages' => \$all_packages,
+    'packages=s'   => \$packages
+  )
+  || do {
+    usage();
+    exit 1;
+  };
+
+if ($help) {
+    usage();
+    exit;
+}
+
+unless ( $theme && ( $all_packages || $packages ) ) {
+    usage();
+    exit 1;
+}
+
+my $theme_docroot = Cpanel::Themes::Utils::get_theme_root($theme);
+$logger->die( "The specified theme [" . $theme . "] does not exist." ) unless -d $theme_docroot;
+
+if ( !$ENV{'REMOTE_USER'} ) { $ENV{'REMOTE_USER'} = 'root'; }
+
+Whostmgr::ACLS::init_acls();
+
+my @list_pkgs = ();
+
+my %pkgs = %{ Whostmgr::Packages::Fetch::fetch_package_list( 'want' => 'editable' ) };
+
+my %valid_pkgs = ();
+
+if ($all_packages) {
+    @list_pkgs  = keys %pkgs;
+    %valid_pkgs = map { ( $_ => $pkgs{$_} ) } @list_pkgs;
+}
+else {
+    @list_pkgs  = split( /\s*\,\s*/, $packages );
+    %valid_pkgs = map { exists( $pkgs{"$_"} ) ? ( $_ => $pkgs{$_} ) : () } @list_pkgs;
+}
+
+unless ( scalar( keys %valid_pkgs ) ) {
+    $logger->die("No valid packages are specified.");
+}
+
+my %updated_pkgs = ();
+my $package_dir  = Whostmgr::Packages::Load::package_dir();
+foreach my $name ( keys %valid_pkgs ) {
+
+    # Should not happen but just in case
+    next unless -e $package_dir . $name;
+
+    my $pkglock = Cpanel::SafeFile::safeopen( \*PKG, '+<', $package_dir . $name );
+    if ( !$pkglock ) {
+        $logger->warn("Could not edit ${package_dir}$name");
+        next;
+    }
+
+    $updated_pkgs{$name} = 1;
+    my %PKG_CONFIG = %{ $valid_pkgs{$name} };
+    seek( PKG, 0, 0 );
+    foreach my $pkgitem ( sort keys %PKG_CONFIG ) {
+        next if !$pkgitem;
+        next if ( $pkgitem eq '_PACKAGE_EXTENSIONS' );
+        my $line = qq{$pkgitem=$PKG_CONFIG{$pkgitem}};
+        $line =~ s/[\r\n]//g;
+        if ( $pkgitem eq 'CPMOD' ) {
+            $line = qq{$pkgitem=$theme};
+        }
+        print PKG $line . "\n";
+    }
+    print PKG qq{_PACKAGE_EXTENSIONS=$PKG_CONFIG{_PACKAGE_EXTENSIONS}\n} if $PKG_CONFIG{_PACKAGE_EXTENSIONS};    # _PACKAGE_EXTENSIONS last in file.
+    truncate( PKG, tell(PKG) );
+    Cpanel::SafeFile::safeclose( \*PKG, $pkglock );
+}
+
+# The default package may or may not have a file.
+my @failed_pkgs = grep { !$updated_pkgs{$_} && $_ ne 'default' } @list_pkgs;
+if ( scalar @failed_pkgs ) {
+    $logger->warn( "Could not update these package(s): " . join( ', ', @failed_pkgs ) );
+    exit 1;
+}
+else {
+    $logger->info("Packages are successfully updated.");
+    exit 0;
+}
+
+sub usage {
+    print <<"EOM";
+
+$0: Modify existing packages to use a theme
+
+Usage:
+    $0 --theme=$Cpanel::Config::Constants::DEFAULT_CPANEL_THEME [--packages=my_pkg,another_pkg|--all-packages]
+
+  Options:
+    --help: print usage and exit
+    --theme: the theme to be adopted
+    --packages: a list of packages to be modified, comma separated
+    --all-packages: update all packages on the system
+
+EOM
+    return;
+}

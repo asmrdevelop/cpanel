@@ -1,0 +1,51 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+package scripts::whoowns;
+
+use strict;
+
+use Getopt::Long ();
+use IO::Handle   ();
+
+our $USERDOMAINS = '/etc/userdomains';
+
+exit script( \*STDOUT, @ARGV ) unless caller;
+
+sub script {
+    my ( $fh, @args ) = @_;
+
+    my $help;
+    Getopt::Long::GetOptionsFromArray(
+        \@args,
+        'help' => \$help
+    ) or return usage(2);
+    return usage(0) if $help;
+    return usage(2) unless @args;
+
+    my $found;
+    my $domain = $args[0] =~ s{^https?://([^/]+)/?.*$}{$1}r;
+    if ( open( my $ud, '<', $USERDOMAINS ) ) {
+        while (<$ud>) {
+            if (/^\Q$domain\E: (\S+)/i) {
+                $fh->print("$1\n");
+                $found = 1;
+            }
+        }
+        close($ud);
+    }
+    return $found ? 0 : 1;
+}
+
+sub usage {
+    my ($retval) = @_;
+    my $fh = $retval ? \*STDERR : \*STDOUT;
+    $fh->print(<<EOM);
+whoowns DOMAIN-OR-URL
+
+Prints the user that owns the given domain, if any.  If a URL is given instead,
+looks for the user owning the domain specified in the URL.  Only HTTP and HTTPS
+URLs are accepted.
+
+Exits 0 if the user is found, 1 if not, and 2 on error.
+EOM
+    return $retval;
+}

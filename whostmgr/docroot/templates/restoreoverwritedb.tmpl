@@ -1,0 +1,57 @@
+[%
+  WRAPPER 'master_templates/master.tmpl'
+  breadcrumburl = '/scripts5/backuprestore',
+  theme = 'bootstrap';
+-%]
+
+<h3>[% locale.maketext('Ready To Restore') %]</h3>
+
+<form action="[% cp_security_token %]/scripts5/dobackuprestore">
+    <input type="hidden" name="jsstatus" value="[% data.jsstatus FILTER html %]">
+    <input type="hidden" name="restoretype" value="[% data.restoretype FILTER html %]">
+    <input type="hidden" name="user" value="[% data.user FILTER html %]">
+    <input type="hidden" name="restoreall" value="[% data.restoreall FILTER html %]">
+    <input type="hidden" name="restoreip" value="[% data.restoreip FILTER html %]">
+    <input type="hidden" name="restoremail" value="[% data.restoremail FILTER html %]">
+    <input type="hidden" name="restoremysql" value="[% data.restoremysql FILTER html %]">
+    <input type="hidden" name="restorepsql" value="[% data.restorepsql FILTER html %]">
+    <input type="hidden" name="restorebwdata" value="[% data.restorebwdata FILTER html %]">
+    <input type="hidden" name="restoresubs" value="[% data.restoresubs FILTER html %]">
+
+[% IF data.mysql_databases && data.mysql_databases.size %]
+    <h4>[% locale.maketext('Select databases to overwrite with the backup.') %]</h4>
+    [% FOREACH db IN data.mysql_databases %]
+    <input type="checkbox" name="mysql_db" value="[% db.name FILTER html %]" [% IF !db.dbexists %]checked="checked"[% END %] value="[% db.name FILTER html %]">
+        [% IF db.dbexists %]
+            [% locale.maketext('Overwrite “[output,strong,_1]”', db.name.html()) %]
+        [% ELSE %]
+            [% locale.maketext('Restore “[output,strong,_1]”', db.name.html()) %]
+        [% END %]
+     [% IF db.dbexists && db.owner %]
+        <div class="info-block">[% locale.maketext("“[output,strong,_1]” is owned by “[output,strong,_2]”.", db.name.html(), db.owner.html()) %]</div>
+     [% END %]
+     <br />
+    [% END %]
+[% END %]
+
+[% IF data.pgsql_databases && data.pgsql_databases.size %]
+    <h4>[% locale.maketext('Select PostgreSQL databases to be overwritten from the backup.') %]</h4>
+    [% FOREACH db IN data.pgsql_databases %]
+    <input type="checkbox" name="pgsql_db" value="[% db.name FILTER html %]" [% IF !db.dbexists %]checked="checked"[% END %] value="[% db.name FILTER html %]">
+        [% IF db.dbexists %]
+            [% locale.maketext('Overwrite “[output,strong,_1]”', db.name.html()) %]
+        [% ELSE %]
+            [% locale.maketext('Restore “[output,strong,_1]”', db.name.html()) %]
+        [% END %]
+     [% IF db.dbexists && db.owner %]
+        <div class="info-block">[% locale.maketext("“[output,strong,_1]” is owned by “[output,strong,_2]”.", db.name.html(), db.owner.html()) %]</div>
+     [% END %]
+     <br />
+    [% END %]
+[% END %]
+
+
+    <input type="submit" name="Submit" value="[% locale.maketext('Continue') %]" class="btn btn-primary" />
+</form>
+
+[% END %]

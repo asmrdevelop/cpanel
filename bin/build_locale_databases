@@ -1,0 +1,1209 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+#                                      Copyright 2024 WebPros International, LLC
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited.
+
+BEGIN {
+    eval {
+        require Encode;
+        import Encode;
+    };
+}
+
+use strict;
+use warnings;
+
+use Cpanel                           ();
+use Cpanel::Logger                   ();
+use Cpanel::LoadModule               ();
+use Cpanel::StatCache                ();
+use Cpanel::CachedDataStore          ();
+use Cpanel::Locale                   ();
+use Cpanel::Locale::Utils::MkDB      ();
+use Cpanel::SafeDir::RM              ();
+use Cpanel::SafeDir::MK              ();
+use Cpanel::SafeDir::Read            ();
+use Cpanel::Themes::Available        ();
+use Cpanel::Locale::Utils::Legacy    ();
+use Cpanel::FileUtils::TouchFile     ();
+use Cpanel::LoadFile                 ();
+use Cpanel::Locale::Utils::Paths     ();
+use Cpanel::Locale::Utils::Charmap   ();
+use Cpanel::Locale::Utils::Files     ();
+use Cpanel::Locale::Utils::Queue     ();
+use Cpanel::Locale::Utils::3rdparty  ();
+use Cpanel::Locale::Utils            ();
+use Cpanel::YAML::Syck               ();
+use Cpanel::Unix::PID::Tiny          ();
+use Getopt::Param::Tiny              ();
+use Cpanel::CPAN::Locales            ();
+use Cpanel::Locale::Utils::Normalize ();
+use MCE::Signal                      qw(-setpgrp);
+use MCE::Loop;
+
+use Try::Tiny;
+
+our $VERSION = '3.0';
+
+require '/usr/local/cpanel/bin/_build_translated_js_files';    ## no critic(RequireBarewordIncludes)
+$Cpanel::Locale::Utils::i_am_the_compiler = 1;
+
+# detect use of symlink created in rev 39264 && let user's know to update their code/usage since they are still using legacy tools
+if ( $0 =~ m{cachelangfiles} ) {
+    warn '!!!! Cpanel::Locale detected a call to the deprecated cachelangfiles script. Please update your code to not use the legacy lang system. !!!!';
+    sleep 10;
+}
+
+my %encode_error;
+
+# this will create any necessary symlinks between non-existant charset aliases so
+# that the OS (i.e. and thus things like iconv) will know about the things we use
+Cpanel::Locale::Utils::Charmap::make_symlinks();
+
+my $lh              = Cpanel::Locale->get_handle();
+my $current_mod_ver = '0.7';
+my $i_locales_path  = Cpanel::Locale::Utils::Paths::get_i_locales_config_path();
+
+# Note:
+# This script has been set up to run without arguments by default and it is currently used in
+# many other scripts and modules. If this setting needs to change, its usage should be checked
+# to make sure it does not impact the rest.
+# The 'no_args_help' is turned off for compatibility with existing behavior of this script.
+my $prm = Getopt::Param::Tiny->new(
+    {
+        'no_args_help' => 0,
+        'help_coderef' => sub { show_help(); exit },
+    }
+);
+
+if ( $prm->param('help') ) {
+    show_help();
+    exit;
+}
+elsif ( $prm->param('man') ) {
+    show_man();
+    exit;
+}
+
+# do this here so they could theoretically get the --help
+die 'You must be root to run this script' if $> != 0;
+
+my %mtime_check;
+my $encdump          = $prm->param('encode-dump') ? 1 : 0;
+my $debug            = $prm->param('debug')       ? 1 : 0;
+my $quiet            = $prm->param('quiet')       ? 1 : 0;
+my $verbose          = $prm->param('verbose')     ? 1 : 0;
+my $dryrun           = $prm->param('dry-run')     ? 1 : 0;
+my $locale_local_dir = $prm->param('locale_local_dir');
+my $legacy_root_dir  = $prm->param('legacy_root_dir');
+
+my $force_level =
+    $prm->param('clean') ? 2
+  : $prm->param('force') ? 1
+  :                        0;
+
+if ($verbose) {
+    $quiet = 0;
+}
+
+# If locale_local_dir passed in, use it. (For testing so we don't write directly to the production dir.)
+if ($locale_local_dir) {
+    no warnings 'redefine';
+
+    *Cpanel::Locale::Utils::Paths::get_locale_yaml_local_root = sub { return $locale_local_dir };
+}
+
+# Ditto for legacy_root_dir
+if ($legacy_root_dir) {
+    no warnings 'redefine';
+
+    *Cpanel::Locale::Utils::Paths::get_legacy_lang_root = sub { return $legacy_root_dir };
+}
+
+my $pidfile = '/var/run/build_locale_databases.pid';
+
+my $logger = Cpanel::Logger->new( { 'alternate_logfile' => '/usr/local/cpanel/logs/build_locale_databases_log' } );
+
+# Get pid file. Do nothing if pid age is < 15 mins old. Kill if pid is older than 1 hours. pid cmdline must match regex if existing pid.
+my $pid_locked = Cpanel::Unix::PID::Tiny::get_run_lock( $pidfile, 15 * 60, 60 * 60, qr/build_locale_databases/ );
+if ( !$pid_locked ) {
+    $logger->die("$0 appears to already be running ($pidfile exists)");
+    exit 1;
+}
+
+$logger->info( 'Begin update of locale databases v' . $VERSION );
+
+my %do_locale;
+if ( !$prm->param('uninit') ) {
+    $SIG{__WARN__} = sub {
+
+        # These warnings, from the phrase parser, are legit (i.e. an indication of bad data) and should not be coded around defensively there.
+        # Here they are just annoying, so quell them.
+        if ( $_[0] !~ m/Use of uninitialized value/ ) {
+            print STDERR $_[0];
+        }
+    };
+}
+if ( $prm->param('locale') ) {
+    for my $str ( $prm->param('locale') ) {
+        foreach my $given_locale ( split( /\s*,\s*/, $str ) ) {
+
+            if ( $given_locale ne Cpanel::Locale::Utils::Normalize::normalize_tag($given_locale) ) {
+                print "Invalid local value '$given_locale' for --locale.\n";
+                exit(1);
+            }
+            $do_locale{$given_locale} = undef();
+        }
+    }
+}
+else {
+
+    # we are doing all locales  …
+    if ( $prm->param('clean') ) {    # … so its OK to clean up all locales’ translated js files (i.e. since we’re rebuilding them all in this run)
+        print $lh->maketext('Cleaning up generated files …') . "\n";
+        Cpanel::Locale::Utils::Files::clean_js_files( { 'verbose' => $verbose } );
+        print $lh->maketext(' … done.') . "\n\n";
+    }
+}
+
+# sort so we have a predictable (i.e. testable) order
+my @addon_paths  = map { -d "/usr/local/cpanel/modules-install/$_" ? "/usr/local/cpanel/modules-install/$_" : () } sort { $b cmp $a } Cpanel::SafeDir::Read::read_dir('/usr/local/cpanel/modules-install/');
+my @plugin_paths = map { -d "/var/cpanel/plugins/$_"               ? "/var/cpanel/plugins/$_"               : () } sort { $b cmp $a } Cpanel::SafeDir::Read::read_dir('/var/cpanel/plugins/');
+my @additional_scan_paths;
+push @additional_scan_paths, @addon_paths;
+push @additional_scan_paths, @plugin_paths;
+
+my @i_locales;
+my @theme_list = Cpanel::Themes::Available::getthemeslist();
+
+my %locales;    # calc all locale's from locale, legacy, and themes
+
+foreach my $loc ( $lh->list_available_locales() ) {
+    $locales{$loc} = [];
+}
+
+if ( $prm->param('clean-stale-locales') ) {
+    my $i_conf_path_quoted = quotemeta( Cpanel::Locale::Utils::Paths::get_i_locales_config_path() );
+
+    foreach my $thm ( '/', @theme_list ) {
+        my $base_cdb_path = $thm eq '/' ? '/var/cpanel/locale' : "/var/cpanel/locale/themes/$thm";
+        next if -l $base_cdb_path;
+
+        # Remove .cdb files that no longer have data files.
+        if ( opendir( my $dh, $base_cdb_path ) ) {
+            my @cdb_files = map { "$base_cdb_path/$_" } grep { m/\.cdb$/ } readdir($dh);
+            closedir($dh);
+
+            for my $cdb_file (@cdb_files) {
+                my ($cur_loc) = $cdb_file =~ m{/([^/]*)\.cdb$};
+                next if !$cur_loc;
+                if ( !grep { !/\.local/ && !m{/modules-install/} && !m{/plugins/} && !m{3rdparty/conf} && !/$i_conf_path_quoted/ && -e $_ } Cpanel::Locale::Utils::Files::get_file_list( $cur_loc, $thm, 0 ) ) {
+                    unlink Cpanel::Locale::Utils::Files::get_addon_files($cur_loc);     # these will trigger a rebuild, so remove them
+                    unlink Cpanel::Locale::Utils::Files::get_plugin_files($cur_loc);    # these will trigger a rebuild, so remove them
+                    print "$cdb_file no longer has data files so it is being removed.\n";
+                    delete $locales{$cur_loc};
+                    unlink $cdb_file or warn "Could not unlink $Cpanel::Grapheme{'left_double_quote'}$cdb_file$Cpanel::Grapheme{'right_double_quote'}: $!";
+                }
+            }
+        }
+        else {
+            print "The directory $base_cdb_path could not be opened: $!";
+        }
+
+        foreach my $loc ( sort keys %locales ) {
+            my $has_data = 0;
+            my $has_file = 0;
+            my @files    = Cpanel::Locale::Utils::Files::get_file_list( $loc, $thm, 1 );
+
+            foreach my $data_file (@files) {
+                next if ( ( !-l $data_file && !-e $data_file ) || $data_file =~ m/\.cdb$/ );
+                $has_file++;
+                next if ( $data_file =~ m/\.pm$/ || $data_file =~ m/3rdparty\/conf/ || $data_file =~ m/$i_conf_path_quoted/ );
+
+                my $keys = {};
+                if ( $data_file =~ m/\.yaml(?:\.local)?$/ ) {
+                    $keys = Cpanel::CachedDataStore::fetch_ref($data_file);
+                }
+                else {
+                    $keys = Cpanel::Locale::Utils::MkDB::get_hash_of_legacy_file_or_its_cache($data_file);
+                }
+
+                if ( scalar keys %{$keys} ) {
+                    $has_data++;
+                    last;
+                }
+            }
+
+            if ( $has_file && !$has_data ) {
+                print "\t$thm has no data for the locale '$loc'! Commencing cleanup ...\n";
+                foreach my $file (@files) {
+                    next if !-l $file && !-e $file;    # nothing to delete
+                    if ( -l $file ) {
+                        unlink $file;
+                        if ( -l $file ) {
+                            print "\t\tCould not remove symlink '$file': $!\n";
+                        }
+                        else {
+                            print "\t\tSuccessfully removed symlink '$file' \n";
+                        }
+                    }
+                    elsif ( -d $file ) {
+                        Cpanel::SafeDir::RM::safermdir($file);
+                        if ( -d $file ) {
+                            print "\t\tCould not remove directory '$file': $!\n";
+                        }
+                        else {
+                            print "\t\tSuccessfully removed directory '$file' \n";
+                        }
+                    }
+                    else {
+                        unlink $file;
+                        if ( -e $file ) {
+                            print "\t\tCould not remove file '$file': $!\n";
+                        }
+                        else {
+                            print "\t\tSuccessfully removed file '$file' \n";
+                        }
+                    }
+                }
+                print "\t ... Done\n";
+            }
+        }
+    }
+
+    $logger->info('Finished cleaning stale locale databases');
+
+    if ( defined $prm->param('clean-stale-locales') && $prm->param('clean-stale-locales') eq 'exit' ) {
+        exit;
+    }
+}
+
+$locales{'en'} = [];
+
+my $legacy_setting_map_hr = Cpanel::Locale::Utils::Legacy::get_legacy_to_locale_map();
+
+# pull in new, valid, root locales
+foreach my $yaml ( Cpanel::SafeDir::Read::read_dir('/usr/local/cpanel/locale') ) {
+    next if $yaml !~ m/\.yaml$/;
+    $yaml =~ s/\.yaml$//;
+    next if !$yaml || $yaml eq 'Utils' || $yaml eq 'Context';
+
+    if ( !exists $locales{$yaml} ) {
+        if ( Cpanel::Locale::Utils::Legacy::get_new_langtag_of_old_style_langname($yaml) eq $yaml ) {
+            $locales{$yaml} = [];
+        }
+    }
+}
+
+if ( $prm->param('user-check') ) {
+    Cpanel::LoadModule::load_perl_module('Cpanel::Config::LoadUserDomains');
+    Cpanel::LoadModule::load_perl_module('Cpanel::Config::CpUserGuard');
+
+    # make sure all cpusers file LANG=XYZ has the right LOCALE=i_xyz as per %$legacy_setting_map_hr
+    foreach my $update_user ( keys %{ Cpanel::Config::LoadUserDomains::loaduserdomains( undef, 0, 1 ) } ) {
+        my $cpuser_guard = Cpanel::Config::CpUserGuard->new($update_user);
+        next if ( !exists $legacy_setting_map_hr->{ $cpuser_guard->{'data'}->{'LANG'} } || $cpuser_guard->{'data'}->{'LOCALE'} eq $legacy_setting_map_hr->{ $cpuser_guard->{'data'}->{'LANG'} } );
+        $cpuser_guard->{'data'}->{'LOCALE'} = $legacy_setting_map_hr->{ $cpuser_guard->{'data'}->{'LANG'} };
+        $cpuser_guard->save();
+    }
+}
+
+# 'en' => [
+#     'english-utf8',
+#     'english',
+# ],
+
+my $yaml_root       = Cpanel::Locale::Utils::Paths::get_locale_yaml_root();
+my $local_yaml_root = Cpanel::Locale::Utils::Paths::get_locale_yaml_local_root();
+my $legacy_root     = Cpanel::Locale::Utils::Paths::get_legacy_lang_root();
+my $locale_root     = Cpanel::Locale::Utils::Paths::get_locale_database_root();
+
+foreach my $dir ( $yaml_root, $local_yaml_root, $legacy_root, $locale_root, $i_locales_path ) {
+    Cpanel::SafeDir::MK::safemkdir($dir) if !-d $dir;
+}
+
+my $cur_locale                    = $lh->get_language_tag();
+my $cur_locale_is_english_default = ( $cur_locale eq 'en' || $cur_locale eq 'en_us' || $cur_locale eq 'i_default' ) ? 1 : 0;
+my $target_charset                = 'utf-8';
+
+# process limit is hardcoded and fit to most sandbox configuration
+my @run_locales;
+my %locale_was_rebuilt;
+foreach my $locale ( sort keys %locales ) {
+    if (%do_locale) {
+        next if !exists $do_locale{$locale};
+    }
+    $locale_was_rebuilt{$locale} = 1;    # assume it was until we say it wasn't
+    push @run_locales, $locale;
+}
+
+my $jobs = scalar @run_locales;
+print $lh->maketext( 'Starting update of [quant,_1,locale,locales] in parallel …', $jobs ) . "\n" if !$quiet;
+
+my @run_results = mce_loop {
+    my ( $mce, $chunk_ref ) = @_;
+    for my $locale ( @{$chunk_ref} ) {
+        my $data = run_locale($locale);
+        $data->{msg} ||= '';
+        if ( $data->{'code'} == 0 ) {
+            MCE->say( $data->{msg} . $lh->maketext( qq{ … “[_1]” complete.}, $locale ) . "\n\n" ) if !$quiet;
+        }
+        else {
+            MCE->say( $data->{msg} . $lh->maketext( qq{ … “[_1]” complete (but with errors).}, $locale ) . "\n\n" ) if !$quiet;
+        }
+        MCE->gather($data);
+    }
+}
+@run_locales;
+
+foreach my $data (@run_results) {
+
+    $locale_was_rebuilt{ $data->{'locale'} } = $data->{'needs_update'};
+
+}
+
+print $lh->maketext( 'Finished with parallel locale [numerate,_1,update,updates].', $jobs ) . "\n" if !$quiet;
+
+foreach my $theme (@theme_list) {
+    if ($dryrun) {
+        print $lh->maketext( qq{Dry run mode. Not attempting any updates to “[_1]”.}, "/usr/local/cpanel/base/frontend/$theme/dynamicui.conf" ) . "\n" if !$quiet;
+    }
+    else {
+        Cpanel::FileUtils::TouchFile::touchfile("/usr/local/cpanel/base/frontend/$theme/dynamicui.conf");
+    }
+}
+
+my @todo;
+
+# TODO: We could --locales=ll == auto handle ll_tt here even if --locales flags resulted in ll_* not being processed
+# but it'd probably be better and less mistake prone to just do a full rebuild to accomplish that
+# since the logic already  only updates what needs updated hence there is not real benefit to warrant the overhead
+foreach my $proc ( %do_locale ? keys %do_locale : keys %locales ) {
+    my $proc_was_uptodate = $locale_was_rebuilt{$proc} ? 0 : 1;
+    my ( $ln, $tr ) = split( /_/, $proc );
+    my $ln_was_uptodate = $locale_was_rebuilt{$ln} ? 0 : 1;
+
+    if ( $ln ne $proc ) {
+        next if $proc_was_uptodate && $ln_was_uptodate;
+
+        my $detach = $cur_locale eq $proc ? 1 : 0;
+        foreach my $path ( $locale_root, map { "$locale_root/themes/$_" } @theme_list ) {
+            if ( -e "$path/$ln.cdb" && -e "$path/$proc.cdb" ) {
+
+                push @todo, sub {
+                    _merge_one_cdb_into_another( "$path/$ln.cdb", "$path/$proc.cdb", $detach );
+                    unlink("$path/$proc.gdbm") if -e "$path/$proc.gdbm";
+                    return ( $path, $ln, $proc );
+                };
+
+            }
+        }
+    }
+}
+
+$jobs = scalar @todo;
+if ($jobs) {
+    print $lh->maketext( 'Starting update of [quant,_1,locale,locales] in parallel …', $jobs ) . "\n" if !$quiet;
+
+    mce_loop {
+        my ( $mce, $chunk_ref ) = @_;
+        for my $pos ( @{$chunk_ref} ) {
+            my ( $path, $source, $target ) = $todo[$pos]->();
+            MCE->say( $lh->maketext( qq{Merge of “[_1]” for “[_2]” into “[_3]” complete.}, $path, $source, $target ) . "\n\n" );
+        }
+        return;
+    }
+    0 .. $#todo;
+
+    print $lh->maketext( 'Finished with parallel locale [numerate,_1,update,updates].', $jobs ) . "\n" if !$quiet;
+}
+
+$logger->info('Finished updating and modifying locales databases');
+
+foreach my $itag (@i_locales) {
+    my $itag_was_uptodate = 0;
+    if ( exists $mtime_check{$itag} && $mtime_check{$itag}{'call_count'} == $mtime_check{$itag}{'uptodate_count'} ) {
+        $itag_was_uptodate = 1;
+    }
+
+    if ( -e "$i_locales_path/$itag.yaml" ) {
+        my $i_conf = Cpanel::CachedDataStore::fetch_ref("$i_locales_path/$itag.yaml");
+        if ( exists $i_conf->{'fallback_locale'} && defined $i_conf->{'fallback_locale'} && $i_conf->{'fallback_locale'} ne '' ) {
+            if (   $itag_was_uptodate
+                && exists $mtime_check{ $i_conf->{'fallback_locale'} }
+                && $mtime_check{ $i_conf->{'fallback_locale'} }{'call_count'} == $mtime_check{ $i_conf->{'fallback_locale'} }{'uptodate_count'} ) {
+                next;
+            }
+
+            my $detach = $cur_locale eq $itag ? 1 : 0;
+
+            foreach my $path ( $locale_root, map { "$locale_root/themes/$_" } @theme_list ) {
+                if ( -e "$path/$i_conf->{'fallback_locale'}.cdb" ) {
+                    _merge_one_cdb_into_another( "$path/$i_conf->{'fallback_locale'}.cdb", "$path/$itag.cdb", $detach );
+                    unlink("$path/$itag.gdbm") if -e "$path/$itag.gdbm";
+                }
+            }
+        }
+    }
+    else {
+
+        # If the config file does not exist it means that it has never been configured.
+        # That being the case lets create a display_name based on one of the legacy name's involved if any.
+
+        if ( $locales{$itag}->[0] && $locales{$itag}->[0] ne $itag && $locales{$itag}->[0] ne "$itag.yaml" && $locales{$itag}->[0] !~ m/\.legacy_duplicate\./ ) {
+            Cpanel::CachedDataStore::store_ref( "$i_locales_path/$itag.yaml", { 'display_name' => $locales{$itag}->[0] } );
+        }
+    }
+}
+
+exit;
+
+sub run_locale {    ## no critic qw(Subroutines::ProhibitExcessComplexity) -- broken out into a sub from a coderef
+    my ($locale) = @_;
+
+    my $msg = '';
+
+    my $skip_pm = 0;
+
+    if ( substr( $locale, 0, 2 ) eq 'i_' ) {
+        push @i_locales, $locale;
+    }
+
+    my $force_dependant_compile   = 0;
+    my $hr                        = undef;
+    my $locale_is_english_default = ( $locale eq 'en' || $locale eq 'en_us' || $locale eq 'i_default' ) ? 1 : 0;
+    my $needs_to_detach           = ( $locale eq $cur_locale || $cur_locale_is_english_default && $locale_is_english_default ) ? 1 : 0;
+
+    $msg .= $lh->maketext( qq{Updating “[_1]” locale …}, $locale ) . "\n" if !$quiet;
+
+    my $mtime_says_uptodate = _base_path_locale_mtime_check_is_uptodate( '/usr/local/cpanel', $locale, "$locale_root/$locale.cdb", 0 );
+    if ($mtime_says_uptodate) {
+
+        # at this point we need $hr to be a non-tied lookup hash
+        # and we will load it below if we actually need it
+    }
+    else {
+        $hr = {};
+        $force_dependant_compile++;
+
+        # Do local ones first in order for them to take precedence over queued values if any
+        _build_hash_from_yaml_files( $hr, "$local_yaml_root/$locale.yaml", "$yaml_root/$locale.yaml" );
+
+        if ( $locale eq 'en' || $locale eq 'en_us' || $locale eq 'i_default' ) {
+            _build_hash_from_yaml_files( $hr, Cpanel::Locale::Utils::Queue::get_pending_file() );
+        }
+
+        for my $qf ( Cpanel::Locale::Utils::Queue::get_pending_file_list_for_locale($locale) ) {
+            _build_hash_from_yaml_files( $hr, $qf );
+        }
+
+        $target_charset = 'utf-8';
+
+        {
+            no strict 'refs';
+            if ( defined ${"Cpanel::Locale::${locale}::Encoding"} && ${"Cpanel::Locale::${locale}::Encoding"} ) {
+                $target_charset = ${"Cpanel::Locale::${locale}::Encoding"};
+            }
+            elsif (
+                  !exists $INC{"Cpanel/Locale/$locale.pm"}
+                && eval "require Cpanel::Locale::$locale"    ## no critic qw(BuiltinFunctions::ProhibitStringyEval)
+
+            ) {
+
+                no strict 'refs';
+                "Cpanel::Locale::$locale"->cpanel_detach_lexicon();    # this is init'd along w/ Encoding, so just undo it
+                if ( ${"Cpanel::Locale::${locale}::Encoding"} ) {
+                    $target_charset = ${"Cpanel::Locale::${locale}::Encoding"};
+                }
+            }
+        }
+
+        my %hr_copy_lookup = %{$hr};
+        foreach my $local_key ( keys %{ Cpanel::CachedDataStore::fetch_ref("$local_yaml_root/$locale.yaml") } ) {
+            delete $hr_copy_lookup{$local_key};    # don't allow the next $legacy to override the locale's local
+        }
+
+        foreach my $legacy ( @{ $locales{$locale} } ) {
+            $msg .= "\t" . $lh->maketext( qq{Starting legacy “[_1]” in “[_2]” …}, $legacy, $legacy_root ) . "\n" if $verbose;
+            _build_hash_from_legacy_files( $hr, "$legacy_root/$legacy.local", "$legacy_root/$legacy", \%hr_copy_lookup );
+        }
+
+        if ( !scalar keys %{$hr} ) {
+            $skip_pm = 1;
+            $msg .= "\t" . $lh->maketext( qq{No keys found for “[_1]”: skipping “[_2]”.}, $locale, "$locale_root/$locale.cdb" ) . "\n" if !$quiet;
+        }
+        elsif ($dryrun) {
+            $msg .= $lh->maketext( qq{Dry run mode. Not attempting any updates to “[_1]”.}, "$locale_root/$locale.cdb" ) . "\n" if !$quiet;
+        }
+        else {
+
+            # see case 31898
+            $lh->cpanel_detach_lexicon() if $needs_to_detach;
+            my ( $rc, @msg ) = Cpanel::Locale::Utils::MkDB::from_hash( "$locale_root/$locale.cdb", $hr, $force_level );
+
+            # see case 31898
+            $lh->cpanel_attach_lexicon() if $needs_to_detach;
+
+            if ( !$rc ) {
+                $skip_pm = 1;
+                $msg .= "\t" . $lh->makevar(@msg) . "\n" if !$quiet;
+            }
+            else {
+                unlink("$locale_root/$locale.gdbm")      if -e "$locale_root/$locale.gdbm";
+                $msg .= "\t" . $lh->makevar(@msg) . "\n" if $verbose;
+            }
+        }
+    }
+
+    foreach my $addon (@additional_scan_paths) {
+        next if _base_path_locale_mtime_check_is_uptodate( $addon, $locale, "$locale_root/$locale.cdb", 1 );
+        $force_dependant_compile++;
+
+        # If the main locale was up to date we have not yet loaded
+        # the cdb so we must do that now
+        $hr ||= Cpanel::Locale::Utils::get_readonly_tie( "$locale_root/$locale.cdb", {} )->fetch_all();
+
+        # local $hr; == Can't localize lexical variable
+        my $hr_copy = {};
+        %{$hr_copy} = %{$hr};
+
+        # We don't want to "delete $hr_copy->{'__FORENSIC'};" like we do for themes since addons get aggregated into the main HR
+
+        # Handle instance where __FORENSIC data is loaded from CDB file (stored in YAML format)
+        if ( exists $hr->{'__FORENSIC'} ) {
+            if ( ref $hr->{'__FORENSIC'} ne 'HASH' ) {
+                my $FORENSIC_YAML;
+                eval {
+                    local $SIG{__WARN__};
+                    local $SIG{__DIE__};
+                    $FORENSIC_YAML = ( YAML::Syck::Load( $hr->{'__FORENSIC'} ) )[0];
+                };
+                if ( defined $FORENSIC_YAML ) {
+                    $hr_copy->{'__FORENSIC'} = $FORENSIC_YAML;
+                }
+            }
+            else {
+                @{ $hr_copy->{'__FORENSIC'}{'order'} } = ref( $hr->{'__FORENSIC'}{'order'} ) eq 'ARRAY' ? @{ $hr->{'__FORENSIC'}{'order'} } : ();
+                %{ $hr_copy->{'__FORENSIC'}{'mtime'} } = ref( $hr->{'__FORENSIC'}{'mtime'} ) eq 'HASH'  ? %{ $hr->{'__FORENSIC'}{'mtime'} } : ();
+            }
+        }
+
+        # Case 50321 : Merge the language entries from the addon back into $hr so they don't get lost
+
+        my $new_pairs = _do_path_into( $addon, $locale_root, $hr_copy, $hr, $locale, $addon, $needs_to_detach, \$skip_pm );
+        foreach my $new_key ( keys %{$new_pairs} ) {
+            $$hr{$new_key} = $$new_pairs{$new_key};
+        }
+    }
+
+    foreach my $theme (@theme_list) {
+        if ( $theme ne $Cpanel::Config::Constants::DEFAULT_CPANEL_THEME && !-l "/usr/local/cpanel/base/frontend/$theme/locale_css/$locale.css" && !-e "/usr/local/cpanel/base/frontend/$theme/locale_css/$locale.css" ) {
+            symlink( 'non_en_locale.css', "/usr/local/cpanel/base/frontend/$theme/locale_css/$locale.css" );
+        }
+
+        next if !$force_dependant_compile && _base_path_locale_mtime_check_is_uptodate( "/usr/local/cpanel/base/frontend/$theme", $locale, "$locale_root/themes/$theme/$locale.cdb", 1 );
+
+        # If the main locale was up to date and all
+        # the addon locales were up to date
+        # we have not yet loaded
+        # the cdb so we must do that now
+        $hr ||= Cpanel::Locale::Utils::get_readonly_tie( "$locale_root/$locale.cdb", {} )->fetch_all();
+
+        # local $hr; == Can't localize lexical variable
+        my $hr_copy = {};
+        %{$hr_copy} = %{$hr};
+        delete $hr_copy->{'__FORENSIC'};
+
+        # Handle instance where __FORENSIC data is loaded from CDB file (stored in YAML format)
+        if ( exists $hr->{'__FORENSIC'} ) {
+            if ( ref $hr->{'__FORENSIC'} ne 'HASH' ) {
+                my $FORENSIC_YAML;
+                eval {
+                    local $SIG{__WARN__};
+                    local $SIG{__DIE__};
+                    $FORENSIC_YAML = ( YAML::Syck::Load( $hr->{'__FORENSIC'} ) )[0];
+                };
+                if ( defined $FORENSIC_YAML ) {
+                    $hr_copy->{'__FORENSIC'} = $FORENSIC_YAML;
+                }
+            }
+            else {
+                @{ $hr_copy->{'__FORENSIC'}{'order'} } = ref( $hr->{'__FORENSIC'}{'order'} ) eq 'ARRAY' ? @{ $hr->{'__FORENSIC'}{'order'} } : ();
+                %{ $hr_copy->{'__FORENSIC'}{'mtime'} } = ref( $hr->{'__FORENSIC'}{'mtime'} ) eq 'HASH'  ? %{ $hr->{'__FORENSIC'}{'mtime'} } : ();
+            }
+        }
+
+        _do_path_into( "/usr/local/cpanel/base/frontend/$theme", "$locale_root/themes/$theme", $hr_copy, $hr, $locale, $theme, 0, \$skip_pm );
+    }
+
+    if ( !Cpanel::StatCache::cachedmtime("$yaml_root/$locale.yaml") ) {
+        if ($dryrun) {
+            $msg .= $lh->maketext( qq{Dry run mode. Not attempting any updates to “[_1]”.}, "$yaml_root/$locale.yaml" ) . "\n" if !$quiet;
+        }
+        else {
+            Cpanel::CachedDataStore::store_ref( "$yaml_root/$locale.yaml", {} );    # see case 31714
+        }
+    }
+
+    my $needs_update = 0;
+    if ( !$skip_pm && !$locale_is_english_default ) {
+        if ( !Cpanel::StatCache::cachedmtime("/usr/local/cpanel/Cpanel/Locale/$locale.pm") ) {
+            $needs_update = 1;
+        }
+        else {
+            # check the version
+            # We don't want to require it in just to fetch the VERSION because it will init the %Lexicon to the CDB
+            my $code = Cpanel::LoadFile::loadfile("/usr/local/cpanel/Cpanel/Locale/$locale.pm");
+            my ($version) = $code =~ m{VERSION[ \t]*=[ \t]*['"]([0-9\.]+)};
+            if ( !$version || $version < $current_mod_ver ) {
+                $needs_update = 2;
+            }
+        }
+    }
+
+    if ($needs_update) {
+        if ($dryrun) {
+            $msg .= $lh->maketext( qq{Dry run mode. Not attempting any updates to “[_1]”.}, "/usr/local/cpanel/Cpanel/Locale/$locale.pm" ) . "\n" if !$quiet;
+        }
+        else {
+            if ( $needs_update == 1 ) {
+                $msg .= "\t" . $lh->maketext( qq{Creating “[_1]” Locale module …}, $locale ) if !$quiet;
+            }
+            else {
+                $msg .= "\t" . $lh->maketext( qq{Updating “[_1]” Locale module to v[_2] …}, $locale, $current_mod_ver ) if !$quiet;
+            }
+
+            my $init  = '';
+            my $i_isa = q{'Cpanel::Locale'};
+            if ( substr( $locale, 0, 2 ) eq 'i_' ) {
+                my $conf = Cpanel::CachedDataStore::fetch_ref("$i_locales_path/$locale.yaml");
+                if ( exists $conf->{'fallback_locale'} ) {
+                    if ( my $fallback = Cpanel::Locale::Utils::Normalize::normalize_tag( $conf->{'fallback_locale'} ) ) {
+                        if ( $fallback ne 'en' && $fallback ne 'en_us' && $fallback ne 'i_default' ) {
+                            if ( Cpanel::CPAN::Locales->new( $conf->{'fallback_locale'} ) ) {
+                                $i_isa = qq{ 'Cpanel::Locale', 'Cpanel::Locale::$fallback' };
+                                $init  = <<"END_I_TAG_INIT";
+
+sub init {
+    my (\$lh) = \@_;
+    \$lh->SUPER::init();
+    \$lh->{'fallback_locale'} = '$fallback';      # Cpanel::CPAN::Locale::Maketext::Utils::get_locales_obj()
+    return \$lh;
+}
+END_I_TAG_INIT
+                            }
+                        }
+                    }
+                }
+            }
+
+            $init .= "\n" if length $init && $init !~ m/\n$/;
+
+            if ( open my $pm_fh, '>', "/usr/local/cpanel/Cpanel/Locale/$locale.pm" ) {
+
+                my $spaces       = ' ' x ( 22 - length($locale) );
+                my $current_year = (localtime)[5] + 1900;
+                print {$pm_fh} <<"END_PM";
+package Cpanel::Locale::$locale;
+
+# cpanel - Cpanel/Locale/$locale.pm${spaces}Copyright(c) $current_year cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright\@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+
+use Cpanel::Locale ();
+
+\$Cpanel::Locale::$locale\::VERSION = '$current_mod_ver';
+\@Cpanel::Locale::$locale\::ISA     = ($i_isa);
+
+sub new {
+    my \$class = shift;
+
+    Cpanel::Locale::Utils::init_package();    # Cpanel::Locale::Utils is brought in via Cpanel::Locale
+
+    return \$class->SUPER::new();
+}
+${init}1;
+END_PM
+
+                close $pm_fh;
+
+                if ( exists $Cpanel::Locale::Utils::3rdparty::cpanel_provided{$locale} && -d '/usr/local/cpanel/t' ) {
+                    my $t_spaces          = " " x ( length($spaces) - 1 );
+                    my $cplint_workaround = 'warnings';
+                    if ( open my $t_fh, '>', "/usr/local/cpanel/t/Cpanel-Locale-$locale.t" ) {
+                        print {$t_fh} <<"END_T";
+#!/usr/local/cpanel/3rdparty/bin/perl -w
+
+# cpanel - t/Cpanel-Locale-$locale.t${t_spaces}Copyright(c) $current_year cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright\@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+# autogenerated from build_locale_databases
+
+use strict;
+use $cplint_workaround;
+use Test::More tests => 3 + 1;
+use Test::NoWarnings;
+
+use Cpanel::Locale::$locale;
+
+my \$obj = Cpanel::Locale::${locale}->new();
+
+ok( ref \$obj, "Cpanel::Locale::$locale new() returns reference" );
+isa_ok( \$obj, 'Cpanel::Locale' );
+isa_ok( \$obj, 'Cpanel::Locale::$locale' );
+END_T
+                        close $t_fh;
+                    }
+                    else {
+                        $msg .= "\n\t" . $lh->maketext( qq{Could not open “[_1]” for writing: [_2]}, "/usr/local/cpanel/t/Cpanel-Locale-$locale.t", $! ) . "\n" if !$quiet;
+                    }
+                }
+
+                $msg .= $lh->maketext(q{Done!}) . "\n" if !$quiet;
+            }
+            else {
+                $msg .= "\n\t" . $lh->maketext( qq{Could not open “[_1]” for writing: [_2]}, "/usr/local/cpanel/Cpanel/Locale/$locale.pm", $! ) . "\n" if !$quiet;
+            }
+        }
+    }
+
+    my @js_args = ($locale);
+    if ( $force_level || $force_dependant_compile ) {
+        push @js_args, '--force';
+    }
+    if ( !$verbose ) {
+        push @js_args, '--quiet';
+    }
+
+    my $err;
+    unless ( $prm->param('no-js-files') ) {
+        try {
+            bin::_build_translated_js_files->script(@js_args);
+        }
+        catch {
+            $err = $_;
+        };
+        if ($err) {
+            $msg .= "\t" . $err . "\n";
+        }
+        else {
+            $msg .= "\t" . $lh->maketext( "Translated JavaScript built for “[_1]”.", $locale ) . "\n";
+        }
+    }
+    return { locale => $locale, code => $err ? 1 : 0, msg => $msg, needs_update => ( $force_level || $force_dependant_compile || $needs_update ) };
+}
+
+sub _merge_one_cdb_into_another {
+    my ( $merge_this, $into_this, $detach ) = @_;
+    return if !-e $merge_this;
+
+    # TODO: print merging $merge_this into $into_this
+    my $this_ref = Cpanel::Locale::Utils::get_readonly_tie( $merge_this, {} )->fetch_all();
+    $lh->cpanel_detach_lexicon() if $detach;
+    my $into_ref = Cpanel::Locale::Utils::get_readonly_tie( $into_this, {} )->fetch_all();
+
+    foreach my $key ( keys %$this_ref ) {
+        if ( !exists $into_ref->{$key} ) {
+
+            # TODO: debug setting key
+            $into_ref->{$key} = $this_ref->{$key};
+        }
+    }
+    undef $this_ref;
+
+    my $create_db_status = Cpanel::Locale::Utils::create_cdb( $into_this, $into_ref );
+
+    $lh->cpanel_attach_lexicon() if $detach;
+
+    return;
+}
+
+sub _build_hash_from_yaml_files {    ## no critic qw(Subroutines::RequireArgUnpacking)
+    my $hr          = shift;
+    my $overridable = ref( $_[-1] ) eq 'HASH' ? pop(@_) : {};
+
+    my $set_hr = {};                 # this allows us to find XYZ in local and then not override it with what is in the un-local one (set local first, fill in gaps w/ base)
+
+    foreach my $file (@_) {
+        next if !-e $file || -z _;                                                                    # silently skip empty YAML files
+        __proc_file( $hr, $set_hr, $overridable, $file, \&Cpanel::CachedDataStore::fetch_ref, 0 );    # the given function should always return a hashref
+    }
+
+    _carp_encode_error();
+    return $set_hr;
+}
+
+sub _build_hash_from_legacy_files {    ## no critic qw(Subroutines::RequireArgUnpacking)
+    my $hr          = shift;
+    my $overridable = ref( $_[-1] ) eq 'HASH' ? pop(@_) : {};
+
+    my $set_hr = {};                   # this allows us to find XYZ in local and then not override it with what is in the un-local one (set local first, fill in gaps w/ base)
+
+    foreach my $file (@_) {
+        __proc_file( $hr, $set_hr, $overridable, $file, \&Cpanel::Locale::Utils::MkDB::get_hash_of_legacy_file_or_its_cache, 1 );    # the given function should always return a hashref
+    }
+
+    _carp_encode_error();
+    return $set_hr;
+}
+
+sub __proc_file {    ## no critic qw(Subroutines::ProhibitExcessComplexity Subroutines::ProhibitManyArgs)
+    my ( $hr, $set_hr, $overridable, $file, $load_file_into_hr_cr, $is_legacy ) = @_;
+
+    print "\t\tFile $file:\n" if $verbose;
+
+    # this code ref should always return a hashref
+    my $file_hr = $load_file_into_hr_cr->($file);
+
+    # no need to delete $file_hr->{'charset'} if $is_legacy since it is skipped in the save function
+    my $file_charset = exists $file_hr->{'charset'} && $file_hr->{'charset'} ? $file_hr->{'charset'} : '';
+    my ( $key, $__FORENSIC_SAVE );
+
+    # we can delete __FORENSIC an readd it to the hashref after the loop so we do not have to check if the current $key is __FORENSIC on each and every loop.
+    if ( exists $file_hr->{'__FORENSIC'} ) {
+        $__FORENSIC_SAVE = delete $file_hr->{'__FORENSIC'};
+    }
+
+    my $needs_re_encode = ( $is_legacy && $file_charset && $file_charset ne $target_charset ) ? 1 : 0;
+
+    if ($debug) {
+
+        # this if{}'s only difference between the else{} below are the debug print() statements,
+        # be sure to duplicate any logic in this if {} in its else {}
+        foreach $key ( keys %{$file_hr} ) {
+            print "\t\t\t($file) Key: $key: ";
+            if ( !exists $set_hr->{$key} && ( exists $overridable->{$key} || !exists $hr->{$key} ) ) {
+                print "adding to lexicon\n";    # leaving this as 'lexicon' since it is low level debug stuff
+                if ($needs_re_encode) {
+
+                    # utf-8 to utf-8 doesn't make sense but utf8 to utf-8 might
+                    # case shouldn't matter but it is conceivable that it might
+                    # this should only be doing extra unnecessary work if the 3rdparty is not doing it sensibly
+                    print "encoding from '$file_charset' to '$target_charset'\n";
+                    eval { $file_hr->{$key} = Encode::encode( $target_charset, Encode::decode( $file_charset, $file_hr->{$key} ) ); };
+                    $encode_error{$@}->{$file}{$key} = {
+                        'value'          => $file_hr->{$key},
+                        'file_charset'   => $file_charset,
+                        'target_charset' => $target_charset,
+                      }
+                      if chomp($@) || $@;    # just in case $@ does not have a newline for some weird reason
+                }
+
+                $hr->{$key} = ++$set_hr->{$key} && $is_legacy && ( $file_hr->{$key} eq '' || !defined $file_hr->{$key} ) ? ' ' : $file_hr->{$key};    # see case 31839
+                $set_hr->{$key}++;
+            }
+            else {
+                print "already compiled\n";
+            }
+        }
+    }
+    else {
+        foreach $key ( keys %{$file_hr} ) {
+            if ( !exists $set_hr->{$key} && ( exists $overridable->{$key} || !exists $hr->{$key} ) ) {
+                if ($needs_re_encode) {
+                    eval { $file_hr->{$key} = Encode::encode( $target_charset, Encode::decode( $file_charset, $file_hr->{$key} ) ); };
+                    $encode_error{$@}->{$file}{$key} = {
+                        'value'          => $file_hr->{$key},
+                        'file_charset'   => $file_charset,
+                        'target_charset' => $target_charset,
+                      }
+                      if chomp($@) || $@;    # just in case $@ does not have a newline for some weird reason
+                }
+
+                $hr->{$key} = ++$set_hr->{$key} && $is_legacy && ( $file_hr->{$key} eq '' || !defined $file_hr->{$key} ) ? ' ' : $file_hr->{$key};    # see case 31839
+            }
+        }
+
+    }
+
+    # restore the key we temp removed above
+    if ($__FORENSIC_SAVE) {
+        $file_hr->{'__FORENSIC'} = $__FORENSIC_SAVE;
+    }
+
+    if ( !exists $hr->{'__FORENSIC'}{'mtime'}{$file} ) {
+        if ( my $mtime = Cpanel::StatCache::cachedmtime($file) ) {
+            push @{ $hr->{'__FORENSIC'}{'order'} }, $file;
+            $hr->{'__FORENSIC'}{'mtime'}{$file} = $mtime;
+        }
+    }
+
+    return;
+}
+
+sub _do_path_into {    ## no critic qw(Subroutines::ProhibitExcessComplexity Subroutines::ProhibitManyArgs)
+    my ( $base_path, $cdb_path, $working_hr, $main_hr, $locale, $name, $detach, $r_skip_pm ) = @_;
+    if (
+        -l $base_path
+        && readlink($base_path) !~ m{^/usr/local/cpanel/plugins}    # plugin symlinks are ok, just not legacy lang ones.
+    ) {
+        my ($target_theme)  = reverse( split( '/', readlink($base_path) ) );
+        my ($headless_self) = $cdb_path =~ m{(.*)/[^\/]+$};
+
+        if ( "$headless_self/$target_theme" eq $cdb_path ) {
+            print "\t" . $lh->maketext( qq{Linking “[_1]” to “[_2]” would create a symlink loop. Skipping.}, $target_theme, $cdb_path ) . "\n" if !$quiet;
+            return;
+        }
+        print "\t" . $lh->maketext( qq{“[_1]” is a symlink to “[_2]”.}, $base_path, $target_theme ) . "\n" if $verbose;
+        if ( -l $cdb_path ) {
+            my $root_target = readlink($cdb_path);
+            if ( $root_target ne "$headless_self/$target_theme" ) {
+                if ( unlink $cdb_path ) {
+
+                    # removed mis-trageted link
+                }
+                else {
+
+                    # could not remove mis-trageted link
+                    next;
+                }
+            }
+        }
+        elsif ( Cpanel::StatCache::cachedmtime($cdb_path) ) {
+            if ( -d $cdb_path ) {
+                if ( Cpanel::SafeDir::RM::safermdir($cdb_path) ) {
+
+                    # removed dir that should be a symlink
+                }
+                else {
+
+                    # could not remove dir that should be a symlink
+                    next;
+                }
+            }
+            else {
+                if ( unlink $cdb_path ) {
+
+                    # removed file that should be a symlink
+                }
+                else {
+
+                    # could not remove dir that should be a symlink
+                    next;
+                }
+            }
+        }
+
+        symlink( "$headless_self/$target_theme", $cdb_path );
+        my $sym_errno = $!;
+        if ( readlink($cdb_path) ne "$headless_self/$target_theme" ) {
+            local $! = $sym_errno;
+            print "\t\t" . $lh->maketext( qq{Could not symlink “[_1]” to “[_2]”: [_3]}, $cdb_path, "$headless_self/$target_theme", $! ) . "\n" if !$quiet;
+        }
+        else {
+            print "\t" . $lh->maketext( qq{Symlink of “[_1]” to “[_2]” was created successfully.}, $cdb_path, "$headless_self/$target_theme" ) . "\n" if $verbose;
+        }
+        return;
+    }
+
+    print "\t" . $lh->maketext( qq{Starting “[_1]” locale in “[_2]” …}, $locale, $name ) . "\n" if $verbose;
+
+    Cpanel::SafeDir::MK::safemkdir("$cdb_path/") if !-d "$cdb_path/";
+
+    my $new_pairs = {};
+    my $just_set  = _build_hash_from_yaml_files( $working_hr, "$base_path/locale/$locale.yaml.local", "$base_path/locale/$locale.yaml", $main_hr, );
+    foreach my $new_key ( keys %{$just_set} ) {
+        $$new_pairs{$new_key} = $$working_hr{$new_key};
+    }
+
+    my %hr_copy_lookup = %{$main_hr};
+    foreach my $local_key ( keys %{ Cpanel::CachedDataStore::fetch_ref("$base_path/locale/$locale.yaml.local") } ) {
+        delete $hr_copy_lookup{$local_key};    # don't allow the next $legacy to override the locale's local
+    }
+
+    foreach my $legacy ( @{ $locales{$locale} } ) {
+        print "\t" . $lh->maketext( qq{Starting legacy “[_1]” in “[_2]” …}, $legacy, $name ) . "\n" if $verbose;
+
+        $just_set = _build_hash_from_legacy_files( $working_hr, "$base_path/lang/$legacy.local", "$base_path/lang/$legacy", \%hr_copy_lookup, );
+
+        foreach my $new_key ( keys %{$just_set} ) {
+            $$new_pairs{$new_key} = $$working_hr{$new_key};
+        }
+
+        foreach my $k ( keys %{$just_set} ) {
+            delete $hr_copy_lookup{$k};    # don't allow the next $legacy to override the previous
+        }
+    }
+
+    if ( !scalar keys %{$working_hr} ) {
+        print "\t" . $lh->maketext( qq{No keys found for “[_1]” in “[_2]”: skipping “[_3]”.}, $locale, $name, "$cdb_path/$locale.cdb" ) . "\n" if !$quiet;
+    }
+    elsif ($dryrun) {
+        print "\t" . $lh->maketext( qq{Dry run mode. Not attempting any updates to “[_1]”.}, "$cdb_path/$locale.cdb" ) . "\n" if !$quiet;
+    }
+    else {
+
+        $lh->cpanel_detach_lexicon() if $detach;
+        my ( $rc, @msg ) = Cpanel::Locale::Utils::MkDB::from_hash( "$cdb_path/$locale.cdb", $working_hr, $force_level );
+        $lh->cpanel_attach_lexicon() if $detach;
+
+        if ($rc) {
+            unlink("$cdb_path/$locale.gdbm") if -e "$cdb_path/$locale.gdbm";
+            $$r_skip_pm = 0;
+            print "\t" . $lh->makevar(@msg) . "\n" if $verbose;
+        }
+        elsif ( !$quiet ) {
+            print "\t" . $lh->makevar(@msg) . "\n";
+            print "\t\t[info] CDB File tied to current object: " . $lh->get_cdb_file_path() . "\n";
+        }
+    }
+    return $new_pairs;
+}
+
+sub _base_path_locale_mtime_check_is_uptodate {
+    my ( $base_path, $locale, $cdb_file, $is_theme_or_addon ) = @_;
+
+    $mtime_check{$locale}{'uptodate_count'} ||= 0;
+    $mtime_check{$locale}{'call_count'}++;
+
+    return if $force_level;
+    my $cdb_mtime = Cpanel::StatCache::cachedmtime($cdb_file);
+    return if !$cdb_mtime;
+
+    my %cdb_hr;
+    my $tie_obj = Cpanel::Locale::Utils::get_readonly_tie( $cdb_file, \%cdb_hr );
+    my $__FORENSIC;
+    eval {
+        local $SIG{__WARN__};
+        local $SIG{__DIE__};
+        $__FORENSIC = ( YAML::Syck::Load( $cdb_hr{'__FORENSIC'} ) )[0];
+    };
+    return if !$__FORENSIC;
+    undef $tie_obj;
+    untie(%cdb_hr);
+
+    # if we are the root data for the locale do a simple sanity check before we go any further
+    if ( !$is_theme_or_addon && ref( $__FORENSIC->{'order'} ) eq 'ARRAY' ) {
+        for my $path_we_had_last_time ( @{ $__FORENSIC->{'order'} } ) {
+            my $file = $path_we_had_last_time;
+            if ( -l $path_we_had_last_time ) {
+                my ($path) = $path_we_had_last_time =~ m{(.*/)[^/]+};
+                $file = $path . readlink($path_we_had_last_time);
+            }
+
+            # return if needs up;
+            my $mtime = Cpanel::StatCache::cachedmtime($file);
+            return if $mtime  && !exists $__FORENSIC->{'mtime'}{$path_we_had_last_time};
+            return if !$mtime && exists $__FORENSIC->{'mtime'}{$path_we_had_last_time};
+            return if $mtime >= $cdb_mtime || $mtime > time();    # timewarp safety
+        }
+    }
+
+    my @possible_files = (
+        $is_theme_or_addon ? ( "$base_path/locale/$locale.yaml.local", "$base_path/locale/$locale.yaml" ) : ( "$local_yaml_root/$locale.yaml", "$yaml_root/$locale.yaml" ),
+        map { ( "$base_path/lang/$_.local", "$base_path/lang/$_" ) } @{ $locales{$locale} }
+    );
+
+    if ( $locale eq 'en' || $locale eq 'en_us' || $locale eq 'i_default' ) {
+        unshift @possible_files, Cpanel::Locale::Utils::Queue::get_pending_file();
+    }
+    unshift @possible_files, Cpanel::Locale::Utils::Queue::get_pending_file_list_for_locale($locale);
+
+    foreach my $possible_file (@possible_files) {
+
+        my $file = $possible_file;
+        if ( -l $possible_file ) {
+            my ($path) = $possible_file =~ m{(.*/)[^/]+};
+            $file = $path . readlink($possible_file);
+        }
+
+        # return if needs up;
+        my $mtime = Cpanel::StatCache::cachedmtime($file);
+        return if $mtime  && !exists $__FORENSIC->{'mtime'}{$possible_file};
+        return if !$mtime && exists $__FORENSIC->{'mtime'}{$possible_file};
+        return if $mtime >= $cdb_mtime || $mtime > time();    # timewarp safety
+    }
+
+    print "\t" . $lh->maketext( qq{CDB file “[_1]” is already current}, $cdb_file ) . "\n" if $verbose;
+
+    $mtime_check{$locale}{'uptodate_count'}++;
+
+    return 1;
+}
+
+sub _carp_encode_error {
+    if (%encode_error) {
+        print "!!\n";
+        for my $err ( keys %encode_error ) {
+            print "\nEncoding error “$err” encountered in:\n";
+            for my $file ( keys %{ $encode_error{$err} } ) {
+                print "\t$file\n";
+            }
+            print "\n";
+        }
+
+        print "Any reported encoding errors could result in corrupted text and will need manually resolved.\n!!\n";
+
+        if ($encdump) {
+            print "\n-- Begin 'Encode error data structure in YAML format' --\n";
+            print YAML::Syck::Dump( \%encode_error );
+            print "\n-- End 'Encode error data structure in YAML format' --\n";
+        }
+
+        %encode_error = ();
+    }
+}
+
+sub show_help {
+
+    print <<"END_HELP";
+Usage: $0 [Options]
+
+Build (or rebuild) Cpanel::Locale CDB databases.
+
+Options:
+
+  --help                      This help screen
+  --man                       This help screen and additional related info
+  --quiet                     No output
+  --verbose                   Show extraneous information, override 'quiet' flag
+  --dry-run                   Do not actually do anything, just output
+
+  --force                     Rebuild the database even if the version is up to date
+  --clean                     Remove the databases first and build it from scratch, implies --force
+                              This will flush keys that have been completely removed (a rare occurrence)
+                              from the database.
+
+  --no-js-files               Avoid build the javascript specific locale files (which we do not ship)
+
+  --user-check                Check that all user's locale settings are set.
+
+  --locale={locale_tag}       Build/rebuild specific locale whose ID is specified by {locale_tag};
+                              its value is based on Cpanel::Locale convention and must be a valid “normalized”
+                              locale tag (e.g. using lower case and “_” instead of “-” for appending territory code).
+
+  --clean-stale-locales       Check for locales without any data and remove them,
+                              then continue on updating the locale databases
+
+  --clean-stale-locales=exit  Exit after stale locale check
+
+  --uninit                    Show “uninitialized value” warnings due to parsing funky data.
+
+  --debug                     Copious information on files and keys being operated on
+
+  --encode-dump               Copious information on any reported “Encoding error”
+
+When given no arguments, this script will run under its normal mode of ensuring that each locale’s database is up to date.
+END_HELP
+}
+
+sub show_man {
+    show_help();
+
+    print <<"END_MAN";
+
+By default, all existing locales from both legacy language system and
+Cpanel::Locale system will be processed. To specify one or more specific locales,
+use option “--locale”.
+e.g. $0 --locale=es --locale=es_es --locale=fr
+
+For additional locale information, see https://go.cpanel.net/localedocs
+END_MAN
+}

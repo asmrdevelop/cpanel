@@ -1,0 +1,68 @@
+[%
+#                                                  Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+%]
+
+[%
+USE JSON;
+USE LinkedNode;
+
+SET CPANEL.CPVAR.dprefix = "../";
+
+SET user_theme = CPANEL.CPDATA.RS;
+
+SET TEMPLATE_PATH = 'clam-av/';
+SET APP_KEY       = 'clam_av';
+SET ROUTER_PATH   = cp_security_token _ '/frontend/' _ user_theme _ '/' _ TEMPLATE_PATH;
+SET style_sheets  = [];
+SET scripts       = []; # Do not change this name unless it is also changed in the partials below.
+
+SET has_mail_linkage = 0;
+SET worker_data = LinkedNode.get_basic_worker_data();
+
+FOR worker IN worker_data;
+    IF worker.worker_type == 'Mail';
+        has_mail_linkage = 1;
+    END;
+END;
+
+# The following content is inserted by underscore-template-loader's require macro.
+#
+#----------------------------------------------------
+# ∨∨∨ THIS IS GENERATED CODE, DO NOT MODIFY IT ∨∨∨
+#----------------------------------------------------
+#
+# Build webpack css bundle list
+style_sheets.push(TEMPLATE_PATH _ 'styles.css');
+
+# Build webpack javascript bundle list
+scripts.push(TEMPLATE_PATH _ 'runtime.js');
+scripts.push(TEMPLATE_PATH _ 'vendor.js');
+scripts.push(TEMPLATE_PATH _ 'polyfills.js');
+scripts.push(TEMPLATE_PATH _ 'main.js');
+
+#
+#----------------------------------------------------
+# ^^^ THIS IS GENERATED CODE, DO NOT MODIFY IT ^^^
+#----------------------------------------------------
+
+WRAPPER '_assets/master.html.tt'
+    app_key = APP_KEY,
+    include_legacy_stylesheets = 0,
+    include_legacy_scripts = 0,
+    include_cjt = 0,
+    use_master_bootstrap = 1,
+    page_stylesheets = style_sheets,
+    page_scripts = scripts,
+    is_ng = 1;
+%]
+<cp-clam-root></cp-clam-root>
+
+<script>
+    window.PAGE = {
+        hasMailnodeLinkage: [% has_mail_linkage %]
+    };
+</script>
+[% END %]

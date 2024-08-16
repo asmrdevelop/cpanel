@@ -1,0 +1,90 @@
+[%#
+Variables passed in:
+
+service_name      - The name of the Service being removed due to deprecation.
+days_left         - Number of days left before the service is removed.
+hrs_left          - Number of hours left before the service is removed.
+last_version      - Last version of cPanel & WHM that will support this service.
+failed_to_convert - A flag indicating whether the conversion process was successful or not.
+script_output     - The output of the conversion script.
+sent_to_root   - A default boolean flag sent to all templates that indicates if the message was sent to 'root'
+
+Optional:
+replacement       - If the service is being replaced.
+custom_subject    - A custom subject passed to the template. If it is not passed, then a standard subject will be used.
+-%]
+
+[%
+    PROCESS "include/colors.tmpl";
+    PROCESS "include/styles.tmpl";
+    PROCESS "include/code_block.tmpl";
+
+    WRAPPER 'wrapper/main.html.tmpl';
+
+    IF NOTICE.custom_subject;
+        NOTICE.email_reason = NOTICE.custom_subject;
+    ELSE;
+        IF NOTICE.days_left.defined && NOTICE.hrs_left.defined;
+            NOTICE.email_reason = CPANEL.locale.maketext('The service, [_1], has been deprecated and will be removed automatically in [quant,_2,day,days] and [quant,_3,hour,hours].', NOTICE.service_name, NOTICE.days_left, NOTICE.hrs_left);
+        ELSE;
+            IF NOTICE.failed_to_convert;
+                IF NOTICE.replacement;
+                    NOTICE.email_reason = CPANEL.locale.maketext('Failed to replace [_1] with [_2].', NOTICE.service_name, NOTICE.replacement);
+                ELSE;
+                    NOTICE.email_reason = CPANEL.locale.maketext('Failed to automatically remove [_1] from the server.', NOTICE.service_name);
+                END;
+            ELSE;
+                IF NOTICE.replacement;
+                    NOTICE.email_reason = CPANEL.locale.maketext('The system replaced the service [_1] with [_2].', NOTICE.service_name, NOTICE.replacement);
+                ELSE;
+                    NOTICE.email_reason = CPANEL.locale.maketext('The system removed the service: [_1].', NOTICE.service_name);
+                END;
+            END;
+        END;
+    END;
+-%]
+
+
+<p>
+[% IF NOTICE.days_left.defined && NOTICE.hrs_left.defined %]
+    <p>
+    [% CPANEL.locale.maketext('The [asis,cPanel amp() WHM] update cannot proceed because the following service has been deprecated: [_1]', NOTICE.service_name ) %]
+    </p>
+
+    [%~ IF NOTICE.replacement ~%]
+        [% CPANEL.locale.maketext('You have [quant,_1,day,days] and [quant,_2,hour,hours] until we replace [_3] with [_4].', NOTICE.days_left, NOTICE.hrs_left, NOTICE.service_name, NOTICE.replacement ) %]
+    [%~ ELSE ~%]
+        [% CPANEL.locale.maketext('You have [quant,_1,day,days] and [quant,_2,hour,hours] until we remove [_3].', NOTICE.days_left, NOTICE.hrs_left, NOTICE.service_name ) %]
+    [%~ END ~%]
+    <p>
+        [% CPANEL.locale.maketext('To continue using [_1], you must change your Update Preferences in [asis,WHM] to Long Term Support (LTS).', NOTICE.service_name ) %]
+        [% CPANEL.locale.maketext('By switching to LTS, you will not receive new features and eventually will stop receiving security updates.') %]
+    </p>
+    <p>
+        [% CPANEL.locale.maketext('[asis,cPanel amp() WHM] version [_1] will be the last [output,abbr,LTS,Long Term Support] version to support [_2].', NOTICE.last_version, NOTICE.service_name ) %]
+    </p>
+
+    <p>
+        [% CPANEL.locale.maketext('For more information about Long Term Support, read the following: [output,url,_1,target,_2]', 'https://go.cpanel.net/longtermsupport','_blank') %]
+        <br>
+        <br>
+    </p>
+[% ELSE %]
+    [% IF NOTICE.failed_to_convert %]
+        [% CPANEL.locale.maketext('Failed to remove the service, [_1], automatically.', NOTICE.service_name) %]
+    [% ELSE %]
+        [%~ IF NOTICE.replacement ~%]
+            [% CPANEL.locale.maketext('The deprecated service, [_1], has been removed and replaced with [_2].', NOTICE.service_name, NOTICE.replacement) %]
+        [%~ ELSE ~%]
+            [% CPANEL.locale.maketext('The deprecated service, [_1], has been removed.', NOTICE.service_name ) %]
+        [%~ END ~%]
+    [% END %]
+    <br>
+    <br>
+    [%~ IF NOTICE.script_output ~%]
+        [% code_block(formatted_code=NOTICE.script_output, title=CPANEL.locale.maketext('Review the log for further details:')) %]
+    [%~ END ~%]
+[% END %]
+</p>
+
+[% END %]

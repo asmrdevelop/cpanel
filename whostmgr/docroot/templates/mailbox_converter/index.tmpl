@@ -1,0 +1,76 @@
+[%
+    USE Whostmgr;
+    USE JSON;
+
+    SET PAGE_BASE = '/scripts5/mailboxconversion/';
+    SET PAGE_NAME = Whostmgr.get_page_name_by_url(PAGE_BASE);
+
+    WRAPPER 'master_templates/master.tmpl'
+        app_key = 'mailbox_conversion'
+        header        = locale.makevar(PAGE_NAME),
+        breadcrumburl = PAGE_BASE,
+        base          = PAGE_BASE,
+        stylesheets = [
+            Whostmgr.find_file_url('/templates/mailbox_converter/index.min.css')
+        ],
+        theme='bootstrap'
+        CJT2_EXCLUSIVE = 1;
+%]
+    <div id="content"
+        ng-controller="BaseController as base"
+        class="ng-cloak"
+        ng-cloak>
+
+        <div class="callout callout-info">
+            [% locale.maketext('You can use this tool to convert the format of accounts’ mailboxes.') %]
+        </div>
+        <div class="panel panel-default">
+            <div class="panel-heading">
+                <ul class="list-inline">
+                    <li ng-repeat="step in steps" ng-click="go($index, true)" ng-class="{'previous-step' : $index < current_step, 'current-step' : $index === current_step } ">
+                        <strong ng-if="current_step === $index" ng-bind="step.breadcrumb">
+                        </strong>
+                        <span ng-if="current_step !== $index" ng-bind="step.breadcrumb" ng-class="{ 'not-visited' : current_step < $index }">
+                        </span>
+                    </li>
+                </ul>
+            </div>
+            <div class="panel-body animate-view"
+                ng-class="get_view_styles()"
+                ng-view></div>
+            <div class="panel-footer">
+                <nav>
+                    <ul class="pager">
+                        <li class="previous" ng-if="current_step > 0">
+                            <button class="btn btn-primary left-button" ng-click="go_back()">
+                                <span aria-hidden="true">&larr;</span>
+                                <span class="hidden-xs"> [% locale.maketext('Previous') %]</span>
+                            </button>
+                        </li>
+                        <li class="next" ng-if="current_step < steps.length - 1 ">
+                            <button class="btn btn-primary right-button" ng-click="go(current_step + 1, true)" ng-disabled="!ready">
+                                <span class="hidden-xs">[% locale.maketext('Next') %] </span>
+                                <span aria-hidden="true">&rarr;</span>
+                            </button>
+                        </li>
+                        <li class="next" ng-if="current_step === steps.length - 1">
+                            <button class="btn btn-primary right-button" ng-click="submit_form('finalize_form')">
+                                <span>[% locale.maketext('Convert Selected') %] </span>
+                            </button>
+                        </li>
+                    </ul>
+                </nav>
+            </div>
+        </div>
+
+    </div>
+
+[% PROCESS 'master_templates/cjt2_header_include.tt' %]
+
+<script type="text/javascript">
+    var PAGE = PAGE || {};
+    PAGE.data = [% data.json() %];
+    PAGE.MAIN_TITLE = [% PAGE_NAME.json() %];
+</script>
+
+[% END %]

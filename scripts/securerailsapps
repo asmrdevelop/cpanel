@@ -1,0 +1,132 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/securerailsapps                 Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+use warnings;
+use File::Find;
+use Cpanel::PwCache                     ();
+use Cpanel::PwCache::Build              ();
+use Cpanel::AccessIds::SetUids          ();
+use Cpanel::Usage                       ();
+use Cpanel::ConfigFiles                 ();
+use Cpanel::Config::userdata::Constants ();
+
+my $user = '';
+my $all  = 0;
+
+my %opts = (
+    'user' => \$user,
+    'all'  => \$all,
+);
+
+Cpanel::Usage::wrap_options( \@ARGV, \&usage, \%opts );
+
+if ($user) {
+    if ( !-e "$Cpanel::ConfigFiles::cpanel_users/$user" ) {
+        print STDERR "User $user not found...\n";
+        exit 1;
+    }
+    my $homedir = ( Cpanel::PwCache::getpwnam($user) )[7];
+    if ( !$homedir ) {
+        print STDERR "Invalid user $user\n";
+        exit 1;
+    }
+
+    if ( my $pid = fork() ) {
+        waitpid( $pid, 0 );
+    }
+    else {
+        Cpanel::AccessIds::SetUids::setuids( $user, $user );
+        secure_rails_dirs( $user, $homedir );
+        exit;
+    }
+}
+elsif ($all) {
+    Cpanel::PwCache::Build::init_passwdless_pwcache();
+    opendir( my $dir_h, $Cpanel::ConfigFiles::cpanel_users ) or die "Failed to read cPanel users directory: $!";
+    my @files = grep { !/^\.\.?$/ } readdir($dir_h);
+    close($dir_h);
+    chomp(@files);
+    foreach my $user (@files) {
+        my $homedir = ( Cpanel::PwCache::getpwnam($user) )[7];
+        next if !$homedir;
+        print "Securing rails apps for: $user\n";
+        if ( my $pid = fork() ) {
+            waitpid( $pid, 0 );
+        }
+        else {
+            Cpanel::AccessIds::SetUids::setuids( $user, $user );
+            secure_rails_dirs( $user, $homedir );
+            exit;
+        }
+    }
+}
+else {
+    usage();
+}
+
+sub secure_rails_dirs {
+    my ( $user, $homedir ) = @_;
+    my @rails_dirs;
+    File::Find::find(
+        {
+            'wanted' => sub {
+                if ( $File::Find::name =~ /boot\.rb$/ ) {
+                    $File::Find::name =~ s{config/boot\.rb}{};
+                    push @rails_dirs, $File::Find::name;
+                }
+            },
+            'no_chdir' => 1,
+            'untaint'  => 1,
+        },
+        $homedir
+    );
+
+    foreach my $rails_dir (@rails_dirs) {
+        foreach my $dir (qw<app config db doc lib script test tmp vendor>) {
+            my $htaccess_file = "$rails_dir/$dir/.htaccess";
+            ($htaccess_file) = $htaccess_file =~ /^(.*)$/;
+            if ( !-e $htaccess_file ) {
+                if ( open( my $fh, '>', $htaccess_file ) ) {
+                    print {$fh} htaccess();
+                    close($fh);
+                }
+            }
+        }
+    }
+}
+
+sub htaccess {
+    return <<'EOF';
+<Limit GET POST OPTIONS PROPFIND>
+    Order allow,deny
+    Deny from all
+</Limit>
+EOF
+}
+
+sub move_yaml_files {
+    my ( $user, $home ) = @_;
+    if ( -e "$home/.cpanel/ruby-on-rails.db" ) {
+        system( 'mv', "$home/.cpanel/ruby-on-rails.db", "$Cpanel::Config::userdata::Constants::USERDATA_DIR/$user/ruby-on-rails" );
+    }
+
+    if ( -e "$home/.cpanel/ruby-on-rails-rewrites.db" ) {
+        system( 'mv', "$home/.cpanel/ruby-on-rails-rewrites.db", "$Cpanel::Config::userdata::Constants::USERDATA_DIR/$user/ruby-on-rails-rewrites" );
+    }
+    return;
+}
+
+sub usage {
+    my $prog = $0;
+    $prog =~ s{^.+/(.+)$}{$1};
+    print <<EOF;
+$prog [--all] [--user cpuser]
+
+EOF
+    exit(0);
+}

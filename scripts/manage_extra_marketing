@@ -1,0 +1,393 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+#                                      Copyright 2024 WebPros International, LLC
+#                                                            All rights reserved.
+# copyright@cpanel.net                                          http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited.
+
+# Private helper class for versions of cpanel that dont have the Cpanel::FeatureFlags class yet.
+package Fallback::FeatureFlags;
+
+use cPstrict;
+
+# NOTE: This code was copied and simplified from Cpanel::FeatureFlags for use on cpanel
+# versions without Cpanel::FeatureFlags. Its self contained here since it has limited utility
+# utility in any other scenario.
+use constant STORAGE_DIR => '/var/cpanel/feature-flags';
+
+sub is_feature_enabled ($flag_name) {
+    _ensure_dir();
+    return -e _path($flag_name) ? 1 : 0;
+}
+
+sub enable ($flag_name) {
+    _ensure_dir();
+    return _touch( _path($flag_name) );
+}
+
+sub disable ($flag_name) {
+    _ensure_dir();
+    return _unlink( _path($flag_name) );
+}
+
+sub _path ($flag_name) {
+    return STORAGE_DIR() . q{/} . $flag_name;
+}
+
+sub _ensure_dir() {
+    my $dir  = STORAGE_DIR;
+    my $perm = 0755;
+
+    if ( !-d $dir ) {
+        require Cpanel::SafeDir::MK;
+        Cpanel::SafeDir::MK::safemkdir( $dir, $perm );
+    }
+    elsif ( ( ( stat(_) )[2] && 07770 ) != $perm ) {
+        _chmod( $perm, $dir );
+    }
+    return 1;
+}
+
+sub _chmod ( $perm, $path ) {
+    require Cpanel::Autodie;
+    return Cpanel::Autodie::chmod( $perm, $path );
+}
+
+sub _touch ($path) {
+    require Cpanel::FileUtils::Touch;
+    return Cpanel::FileUtils::Touch::touch_if_not_exists($path);
+}
+
+sub _unlink ($path) {
+    require Cpanel::Autodie;
+    return Cpanel::Autodie::unlink_if_exists($path);
+}
+
+1;
+
+package scripts::manage_extra_marketing;
+
+use cPstrict;
+
+=encoding utf-8
+
+=head1 USAGE
+
+manage_extra_marketing [options] {apply|disable|enable|status}
+
+  Commands
+
+  apply   - reapply the current configured marketing extras.
+
+  disable - disable the marketing extras for the selected features.
+
+  enable  - enable the marketing extras for the selected features.
+
+  status  - show the current status for the marketing extras for the selected features.
+
+  Options
+
+  --feature   Optional, Multiple
+
+  The names of specific features to process with the command. If this option
+  is not provided, the system processes all the supported features. This script
+  supports the following features:
+
+    * cpanel-sitejet-plugin - The Sitejet Builder feature in cPanel.
+    * cpanel-koality-plugin - The Site Quality Monitoring feature in cPanel.
+
+  --help      Show the help for this script.
+
+  --verbose   Provide more output while processing the request.
+
+=head1 EXAMPLES
+
+    Disabling the extra marketing for all supported features
+
+        /usr/local/cpanel/scripts/manage_extra_marketing disable
+
+    Enabling the extra marketing for all supported features
+
+        /usr/local/cpanel/scripts/manage_extra_marketing enable
+
+    Disabling Sitejet extra marketing
+
+        /usr/local/cpanel/scripts/manage_extra_marketing disable --feature cpanel-sitejet-plugin
+
+    Enabling Sitejet extra marketing
+
+        /usr/local/cpanel/scripts/manage_extra_marketing enable --feature cpanel-sitejet-plugin
+
+    Check the current extra marketing flags for Sitejet
+
+        /usr/local/cpanel/scripts/manage_extra_marketing status --feature cpanel-sitejet-plugin
+
+    Disabling Site Quality Monitoring extra marketing
+
+        /usr/local/cpanel/scripts/manage_extra_marketing disable --feature cpanel-koality-plugin
+
+    Enabling Site Quality Monitoring extra marketing
+
+        /usr/local/cpanel/scripts/manage_extra_marketing enable --feature cpanel-koality-plugin
+
+    Check the current extra marketing flags for Site Quality Monitoring
+
+        /usr/local/cpanel/scripts/manage_extra_marketing status --feature cpanel-koality-plugin
+
+=cut
+
+use Getopt::Long                 ();
+use Pod::Usage                   qw(pod2usage);
+use Cpanel::Plugins::MenuBuilder ();
+use Cpanel::PluginManager        ();
+
+my $verbose  = '';    # boolean switch
+my $help     = '';    # view the help
+my $action   = '';    # disable, enable, status, apply
+my @features = ();    # cpanel-koality-plugin, cpanel-sitejet-plugin
+
+my $MODULE = can_use_std_feature_flags() ? 'Cpanel::FeatureFlags' : 'Fallback::FeatureFlags';
+
+# flag format: {cpanel|webmail|whm}-<what system>-<what-plugin/feature>-<what-the-flag-does>
+my $supported_features = {
+    'cpanel-koality-plugin' => {
+        name      => 'Site Quality Monitoring',
+        namespace => 'Cpanel::Koality',
+        dir       => '/var/cpanel/plugins/koality/menu',
+        flags     => [
+            'cpanel-highlight.menus-cpanel.koality.plugin-link.removed',
+            'cpanel-wptk.banner-cpanel.koality.plugin-banner.removed',
+            'cpanel-sitejet.banner-cpanel.koality.plugin-banner.removed',
+            'cpanel-tools-sidebar.banner-cpanel.koality.plugin-banner.removed',
+        ],
+    },
+    'cpanel-sitejet-plugin' => {
+        name      => 'Sitejet Builder',
+        namespace => 'Cpanel::Sitejet',
+        dir       => '/var/cpanel/plugins/sitejet/menu',
+        flags     => ['cpanel-highlight.menus-cpanel.sitejet.plugin-link.removed'],
+    },
+};
+
+my $supported_actions = {
+    'apply'   => 1,
+    'enable'  => 1,
+    'disable' => 1,
+    'status'  => 1,
+};
+
+my $menus = {
+    LeftMenu => 1,
+
+    # WelcomeModal => 1,  # NOTE: We cannot disable this one because of a bug in Cpanel::Plugins::MenuBuilder so build_menu() breaks for menus not available on a specific version of cpanel.
+};
+
+exit run(@ARGV) if !caller;
+
+sub run (@args) {
+
+    my $ok;
+    {
+        # Capture and format errors from Getopt::Long::GetOptionsFromArray
+        local $SIG{__WARN__} = sub ($text) {
+            print STDERR "ERROR: $text";
+        };
+
+        $ok = Getopt::Long::GetOptionsFromArray(
+            \@args,
+            "feature=s" => \@features,
+            "verbose"   => \$verbose,
+            "help"      => \$help,
+        );
+    }
+
+    if ( !$ok ) {
+        help(1);
+        return 1;
+    }
+
+    if ($help) {
+        help();
+        return 0;
+    }
+
+    if (@args) {
+        $action = $args[0];
+    }
+
+    # Verify action is supported
+    if ( !$action || not exists $supported_actions->{$action} ) {
+        help("ERROR: You must provide a valid action: apply, status, enable or disable.");
+        return 0;
+    }
+
+    # Apply to all known features if none selected.
+    if ( !@features ) {
+        @features = keys %$supported_features;
+    }
+    else {
+
+        # Verify features are supported
+        foreach my $try (@features) {
+            my $ok = 0;
+            foreach my $feature ( keys %$supported_features ) {
+                if ( $try eq $feature ) {
+                    $ok = 1;
+                    last;
+                }
+            }
+            if ( !$ok ) {
+                help("ERROR: The feature '$try' is not a valid feature.");
+                return 1;
+            }
+        }
+    }
+
+    # Adjust the menu file shipped in the plugins to have the
+    # desired effect.
+    foreach my $feature (@features) {
+        my $feature_data = $supported_features->{$feature};
+        if ( !-d $feature_data->{dir} ) {
+            say "SKIP:  $feature_data->{name} is not installed on this server.\n" if $verbose;
+            next;
+        }
+
+        # Previous check fails if plugin rpm is manually uninstalled, checking perl modules to make sure plugin is actually installed
+        my $plugin_manager = Cpanel::PluginManager->new( 'directories' => ['/usr/local/cpanel'], 'namespace' => $feature_data->{namespace} );
+        my $plugin_modules = $plugin_manager->list_plugin_names;
+        if ( !$plugin_modules ) {
+            say "SKIP:  $feature_data->{name} is not installed on this server.\n" if $verbose;
+            next;
+        }
+
+        if ( $action eq 'enable' ) {
+            say "Enabling marketing links for " . $feature_data->{name} if $verbose;
+
+            # since these are disable flags, disable() removes the flag
+            foreach my $flag ( $feature_data->{flags}->@* ) {
+                $MODULE->can('disable')->($flag);
+            }
+
+            # make sure the menu is present to be installed
+            require File::Copy;
+            foreach my $menu ( keys %$menus ) {
+                my $default_path = $feature_data->{dir} . "/" . $menu . ".default.yaml";
+                my $menu_path    = $feature_data->{dir} . "/" . $menu . ".yaml";
+                if ( -e $default_path ) {
+                    File::Copy::copy( $default_path, $menu_path ) or say STDERR "ERROR: Copy from $default_path to $menu_path failed: $!";
+                }
+            }
+        }
+        elsif ( $action eq 'disable' ) {
+            say "Disabling marketing links for " . $feature_data->{name} if $verbose;
+
+            # since these are disable flags, enable() creates the flag
+            foreach my $flag ( $feature_data->{flags}->@* ) {
+                $MODULE->can('enable')->($flag);
+            }
+
+            # make sure the menu is NOT present so it wont be installed
+            foreach my $menu ( keys %$menus ) {
+                my $default_path = $feature_data->{dir} . "/" . $menu . ".default.yaml";
+                if ( !-e $default_path ) {
+                    say "SKIP:  $feature_data->{name} is not supported by this script.\n" if $verbose;
+                    last;
+                }
+
+                my $menu_path = $feature_data->{dir} . "/" . $menu . ".yaml";
+                if ( -e $menu_path ) {
+                    unlink $menu_path or say STDERR "ERROR: Removal of $menu_path failed: $!";
+                }
+            }
+        }
+        elsif ( $action eq 'apply' ) {
+            say "Applying marketing links state for " . $feature_data->{name} if $verbose;
+
+            # This applies only to the left menu items, so we will filter for those flags.
+            _handle_menu_items( $feature_data, $_ ) for grep { $_ =~ /menus-cpanel/ } $feature_data->{flags}->@*;
+
+        }
+        else {
+            foreach my $flag ( $feature_data->{flags}->@* ) {
+                say "The flag '$flag' for '$feature_data->{name}' is " . ( !$MODULE->can('is_feature_enabled')->($flag) ? 'enabled.' : 'disabled.' );
+            }
+        }
+    }
+
+    # Dont update the menu unless needed
+    return 0 if $action !~ m/enable|disable|apply/;
+
+    # Rebuild the menus
+    say "Rebuilding the extra marketing menus." if $verbose;
+    foreach my $menu ( keys %$menus ) {
+        Cpanel::Plugins::MenuBuilder::build_menu($menu);
+    }
+
+    return 0;
+}
+
+sub help ( $error = undef ) {
+    if ($error) {
+        if ( $error eq '1' ) {
+
+            # not a message, just signaling someone else printed the error already
+            # but we need the error version.
+            pod2usage( -exitvalue => 'NOEXIT', -verbose => 2, -output => \*STDERR );
+        }
+        else {
+            # all other errors
+            pod2usage( -message => $error, -exitvalue => 'NOEXIT', -verbose => 2, -output => \*STDERR );
+        }
+    }
+    else {
+        # non-error
+        pod2usage( -exitvalue => 'NOEXIT', -verbose => 2, -output => \*STDERR );
+    }
+    return;
+}
+
+sub can_use_std_feature_flags {
+    eval { require Cpanel::FeatureFlags; };
+    return 0 if $@;
+    return 1;
+}
+
+sub _handle_menu_items ( $feature_data, $flag ) {
+
+    # check if the feature is disabled
+    if ( $MODULE->can('is_feature_enabled')->($flag) ) {
+        say " - " . $feature_data->{name} . " is disabled." if $verbose;
+
+        foreach my $menu ( keys %$menus ) {
+            my $default_path = $feature_data->{dir} . "/" . $menu . ".default.yaml";
+            if ( !-e $default_path ) {
+                say "SKIP:  $feature_data->{name} is not supported by this script.\n" if $verbose;
+                last;
+            }
+
+            # Remove the menu since its disabled
+            my $menu_path = $feature_data->{dir} . "/" . $menu . ".yaml";
+            if ( -e $menu_path ) {
+                unlink $menu_path or say STDERR "ERROR: Removal of $menu_path failed: $!";
+            }
+        }
+    }
+
+    # otherwise the feature is enabled.
+    else {
+        say " - " . $feature_data->{name} . " is enabled." if $verbose;
+
+        require File::Copy;
+        foreach my $menu ( keys %$menus ) {
+            my $default_path = $feature_data->{dir} . "/" . $menu . ".default.yaml";
+            my $menu_path    = $feature_data->{dir} . "/" . $menu . ".yaml";
+            if ( -e $default_path ) {
+                File::Copy::copy( $default_path, $menu_path ) or say STDERR "ERROR: Copy from $default_path to $menu_path failed: $!";
+            }
+        }
+    }
+
+    return;
+}
+
+1;

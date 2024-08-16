@@ -1,0 +1,277 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/dovecot_maintenance             Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::dovecot_maintenance;
+
+=pod
+
+=head1 NAME
+
+dovecot_maintenance - Run nightly maintenance for dovecot which includes
+                      purging deleted messages from mdbox.
+
+=head1 SYNOPSIS
+
+/usr/local/cpanel/scripts/dovecot_maintenance [options]
+
+    Options:
+      --help       This help message
+      --background Run in the background
+
+=head1 DESCRIPTION
+
+All deleted email will be purged from mdbox users
+who have logged in since this script was last run.
+
+This program will also purge all expired APNs
+registrations
+
+=cut
+
+use strict;
+use Cpanel::IONice             ();
+use Cpanel::PwCache            ();
+use Cpanel::PwCache::Build     ();
+use Cpanel::Config::LoadCpConf ();
+use Cpanel::Config::LoadConfig ();
+use Cpanel::ConfigFiles        ();
+use Cpanel::Dovecot            ();
+use Cpanel::Dovecot::Utils     ();
+use Cpanel::AdvConfig          ();
+use Cpanel::Locale             ();
+
+use Cpanel::AcctUtils::DomainOwner::Tiny ();
+use Cpanel::AcctUtils::Lookup            ();
+use Cpanel::FileUtils::Open              ();
+use Cpanel::Email::Exists                ();
+
+use Cpanel::FileUtils::Dir ();
+
+use Cpanel::SQLite::Compat ();
+
+use DBD::SQLite         ();
+use Cpanel::DBI::SQLite ();
+
+use Cpanel::APNS::Mail::DB ();
+
+use File::Path   ();
+use Getopt::Long ();
+use Pod::Usage   ();
+use Umask::Local ();
+use Try::Tiny;
+
+our $DAYS_TO_KEEP_APNS_REGISTRATIONS = 7;
+
+my $background = 0;
+my $help       = 0;
+
+unless ( caller() ) {
+    Getopt::Long::GetOptions( 'background' => \$background, 'help' => \$help );
+    Pod::Usage::pod2usage( -verbose => 2 ) if $help;
+
+    if ($background) {
+        require Cpanel::Daemonizer::Tiny;
+        my $pid = Cpanel::Daemonizer::Tiny::run_as_daemon(
+            sub {
+                ####
+                # The next two calls are unchecked because it cannot be captured when running as a daemon
+                Cpanel::FileUtils::Open::sysopen_with_real_perms( \*STDERR, $Cpanel::ConfigFiles::CPANEL_ROOT . '/logs/error_log', 'O_WRONLY|O_APPEND|O_CREAT', 0600 );
+                open( STDOUT, '>&', \*STDERR ) || warn "Failed to redirect STDOUT to STDERR";
+
+                exit( __PACKAGE__->script() );
+            }
+        );
+    }
+    else {
+        exit( __PACKAGE__->script() );
+    }
+}
+
+our $DEFAULT_IO_NICE = 7;
+
+sub script {
+    my ($class) = @_;
+
+    my $self = bless {}, $class;
+
+    $self->_init();
+
+    local $| = 1;
+    my $exit_status = 0;
+
+    # Order matters since for mdbox expunge will only mark it for purge
+    foreach my $op (qw(_purge_deleted_messages _purge_expired_xaps_registrations)) {
+        try {
+            $self->$op();
+        }
+        catch {
+            warn $_;
+            $exit_status = 1;
+        };
+    }
+
+    return $exit_status;
+}
+
+sub _init {
+    my ($self) = @_;
+
+    $self->{'mailbox_formats'} = scalar Cpanel::Config::LoadConfig::loadConfig( "/etc/mailbox_formats", undef, ": " );
+    $self->{'dovecot_conf'}    = Cpanel::AdvConfig::load_app_conf('dovecot');
+
+    Cpanel::AcctUtils::DomainOwner::Tiny::build_domain_cache();
+    Cpanel::PwCache::Build::init_passwdless_pwcache();
+
+    return;
+}
+
+sub _ionice {
+    my ($self) = @_;
+    return if $self->{'did_ionice'};
+    $self->{'did_ionice'} = 1;
+    my $cpconf_ref = Cpanel::Config::LoadCpConf::loadcpconf();
+    if ( Cpanel::IONice::ionice( 'best-effort', exists $cpconf_ref->{'ionice_dovecot_maintenance'} ? $cpconf_ref->{'ionice_dovecot_maintenance'} : $$DEFAULT_IO_NICE ) ) {
+        print "[dovecot_maintenance] Setting I/O priority to reduce system load: " . Cpanel::IONice::get_ionice() . "\n";
+    }
+    return 1;
+}
+
+sub _purge_deleted_messages {
+    my ($self) = @_;
+
+    return if !-d $Cpanel::Dovecot::LASTLOGIN_DIR;    # may not be created yet
+
+    my $nodes_ar = Cpanel::FileUtils::Dir::get_directory_nodes($Cpanel::Dovecot::LASTLOGIN_DIR);
+    my $locale   = $self->_locale();
+    foreach my $username (@$nodes_ar) {
+        if ( index( $username, q{__cpanel__service__auth__} ) == -1 && $self->_has_mdbox($username) ) {
+            $self->_ionice();
+            print $locale->maketext( "Purging deleted messages for “[_1]” …", $username );
+            Cpanel::Dovecot::Utils::purge($username);
+            print $locale->maketext("Done") . "\n";
+        }
+
+        if ( -d "$Cpanel::Dovecot::LASTLOGIN_DIR/$username" ) {
+
+            # Handle user/sent logins
+            try {
+                File::Path::rmtree("$Cpanel::Dovecot::LASTLOGIN_DIR/$username");
+            }
+            catch {
+                local $@ = $_;
+                warn;
+            };
+        }
+        else {
+            # Handle normal logins
+            unlink("$Cpanel::Dovecot::LASTLOGIN_DIR/$username");
+        }
+    }
+
+    return 1;
+
+}
+
+sub _locale {
+    my ($self) = @_;
+    return ( $self->{'locale'} ||= Cpanel::Locale->get_handle() );
+}
+
+sub _has_mdbox {
+    my ( $self, $username ) = @_;
+
+    my $system_user;
+
+    # get_system_user generates an exception when the user or the
+    # domain does not exist. UserNotFound/DomainDoesNotExist.
+    #
+    # anything else is a fail
+    try {
+        $system_user = Cpanel::AcctUtils::Lookup::get_system_user($username);
+    }
+    catch {
+        local $@ = $_;
+        die if !try { $_->isa('Cpanel::Exception::UserNotFound') || $_->isa('Cpanel::Exception::DomainDoesNotExist') };
+    };
+
+    return 0 if !$system_user;
+
+    # The email account may have a different setting than the main account, so
+    # we check here.
+    if ( $username =~ tr{@}{} ) {
+        my ( $user, $domain ) = split /@/, $username;
+        my $homedir = Cpanel::PwCache::gethomedir($system_user);
+
+        # cannot have mdbox if there is no dir
+        if ( !-d "$homedir/mail/$domain/$user/storage" ) {
+            if ( !$! ) {
+                warn "“$homedir/mail/$domain/$user/storage” exists but isn’t a directory??";
+            }
+            elsif ( !$!{'ENOENT'} ) {
+                warn "stat($homedir/mail/$domain/$user/storage) as EUID $>: $!";
+            }
+
+            return 0;
+        }
+
+        my $size = ( stat("$homedir/mail/$domain/$user/mailbox_format.cpanel") )[7];
+        if ( !$size ) {
+            require Cpanel::AcctUtils::Lookup::MailUser;
+
+            # no mailbox_format.cpanel file? fallback to the logic
+            # we use to lookup a user
+            my $response;
+            try {
+                $response = Cpanel::AcctUtils::Lookup::MailUser::lookup_mail_user( $username, q{} );
+            }
+            catch {
+                local $@ = $_;
+                warn;
+            };
+            if ( $response && $response->{'user_info'}{'mailbox'}{'format'} eq 'mdbox' ) {
+                return 1;
+            }
+            return 0;
+        }
+        return $size == length 'mdbox' ? 1 : 0;
+    }
+
+    return $self->{'mailbox_formats'}->{$system_user} eq 'mdbox' ? 1 : 0;
+}
+
+sub _find_valid_users_from_query {
+    my ( $self, $query ) = @_;
+
+    my ( @valid, %invalid );
+
+  EXPIRED_ENTRY:
+    while ( my $entry = $query->fetchrow_hashref() ) {
+        local $@;
+        if (
+            !try {
+                my $system_user = Cpanel::AcctUtils::Lookup::get_system_user( $entry->{'username'} );
+                local $Cpanel::homedir = Cpanel::PwCache::gethomedir($system_user);
+                Cpanel::Email::Exists::pop_exists( split( q{@}, $entry->{'username'} ) );
+            }
+        ) {
+            print "$entry->{'username'} does not exist. Removing stale entries.\n";
+            $invalid{ $entry->{'username'} } = 1;
+            next EXPIRED_ENTRY;
+        }
+
+        push @valid, $entry;
+    }
+    return ( \@valid, \%invalid );
+}
+
+sub _purge_expired_xaps_registrations {
+    my ($self) = @_;
+
+    return Cpanel::APNS::Mail::DB->new()->purge_registrations_older_than($DAYS_TO_KEEP_APNS_REGISTRATIONS);
+}
+
+1;

@@ -1,0 +1,37 @@
+[% SET CPANEL.CPVAR.dprefix="../"  %]
+
+[%
+    SET add_deny_ip = execute("BlockIP", "add_ip", {ip => RAW_FORM.item("ip")});
+%]
+
+[% WRAPPER '_assets/master.html.tt'
+    app_key = 'ip_blocker'
+-%]
+<div class="body-content">
+    [% IF add_deny_ip.status %]
+        <div class="alert alert-success" role="alert">
+            <span class="glyphicon glyphicon-ok-sign" aria-hidden="true"></span>
+            <div class="alert-message">
+                <strong class="alert-title">[% locale.maketext('Success:') %]</strong>
+                <span class="alert-body">
+                    [% locale.maketext("Users from the IP address(es) “[_1]” will not be able to access your site.", FORM.ip) %]
+                </span>
+            </div>
+        </div>
+    [% ELSE %]
+        [% FOREACH message IN add_deny_ip.errors %]
+            <div class="alert alert-danger" role="alert">
+                <span class="glyphicon glyphicon-remove-sign" aria-hidden="true"></span>
+                <div class="alert-message">
+                    <strong class="alert-title">[% locale.maketext('Error:') %]</strong>
+                    <span class="alert-body" id="error-[% loop.index() %]">
+                        [% message.html() %]
+                    </span>
+                </div>
+            </div>
+        [% END %]
+    [% END %]
+
+    [% INCLUDE _assets/return_link.html.tt return_location="index.html" return_link_text=locale.maketext("Go Back") %]
+</div>
+[% END #wrapper %]

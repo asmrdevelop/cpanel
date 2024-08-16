@@ -1,0 +1,64 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/biglogcheck                     Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+
+use Cpanel::ConfigFiles::Apache ();
+
+my $apacheconf = Cpanel::ConfigFiles::Apache->new();
+
+my $msg;
+my @logdirs = (
+    $apacheconf->dir_domlogs(),
+    $apacheconf->dir_logs(),
+    '/usr/local/cpanel/logs',
+    '/var/log',
+);
+
+foreach my $logdir (@logdirs) {
+    if ( -d $logdir ) {
+        open( DU, "du -La $logdir |" );
+        while (<DU>) {
+            my ( $size, $file ) = split( /\s+/, $_ );
+            if ( $size > 1650000 ) {
+                next if $file =~ m/\.(?:gz|bz2|tar|zip)$/;
+                next if -d $file;
+                my $nicesize = ( $size / 1024 );
+                $msg .= "$file ($nicesize Megs)\n";
+            }
+        }
+        close(DU);
+    }
+}
+
+if ($msg) {
+    my $message = <<"EOM";
+
+The following log files are near the 2 gigabyte file limit.
+You should recycle them or remove them to prevent Apache from
+getting SIGXFSZ (File Size Exceeded)
+
+
+=======================================================
+
+$msg
+
+EOM
+    require Cpanel::Notify;
+    Cpanel::Notify::notification_class(
+        'class'            => 'Check::Biglog',
+        'application'      => 'Check::Biglog',
+        'constructor_args' => [
+            'origin'       => 'biglogcheck',
+            'attach_files' => [ { 'name' => 'big_log.txt', 'content' => \$msg } ]
+        ]
+    );
+
+    if ( $ARGV[0] eq '-v' ) {
+        print $message;
+    }
+}

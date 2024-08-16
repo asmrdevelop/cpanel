@@ -1,0 +1,92 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - bin/purge_dead_comet_files              Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package bin::purge_dead_comet_files;
+
+use strict;
+use warnings;
+
+use Cpanel::Config::Users        ();
+use Cpanel::JSON                 ();    # PPI USE OK - speed
+use Cpanel::AdminBin::Serializer ();    # PPI USE OK - speed
+use Cpanel::PwCache::Build       ();
+
+# 12 hours in seconds
+our $EXPIRATION = ( 12 * 3600 );
+our ( $QUIET, $now );
+
+exit script(@ARGV) unless caller();
+
+sub script {
+    my @args = @_;
+
+    $QUIET = grep( /-quiet/, @args ) ? 1 : 0;
+    $now   = time();
+
+    local $| = 1;
+
+    # Retrieve all cpusers
+    my %cpusers = map { $_ => 1 } ( 'root', Cpanel::Config::Users::getcpusers() );
+
+    my $pwcache_ref = Cpanel::PwCache::Build::fetch_pwcache();
+    foreach my $pwref (@$pwcache_ref) {
+        my ( $user, $uid, $gid, $homedir ) = @{$pwref}[ 0, 2, 3, 7 ];
+        next if !$cpusers{$user};
+
+        if ( !$homedir ) {
+            print "******Skipping $user because of no home directory\n" if !$QUIET;
+            next;
+        }
+        my $comet_dir = "$homedir/.cpanel/comet";
+        next if ( !-e $comet_dir );
+
+        print "******Cleaning up comet for $user..." if !$QUIET;
+        {
+            my $privs;
+            if ( $user ne 'root' ) {
+                require Cpanel::AccessIds::ReducedPrivileges;
+                $privs = Cpanel::AccessIds::ReducedPrivileges->new( $uid, $gid );
+            }
+            purge_dead_comet_files($comet_dir);
+        }
+        print "Done\n" if !$QUIET;
+    }
+    return 0;
+}
+
+sub purge_dead_comet_files {
+    my ($comet_dir) = @_;
+    require Cpanel::SafeFind;
+    my $file;
+    Cpanel::SafeFind::finddepth(
+        {
+            'no_chdir' => 1,
+            'wanted'   => sub {
+                $file = $File::Find::name = $File::Find::name;    # no warnings once.
+
+                # File is deleted only if last modify time is 3 days old.
+                if ( $file && !-l $file && ( $now - ( stat(_) )[9] ) >= $EXPIRATION ) {
+                    if ( -d _ ) {
+                        rmdir($file);    #ok to fail since there may still be other live files
+                    }
+                    else {
+                        _unlink($file) or do {
+                            print "\nUnable to delete $file: $!" if !$QUIET;
+                        };
+                    }
+                }
+            }
+        },
+        $comet_dir
+    );
+    return 1;
+}
+
+# For tests
+sub _unlink { return unlink(@_) }
+
+1;

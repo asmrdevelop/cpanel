@@ -1,0 +1,58 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+#                                      Copyright 2024 WebPros International, LLC
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited.
+
+package autofixer2::set_upgrade_deferred_file_timestamp;
+
+use strict;
+use warnings;
+use Carp;
+
+exit run() unless caller;
+
+sub run {
+
+    return 0 unless supported_on_this_major( 48, 120 );    # Set this to the Min/Max we support this autofixer on.
+
+    my $upgrade_deferred_file = '/var/cpanel/upgrade_deferred';
+
+    return 0 unless ( -e $upgrade_deferred_file );
+
+    if ( !utime( undef, undef, $upgrade_deferred_file ) ) {
+        croak "Unable to update timestamp for $upgrade_deferred_file: $!";
+    }
+
+    return 0;                                              # exit(0);
+}
+
+# Do we run this code?
+sub supported_on_this_major {
+    my ( $min_ver, $max_ver ) = @_;
+
+    my $major = get_major_version();
+
+    return 0 if $major < $min_ver;
+    return 0 if $major > $max_ver;
+
+    return 1;
+}
+
+sub get_major_version {
+    my $major_version;
+
+    if ( open( my $fh, '<', '/usr/local/cpanel/version' ) ) {
+        my $full_version = <$fh>;
+        close($fh);
+        if ( length $full_version ) {
+            chomp $full_version;
+            ($major_version) = $full_version =~ /^[0-9]+\.([0-9]+)/;
+        }
+    }
+
+    # Safe default.
+    return $major_version || 30;
+}
+
+1;

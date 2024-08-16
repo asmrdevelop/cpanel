@@ -1,0 +1,59 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - bin/is_registered_with_appconfig        Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::is_registered_with_appconfig;
+
+use strict;
+use Cpanel::AppConfig ();
+
+run() unless caller;
+
+sub run {
+    my $applist = Cpanel::AppConfig::get_application_list();
+    my $service = $ARGV[0];
+    my $app     = $ARGV[1];
+
+    usage() if $service =~ m/^-*help/;
+
+    if ( !exists $applist->{$service} ) {
+        print "The service '$service' is not a valid service.\n";
+        usage();
+    }
+
+    if ( grep { $_->{'name'} eq $app } @{ $applist->{$service} } ) {
+        print "1";
+    }
+    else {
+        print "0";
+
+    }
+
+    exit(0);
+}
+
+sub usage {
+    print <<EOM;
+
+
+$0: Summary
+
+This tool allows you to quickly tell if an app is registered with appconfig.
+
+For more information please see the documentation for this system:
+
+https://go.cpanel.net/appconfig
+
+Example usage:
+
+  $0 <service> <appname>
+
+  $0 --help
+
+EOM
+
+    exit(1);
+}

@@ -1,0 +1,146 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/modify_accounts                 Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::modify_accounts;
+
+use strict;
+use warnings;
+
+use Cpanel::Config::Constants ('DEFAULT_CPANEL_THEME');
+use Cpanel::AcctUtils::Owner        ();
+use Cpanel::Config::LoadUserDomains ();
+use Cpanel::JSON                    ();
+use Cpanel::Logger                  ();
+use Cpanel::Reseller                ();
+use Cpanel::SafeRun::Errors         ();
+use Whostmgr::ACLS                  ();
+
+use Getopt::Long ();
+
+my $logger = Cpanel::Logger->new();
+
+local $| = 1;
+
+exit main(@ARGV) unless caller;
+
+sub main {
+    my @args = @_;
+
+    if ( $> != 0 ) {
+        $logger->die("Sorry, only root can use this script.");
+    }
+
+    my ( $theme, $users, $help, $all_users, $reseller, $style );
+
+    Getopt::Long::GetOptionsFromArray(
+        \@args,
+        'help'                      => \$help,
+        'theme=s'                   => \$theme,
+        'all-users'                 => \$all_users,
+        'users=s'                   => \$users,
+        'all-users-from-reseller=s' => \$reseller,
+        'style=s'                   => \$style
+      )
+      and ( !@args )
+      or do {
+        usage();
+        exit 1;
+      };
+
+    if ($help) {
+        usage();
+        exit;
+    }
+
+    unless ( $theme && ( $all_users || $users || $reseller ) ) {
+        usage();
+        exit 1;
+    }
+
+    if ($reseller) {
+        unless ( Cpanel::Reseller::isreseller($reseller) ) {
+            $logger->die("'$reseller' is not a reseller.");
+        }
+    }
+
+    local $ENV{'REMOTE_USER'} = 'root';
+
+    Whostmgr::ACLS::init_acls();
+
+    my %userdomains = Cpanel::Config::LoadUserDomains::loadtrueuserdomains( undef, 1 );
+
+    my @list_users;
+    if ( $all_users || $reseller ) {
+        @list_users = keys %userdomains;
+        if ($reseller) {
+            @list_users = grep { my $real_owner = Cpanel::AcctUtils::Owner::getowner($_); $real_owner && $real_owner eq $reseller ? 1 : 0 } @list_users;
+        }
+    }
+    else {
+        @list_users = split( /\s*,\s*/, $users );
+    }
+
+    my %updated_users;
+    foreach my $user (@list_users) {
+        unless ( exists $userdomains{$user} ) {
+            $logger->warn("User: $user does not exist.");
+            next;
+        }
+
+        my %modify_opts = (
+            'user'    => $user,
+            'CPTHEME' => $theme,
+        );
+        $modify_opts{'STYLE'} = $style if $style;
+
+        # Whostmgr::Accounts::Modify does not ship,
+        # we need to use whmapi1 modifyacct instead
+        my $json = Cpanel::SafeRun::Errors::saferunallerrors(
+            '/usr/local/cpanel/bin/whmapi1',
+            '--output', 'json',
+            'modifyacct',
+            %modify_opts
+        );
+        my $response = Cpanel::JSON::Load($json);
+
+        if ( $response->{'metadata'}{'result'} == 0 ) {
+            $logger->warn( "Unable to update data for $user: " . $response->{'metadata'}{'reason'} );
+        }
+        else {
+            $updated_users{$user} = 1;
+        }
+    }
+
+    my @failed_accts = grep { !$updated_users{$_} } @list_users;
+    if ( scalar @failed_accts ) {
+        $logger->warn( "Could not update these users: " . join( ', ', @failed_accts ) );
+        exit 1;
+    }
+    else {
+        $logger->info("Users are successfully updated.");
+        exit 0;
+    }
+}
+
+sub usage {
+    print <<"EOM";
+
+modify_accounts: Modify existing accounts to use a theme or a style
+
+Usage:
+    modify_accounts --theme=$Cpanel::Config::Constants::DEFAULT_CPANEL_THEME [--users=user1,another_user|--all-users|--all-users-from-reseller=reseller1]
+
+  Options:
+    --help: print usage and exit
+    --theme: the theme to be adopted
+    --users: a list of users to be modified, comma separated
+    --all-users: update all users on the system
+    --all-users-from-reseller: update all users that are owned by reseller
+    --style: update specified users to use this style
+EOM
+    return;
+}

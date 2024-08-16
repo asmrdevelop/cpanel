@@ -1,0 +1,215 @@
+<h4 class="section-heading">[% locale.maketext("[output,url,_1,Amazon S3™,target,_blank] Destination","http://aws.amazon.com/s3/") %]</a></h4>
+<p class="documentation-info" id="documentation-info">
+    [% locale.maketext("For more information on how to properly configure [asis,Amazon S3] as a remote backup destination, read [output,url,_1,our documentation,target,_2].", 'https://go.cpanel.net/AWSBackupConfiguration', 'amazons3doc') %]
+    <span class='fas fa-external-link-alt fa-sm'></span>
+</p>
+<div class="section-body">
+    <form name="amazonS3Destination" ng-if="!destinationState.fetching_data" ng-disabled="destinationState.savingDestination || destinationState.validatingDestination" novalidate>
+        <div class="form-group">
+            <div class="row">
+                <div class="col-xs-12 col-md-6 col-lg-6">
+                    <label for="name">[% locale.maketext("Destination Name") %]</label>
+                    <span class="info-block">[% locale.maketext("Enter a name for this destination.") %]</span>
+                </div>
+            </div>
+            <div class="row">
+                <div class="col-xs-12 col-md-6 col-lg-6">
+                    <input type="text"
+                            name="name"
+                            id="amazons3_name"
+                            required
+                            class="form-control"
+                            minlength="1"
+                            ng-maxlength="256"
+                            ng-model="destinationState.destination.amazons3.name" />
+                </div>
+                <div class="col-xs-12 col-md-6 col-lg-6">
+                    <ul validation-container field-name="name">
+                        <validation-item
+                            field-name="name"
+                            validation-name="required">
+                                [% locale.maketext("You must enter a destination name.") %]
+                        </validation-item>
+                        <validation-item
+                            field-name="name"
+                            validation-name="maxlength">
+                                [% locale.maketext("The destination name must contain between [numf,1] and [numf,256] characters.") %]
+                        </validation-item>
+                    </ul>
+                </div>
+            </div>
+        </div>
+        <div class="form-group">
+            <div class="row">
+                <div class="col-xs-12 col-md-6 col-lg-6">
+                    <input type="checkbox" name="upload_system_backup" id="amazons3_system" ng-model="destinationState.destination.amazons3.upload_system_backup"/>
+                    <label for="amazons3_system">[% locale.maketext("Transfer System Backups to this Destination") %]</label>
+                    <div class="callout callout-warning">
+                        <span>[% locale.maketext('[output,strong,Warning:] System Backups contain sensitive security details and should not be transferred over non-encrypted methods.') %]</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+		<div class="form-group">
+            <div class="row">
+                <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                    <input
+                        ng-model="destinationState.destination.amazons3.only_used_for_logs"
+                        type="checkbox"
+                        name="only_used_for_logs"
+                        id="amazons3_logsonly"/>
+                    <label for="amazons3_logsonly">[% locale.maketext('Only use this destination for log file transfers[comment,title of option like one above, but looks wrong title cased]') %]</label>
+                    <div class="callout callout-warning">
+                        <span>[% locale.maketext('[output,strong,Warning:] Enabling this option will prevent it from being used for account and/or system backups.') %] [% locale.maketext('Only enable this option if this destination will only be used for log backups. If it will be used for all backups, leave this unchecked.') %]</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="form-group">
+            <div class="row">
+                <div class="col-xs-12 col-md-6 col-lg-6">
+                    <label for="folder">[% locale.maketext("Folder") %]</label>
+                    <span class="info-block">[% locale.maketext("Optional. Specify the path, relative to the account’s home directory, where the system stores backups.") %]</span>
+                </div>
+            </div>
+            <div class="row">
+                <div class="col-xs-12 col-md-6 col-lg-6">
+                    <input
+                        type="text"
+                        name="folder"
+                        id="amazons3_path"
+                        class="form-control"
+                        backup-location
+                        ng-model="destinationState.destination.amazons3.folder" />
+                </div>
+                <div class="col-xs-12 col-md-6 col-lg-6">
+                    <ul validation-container field-name="folder">
+                    </ul>
+                </div>
+            </div>
+        </div>
+        <div class="form-group">
+            <div class="row">
+                <div class="col-xs-12 col-md-6 col-lg-6">
+                    <label for="bucket">[% locale.maketext("Bucket") %]</label>
+                    <span class="info-block">[% locale.maketext("Enter the bucket name on the remote destination.") %]</span>
+                </div>
+            </div>
+            <div class="row">
+                <div class="col-xs-12 col-md-6 col-lg-6">
+                    <input type="text" name="bucket" id="amazons3_bucket" class="form-control" required bucket="amazon" ng-model="destinationState.destination.amazons3.bucket" />
+                </div>
+                <div class="col-xs-12 col-md-6 col-lg-6">
+                    <ul validation-container field-name="bucket">
+                        <validation-item
+                            field-name="bucket"
+                            validation-name="required">
+                                [% locale.maketext("You must enter a bucket name.") %]
+                        </validation-item>
+                    </ul>
+                </div>
+            </div>
+        </div>
+        <div class="form-group">
+            <div class="row">
+                <div class="col-xs-12 col-md-6 col-lg-6">
+                    <label for="awsAccessKeyId">[% locale.maketext("Access Key [asis,ID]") %]</label>
+                </div>
+            </div>
+            <div class="row">
+                <div class="col-xs-12 col-md-6 col-lg-6">
+                    <input type="text" name="awsAccessKeyId" id="amazons3_username" class="form-control" required ng-model="destinationState.destination.amazons3.aws_access_key_id" />
+                </div>
+                <div class="col-xs-12 col-md-6 col-lg-6">
+                    <ul validation-container
+                        field-name="awsAccessKeyId">
+                            <validation-item
+                                field-name="awsAccessKeyId"
+                                validation-name="required">
+                                     [% locale.maketext("You must enter an Access Key [asis,ID] for the remote destination.") %]
+                            </validation-item>
+                    </ul>
+                </div>
+            </div>
+        </div>
+        <div class="form-group">
+            <div class="row">
+                <div class="col-xs-12 col-md-6 col-lg-6">
+                    <label for="password">[% locale.maketext("Secret Access Key") %]</label>
+                    <span class="info-block">[% locale.maketext("For security reasons, you will not see the Secret Access Key.") %] [% locale.maketext("Only enter the Secret Access Key when you create this destination, or when you change the Secret Access Key.") %]</span>
+                </div>
+            </div>
+            <div class="row">
+                <div class="col-xs-12 col-md-6 col-lg-6">
+                    <input type="password" name="password" id="amazons3_password" class="form-control" ng-required="destinationState.newMode" ng-model="destinationState.destination.amazons3.password" />
+                </div>
+                <div class="col-xs-12 col-md-6 col-lg-6">
+                    <ul validation-container field-name="password">
+                        <validation-item
+                            field-name="password"
+                            validation-name="required">
+                                [% locale.maketext("You must enter a Secret Access Key.") %]
+                            </validation-item>
+                    </ul>
+                </div>
+            </div>
+        </div>
+[%
+    timeout_required_number_message = locale.maketext('You must enter a positive integer for the timeout value.');
+    timeout_min_max_message = locale.maketext("You must enter a timeout value between [numf,30] and [numf,300] seconds.");
+%]
+        <div class="form-group">
+            <div class="row">
+                <div class="col-xs-12 col-md-6 col-lg-6">
+                    <label for="timeout">[% locale.maketext("Timeout") %]</label>
+                    <span class="info-block">[% locale.maketext("The number of seconds that the system will wait for a response from the remote server.") %]</span>
+                </div>
+            </div>
+            <div class="row">
+                <div class="col-xs-12 col-md-6 col-lg-6">
+                    <input
+                        type="number"
+                        name="timeout"
+                        id="amazons3_timeout"
+                        class="form-control"
+                        min="30"
+                        max="300"
+                        ng-keydown="noDecimalPoints($event)"
+                        ng-paste="onlyNumbers($event)"
+                        ng-model="destinationState.destination.amazons3.timeout"
+                        positive-integer />
+                </div>
+                <div class="col-xs-12 col-md-6 col-lg-6">
+                    <ul validation-container field-name="timeout">
+                        <validation-item
+                            field-name="timeout"
+                            validation-name="number">
+                                [% timeout_required_number_message %]
+                        </validation-item>
+                        <validation-item
+                            field-name="timeout"
+                            validation-name="min">
+                                [% timeout_min_max_message %]
+                        </validation-item>
+                        <validation-item
+                            field-name="timeout"
+                            validation-name="max">
+                                [% timeout_min_max_message %]
+                        </validation-item>
+                    </ul>
+                </div>
+            </div>
+        </div>
+        <div class="form-group">
+            <div class="row">
+                <div class="col-xs-12">
+                    <div id="save_config">
+                        <button type="submit" id="save_destination_button" cp-action="saveDestination(destinationState.destination)" ng-disabled="amazonS3Destination.$pristine || amazonS3Destination.$invalid || destinationState.savingDestination || destinationState.validatingDestination">[% locale.maketext('Save Destination') %]</button>
+                        <button type="button" button-class="btn-default" id="save_and_validate_destination_button" cp-action="saveAndValidateDestination(destinationState.destination)" ng-disabled="amazonS3Destination.$pristine || amazonS3Destination.$invalid || destinationState.savingDestination || destinationState.validatingDestination">[% locale.maketext('Save and Validate Destination') %]</button>
+                        <button type="button" class="btn btn-link" id="cancel_destination_button" ng-click="cancelDestination()" ng-disabled="destinationState.savingDestination || destinationState.validatingDestination">[% locale.maketext('Cancel') %]</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </form>
+</div>

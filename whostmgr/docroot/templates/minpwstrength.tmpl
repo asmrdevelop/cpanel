@@ -1,0 +1,106 @@
+[% USE JSON -%]
+[% USE CPList -%]
+[% WRAPPER 'master_templates/master.tmpl'
+    theme="yui"
+    app_key='password_strength_configuration'
+    scripts = [
+        '/yui/slider/slider-min.js'
+    ]
+-%]
+
+[% PROCESS '_ajaxapp.tmpl' -%]
+
+[% IF data.is_linked %]
+<div class="callout callout-warning">
+    <p>
+        [% locale.maketext("Changing the password strength on the parent node only affects the parent node. You must update password strength on a child node to apply changes to the child node.") %]
+    </p>
+</div>
+[% END %]
+
+<script type="text/javascript">
+var items = [];
+</script>
+
+[%# txt, key, off_label, setting -%]
+[% VIEW row_block; BLOCK hash -%]
+
+<script type="text/javascript">
+[% FOREACH element IN item.key %]
+    items.push( "[% element %]" );
+[% END %]
+</script>
+
+<tr class="[% item.is_odd_row ? 'odd-row' : 'even-row' %]">
+    <td>[% item.txt %]:</td>
+    <td class="off-cell"><label><input type="radio" id="[% item.key %]-default" name="[% item.key %]-control" value="" [% item.setting.length ? '' : 'checked="checked"' %] /> [% locale.maketext('Default') -%]</label></td>
+    <td class="slider-cell">
+        <input type="radio" id="[% item.key %]-enabled" name="[% item.key %]-control" value="1" [% item.setting.length ? 'checked="checked"' : '' %] />
+        <div class="slider-bg" id="[% item.key %]-slider-bg" tabindex="-1" title="Slider">
+            <div class="slider-thumb" id="[% item.key %]-slider-thumb"><img src="[% MagicRevision('/yui/slider/assets/thumb-n.gif') %]"></div>
+        </div>
+        <input id="[% item.key %]" name="[% item.key %]" type="text" autofill="off" autocomplete="off" size="[% data.max_strength.length %]" maxlength="[% data.max_strength.length %]" value="[% item.setting || 0 %]">
+    </td>
+    <td>
+        <div id="[% item.key %]_error"></div>
+    </td>
+</tr>
+[% END; END -%]
+
+<div id="cjt_pagenotice_container"></div>
+
+<form id="the_form" onsubmit="save()" action="javascript:void(0)">
+
+<div id="default_strength_area">
+    <span class="the-label">[% locale.maketext('Default Required Password Strength') %]:</span>
+    <span class="nowrap">
+        <div class="slider-bg" id="default-slider-bg" tabindex="-1" title="Slider">
+            <div class="slider-thumb" id="default-slider-thumb"><img src="[% MagicRevision('/yui/slider/assets/thumb-n.gif') %]"></div>
+        </div>
+        <input id="default" name="default" type="text" autofill="off" autocomplete="off" size="[% data.max_strength.length %]" maxlength="[% data.max_strength.length %]" value="[% data.default_strength %]">
+        <span id="default_error"></span>
+    </span>
+<p>[% locale.maketext('The “[_1]” setting will propagate to any individual options that are set to “[_2]”.', locale.maketext('Default Required Password Strength'), locale.maketext('Default')) %]</p>
+
+</div>
+
+<table id="application_strengths_table">
+[% FOR str = data.strengths.sort('label') -%]
+    [% row_block.print( {
+        is_odd_row => loop.index % 2,
+        setting => str.setting,
+        txt => str.label,
+        key => str.key,
+    } ) -%]
+[% END -%]
+</table>
+
+
+<script type="text/javascript">
+[% SET js_strengths = data.strengths.ofeach('key'); js_strengths.unshift('default') -%]
+var STRENGTHS = [% js_strengths.json() %];
+var MAX_STRENGTH = [% data.max_strength %];
+
+function validate_input( element ) {
+    var INPUT_FIELD_VALIDATION = new CPANEL.validate.validator("PW Strength");
+    INPUT_FIELD_VALIDATION.add(element, function () {
+        var val = DOM.get(element).value.trim()
+        return CPANEL.validate.positive_integer(val);
+    }, "[% locale.maketext("Password strength must be a number between 0 and 100.") %]");
+    INPUT_FIELD_VALIDATION.attach();
+    CPANEL.validate.attach_to_form( "save_button", INPUT_FIELD_VALIDATION, { no_panel:true } );
+}
+
+validate_input( "default" );
+for ( i=0; i < items.length; i++ ) {
+    validate_input(items[i] );
+}
+</script>
+<br /> <br />
+<div style="text-align:center">
+<input id="save_button" type="submit" class="btn-primary" value="[% locale.maketext('Save') %]" />
+</div>
+</form>
+
+[% PROCESS '_ajaxapp.tmpl' -%]
+[% END -%]

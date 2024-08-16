@@ -1,0 +1,92 @@
+#!/usr/bin/perl
+
+# cpanel - scripts/cpan_config                     Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+BEGIN { unshift @INC, '/usr/local/cpanel'; }
+
+use strict;
+use warnings;    # DO NOT REMOVE. NEEDED FOR PATH LOOKUP
+
+use Cpanel::CleanINC       ();
+use Cpanel::cPCPAN         ();
+use Cpanel::cPCPAN::Config ();
+
+if ( $> != 0 ) {
+    die "Unable to set system CPAN::Config. Permission denied.\n";
+}
+
+my $cpanbasedir = '/home';
+
+my $cpan = { 'basedir' => $cpanbasedir };
+
+my $cpan_config = Cpanel::cPCPAN::fetch_config($cpan);
+
+my $path = $INC{'warnings.pm'};
+$path =~ s/\/warnings\.pm$//;
+if ( !-e $path . '/CPAN' ) {
+    mkdir $path . '/CPAN';
+}
+
+my $cpan_config_file = $path . '/CPAN/Config.pm';
+
+my $now = time;
+if ( -e $cpan_config_file ) {
+    rename $cpan_config_file, $cpan_config_file . '.' . $now or die "Unable to archive $cpan_config_file: $!";
+    print "Existing $cpan_config_file archived as ${cpan_config_file}.${now}\n";
+}
+
+if ( open my $conf_fh, '>', $cpan_config_file ) {
+    my $localtime = localtime($now);
+    print {$conf_fh} <<"EOM";
+# This CPAN::Config was automatically generated using /usr/local/cpanel/scripts/cpan_config
+# at $localtime
+#
+# If this Config.pm replaced an existing version, then it would be located at:
+#     ${cpan_config_file}.${now}
+
+
+# This is CPAN.pm's systemwide configuration file. This file provides
+# defaults for users, and the values can be changed in a per-user
+# configuration file.
+
+EOM
+    print {$conf_fh} qq{\$CPAN::Config = \{\n};
+    foreach my $key ( sort keys %{$cpan_config} ) {
+        print {$conf_fh} "  '$key' => ", neatvalue( $cpan_config->{$key} ), ",\n";
+    }
+    print {$conf_fh} "};\n1;\n__END__\n";
+    close $conf_fh;
+}
+
+# stolen from MakeMaker; not taking the original because it is buggy;
+# bugreport will have to say: keys of hashes remain unquoted and can
+# produce syntax errors
+sub neatvalue {
+    my ($value) = @_;
+    return 'undef' unless defined $value;
+    my $ref_type = ref $value;
+    unless ($ref_type) {
+        $value =~ s/\\/\\\\/g;
+        return "q[$value]";
+    }
+    if ( $ref_type eq 'ARRAY' ) {
+        my ( @m, @neat );
+        push @m, '[';
+        foreach my $elem (@$value) {
+            push @neat, "q[$elem]";
+        }
+        push @m, join ', ', @neat;
+        push @m, ']';
+        return join '', @m;
+    }
+    return "$value" unless $ref_type eq 'HASH';
+    my ( @m, $key, $val );
+    while ( ( $key, $val ) = each %$value ) {
+        last unless defined $key;    # cautious programming in case (undef,undef) is true
+        push( @m, "q[$key]=>" . neatvalue($val) );
+    }
+    return '{ ' . join( ', ', @m ) . ' }';
+}

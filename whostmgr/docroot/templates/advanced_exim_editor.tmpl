@@ -1,0 +1,1239 @@
+[% USE CPScalar -%]
+[% USE JSON -%]
+[% USE Encoder -%]
+[% USE Whostmgr -%]
+[% WRAPPER 'master_templates/master.tmpl' theme="yui"
+    inside_frame_or_tab_or_popup = in_tab
+    skipheader = in_tab
+    stylesheets = [
+        Whostmgr.find_file_url('css/tweaksettings_optimized.css'),
+        '/yui/button/assets/skins/sam/button.css'
+        '/yui/autocomplete/assets/skins/sam/autocomplete.css'
+    ]
+    scripts = [
+        '/yui/datasource/datasource-min.js'
+        '/yui/autocomplete/autocomplete-min.js'
+        '/cjt/combobox.js'
+    ]
+    breadcrumburl = '/scripts2/displayeximconfforedit'
+    extrastyle = '
+
+/* Tab Style */
+#pageContainer {
+    margin: 0;
+    padding: 0;
+}
+
+#contentContainer {
+    max-width: inherit !important;
+}
+
+/* End Tab Style */
+
+.confeditbox {
+    overflow: hidden;
+}
+
+.brickliststart li {
+    list-style: none;
+}
+
+#rbl_table {
+    width: 100%;
+}
+
+#rbl_table th,
+#rbl_table td {
+    text-align: center;
+}
+
+tr.delete_rbl td {
+    font-style: italic;
+    color: graytext;
+}
+
+.CONFIG_autocompleter {
+    margin-right: 10px;
+    border: 1px solid #aaaaaa;
+    display: inline-block;
+}
+
+.CONFIG_autocompleter a {
+    margin: 0 2px;
+    vertical-align: middle;
+}
+
+.CONFIG_autocompleter a:hover {
+    text-decoration: none;
+}
+
+.CONFIG_autocompleter input {
+    width: 256px;
+    border: 0;
+    border-right: 1px solid #aaaaaa;
+}
+
+.yui-skin-sam .yui-ac-input {
+    position: static;
+    width: 20em;
+    vertical-align: middle;
+}
+
+.yui-skin-sam .yui-ac-container {
+    width: 20em;
+    left: 0px;
+}
+
+.yui-skin-sam .yui-ac-container .yui-ac-content {
+    max-height: 150px;
+    overflow-y: scroll;
+}
+
+.syntax_error {
+    color: #a00;
+}
+
+.sortable td .validator_display,
+.datatable td .validator_display,
+.validator_display {
+    border: 0;
+}
+
+.validator_display {
+    width: 80px;
+}
+
+.CONFIG_container td {
+    padding-bottom: 0;
+}
+
+.CONFIG_container textarea {
+    margin: 0;
+}
+
+.CONFIG_default_container td {
+    padding-top: 0;
+    width: 215px;
+    font: 12px "Andale Mono", "Courier New", Courier, monospace;
+}
+
+fieldset.section {
+    padding: 0;
+    padding-left: 10px !important;
+    border: none;
+}
+
+fieldset.aclinsert {
+    padding: 0;
+    padding-left: 10px !important;
+}
+
+#CONFIG a {
+    color: #037094;
+}
+
+#CONFIG a:visited {
+    color: #335024;
+}
+
+#CONFIG a:hover,
+a:visited:hover {
+    color: #000000;
+}
+
+#CONFIG .docbook_filename,
+.docbook_emphasis,
+.docbook_function {
+    font-style: italic;
+}
+
+#CONFIG .docbook_option,
+.docbook_command {
+    font-weight: bold;
+}
+
+#CONFIG .docbook_literal {
+    font-family: monospace;
+}
+
+#CONFIG .docbook_literallayout {
+    background-color: #E8E8D0;
+}
+
+#CONFIG .docbook_literallayout pre {
+    margin-bottom: 1em;
+    padding: 1em;
+}
+
+#CONFIG p,
+#CONFIG pre {
+    margin: 0;
+}
+
+#CONFIG .CONFIG_description {
+    width: 710px;
+    padding-left: 15px;
+    border: dashed 1px #ccc;
+}
+
+#eximconf pre {
+    margin: 0;
+    padding-left: 10px;
+}
+
+.aclinsert {
+    padding-left: 15px;
+    padding-top: 5px;
+}
+
+#CONFIG td {
+    border: 0;
+}
+
+legend {
+    font-weight: 900;
+}
+
+.datatable td,
+.sortable td {
+    border-right: 0;
+}
+
+html[dir="rtl"] .sortable .cell,
+html[dir="rtl"] .fixedtable .cell,
+html[dir="rtl"] .datatable .cell {
+    border-left: 1px solid #ccc;
+}
+
+html[dir="rtl"] .yui-panel .container-close {
+    left: 4px;
+    right: auto;
+}
+'
+-%]
+<div class="brickcontainer tweaksettings">
+<div class="brickcontainer2">
+<script type="text/javascript">
+function notify_parent_submit() {
+    if (parent && parent.notify_submit)  {
+        parent.notify_submit('advanced','Saving Advanced Configuration...' );
+    }
+}
+
+function resizetextarea(thisarea) {
+    thisarea.style.overflow='hidden';
+    var newrows = thisarea.value.split("\n").length; //# - 1;
+    if (newrows > thisarea.rows) {
+        thisarea.rows = newrows;
+    } else if (newrows + 1 < thisarea.rows) {
+        thisarea.rows = newrows + 1;
+    }
+}
+</script>
+[% WRAPPER '_brick.tmpl' bricktitle='Instructions' brickpercent='auto' -%]
+<blockquote>
+    The following configuration editor will allow you to modify the default configuration of Exim.
+    Configuration changes made within this editor will be conserved across Exim updates and reinstallation.
+    Changes to the default configuration can significantly impact Exim's performance and may prevent it from
+    operating altogether. <b>Use this editor with caution.</b>
+    <br />
+    <br />
+    To use, add new directives or modify current directives within the provided text boxes.
+    You should only use this feature if you
+    understand how to write a valid Exim configuration file. Information on Exim's configuration syntax can
+    be found in <a href="http://www.exim.org/exim-html-current/doc/html/spec_html/index.html" target="_blank">Exim's documentation</a>.
+    <br />
+    <br />
+    <b><i>Adding invalid configuration information here will prevent Exim from operating.</i></b>
+    <br />
+</blockquote>
+[% END -%]
+<br /><br />
+
+<div id="eximconf">
+[% WRAPPER '_brick.tmpl' bricktitle='Combined Exim Configuration' brickpercent='auto' %]
+<form id="advform" [% IF in_tab %]target="tabaction"[% END %] onSubmit="try { return ensure_cfg_is_valid(); } catch(e) { return false } return false;"action="[% cp_security_token %]/scripts2/saveeximconf" method="POST">
+<input type="hidden" name="hasdata" value="1">
+<input type="hidden" name="in_tab" value="[% in_tab %]">
+
+[% VIEW cfg_ac_cell; BLOCK hash -%]
+<td>
+    <div class='CONFIG_autocompleter' id="AutoComplete_[% item.optcount %]">
+        <input size='40' type='text' id='CONFIG_option_[% item.optcount %]' name='CONFIG_option_[% item.optcount %]' value="[% item.optsetting FILTER html %]" /><a id="toggle-[% item.optcount %]" href="javascript:void(0)"></a>
+    </div>
+</td>
+[% END; END; -%]
+[%-
+SET cols = 100;
+SET minrows = 5;
+SET incfkill = 0;
+SET section = 'acl';
+SET inblock = 0;
+SET inpre = 0;
+
+
+FOREACH line = data.exim_dist_config_template;
+    SET this_match = line.match('\Abegin\s+(.+)\z');
+    IF this_match;
+        SET section = this_match.0;
+    END;
+
+    SET this_match = line.match('\A\s*\@(.+)\@\s*\n?\z');
+    IF this_match;
+        IF inpre; "</pre>"; SET inpre=0; END;
+        SET insert = this_match.0;
+
+        "<div id='$insert'><fieldset class='section'><legend>Section: $insert</legend>";
+
+        IF insert == "CONFIG";
+            SET optcount = 0;
+            "<div>";
+                "<div id='config_options'>";
+                FOREACH cfgopt = data.parsed_config;
+                    SET optname = cfgopt.name;
+                    SET optsetting = cfgopt.setting;
+                    SET optcount = optcount + 1;
+                    "\n\n\n<div class='config_option' id='CONFIG_container_${optcount}'><table>";
+                    "<tr class='CONFIG_container'>";
+                    cfg_ac_cell.print({ 'optcount'=>optcount, 'optsetting'=>optsetting });
+                    "<td>=</td>";
+                    SET cfgval = cfgopt.val.cpanel_safe_html_encode_str();
+                    SET rows = cfgval.split('\n').size;
+                    IF rows < minrows;
+                        SET rows = 2;
+                    END;
+                    "<td colspan='2'><pre><textarea id='CONFIG_value_${optcount}' onkeyup='resizetextarea(this)' onchange='progressively_validate_configuration(0,this)' class='confeditbox' cols='60' rows='$rows' name='CONFIG_value_${optcount}'>";
+                    GET cfgval;
+                    '</textarea></pre></td>';
+                    "<td class='validator_display'>";
+                        "<div id='CONFIG_option_${optcount}_error'></div>";
+                    "</td>";
+                    "<td align='right'>";
+                    IF ! data.non_removable_opts.$optsetting;
+                        "<img id='CONFIG_delete_${optcount}' src='" _ MagicRevision('/images/trashcan.png') _ "' alt='Delete' style='cursor:pointer'>";
+                    END;
+                    "</td>";
+                    "</tr>";
+                    "<tr class='CONFIG_default_container'>";
+                        "<td colspan='2'></td>";
+                        IF data.config_docs.$optname.default;
+                            "<td valign='top' id='CONFIG_default_${optcount}' class='CONFIG_default'>Exim Default: " _ data.config_docs.$optname.default.cpanel_safe_html_encode_str() _ "</td>";
+                        ELSE;
+                            "<td valign='top' id='CONFIG_default_${optcount}' class='CONFIG_default'></td>";
+                        END;
+                        IF data.config_docs.$optname.cpanel_default;
+                            "<td valign='top' id='CONFIG_cpanel_default_${optcount}' class='CONFIG_cpanel_default'>cPanel Default: " _ data.config_docs.$optname.cpanel_default.cpanel_safe_html_encode_str() _ "</td>";
+                        ELSE;
+                            "<td valign='top' id='CONFIG_cpanel_default_${optcount}' class='CONFIG_cpanel_default'></td>";
+                        END;
+                    "</tr>";
+                    '</table>';
+                    "</div>";
+                    "<div id='CONFIG_description_${optcount}' class='CONFIG_description'>";
+                    data.config_docs.$optname.description;
+                    "</div>\n\n\n";
+                END;
+                "</div>";
+                "<div><br /><div style='width: 275px; font-weight: 900; cursor: pointer;' class='btn-primary' id='add_cfg'><i class='fas fa-plus-circle fa-lg' aria-hidden='true'></i> Add additional configuration setting</div></div>";
+            "</div>";
+        ELSE;
+            SET rows = data.cf.$insert.split('\n').size;
+            IF rows < minrows;
+                SET rows = minrows;
+            END;
+            "<table>";
+                "<tr>";
+                    "<td>";
+                        "<pre>";
+                            "<textarea id='$insert|$section' onkeyup='resizetextarea(this)' onchange='progressively_validate_configuration(0,this)' class='confeditbox' cols='$cols' rows='$rows' name='$insert'>";
+                            GET data.cf.$insert.cpanel_safe_html_encode_str();
+                            '</textarea>';
+                         "<pre>";
+                    "</td>";
+                    "<td  class='validator_display'>";
+                        "<div id='$insert|${section}_error'></div>";
+                    "</td>";
+                "</tr>";
+           "</table>";
+
+        END;
+
+        "</fieldset></div>";
+
+        NEXT;
+    END;
+
+    SET this_match = line.match('\A\%(.+)\%\n?\z');
+    IF this_match;
+        IF inpre; "</pre>"; SET inpre=0; END;
+        SET insert = this_match.0;
+        SET acf = insert.replace('\A(?:BEGIN|END)', '');
+        IF insert.match( '\ABEGINACL' );
+            "<div id='ACLS'><fieldset class='section'><legend>Section: ACLs</legend>";
+
+            SET incfkill = 1;
+            SET usingcustom = 0;
+            SET currentblock = "";
+            SET inside_insert = 0;
+            SET insert_text = "";
+            SET customacls = data.cf.$acf ? data.cf.$acf : data.distcf.$acf;
+            SET parsedacls = data.parsed_acls;
+
+               IF data.cf.exists( acf ) && data.cf.$acf;
+                SET usingcustom = 1;
+            END;
+
+            SET rows = customacls.split('\n').size;
+               IF rows < minrows;
+                SET rows = minrows;
+            END;
+
+            "<div id='%${acf}%'>";
+                "<div id='%${acf}%_custom' " _ (usingcustom ? "" : "style='display:none;'")  _  ">";
+                    "<table>";
+                        "<tr>";
+                            "<td>";
+                                "<pre>";
+                                    "<textarea id='customaclbox|acl' onkeyup='resizetextarea(this)' onchange='progressively_validate_configuration(0)' class='confeditbox' cols='$cols' rows='$rows' name='%${acf}%'>";
+                                    GET customacls.cpanel_safe_html_encode_str();
+                                    '</textarea>';
+                                "</pre>";
+                            "</td>";
+                            "<td class='validator_display'>";
+                                "<div id='customaclbox|acl_error'></div>";
+                            "</td>";
+                        "</tr>";
+                    "</table>";
+                "</div>";
+                "<script>resizetextarea(YAHOO.util.Dom.get('customaclbox|acl'));</script>";
+                "<div id='%${acf}%_block' " _ (usingcustom ? "style='display:none;'" : "")  _  ">";
+                FOREACH entry = parsedacls;
+                    IF entry.type == "text";
+                        IF entry.value.match('^\s*$');
+                            NEXT;
+                        END;
+                        IF entry.value.match('^\s*#');
+                            NEXT;
+                        END;
+                        SET aclname = entry.value;
+                        "<br /><span class='acl_name'>";
+                        GET aclname.cpanel_safe_html_encode_str();
+                        "</span>";
+                    ELSIF entry.type == "insert";
+                        SET rows = entry.value.split('\n').size;
+                        IF rows < 1;
+                            SET rows = 1;
+                        END;
+                        "<div class='aclinsert'><fieldset class='aclinsert'><legend>";
+                        "<input onclick='sync_acl_checks(this);' type='checkbox' class='aclcheck acl_check_" _ entry.name.cpanel_safe_html_encode_str()  _ "'  id='%" _ acf _ "%|" _ entry.block.cpanel_safe_html_encode_str() _ "|" _ entry.name.cpanel_safe_html_encode_str() _ "|enabled' name='%" _ acf _ "%|" _ entry.block.cpanel_safe_html_encode_str() _ "|" _ entry.name.cpanel_safe_html_encode_str() _ "|enabled' value='" _ (entry.enabled ? entry.enabled : "1") _ "'"  _  (entry.enabled ? " checked='checked' " : "")  _   " > ";
+                        "<input type='hidden' name='%" _ acf _ "%|" _ entry.block.cpanel_safe_html_encode_str() _ "|" _ entry.name.cpanel_safe_html_encode_str() _ "|key' value='1'> ";
+                        entry.name.cpanel_safe_html_encode_str();
+
+                        SET aclkey = "acl_" _ entry.name;
+                        IF data.rbl_docs.$aclkey;
+                            " (" _ data.rbl_docs.$aclkey.label _ ")";
+                        END;
+
+                        "</legend>" ;
+
+                        "<div class='aclinner acl_" _ entry.name.cpanel_safe_html_encode_str()  _ "' style='"  _ (entry.enabled ? "" : "display:none;")   _ "'>";
+                        IF entry.editable;
+                            "<table>";
+                                "<tr>";
+                                    "<td>";
+                                        "<pre>";
+                                            "<textarea onkeyup='resizetextarea(this)' onchange='progressively_validate_configuration(0,this)' class='confeditbox' cols='$cols' rows='$rows' id='%${acf}%|" _ entry.block  _ "|" _ entry.name _"' name='%${acf}%|" _ entry.block  _ "|" _ entry.name _"'>";
+                                            GET entry.value.cpanel_safe_html_encode_str();
+                                            '</textarea>';
+                                        "</pre>";
+                                    "</td>";
+                                    "<td class='validator_display'>";
+                                        "<div id='%${acf}%|" _ entry.block  _ "|" _ entry.name _"_error'></div>";
+                                    "</td>";
+                                "</tr>";
+                            "</table>";
+                        ELSE;
+                            "<pre>";
+                                "<div style='width: 710px;' id='%${acf}%|" _ entry.block  _ "|" _ entry.name _"' name='%${acf}%|" _ entry.block  _ "|" _ entry.name _"'>";
+                                FOREACH txtline IN entry.value.split("\n");
+                                    GET txtline.textbreak( cols, "\n" ).cpanel_safe_html_encode_str() _ "\n";
+                                END;
+                                '</div>';
+                            "</pre>";
+                        END;
+                        "</div>"; #aclinner
+
+                        "</fieldset></div>";
+                    END;
+                END;
+                "</div>";
+            "</div>";
+            "</fieldset></div>";
+        ELSIF insert.match( '\ABEGIN(.+)' );
+            SET inblock = 1;
+            SET acf = this_match.0.replace('\ABEGIN','');
+            "<div id='${acf}'><fieldset class='section'><legend>Section: ${acf}</legend>";
+            SET rows = minrows;
+            "<div id='%${acf}%'>";
+                "<div id='%${acf}%_custom'>";
+                    "<table>";
+                        "<tr>";
+                            "<td>";
+                                "<pre>";
+                                    "<textarea id='custom${acf}box|$section' onkeyup='resizetextarea(this)' onchange='progressively_validate_configuration(0,this)' class='confeditbox' cols='$cols' rows='$rows' name='%${acf}%'>";
+        ELSIF insert.match( '\AENDACL' );
+            SET incfkill = 0;
+        ELSIF insert.match( '\AEND(.+)' );
+            SET inblock = 0;
+            SET acf = this_match.0.replace('\AEND','');
+            SET incfkill = 0;
+            IF data.cf.$acf;
+                GET data.cf.$acf;
+            END;
+                                    '</textarea>';
+                                "</pre>";
+                            "</td>";
+                            "<td class='validator_display'>";
+                                "<div id='custom${acf}box|${section}_error'></div>";
+                            "</td>";
+                        "</tr>";
+                    "</table>";
+                "</div>";
+            "</div>";
+            "<script>resizetextarea(YAHOO.util.Dom.get('custom${acf}box|$section'));</script>";
+            "</fieldset></div>";
+
+        END;
+
+        NEXT;
+    END;
+
+    NEXT IF incfkill;
+
+    IF !inblock && !inpre;
+        "<pre>";
+        SET inpre= 1;
+    END;
+    GET line.textbreak( cols, "\n" ).cpanel_safe_html_encode_str() _ "\n";
+
+END;
+
+IF inpre;
+    "</pre>";
+END;
+
+-%]
+<div>
+    <input type="submit" id="savebutton" class="btn-primary" value="Save">
+    <span id="savebutton_status"></span>
+</div>
+</form>
+
+</div>
+[% END #block -%]
+
+<br />
+
+<script type="text/plain" id="cfg_template">
+<div class='config_option' id='CONFIG_container_{optcount}'>
+    <table>
+        <tr class='CONFIG_container'>
+            [% cfg_ac_cell.print({'optcount'=>'{optcount}'}) %]
+            <td>=</td>
+            <td colspan='2'>
+                <pre><textarea id='CONFIG_value_{optcount}' onkeyup='resizetextarea(this)' onchange='progressively_validate_configuration(0,this)'  class='confeditbox' cols='60' rows='1' name='CONFIG_value_{optcount}'></textarea></pre>
+            </td>
+            <td class='validator_display'>
+                <div id='CONFIG_option_{optcount}_error'></div>
+            </td>
+            <td align='right'>
+                <img id='CONFIG_delete_{optcount}' src='[% MagicRevision("/images/trashcan.png") %]' alt='Delete' style='pointer'>
+            </td>
+        </tr>
+        <tr class='CONFIG_default_container'>
+            <td colspan='2'></td>
+            <td valign='top' id='CONFIG_default_{optcount}' class='CONFIG_default'></td>
+            <td valign='top' id='CONFIG_cpanel_default_{optcount}' class='CONFIG_cpanel_default'></td>
+        </tr>
+    </table>
+</div>
+<div id='CONFIG_description_{optcount}' class='CONFIG_description'></div>
+</script>
+
+<script type="text/javascript">
+var save_broken_cfg_panel;
+var optcount = [% optcount %];
+var optkeys = [];
+var restart_progressive_validation = 0;
+var progressive_validation_in_progress = 0;
+var valid_configuration = {};
+var inital_configuration_is_valid = -1;
+var ignore_invalid_config = 0;
+var invalid_config_ids_list = [];
+var window_is_unloading = 0;
+
+function sync_acl_checks(thisEl) {
+    var classes = thisEl.className.split(" ");
+    var class_to_find;
+    for(var i=0;i<classes.length;i++) {
+        if (classes[i].match(/^acl_check/)) {
+            class_to_find = classes[i];
+            break;
+        }
+    }
+    var acl_check_Els = YAHOO.util.Dom.getElementsByClassName(class_to_find,'input');
+    for(var i=0;i<acl_check_Els.length;i++) {
+        if (thisEl.checked) {
+            acl_check_Els[i].checked=true;
+        } else {
+            acl_check_Els[i].checked=false;
+        }
+    }
+    class_to_find = class_to_find.replace(/_check/,'');
+    var needs_validate = 0;
+    var acl_container_Els = YAHOO.util.Dom.getElementsByClassName(class_to_find,'div');
+    for(var i=0;i<acl_container_Els.length;i++) {
+        var thisid = thisEl.id.replace('|enabled','');
+        if (thisEl.checked) {
+            if ( YAHOO.util.Dom.get(thisid).value) {
+                valid_configuration[thisid] = 0;
+                needs_validate = 1;
+            }
+            acl_container_Els[i].style.display='';
+        } else {
+            valid_configuration[thisid] = 1;
+            acl_container_Els[i].style.display='none';
+        }
+    }
+    if(needs_validate) {
+        progressively_validate_configuration(0);
+    }
+}
+
+function setupacledits() {
+    var customaclboxEl = YAHOO.util.Dom.get('BEGINACL');
+    var targetwidth = customaclboxEl.offsetWidth;
+    var aclblockEl = YAHOO.util.Dom.get('%ACLBLOCK%');
+    aclblockEl.style.width=(targetwidth + 2) + 'px';
+}
+
+function attach_add_cfg() {
+    YAHOO.util.Event.addListener('add_cfg','click',add_cfg);
+}
+
+YAHOO.util.Event.onDOMReady( function() {
+    for(var i=1;i<=optcount;i++) {
+        init_config_option(i);
+    }
+} );
+
+var config_options = [% data.config_options.sort().json() %];
+
+function delete_cfg (e,optid) {
+    YAHOO.util.Dom.get("CONFIG_option_" + optid).value = '';
+    YAHOO.util.Dom.get("CONFIG_value_" + optid).value = '';
+    YAHOO.util.Dom.get("CONFIG_container_" + optid).style.display='none';
+    YAHOO.util.Dom.get("CONFIG_description_" + optid).style.display='none';
+    valid_configuration["CONFIG_option_" + optid] = 1;
+    valid_configuration["CONFIG_value_" + optid] = 1;
+    progressively_validate_configuration(0);
+}
+
+function init_config_option (optid) {
+    optkeys[optid] = (YAHOO.util.Dom.get("CONFIG_option_" + optid).value.split(" "))[0];
+    var DeleteButton = YAHOO.util.Dom.get("CONFIG_delete_" + optid);
+    if (DeleteButton) {
+        EVENT.on(DeleteButton,'click',delete_cfg,optid);
+    }
+
+    var my_configs = {
+        useShadow: true,
+        maxResultsDisplayed: config_options.length,
+        expander: "toggle-"+optid,
+        applyLocalFilter: true,
+        queryMatchCase: true
+    };
+    var AC = new CPANEL.widgets.Combobox("CONFIG_option_" + optid, null, config_options, my_configs);
+    AC.originalfilterResults=AC.filterResults;
+    AC.filterResults = function(sQuery, oFullResponse, oParsedResponse, oCallback) {
+        sQuery = sQuery.replace(/\%20.*/, '');
+        oCallback.argument.query = sQuery;
+        return AC.originalfilterResults(sQuery, oFullResponse, oParsedResponse, oCallback);
+    }
+    AC.itemSelectEvent.subscribe(function(type, ACo) {
+        var newval = ACo[2][0];
+        if (newval != optkeys[optid]) {
+            update_config(optid,newval);
+        }
+        optkeys[optid] = this.getInputEl().value;
+    });
+    AC.textboxChangeEvent.subscribe(function(type, ACo) {
+        var fullval = YAHOO.util.Dom.get("CONFIG_option_" + optid).value;
+        var newval = (fullval.split(" "))[0];
+        if (newval != optkeys[optid]) {
+            update_config(optid,newval,fullval);
+        }
+        optkeys[optid] = this.getInputEl().value;
+    });
+}
+
+function update_config(optid, configkey, fullval) {
+    if (!configkey.match(/list$/)) {
+        for(var i=1;i<=optcount;i++) {
+            if (i == optid) { continue; };
+            if ( (YAHOO.util.Dom.get("CONFIG_option_" + i).value.split(" "))[0] == configkey ) {
+                alert('"' + configkey + '" is already configured.  Please modify the existing value.');
+                YAHOO.util.Dom.get("CONFIG_option_" + optid).value = '';
+                YAHOO.util.Dom.get("CONFIG_option_" + i).focus();
+                return;
+            }
+        }
+    } else if (fullval) {
+        for(var i=1;i<=optcount;i++) {
+            if (i == optid) { continue; };
+            if ( YAHOO.util.Dom.get("CONFIG_option_" + i).value == fullval ) {
+                alert('"' + fullval + '" is already configured.  Please modify the existing value.');
+                YAHOO.util.Dom.get("CONFIG_option_" + optid).value = '';
+                YAHOO.util.Dom.get("CONFIG_option_" + i).focus();
+                return;
+            }
+        }
+    }
+
+    if (configkey.match(/^[A-Z]+$/)) {
+        configkey='MACRO';
+    }
+
+    YAHOO.util.Dom.get('CONFIG_description_' + optid).innerHTML = '<img src="/img/yui/rel_interstitial_loading.gif" />';
+    YAHOO.util.Connect.asyncRequest( "GET", '[% cp_security_token %]/json-api/fetch_doc_key?module=Exim&key=' + encodeURIComponent(configkey),
+                {
+                    success:function(o) {
+                        var jsonResponse = YAHOO.lang.JSON.parse(o.responseText);
+                        YAHOO.util.Dom.get('CONFIG_description_' + optid).innerHTML = jsonResponse.doc.description || 'Unknown configuration setting: ' + configkey;
+
+                        var default_text = 'Exim Default: ' + jsonResponse.doc['default'];
+                        var text = jsonResponse.doc['default'] ? default_text : '';
+                        YAHOO.util.Dom.get('CONFIG_default_' + optid).innerHTML = text;
+
+                        var cpanel_default_text = 'cPanel Default: ' + jsonResponse.doc['cpanel_default'];
+                        var text = jsonResponse.doc['cpanel_default'] ? cpanel_default_text : '';
+                        YAHOO.util.Dom.get('CONFIG_cpanel_default_' + optid).innerHTML = text;
+
+                        if (jsonResponse.doc['cpanel_default'] && jsonResponse.doc['cpanel_default'] != 'unset') {
+                           YAHOO.util.Dom.get('CONFIG_value_' + optid).value = jsonResponse.doc['cpanel_default'];
+                        }
+
+                        progressively_validate_configuration(0,YAHOO.util.Dom.get("CONFIG_option_" + optid))
+                     },
+                     failure: function(o) {
+                        YAHOO.util.Dom.get('CONFIG_description_' + optid).innerHTML = 'failed to load help';
+                        YAHOO.util.Dom.get('CONFIG_default_' + optid).innerHTML = 'failed to load';
+                        YAHOO.util.Dom.get('CONFIG_cpanel_default_' + optid).innerHTML = 'failed to load';
+                     }
+                }, null );
+
+}
+function add_cfg() {
+    var newDiv = document.createElement('div');
+    var text = DOM.get("cfg_template").text.replace(/\{optcount\}/g,++optcount);
+    newDiv.innerHTML=text;
+    YAHOO.util.Dom.get('config_options').appendChild(newDiv);
+    init_config_option(optcount);
+}
+
+function validate_entire_configuration() {
+    disable_save_button();
+    progressively_validate_configuration(1);
+
+    // We cannot take a shortcut as they may have manually edited exim.conf.l*
+    if (0) {
+        YAHOO.util.Connect.asyncRequest( "GET", '[% cp_security_token %]/json-api/validate_current_installed_exim_config',
+                    {
+                        success:function(o) {
+                            var jsonResponse = YAHOO.lang.JSON.parse(o.responseText);
+                            inital_configuration_is_valid = jsonResponse['status'];
+                            progressively_validate_configuration(inital_configuration_is_valid);
+                         },
+                         failure: function(o) {
+                            inital_configuration_is_valid = 0;
+                            alert('Failed to validate exim configuration');
+                            enable_save_button();
+                         }
+                    }, null );
+
+   }
+}
+function disable_save_button() {
+    var buttonEl = YAHOO.util.Dom.get('savebutton');
+    buttonEl.disabled=true;
+    YAHOO.util.Dom.get('savebutton_status').innerHTML = CPANEL.icons.ajax;
+    buttonEl.style.display='none';
+    buttonEl.value='Validating Configuration...';
+}
+function enable_save_button() {
+    progressive_validation_in_progress=0;
+    restart_progressive_validation=0;
+
+    var buttonEl = YAHOO.util.Dom.get('savebutton');
+    buttonEl.value='Save';
+    YAHOO.util.Dom.get('savebutton_status').innerHTML = '';
+    buttonEl.style.display='';
+    buttonEl.disabled=false;
+}
+function progressively_validate_configuration(assume_ok, changedEl, restart) {
+    //console.log("progressively_validate_configuration(assume_ok=" + assume_ok + ",changedEl=" + changedEl + ",restart=" + restart + ");");
+    if (changedEl) {
+       var working_on_id = changedEl.id;
+       //console.log("changed el = " + working_on_id );
+       valid_configuration[working_on_id] = 0;
+       if( working_on_id.match(/^CONFIG_option/)) {
+            valid_configuration[working_on_id.replace(/^CONFIG_option/,'CONFIG_value')] = 0;
+       }
+       else if( working_on_id.match(/^CONFIG_value/)) {
+            valid_configuration[working_on_id.replace(/^CONFIG_value/,'CONFIG_option')] = 0;
+       }
+    }
+
+    if (progressive_validation_in_progress && !restart) {
+        restart_progressive_validation=1;
+        return;
+    }
+    progressive_validation_in_progress = 1;
+//    disable_save_button();
+    var attempted_config = []; //zero element is full on purpose
+    var attempted_config_origin = []; //zero element is full on purpose
+    for(var i=1;i<=optcount;i++) {
+        var optEl = YAHOO.util.Dom.get("CONFIG_option_" + i);
+        if (optEl.style.display == 'none') {
+            continue; // deleted element
+        }
+        var option = optEl.value.replace("\n","\\");
+        if (!option) { continue; }
+        var value = YAHOO.util.Dom.get("CONFIG_value_" + i).value.replace("\n","\\");
+        // We have to validate all of these at once
+        //if (!valid_configuration['CONFIG_option_' + i] || !valid_configuration['CONFIG_value_' + i]) {
+            valid_configuration['CONFIG_option_' + i] = 0;
+            valid_configuration['CONFIG_value_' + i] = 0;
+            attempted_config.push(option + "=" + value);
+            attempted_config_origin.push('CONFIG_option_' + i);
+            YAHOO.util.Dom.get("CONFIG_option_" + i).style.background="#fff";
+            YAHOO.util.Dom.get("CONFIG_option_" + i + '_error').innerHTML = CPANEL.icons.ajax;
+        //}
+    }
+    var textareas = document.getElementsByTagName('textarea');
+    var section = '';
+    var thissection = '';
+    var acl = '';
+    var thisacl = '';
+    for(var i=0;i<textareas.length;i++) {
+        if (textareas[i].id == null || textareas[i].id.match(/^CONFIG_/) || textareas[i].id === "customaclbox|acl") {
+            continue;
+        }
+        var thisid = textareas[i].id;
+        if (thisid.match(/%ACLBLOCK%/)) {
+            thissection='acl';
+        } else {
+            var splitid = thisid.split('|');
+            thissection = splitid[splitid.length-1];
+        }
+        if (thissection && thissection != section) {
+           // This inserts the "begin acl: etc line in the test exim config"
+            attempted_config.push("begin " + thissection);
+            attempted_config_origin.push('');
+            section = thissection;
+        }
+
+        var enabledEl = YAHOO.util.Dom.get(thisid + '|enabled');
+        if (enabledEl) {
+            if (!enabledEl.checked) {
+                //console.log("skipped: " + thisid);
+                continue;
+            }
+        }
+        if ( YAHOO.util.Dom.get(thisid + '_error') && !valid_configuration[thisid] ) {
+            valid_configuration[thisid] = 0; //not yet validated
+        }
+
+        if (thisid.match(/%ACLBLOCK%\|/) && thisid.match(/\|custom_/)) {
+           // This inserts the "acl_connect: etc line in the test exim config"
+           var blockmatcher = thisid.match(/\|custom_(?:begin|end)_(.*)/);
+           thisacl = blockmatcher[1];
+           if (acl != thisacl) {
+               attempted_config.push("acl_" + thisacl + ":");
+               attempted_config_origin.push('0|acl');
+               acl = thisacl;
+           }
+        }
+        var text_content = textareas[i].value.split("\n");
+        for(var j=0;j<text_content.length;j++) {
+            if (!valid_configuration[thisid]) {
+                YAHOO.util.Dom.get(thisid).style.background="#fff";
+                YAHOO.util.Dom.get(thisid + '_error').innerHTML = CPANEL.icons.ajax;
+                attempted_config.push(text_content[j]);
+                attempted_config_origin.push(thisid);
+            }
+        }
+    }
+
+    call_validate_exim_configuration_syntax(attempted_config, attempted_config_origin);
+}
+
+
+function call_validate_exim_configuration_syntax(attempted_config, attempted_config_origin) {
+
+    YAHOO.util.Connect.asyncRequest( "POST", '[% cp_security_token %]/json-api/validate_exim_configuration_syntax',
+                        {
+                            success:function(o) {
+                                continue_progressively_validate_configuration(attempted_config, attempted_config_origin, o.responseText);
+                                //inital_configuration_is_valid = jsonResponse['status'];
+                             },
+                             failure: function(o) {
+                                if (window_is_unloading) {
+                                    return;
+                                }
+                                enable_save_button();
+                                //inital_configuration_is_valid = 0;
+                                //progressively_validate_configuration(inital_configuration_is_valid);
+                             }
+                        }, 'cfg_text=' + encodeURIComponent(attempted_config.join("\n"))  );
+}
+
+function continue_progressively_validate_configuration(attempted_config, attempted_config_origin, validate_exim_configuration_syntax_response) {
+   if (restart_progressive_validation) {
+       //console.log("restarting validation due to edit in the middle of validation");
+       restart_progressive_validation = 0;
+       progressively_validate_configuration(null, null, 1);
+       return;
+   }
+
+   var enable_save = false;
+
+   var jsonResponse = YAHOO.lang.JSON.parse(validate_exim_configuration_syntax_response);
+   if ( jsonResponse['status'] == 1) {
+        set_success_for_validated_ids_up_to_line(attempted_config_origin,attempted_config_origin.length+1);
+        enable_save = true;
+   } else {
+       // All of the "LOG_PANIC_DIE|LOG_CONFIG" errors need to be handled in exim/src/readconf.c
+       // Note: "LOG_PANIC_DIE|LOG_CONFIG_IN" (notice the IN) are autohandled because it shows the line #
+        var matcher = jsonResponse['error_msg'].match(/in line (\d+)/);
+        var directive_matcher = jsonResponse['error_msg'].match(/configuration\s+error:[\s\n\r]+(\S+)/);
+
+        var router_matcher = jsonResponse['error_msg'].match(/configuration\s+error\s+for\s+(.*)\s+router/);
+
+        var router_matcher_two = jsonResponse['error_msg'].match(/for\s+(authenticator|router|transport)\s+\"([^\"]*)\"/);
+        var router_dupe_matcher = jsonResponse['error_msg'].match(/there\s+are\s+two\s+(authenticator|router|transport)s\s+called\s+\"([^\"]*)\"/);
+        var router_defined_matcher = jsonResponse['error_msg'].match(/no\s+driver\s+defined\s+for\s+(authenticator|router|transport)\s+\"([^\"]*)\"/);
+        //console.log(router_matcher_two);
+        if (matcher || directive_matcher || router_matcher || router_matcher_two) {
+            var broken_id;
+            var error_line;
+            var attempted_config_origin_array_position;
+            //console.log( matcher);
+            //console.log( directive_matcher );
+            //console.log( router_matcher );
+            //console.log( router_matcher_two );
+            if (matcher) {
+                var error_line = matcher[1];
+                set_success_for_validated_ids_up_to_line(attempted_config_origin,error_line);
+                attempted_config_origin_array_position = parseInt(error_line)-1;
+                //console.log(attempted_config_origin_array_position);
+                //console.log(attempted_config_origin);
+                //console.log(jsonResponse);
+                broken_id = attempted_config_origin[attempted_config_origin_array_position];
+            } else if (router_matcher_two  || router_defined_matcher || router_dupe_matcher) {
+                var target_match;
+                if ( router_dupe_matcher ) { target_match= router_dupe_matcher; }
+                else if ( router_matcher_two ) { target_match= router_matcher_two; }
+                else if ( router_defined_matcher ) { target_match= router_defined_matcher; }
+                var broken_section = target_match[1] + 's';
+                var broken_router = target_match[2];
+                var insection = 'config';
+                for(var i=0;i<attempted_config_origin.length;i++) {
+                    var line = attempted_config[i];
+                    var element = attempted_config_origin[i];
+                    if (line) {
+                        var secmatch = line.match(/^begin\s+(\S+)/);
+                        if (secmatch) {
+                            insection =  secmatch[1];
+                        }
+                    }
+                    if (element && insection == broken_section && line.match('^' + broken_router + ':')) {
+                        error_line = i+1;
+                        break;
+                    }
+                }
+                if (!error_line) {
+                    alert("Warning! router_matcher could not parse error: " + jsonResponse['error_msg']);
+                    enable_save_button();
+                    return;
+                }
+                set_success_for_validated_ids_up_to_line(attempted_config_origin,error_line);
+                attempted_config_origin_array_position = parseInt(error_line)-1;
+                broken_id = attempted_config_origin[attempted_config_origin_array_position];
+
+            } else if (router_matcher) {
+                var broken_router = router_matcher[1];
+                //console.log(router_matcher);
+                //console.log(router_matcher_two);
+                //console.log("broken router: " + broken_router);
+                for(var i=0;i<attempted_config_origin.length;i++) {
+                    var line = attempted_config[i];
+                    var element = attempted_config_origin[i];
+                    if (element && line.match(broken_router + ':')) {
+                        error_line = i+1;
+                        break;
+                    }
+                }
+                if (!error_line) {
+                    alert("Warning! router_matcher could not parse error: " + jsonResponse['error_msg']);
+                    enable_save_button();
+                    return;
+                }
+                set_success_for_validated_ids_up_to_line(attempted_config_origin,error_line);
+                attempted_config_origin_array_position = parseInt(error_line)-1;
+                broken_id = attempted_config_origin[attempted_config_origin_array_position];
+            } else if (directive_matcher) {
+                var broken_directive = directive_matcher[1];
+                for(var i=0;i<attempted_config_origin.length;i++) {
+                    var element = attempted_config_origin[i];
+                    if (element && element.match(/^CONFIG_option_/)) {
+                        var text = YAHOO.util.Dom.get(element).value;
+                        if (text === broken_directive) {
+                             error_line = i+1;
+                             break;
+                        }
+                    }
+                }
+                if (!error_line) {  //fallback and just look for the directive name
+                    for(var i=0;i<attempted_config_origin.length;i++) {
+                        var element = attempted_config_origin[i];
+                        if (element && element.match(/^CONFIG_option_/)) {
+                            var text = YAHOO.util.Dom.get(element).value;
+                            if (text && jsonResponse['error_msg'].match(text)) {
+                                 error_line = i+1;
+                                 break;
+                            }
+                        }
+                    }
+                }
+                if (!error_line) {
+                    alert("Warning! directive_matcher could not parse error: " + jsonResponse['error_msg']);
+                    enable_save_button();
+                    return;
+                }
+                set_success_for_validated_ids_up_to_line(attempted_config_origin,error_line);
+                attempted_config_origin_array_position = parseInt(error_line)-1;
+                broken_id = attempted_config_origin[attempted_config_origin_array_position];
+            } else {
+                alert("Warning! There is no parser for error message: " + jsonResponse['error_msg']);
+                enable_save_button();
+                return;
+            }
+
+            //console.log(broken_id);
+
+            var errmatcher = jsonResponse['error_msg'].split("\n");
+            var errortxt = errmatcher[errmatcher.length-1].replace(/^\s+/,'');
+            var errorEl = YAHOO.util.Dom.get(broken_id + '_error');
+            if (errorEl) {
+                YAHOO.util.Dom.get(broken_id).style.background="#fcc";
+                errorEl.innerHTML = CPANEL.icons.error + "<div class='syntax_error'>" + errortxt + "</div>";
+            } else {
+                alert("Missing element: " + broken_id + '_error');
+            }
+            if ( broken_id.match(/^CONFIG_option/)) {
+                valid_configuration[broken_id.replace(/^CONFIG_option/,'CONFIG_value')]=-1;
+            }
+            valid_configuration[broken_id]=-1;
+
+            //console.log(valid_configuration);
+
+            var still_to_check = get_list_of_invalid_config_ids(broken_id);
+            //console.log(still_to_check);
+            if (still_to_check && still_to_check.length) {
+               if (broken_id.match(/^CONFIG_option_/)) {
+                   //console.log("its a config option:  "  + broken_id);
+                   // only remove the element as the CONFIG section has to be validated as a whole
+                    //console.log(attempted_config);
+                    attempted_config.splice(attempted_config_origin_array_position, 1);
+                    attempted_config_origin.splice(attempted_config_origin_array_position, 1);
+                    //console.log(attempted_config);
+               } else {
+                   var next_origin_offset = 0;
+                   // The next few lines may be the same broken_id so we need to skip over that many lines
+                   for(var i=attempted_config_origin_array_position;i<attempted_config_origin.length;i++) {
+                      if (attempted_config_origin[i] == broken_id) {
+                        next_origin_offset++;
+                      }
+                   }
+                   //console.log("offset is: " + next_origin_offset);
+                   // remove everything before the broken id as it is ok
+                   attempted_config.splice(0, attempted_config_origin_array_position+next_origin_offset);
+                   attempted_config_origin.splice(0, attempted_config_origin_array_position+next_origin_offset);
+                   //console.log(attempted_config[0]);
+               }
+               if (attempted_config_origin[0] && attempted_config_origin[0].match(/\|/)) {
+                    var section = attempted_config_origin[0].match(/\%ACLBLOCK\%/) ? 'acl' : (attempted_config_origin[0].split('|'))[1];
+                    // console.log('create sec:' + section);
+                    attempted_config.unshift("begin " + section);
+                    attempted_config_origin.unshift('');
+               }
+               call_validate_exim_configuration_syntax(attempted_config, attempted_config_origin);
+               // splice the attempted_config and attempted_config_origin up to the point of failure and sent it through again
+            } else {
+                enable_save = true;
+            }
+        } else {
+            alert("Warning, could not highlight error! No parser for error message found: " + jsonResponse['error_msg']);
+            enable_save = true;
+        }
+    }
+
+    if (enable_save) {
+        enable_save_button();
+        if (TO_DO_AFTER_VALIDATION) {
+            TO_DO_AFTER_VALIDATION();
+            TO_DO_AFTER_VALIDATION = undefined;
+        }
+    }
+}
+
+var TO_DO_AFTER_VALIDATION;
+function ensure_cfg_is_valid() {
+    if (progressive_validation_in_progress) {
+        TO_DO_AFTER_VALIDATION = function() {
+            if (ensure_cfg_is_valid() !== false) {
+                YAHOO.util.Dom.get('advform').submit();
+            }
+        };
+        disable_save_button();
+        return false;
+    }
+
+    invalid_config_ids_list = [];
+    for(var i in valid_configuration) {
+        if (valid_configuration[i] != 1) { invalid_config_ids_list.push(i); }
+    }
+
+    if (!ignore_invalid_config && invalid_config_ids_list && invalid_config_ids_list.length) {
+        if (! save_broken_cfg_panel ) {
+         save_broken_cfg_panel = new YAHOO.widget.Dialog("save_broken_cfg_panel", {
+            width:"320px",
+            visible:false,
+            constraintoviewport:true,
+            close:true,
+            modal:true,
+            fixedcenter:true,
+            buttons : [ { text:"Correct", handler:function() {
+                                this.hide();
+                                YAHOO.util.Dom.get(invalid_config_ids_list[0]).focus();
+                                } , isDefault:true },
+                        { text:"Ignore", handler:function() {
+                                this.hide();
+                                ignore_invalid_config=1;
+                                notify_parent_submit();
+                                YAHOO.util.Dom.get('advform').submit();
+                        }
+                    } ]
+            } );
+            document.getElementById('save_broken_cfg_panel').style.display='';
+            save_broken_cfg_panel.render();
+        }
+        save_broken_cfg_panel.show();
+        return false;
+    }
+
+    notify_parent_submit();
+
+    return true;
+}
+
+function get_list_of_invalid_config_ids(id_to_skip) {
+    var invalid_config_ids_list = [];
+    for(var i in valid_configuration) {
+        if (id_to_skip && ( i == id_to_skip ||
+                i == id_to_skip.replace(/^CONFIG_option/,'CONFIG_value') ||
+                i == id_to_skip.replace(/^CONFIG_value/,'CONFIG_option')
+                )) { continue; }
+        if (!valid_configuration[i]) { invalid_config_ids_list.push(i); }
+    }
+    return invalid_config_ids_list;
+}
+function set_success_for_validated_ids_up_to_line(attempted_config_origin,where_to_stop) {
+    for(var i=1;i < where_to_stop;i++) {
+        var attempted_config_origin_array_position = i-1;
+        if( attempted_config_origin[attempted_config_origin_array_position] && !attempted_config_origin[attempted_config_origin_array_position].match(/^0/) ) {
+            YAHOO.util.Dom.get(attempted_config_origin[attempted_config_origin_array_position] + '_error').innerHTML = CPANEL.icons.success;
+            YAHOO.util.Dom.get(attempted_config_origin[attempted_config_origin_array_position]).style.background="#fff";
+            if ( attempted_config_origin[attempted_config_origin_array_position].match(/^CONFIG_option/)) {
+                valid_configuration[attempted_config_origin[attempted_config_origin_array_position].replace(/^CONFIG_option/,'CONFIG_value')]=1;
+            }
+            valid_configuration[attempted_config_origin[attempted_config_origin_array_position]]=1;
+        }
+    }
+}
+
+function notify_previous_config_failed() {
+
+    var  previous_config_failed_panel = new YAHOO.widget.Dialog("previous_config_failed_panel", {
+        width:"320px",
+        visible:false,
+        constraintoviewport:true,
+        close:true,
+        modal:true,
+        fixedcenter:true,
+        buttons : [ { text:"Edit", handler:function() { this.hide();  } , isDefault:true },
+                    { text:"Revert", handler:function() { remove_in_progress_exim_config_edit(); } } ]
+        } );
+    document.getElementById('previous_config_failed_panel').style.display='';
+    previous_config_failed_panel.render();
+    previous_config_failed_panel.show();
+
+}
+function remove_in_progress_exim_config_edit() {
+     YAHOO.util.Connect.asyncRequest('GET', '[% cp_security_token %]/json-api/remove_in_progress_exim_config_edit', {
+                    success:function() {
+                        if (parent.reload_tab) {
+                            parent.reload_tab('advanced',{},1);
+                        }  else {
+                            window.location.reload();
+                        }
+                    },
+                    failure:function() {
+                        alert("Could not remove the in progress exim config edit");
+                    }
+             }, "");
+}
+
+YAHOO.util.Event.onAvailable('customaclbox|acl', setupacledits);
+YAHOO.util.Event.onAvailable('add_cfg', attach_add_cfg);
+YAHOO.util.Event.onDOMReady( validate_entire_configuration );
+YAHOO.util.Event.on(window, 'beforeunload', function(e) { window_is_unloading = 1; } );
+[% IF data.previous_config_failed && ! data.skip_dry_run_warning %]
+YAHOO.util.Event.onAvailable('previous_config_failed_panel', notify_previous_config_failed);
+[% END %]
+
+</script>
+
+<div id="previous_config_failed_panel" style="display:none;">
+    <div class="hd">Failed Configuration</div>
+    <div class="bd">
+        <div>The previous configuration edit failed due to invalid configuration data. Would you like to continue to <b>edit</b> the configuration, or <b>revert</b> to the currently installed configuration?</div>
+    </div>
+    <div class="ft"></div>
+</div>
+
+<div id="save_broken_cfg_panel" style="display:none;">
+    <div class="hd">Configuration Errors Exist</div>
+    <div class="bd">
+        <div>You have errors in your configuration. Do you want to <b>ignore</b> them and attempt to install the new configuration anyway, or would you like to <b>correct</b> them?</div>
+    </div>
+    <div class="ft"></div>
+</div>
+
+
+
+</div>
+
+
+[% END #wrapper -%]

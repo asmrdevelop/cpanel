@@ -1,0 +1,147 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/secureit                        Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+use warnings;
+
+use Cpanel::Usage        ();
+use Cpanel::Init::Simple ();
+use Cpanel::OS           ();
+
+# Parse command line.
+my $dryrun  = 0;
+my $try_rpm = 0;
+Cpanel::Usage::wrap_options( \@ARGV, \&usage, { 'dryrun' => \$dryrun, 'fast' => \$try_rpm } );
+
+exit 0 if -e '/var/cpanel/nosecureit' || -e '/var/cpanel/disabled/secureit';
+
+#----------------------------------------------------------------------
+
+my @serviceList = ( 'portmap', 'lpd', 'apmd', 'gpm', 'innd', 'pcmcia', 'smb', 'xfs', 'ypbind' );
+
+{
+    local $SIG{__WARN__} = sub { };    # we expect some of these to fail
+    foreach my $serviceName (@serviceList) {
+        Cpanel::Init::Simple::call_cpservice_with( $serviceName => qw/stop disable/ );
+
+    }
+}
+
+#----------------------------------------------------------------------
+
+my @OKSUID = (qw/crontab cpwrap jailshell passwd ksu su suexec suphp exim sendmail fpexe wrapper sudo sudoedit gpasswd sendmail.sendmail cagefs_enter.proxied/);
+my @OKGUID = (qw/crontab procmail wall man sendmail sendmail.sendmail screen/);
+
+# to use rpm to find [sg]uid files --fast needs to be passed and we've got to be an RPM based linux
+if ( $try_rpm && Cpanel::OS::is_rpm_based() ) {
+    cleanse_sguid_rpm();
+}
+else {
+    cleanse_sguid_find();
+}
+
+sub cleanse_sguid_find {
+    print "Finding set[gu]id files via find\n";
+
+    my @SUID = `nice -19 /usr/bin/find /usr /sbin /bin -uid 0 -perm /4000`;
+    my @GUID = `nice -19 /usr/bin/find /usr /sbin /bin -uid 0 -perm /2000`;
+    chomp @SUID;
+    chomp @GUID;
+
+    foreach my $item (@SUID) {
+        next if ( $item =~ m{^/usr/local/cpanel} );    # Skip cpanel files.
+        next if ( $item =~ /modsec_audit/ );
+        $item =~ s/\n//g;
+        my $itemok = 0;
+        foreach my $match (@OKSUID) {
+            if ( $item =~ /${match}$/ ) {
+                $itemok = 1;
+            }
+        }
+        if ( $itemok == 0 ) {
+            print "Removing suid from $item\n";
+            system( 'chmod', 'u-s', $item ) if ( !$dryrun );
+        }
+    }
+
+    foreach my $item (@GUID) {
+        next if ( $item =~ m{^/usr/local/cpanel} );    # Skip cpanel files.
+        next if ( $item =~ /modsec_audit/ );
+        $item =~ s/\n//g;
+        my $itemok = 0;
+        foreach my $match (@OKGUID) {
+            if ( $item =~ /${match}$/ ) {
+                $itemok = 1;
+            }
+        }
+        if ( $itemok == 0 ) {
+            print "Removing guid from $item\n";
+            system( 'chmod', 'g-s', $item ) if ( !$dryrun );
+        }
+    }
+    return;
+}
+
+sub cleanse_sguid_rpm {
+    print "Finding set[gu]id files via the RPM database\n";
+
+    my @RPMFILES = `rpm -qa --queryformat '[%{FILEMODES} %{FILENAMES}\n]'`;
+    chomp @RPMFILES;
+    @RPMFILES = grep { !m{^\d+\s+/usr/local/cpanel} } @RPMFILES;    # Strip out cpanel installed rpms
+
+  SUID: foreach my $item (@RPMFILES) {
+        my ( $perm, $file ) = split( " ", $item, 2 ) or next;
+        next if ( $perm !~ m/^\d+$/ );                              # Lines that don't mention files (%{FILENAMES})
+        next if ( !( $perm & 04000 ) );
+        next if !-e $file;
+
+        foreach my $match (@OKSUID) {
+            if ( $file =~ m{/${match}$} ) {
+                print "Skipping suid removal for $file\n";
+                next SUID;
+            }
+        }
+        print "Removing suid from $file\n";
+
+        system( 'chmod', 'u-s', $file ) if ( !$dryrun );
+    }
+
+  GUID: foreach my $item (@RPMFILES) {
+        my ( $perm, $file ) = split( " ", $item, 2 ) or next;
+        next if ( $perm !~ m/^\d+$/ );    # Lines that don't mention files (%{NAME})
+        next if ( !( $perm & 02000 ) );
+        next if !-e $file;
+
+        foreach my $match (@OKGUID) {
+            if ( $file =~ m{/${match}$} ) {
+                print "Skipping guid removal for $file\n";
+                next GUID;
+            }
+        }
+        print "Removing guid from $file\n";
+        system( 'chmod', 'g-s', $file ) if ( !$dryrun );
+    }
+    return;
+}
+
+sub usage {
+    print qq{Usage: $0 [options]};
+    print qq{
+
+    Options:
+      --help     Brief help message
+      --dryrun   Do not make any changes but show what would happen.
+      --fast     On RPM systems, do not walk the file system, instead,
+                 get the file permissions list from the RPM DB. This is
+                 only useful once. After that the DB will be out of sync
+                 with the file system. This option is mostly useful
+                 during install
+
+
+};
+    exit 1;
+}

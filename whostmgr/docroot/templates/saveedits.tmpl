@@ -1,0 +1,91 @@
+[% USE Whostmgr -%]
+[% WRAPPER 'master_templates/master.tmpl' theme="yui"
+    breadcrumburl = '/scripts/editsets'
+-%]
+
+[%
+
+IF data.exists('reseller_ns_success');
+    IF data.reseller_ns_success;
+        '<p>';
+        IF data.reseller_ns_reset_to_root;
+            locale.maketext('Your account’s nameservers inherit [asis,root]‘s nameservers.');
+        ELSE;
+            SET real_nameservers = data.reseller_nameservers.grep('.');  #weed out empty string
+            locale.maketext('Your account’s nameservers have been set to [list_and,_1].',real_nameservers);
+        END;
+        '</p>';
+    ELSE;
+        '<p>';
+        locale.maketext('Your account’s nameservers were not updated: [_1]', data.reseller_ns_message);
+        '</p>';
+    END;
+ELSIF data.invalid_reseller_ns;
+    '<p>';
+    locale.maketext('“[_1]” submitted reseller [numerate,_1,nameserver is,nameservers are] invalid: [list_and,_2].',data.invalid_reseller_ns.values.size, data.invalid_reseller_ns.values.sort() );
+    '<br />';
+    locale.maketext('Your account’s nameservers are not updated.');
+    '</p>';
+END;
+
+IF data.exists('changed_settings');  #if root
+    FOR key = data.invalid.keys.sort();
+        SET setting_label = ts_texts.$key.label;
+
+        SET value_text = data.invalid.defined( key )
+            ? "&ldquo;${data.invalid.$key}&rdquo;"
+            : 'undefined'
+        ;
+        SET reason = data.invalid_reasons.defined(key)
+            ? " (" _ data.invalid_reasons.$key _ ")"
+            : ''
+        ;
+
+        "<p><b>Invalid $setting_label value: ${value_text}${reason}. This setting will not be updated.</b></p>";
+    END;
+
+    FOR key = data.changed_settings.keys.sort();
+        SET setting_undef = ts_conf.$key.can_disable && ts_texts.$key.undef;
+        SET setting_label = ts_texts.$key.label;
+        SET optionlabels = ts_texts.$key.optionlabels;
+
+        SET oldvalue = data.changed_settings.$key.0;
+        SET newvalue = data.changed_settings.$key.1;
+
+        IF optionlabels && optionlabels.defined( oldvalue );
+            SET oldvalue_text = optionlabels.$oldvalue;
+        ELSE;
+            SET oldvalue_text = oldvalue.defined()
+                ? "&ldquo;${oldvalue}&rdquo;"
+                : setting_undef
+            ;
+        END;
+
+        IF optionlabels && optionlabels.defined( newvalue );
+            SET newvalue_text = optionlabels.$newvalue;
+        ELSE;
+            SET newvalue_text = newvalue.defined()
+                ? "&ldquo;${newvalue}&rdquo;"
+                : setting_undef
+            ;
+        END;
+
+        IF ts_conf.$key.type == 'password';
+            "<p>Modifying &ldquo;$setting_label&rdquo;.</p>";
+        ELSE;
+            "<p>Modifying &ldquo;$setting_label&rdquo; from $oldvalue_text to ${newvalue_text}.</p>";
+        END;
+    END;
+END;
+-%]
+
+<br />
+[% locale.maketext('This system has [quant,_1,free IP,free IPs,no free IPs].', data.freeips) %]
+
+[%- IF data.enable_named %]
+<br />
+<br />
+<div class="[% IF data.enable_named.0 %]ok[% ELSE %]error[% END %]msg">[% data.enable_named.1 %]</div>
+[%- END %]
+
+[% END #wrapper -%]

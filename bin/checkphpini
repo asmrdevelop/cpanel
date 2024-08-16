@@ -1,0 +1,208 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - bin/checkphpini                         Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package bin::checkphpini;
+
+use cPstrict;
+
+use parent qw( Cpanel::HelpfulScript );
+
+use Cpanel::Config::LoadCpConf ();
+use Cpanel::Binaries           ();
+use Cpanel::PHPINI             ();
+use Cpanel::SafeFile           ();
+use Cpanel::Timezones          ();
+
+=encoding utf-8
+
+=head1 NAME
+
+bin::checkphpini
+
+=head1 SYNOPSIS
+
+    checkphpini [ --help | --verbose ]
+
+=head1 DESCRIPTION
+
+This script constructs a valid CpPHP ini file based on the php.ini.dist file that is distributed
+with the cpanel-phpXX package.  If the CpPHP ini file exists before running this script, any customizations
+to the CpPHP ini file will NOT be honored.  The only exceptions to this are the settings that can be defined
+via ‘WHM →Home →Server Configuration →Tweak Settings →PHP’
+
+=cut
+
+use constant {
+    PHP_INI_SUFFIX => '/etc/php.ini',
+};
+
+use constant _OPTIONS => ('verbose');
+
+__PACKAGE__->new(@ARGV)->run() unless caller();
+
+sub _logger ($self) {
+    require Cpanel::Logger;
+    $self->{logger} ||= Cpanel::Logger->new();
+    return $self->{logger};
+}
+
+# Only for tests, it is hard to mock out constants
+sub _unversioned ($self) {
+    return Cpanel::Binaries::CPANEL_PHP_UNVERSIONED;
+}
+
+sub run ($self) {    ## no critic qw(Subroutines::ProhibitExcessComplexity)
+
+    $self->ensure_root();
+
+    $self->{verbose} = $self->getopt('verbose');
+
+    # abort if the php target is disabled
+    my $php_version = Cpanel::Binaries::get_php_version();
+    if ( !$php_version ) {
+        $self->_logger()->warn("skipping bin/checkphpini: No PHP versions appear to be installed on this system.");
+        return;
+    }
+
+    my $prefix_dir         = Cpanel::Binaries::get_prefix('php');
+    my $unversioned_prefix = $self->_unversioned();
+    my $php_ini            = $prefix_dir . PHP_INI_SUFFIX();
+
+    # Make sure php.ini isn't immutable.
+    if ( -e $php_ini ) {
+        system 'chattr', '-i', $php_ini;
+    }
+
+    # Copy php.ini from php.ini.dist
+    -e "$php_ini.dist" or $self->_logger()->die("You are missing $php_ini.dist from cpanel's php package. To correct this, try running /usr/local/cpanel/scripts/upcp --sync");
+    unlink $php_ini if ( -l $php_ini );
+    if ( -d _ ) {
+        rmdir $php_ini;
+        -e $php_ini and $self->_logger()->die("Cannot create $php_ini because it's a populated directory");
+    }
+    require File::Copy;
+    File::Copy::copy( "$php_ini.dist", $php_ini );
+    -f $php_ini or $self->_logger()->die('Unable to copy into $php_ini');
+
+    # Read cpanel.config to get php.ini settings.
+    my $cpconf_ref = Cpanel::Config::LoadCpConf::loadcpconf_not_copy();
+    my %set_directives;
+
+    # Set timezone
+    my $server_timezone = Cpanel::Timezones::get_current_timezone();
+    $set_directives{'date.timezone'} = $server_timezone;
+
+    # Set directive in php.ini - max_execution_time
+    if ( defined $cpconf_ref->{'php_max_execution_time'} ) {
+        my $max_execution_time = $cpconf_ref->{'php_max_execution_time'};
+        $max_execution_time =~ s/\s*(\d+).*?$/$1/ or $max_execution_time = 0;
+        if ( $max_execution_time < 90 ) {
+            $self->_logger()->warn("Increasing set cPanel/WHM PHP max execution time from '$cpconf_ref->{php_max_execution_time}' to 90");
+            $max_execution_time = 90;
+        }
+        $set_directives{'max_execution_time'} = $max_execution_time;
+    }
+
+    # Set directive in php.ini - memory_limit
+    if ( defined $cpconf_ref->{'php_memory_limit'} ) {
+        my $memory_limit = $cpconf_ref->{'php_memory_limit'};
+        $memory_limit =~ s/\s*(\d+).*?$/$1/a or $memory_limit = 0;
+        if ( $memory_limit < 128 ) {
+            $self->_logger()->warn("Increasing cPanel/WHM PHP memory limit from '$cpconf_ref->{php_memory_limit}' to 128M");
+            $memory_limit = 128;
+        }
+        $memory_limit .= 'M';
+        $set_directives{'memory_limit'} = $memory_limit;
+    }
+
+    # Set directive in php.ini - post_max_size
+    if ( defined $cpconf_ref->{'php_post_max_size'} ) {
+        my $post_max_size = $cpconf_ref->{'php_post_max_size'};
+        $post_max_size =~ s/\s*(\d+).*?$/$1/ or $post_max_size = 0;
+        if ( $post_max_size < 55 ) {
+            $self->_logger()->warn("Increasing cPanel/WHM PHP maximum post size from '$cpconf_ref->{php_post_max_size}' to 55M");
+            $post_max_size = 55;
+        }
+        $post_max_size .= 'M';
+        $set_directives{'post_max_size'} = $post_max_size;
+    }
+
+    # Set directive in php.ini - post_max_size
+    if ( defined $cpconf_ref->{'php_upload_max_filesize'} ) {
+        my $upload_max_filesize = $cpconf_ref->{'php_upload_max_filesize'};
+        $upload_max_filesize =~ s/\s*(\d+).*?$/$1/ or $upload_max_filesize = 0;
+        if ( $upload_max_filesize < 50 ) {
+            $self->_logger()->warn("Increasing cPanel/WHM PHP maximum upload file size from '$cpconf_ref->{php_upload_max_filesize}' to 50M");
+            $upload_max_filesize = 50;
+        }
+        $upload_max_filesize .= 'M';
+        $set_directives{'upload_max_filesize'} = $upload_max_filesize;
+    }
+
+    Cpanel::PHPINI::set_directives( \%set_directives, $prefix_dir );
+
+    # Stop if no phploader is set.
+    return if ( !$cpconf_ref->{'phploader'} || $cpconf_ref->{'phploader'} eq 'none' );
+
+    # Figure out what php loaders are set.
+    my %php_loaders;
+    @php_loaders{ split( /,/, $cpconf_ref->{'phploader'} ) } = ( 1 .. 200 );
+
+    # Warn about expired setting
+    if ( $php_loaders{'oldsourceguardian'} ) {
+        $self->_logger()->warn(q{Your cPanel PHP loader is set to 'oldsourceguardian'. Unfortunately, we have});
+        $self->_logger()->warn(q{discontinued this setting. To select a valid setting, navigate to WHM's Tweak});
+        $self->_logger()->warn(q{Settings feature.});
+    }
+
+    # Read in the php.ini file with locking.
+    my $phplock = Cpanel::SafeFile::safeopen( \*PHPINI, '+<', $php_ini );
+    if ( !$phplock ) {
+        $self->_logger()->warn("Could not edit $php_ini");
+        return;
+    }
+    my $phpini = '';
+
+    # Replace zend_extension and extension depending on phploader settings
+    while ( my $line = <PHPINI> ) {
+        next if $line =~ /ioncube_loader_lin|ixed\..+\.lin/;
+
+        $phpini .= $line;
+        if ( $line =~ /;\s*zend_extension\s*=\s*cpanel/ ) {
+            if ( $php_loaders{'ioncube'} ) {
+                $phpini .= qq{zend_extension\t="$unversioned_prefix/ioncube/ioncube_loader_lin_${php_version}.so"\n};
+                $self->output("IonCubeLoader is activated.");
+
+            }
+            if ( $php_loaders{'zend'} ) {
+                $self->output("ZendGuardLoader is specified, but not supported on PHP 7.2+. Ignoring...");
+            }
+        }
+        elsif ( $line =~ /;\s*extension\s*=\s*cpanel/ ) {
+            if ( $php_loaders{'sourceguardian'} ) {
+                $phpini .= qq{extension="ixed.${php_version}.lin"\n\n};
+                $self->output("SourceGuardian is activated.");
+            }
+        }
+    }
+
+    # Write out the file.
+    seek( PHPINI, 0, 0 );
+    print PHPINI $phpini;
+    truncate( PHPINI, tell(PHPINI) );
+    Cpanel::SafeFile::safeclose( \*PHPINI, $phplock );
+    return;
+}
+
+sub output ( $self, $output ) {
+    return unless $self->{verbose};
+    $output //= '';
+    print $output . "\n";
+    return;
+}
+
+1;

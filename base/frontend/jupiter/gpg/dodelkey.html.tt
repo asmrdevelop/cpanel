@@ -1,0 +1,26 @@
+[% SET CPANEL.CPVAR.dprefix = "../" %]
+
+[% WRAPPER '_assets/master.html.tt'
+    app_key = 'encryption'
+%]
+<div class="body-content">
+    [% SET delete_key_call = execute("GPG", "delete_keypair", { "key_id" => RAW_FORM.key }); %]
+    [% IF delete_key_call.status %]
+        <div id="delKeyOutput_success" class="alert alert-success">
+            <span class="glyphicon glyphicon-ok-sign" aria-hidden="true"></span>
+            <div class="alert-message">
+                [% locale.maketext("The system successfully deleted the [asis,GPG] key.") %]
+            </div>
+        </div>
+    [% ELSE %]
+        <div id="delKeyOutput_error" class="alert alert-danger">
+            <span class="glyphicon glyphicon-remove-sign" aria-hidden="true"></span>
+            <div class="alert-message">
+                [% locale.maketext("The system failed to delete the [asis,GPG] key.") %]
+            </div>
+        </div>
+    [% END %]
+
+    [% INCLUDE _assets/return_link.html.tt return_location='index.html' return_link_text=locale.maketext('Go Back') %]
+</div>
+[% END %]

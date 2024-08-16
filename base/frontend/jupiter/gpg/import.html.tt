@@ -1,0 +1,30 @@
+[% SET CPANEL.CPVAR.dprefix = "../" %]
+
+[% WRAPPER '_assets/master.html.tt'
+    app_key = 'encryption'
+%]
+<div class="body-content">
+    [% SET import_key_call = execute("GPG", "import_key", { "key_data" => RAW_FORM.gpgdata }); %]
+
+    [% IF import_key_call.status %]
+        <div id="importSuccess" class="alert alert-success">
+            <span id="importSuccessImg" class="glyphicon glyphicon-ok-sign" aria-hidden="true"></span>
+            <div id="importSuccessMsg" class="alert-message">
+                [% locale.maketext("Your [asis,GPG] key imported successfully.") %]
+            </div>
+        </div>
+    [% ELSE %]
+        <div id="importFailure" class="alert alert-danger">
+            <span id="importFailureImg" class="glyphicon glyphicon-remove-sign" aria-hidden="true"></span>
+            <div id="importFailureMsg" class="alert-message">
+                [%
+                    FOREACH error = import_key_call.errors;
+                        error;
+                    END;
+                %]
+            </div>
+        </div>
+    [% END %]
+    [% INCLUDE _assets/return_link.html.tt return_location='index.html' return_link_text=locale.maketext('Go Back') %]
+</div>
+[% END %]

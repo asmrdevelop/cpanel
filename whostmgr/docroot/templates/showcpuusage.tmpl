@@ -1,0 +1,74 @@
+[% USE CPDate -%]
+[% USE CPScalar -%]
+[% USE CPSort -%]
+[% WRAPPER 'master_templates/master.tmpl' theme="yui"
+    scripts = '/js/sorttable.js'
+    app_key = 'daily_process_log'
+-%]
+<table width="100%">
+<td align="left">
+[% SET
+    day_before = CPDate.nicedate( data.logdate - 86400 )
+    day_of = CPDate.nicedate( data.logdate )
+    day_after = CPDate.nicedate( data.logdate + 86400 )
+    top_processes = [];
+;
+-%]
+<a href="[% data.script_uri %]?logdate=[% data.logdate - 86400 FILTER html %]">&lt;&lt;
+[% day_before.1 _ '-' _ day_before.2 _ '-' _ day_before.0 -%]</a></td>
+<td >[% day_of.1 _ '-' _ day_of.2 _ '-' _ day_of.0 %]</td>
+<td align='right'>
+<a href="[% data.script_uri %]?logdate=[% data.logdate + 86400 %]">[% day_after.1 _ '-' _ day_after.2 _ '-' _ day_after.0 %] &gt;&gt;</a></td>
+</table>
+Note: These figures are averages since 0000 hours today.<br />
+Note: This script will only track CGI CPU/memory usage if the processes run as the cPanel user.<br />
+<br />
+[% IF data.cpucount > 1 -%]
+You have [% data.cpucount %] CPUs; therefore, these CPU percentages are
+divided by [% data.cpucount %] to indicate the true percentage of all
+CPU power used.<br />
+[% END -%]
+<br />
+
+<table border="1" id=cputbl class=sortable><tr><th class="sorttable_alpha">User</th><th>Domain</th><th>%&nbsp;CPU</th><th>%&nbsp;MEM</th><th>Database&nbsp;Processes</th></tr>
+[% FOR cpudata=data.cpudata.cpsort(
+    {'field' => 'cpu', 'num' => 1, 'desc' => 1, },
+    {'field' => 'mem', 'num' => 1, 'desc' => 1, },
+    {'field' => 'mysql', 'num' => 1, }
+) -%]
+<tr>
+	<td>[% cpudata.user %]</td>
+	<td>[% data.userdomains.${cpudata.user} || '' %]</td>
+	<td>[% CPScalar.sprintf('%.2f', cpudata.cpu / data.cpucount) %]</td>
+	<td>[% cpudata.mem.sprintf('%.2f') %]</td>
+	<td>[% cpudata.mysql.sprintf('%.1f') %]</td>
+</tr>
+[% FOR proc = cpudata.top;
+    IF proc.name;
+        top_processes.push( {
+            'user' => cpudata.user,
+            'cpu' => proc.cpu,
+            'name' => proc.name
+        } );
+        END;
+    END;
+-%]
+[% END -%]
+</table>
+<br />
+<br />
+<table border='1' class='sortable'>
+<caption>Top Processes</caption>
+<tr><th class="sorttable_alpha">User</th><th>Domain</th><th>%&nbsp;CPU</th><th>Process</th></tr>
+[% FOR proc = top_processes.cpsort({ 'field' => 'cpu', 'num' => 1, 'desc' => 1}) -%]
+[% IF proc.cpu > 0.03 -%]
+<tr>
+    <td>[% proc.user %]</td>
+    <td>[% data.userdomains.${proc.user} || '' %]</td>
+    <td>[% proc.cpu %]</td>
+    <td>[% proc.name FILTER html %]</td>
+</tr>
+[% END -%]
+[% END -%]
+</table>
+[% END #wrapper -%]

@@ -1,0 +1,49 @@
+#!/usr/bin/perl
+
+# cpanel - scripts/perlmods                        Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+BEGIN { unshift @INC, '/usr/local/cpanel'; }
+
+use strict;
+use Cpanel::CleanINC ();
+use Cpanel::cPCPAN;
+
+alarm(3000);
+
+my $cPCPAN = Cpanel::cPCPAN->new;
+$cPCPAN->{'print'} = 1;
+if ( $ARGV[0] eq '-s' ) {
+    $cPCPAN->search( $ARGV[1], 1 );
+}
+elsif ( $ARGV[0] eq '-a' ) {
+    $cPCPAN->list_available(1);
+}
+elsif ( $ARGV[0] eq '-u' ) {
+    my $uninstall;
+    if ( $ARGV[2] ) {
+        $uninstall = $cPCPAN->uninstall( $ARGV[1], $ARGV[2] );
+    }
+    else {
+        $uninstall = $cPCPAN->uninstall( $ARGV[1] );
+    }
+    if ( ref $uninstall ) {
+        print @{$uninstall};
+    }
+    else {
+        print $uninstall;
+    }
+}
+elsif ( $ARGV[0] eq '-l' ) {
+    if ( $ARGV[1] ) {
+        print join( "\n", @{ $cPCPAN->list_installed( $ARGV[1] ) } );
+    }
+    else {
+        print join( "\n", @{ $cPCPAN->list_installed() } );
+    }
+}
+else {
+    die "Unknown command";
+}

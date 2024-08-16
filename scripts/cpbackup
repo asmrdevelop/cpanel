@@ -1,0 +1,1264 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/cpbackup                        Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+
+use Try::Tiny;
+
+use Capture::Tiny ();
+use Cwd           ();
+
+use Cpanel::ExitValues::rsync       ();
+use Cpanel::PwCache::Build          ();
+use Cpanel::SafeDir::MK             ();
+use Cpanel::LoadFile                ();
+use Cpanel::BackupMount             ();
+use Cpanel::Backup::SystemResources ();
+use Cpanel::Hostname                ();
+use Cpanel::Binaries                ();
+use Cpanel::OSSys                   ();
+use Cpanel::OSSys::Capabilities     ();
+use Cpanel::CpuWatch                ();
+use Cpanel::Exception               ();
+use Cpanel::Logger                  ();
+use Cpanel::FileUtils::TouchFile    ();
+use Cpanel::FileUtils::Copy         ();
+use Cpanel::FileUtils::Move         ();
+use Cpanel::Config::Backup          ();
+use Cpanel::Config::LoadConfig      ();
+use Cpanel::Config::FlushConfig     ();
+use Cpanel::Config::LoadCpConf      ();
+use Cpanel::Config::LoadCpUserFile  ();
+use Cpanel::Config::IPs::RemoteDNS  ();
+use Cpanel::Config::IPs::RemoteMail ();
+use Cpanel::Config::Users           ();
+use Cpanel::ConfigFiles             ();
+use Cpanel::Kill::Single            ();
+use Cpanel::Mailman::Filesys        ();
+use Cpanel::MysqlUtils::Dir         ();
+use Cpanel::SafeRun::Errors         ();
+use Cpanel::SimpleSync              ();
+use Cpanel::Tar                     ();
+use Cpanel::IONice                  ();
+use Cpanel::Gzip::Config            ();
+use Cpanel::Usage                   ();
+use Cpanel::Backup::Sync            ();
+use Cpanel::Update::InProgress      ();
+use Cpanel::Locale                  ();
+use Cpanel::ConfigFiles::Apache     ();
+use Cpanel::StringFunc::Trim        ();
+use Cpanel::Waitpid                 ();
+use Cpanel::FtpUtils::ResponseCodes ();
+use Cpanel::SignalManager           ();
+use Cpanel::OS                      ();
+
+#
+# These constants identify the backup type
+# which is running and to name the pid file
+# We'll be passing this to the set of common functions
+# used by the old and new backup systems to avoid collisions
+#
+use constant BACKUP_ID       => Cpanel::Backup::Sync::BACKUP_TYPE_OLD;
+use constant BACKUP_ID_OTHER => Cpanel::Backup::Sync::BACKUP_TYPE_NEW;
+
+my $start_time = time();
+my $apacheconf = Cpanel::ConfigFiles::Apache->new();
+my $logger     = Cpanel::Logger->new();
+
+our $VERSION = 2.1;
+
+$Cpanel::BackupMount::VERBOSE = 1;
+
+$ENV{'PATH'} .= ":/sbin";
+
+our $logdir = '/usr/local/cpanel/logs/cpbackup';
+
+my $force          = 0;
+my $debug          = 0;
+my $allow_override = 0;
+my $monthly        = 0;
+my $weekly         = 0;
+
+my $locale;
+my $LAST_CPUSYSTEM_ERROR;
+
+$locale ||= Cpanel::Locale->get_handle();
+
+my %opts = (
+    'force'          => \$force,
+    'debug'          => \$debug,
+    'monthly'        => \$monthly,
+    'weekly'         => \$weekly,
+    'allow-override' => \$allow_override,
+);
+
+Cpanel::Usage::wrap_options( \@ARGV, \&usage, \%opts );
+
+my $host   = Cpanel::Hostname::gethostname();
+my %CPCONF = Cpanel::Config::LoadCpConf::loadcpconf();
+
+if ( Cpanel::Update::InProgress->is_on() ) {
+    $logger->warn("An update is in progress. Backups are disabled at this time.");
+    exit 1;
+}
+
+#
+# Handle the case where another instance of the script
+# is already running
+#
+Cpanel::Backup::Sync::handle_already_running( BACKUP_ID, $logdir, $logger ) or exit 1;
+
+# Load the configuration and do some preliminary checks as to whether we
+# actually need to run before trying to wait for the other backup to complete
+# and warning the user.
+my %CONF = Cpanel::Config::Backup::load();
+
+if ( $CONF{'BACKUPENABLE'} ne "yes" ) {
+    if ( -t \*STDOUT ) {
+        print STDERR "[cpbackup] Backup Not Enabled (This can be adjusted in WHM => Backup => Legacy Backup Configuration)\n";
+    }
+    exit 1;
+}
+if ( $CONF{'BACKUPENABLE'} ne "restoreonly" && $CONF{'BACKUPENABLE'} ne "yes" ) {
+    print STDERR "[cpbackup] Backup Not Enabled (restore only) (This can be adjusted in WHM => Backup => Legacy Backup Configuration)\n";
+    exit 1;
+}
+
+if ( $CONF{'BACKUPCHECK'} ne "yes" ) {
+    print STDERR "[cpbackup] Backup must be re-enabled in your WHM (This can be adjusted in WHM => Backup => Legacy Backup Configuration)\n";
+    exit 1;
+}
+
+#
+# If the other backup type is running wait for it to finish,
+# then flag that we are running so the other backup type can not
+# start
+#
+my $rc = Cpanel::Backup::Sync::set_backup_as_running_after_other_finishes( BACKUP_ID, BACKUP_ID_OTHER, time(), $logger );
+
+if ( $rc == Cpanel::Backup::Sync::OTHER_TYPE_RUNNING ) {
+    print STDERR "[backup] Unable start backup script";
+    require Cpanel::iContact::Class::Backup::Failure;
+    require Cpanel::Notify;
+    Cpanel::Notify::notification_class(
+        'class'            => 'Backup::Failure',
+        'application'      => 'Backup::Failure',
+        'constructor_args' => [
+            'origin'     => 'Legacy cPanel Backup System',
+            'start_time' => $start_time,
+            'end_time'   => time(),
+            'reason'     => $locale->maketext('The system could not complete the backup because legacy and current backup processes may not run concurrently, and the first backup process has not finished.')
+        ]
+    );
+    exit 1;
+}
+if ( $rc != Cpanel::Backup::Sync::SUCCESS ) {
+    print STDERR "[backup] Unable start backup script";
+    require Cpanel::iContact::Class::Backup::Failure;
+    require Cpanel::Notify;
+    Cpanel::Notify::notification_class(
+        'class'            => 'Backup::Failure',
+        'application'      => 'Backup::Failure',
+        'constructor_args' => [
+            'origin'     => 'Legacy cPanel Backup System',
+            'start_time' => $start_time,
+            'end_time'   => time(),
+            'reason'     => $locale->maketext( 'The system could not complete the backup because a test of “[_1]” resulted in an error.', '/bin/backup' )
+        ]
+    );
+    exit 1;
+}
+
+#
+# If stats are running, request that they pause
+#
+if ( $CPCONF{'nocpbackuplogs'} ) {
+    Cpanel::Backup::Sync::pause_stats_if_needed($logger);
+}
+
+my $gzip_cfg = Cpanel::Gzip::Config->load();
+my $gzip_bin = $gzip_cfg->{'bin'};
+if ( !-x $gzip_bin ) {
+    $logger->info('Unable to locate suitable gzip binary');
+    exit 1;
+}
+
+my $rsync_bin = Cpanel::Binaries::path('rsync');
+if ( !-x $rsync_bin ) {
+    $logger->info('Unable to locate suitable rsync binary');
+    exit 1;
+}
+
+my $tarcfg = Cpanel::Tar::load_tarcfg();
+
+my ( $status, $message ) = Cpanel::Tar::checkperm();
+exit 1 if !$status;    # No need to show message here, handled in checkperm routine
+
+my $tar_bin = $tarcfg->{'bin'};
+
+my $now       = time;
+my $rsyncopts = '-rlptD';
+
+#recusive, copy symlinks as symlinks, preserve permissions,
+#preserve times, preserve devices
+
+$ENV{'CPBACKUP'} = 1;
+
+if ( !$CPCONF{'skipnotifyacctbackupfailure'} ) {
+    $ENV{'CPBACKUP_NOTIFY_FAIL'} = 1;
+}
+
+my $CAPABILITIES = Cpanel::OSSys::Capabilities->load;
+
+my $pkgacct = -x '/usr/local/cpanel/bin/pkgacct' ? '/usr/local/cpanel/bin/pkgacct' : '/usr/local/cpanel/scripts/pkgacct';
+
+if ($allow_override) {
+    if ( -e '/var/cpanel/lib/Whostmgr/Pkgacct/pkgacct' && -x _ ) {
+        $pkgacct = '/var/cpanel/lib/Whostmgr/Pkgacct/pkgacct';
+    }
+}
+
+my $has_link_dest = 0;
+if ( $CONF{'BACKUPINC'} eq 'yes' && $CONF{'LINKDEST'} && ( $CONF{'LINKDEST'} eq 'yes' || $CONF{'LINKDEST'} eq '1' ) ) {
+    my $rsync_help = Cpanel::SafeRun::Errors::saferunallerrors( $rsync_bin, '--help' );
+    $has_link_dest = ( $rsync_help =~ /link-dest/ ? 1 : 0 );
+}
+
+if ( ( !exists $CONF{'PREBACKUP'} || $CONF{'PREBACKUP'} eq '-1' || $CONF{'PREBACKUP'} eq '' ) && -e '/usr/local/cpanel/scripts/precpbackup' && -x _ ) {
+
+    if ( !exists $CONF{'PREBACKUP'} ) {
+        require Cpanel::Redirect;
+        my $url_host = Cpanel::Redirect::getserviceSSLdomain('cpanel') || $host;
+        if ( my $pid = fork() ) {
+            Cpanel::Waitpid::sigsafe_blocking_waitpid($pid);
+            if ( $? && $? & 127 ) {
+                my $signum = $? & 127;
+                print STDERR "[cpbackup] WARNING: Process $pid died from signal $signum!\n";
+            }
+        }
+        else {
+            require Cpanel::Notify;
+            Cpanel::Notify::notification_class(
+                'class'            => 'Backup::PreBackupNotice',
+                'application'      => 'Legacy cPanel Backup System',
+                'status'           => 'prebackup deprecation',
+                'priority'         => 2,
+                'interval'         => 60 * 60 * 24,
+                'constructor_args' => [ 'origin' => 'Legacy cPanel Backup System' ]
+            );
+            exit(0);
+        }
+
+    }
+
+    if ( -t STDIN ) {
+        print "[cpbackup] Executing user defined pre backup script (/usr/local/cpanel/scripts/precpbackup) [LEGACY].\n";
+    }
+
+    system '/usr/local/cpanel/scripts/precpbackup';
+    $CONF{'PREBACKUP'} = 0;    # Prevent from running again
+}
+
+if ( exists $CONF{'GZIPRSYNCOPTS'} ) {
+    $ENV{'GZIP'} .= $CONF{'GZIPRSYNCOPTS'};
+}
+else {
+    $CONF{'GZIPRSYNCOPTS'} = $gzip_cfg->{'rsyncable'} ? '--rsyncable' : '';
+    $ENV{'GZIP'} .= $CONF{'GZIPRSYNCOPTS'};
+    Cpanel::Config::Backup::save( \%CONF );
+}
+
+$ENV{'pkgacct-cpbackup'} = 1;
+
+#BACKUPDIR /backup
+#BACKUPINT daily
+#BACKUPENABLE yes
+#BACKUPCHECK yes
+#BACKUPMOUNT no
+#BACKUPINC no
+#BACKUPFILES yes
+#BACKUPACCTS
+#DIEIFNOTMOUNTED no
+#BACKUPDAYS 0,1,2,3,4,5,6
+#BACKUPLOGS no
+#MYSQLBACKUP accounts
+#BACKUPTYPE normal,ftp
+
+if ( $> == 0 ) {
+    $ENV{'USER'} = 'root';
+    $ENV{'HOME'} = '/root';
+}
+
+# my %SKIPUSERS;
+# if ( open my $userskip_fh, '<', '/etc/cpbackup-userskip.conf' ) {
+#     while (<$userskip_fh>) {
+#         chomp;
+#         $SKIPUSERS{$_} = 1;
+#     }
+#     close $userskip_fh;
+# }
+
+my @FILES = (
+    qw(
+      /etc/exim.conf
+      /etc/exim.conf.local
+      /etc/exim.conf.localopts
+      /etc/namedb/named.conf
+      /etc/rc.conf
+      /etc/named.conf
+      /etc/proftpd.conf
+      /etc/pure-ftpd.conf
+      /etc/localdomains
+      /etc/httpd/conf/httpd.conf
+      /usr/local/apache/conf/httpd.conf
+      /etc/group
+      /etc/shadow
+      /etc/digestshadow
+      /etc/master.passwd
+      /etc/passwd
+      /etc/fstab
+      /root/.my.cnf
+      /etc/ips
+      /etc/reservedips
+      /etc/reservedipreasons
+      /etc/wwwacct.conf
+      /etc/remotedomains
+      /etc/rndc.conf
+      /etc/secondarymx
+      /etc/senderverifybypasshosts
+      /etc/spammeripblocks
+      /etc/blocked_incoming_email_countries
+      /etc/blocked_incoming_email_country_ips
+      /etc/blocked_incoming_email_domains
+      /etc/cpanel_exim_system_filter
+      /etc/global_spamassassin_enable
+      /etc/spammers
+      /etc/my.cnf
+      /etc/dovecot/sni.conf
+      /var/cpanel/greylist/conf
+      /var/cpanel/greylist/greylist.sqlite
+      /var/cpanel/mysql/remote_profiles/profiles.json
+    ),
+    $apacheconf->file_conf(),
+    Cpanel::Config::IPs::RemoteDNS->PATH(),
+    Cpanel::Config::IPs::RemoteMail->PATH(),
+);
+
+my @DIRS = (
+    $Cpanel::ConfigFiles::VALIASES_DIR,
+    $Cpanel::ConfigFiles::VDOMAINALIASES_DIR,
+    $Cpanel::ConfigFiles::VFILTERS_DIR,
+    $Cpanel::ConfigFiles::FTP_PASSWD_DIR,
+    Cpanel::Mailman::Filesys::MAILMAN_DIR(),
+    Cpanel::OS::user_crontab_dir(),
+    Cpanel::OS::dns_named_basedir(),
+    qw(
+      /etc/cpanel
+      /etc/namedb
+      /etc/ssl
+      /usr/share/ssl
+      /var/cpanel
+      /var/cron/tabs
+      /var/lib/named/chroot/var/named/master
+      /var/lib/rpm
+      /var/log/bandwidth
+      /var/spool/cron
+      /var/spool/fcron
+      /var/ssl
+    ),
+);
+
+if ( $CONF{'BACKUPDAYS'} ne "" ) {
+    my @BACKUPDAYS = split( /\,/, $CONF{'BACKUPDAYS'} );
+    my ( $sec, $min, $hour, $mday, $mon, $year, $wday, $yday, $isdst ) = localtime($now);
+    my $backupthisday = 0;
+
+    foreach (@BACKUPDAYS) {
+        if ( $wday eq $_ ) {
+            $backupthisday = 1;
+        }
+    }
+
+    if ( !$backupthisday && !$force ) {
+        print STDERR "[cpbackup] Backups are not scheduled to run today (This can be adjusted in WHM => Backup => Legacy Backup Configuration)\n";
+        exit 1;
+    }
+}
+
+my $basedir = $CONF{'BACKUPDIR'};
+
+# Create log dir and rotate log files
+setup_and_clean_logs();
+
+my $log_file_path = Cpanel::Backup::Sync::log_file_path( $logdir, $now );
+
+my ( $SIGNAL_MANAGER, $at_perl_end );
+
+if ( !$debug ) {
+    ( $SIGNAL_MANAGER, $at_perl_end ) = Cpanel::Backup::Sync::fork_and_redirect_output( BACKUP_ID, $logdir, $now, $logger, \&send_message );
+}
+
+$ENV{'CPBACKUP_LOGFILE'} = $log_file_path;
+
+if ( $CONF{'BACKUPTYPE'} eq 'ftp' ) {
+    my $ftpuser = $CONF{'BACKUPFTPUSER'};
+    my $ftppass = $CONF{'BACKUPFTPPASS'};
+    if ( !defined($ftpuser) || $ftpuser eq '' ) {
+        my $status  = 'FTP user for backups is not defined.';
+        my $subject = $status;
+        exit_STDERR_log_and_notify(
+            $status,
+            $subject,
+            $locale->maketext(
+                'The “[_1]” of the Legacy Backup System is set to “[_2]”, but the [asis,FTP] user is not defined.',
+                $locale->maketext('Backup Type'),
+                $locale->maketext('Remote FTP (Accounts Only)'),
+            ),
+        );
+    }
+    elsif ( !defined($ftppass) || $ftppass eq '' ) {
+        my $status  = "FTP password for $ftpuser is not defined.";
+        my $subject = $status;
+        exit_STDERR_log_and_notify(
+            $status,
+            $subject,
+            $locale->maketext(
+                'The “[_1]” of the Legacy Backup System is set to “[_2]”, but the [asis,FTP] password for “[_3]” is not defined.',
+                $locale->maketext('Backup Type'),
+                $locale->maketext('Remote FTP (Accounts Only)'),
+                $ftpuser,
+            ),
+        );
+    }
+
+    my $net_ftp_ok = 0;
+    eval { require Net::FTP; $net_ftp_ok = 1; };
+    if ( !$net_ftp_ok ) {
+        my $status  = 'loading Net::FTP failed';
+        my $subject = qq{Remote FTP backup failed because Net::FTP could not be loaded on $host};
+        exit_STDERR_log_and_notify(
+            $status,
+            $subject,
+            $locale->maketext(
+                'The “[_1]” of the Legacy Backup System is set to “[_2]”, but the backup failed because “[asis,Net::FTP]” could not be loaded on “[_3]”.',
+                $locale->maketext('Backup Type'),
+                $locale->maketext('Remote FTP (Accounts Only)'),
+                $host,
+            ),
+        );
+    }
+
+    my $ftptimeout = $CONF{'BACKUPFTPTIMEOUT'} || 120;
+    my $ftppassive = ( $CONF{'BACKUPFTPPASSIVE'} eq 'yes' );
+    my $ftphost    = $CONF{'BACKUPFTPHOST'};
+    my $ftp        = Net::FTP->new(
+        $ftphost,
+        Debug   => 1,
+        Passive => $ftppassive,
+        Timeout => $ftptimeout
+    );
+    unless ($ftp) {
+        my $status  = "Unable to connect to remote FTP server ($ftphost).";
+        my $subject = qq{Remote FTP backup on $host failed because unable to connect to remote FTP server ($ftphost)};
+        exit_STDERR_log_and_notify(
+            $status,
+            $subject,
+            $locale->maketext( 'Remote [asis,FTP] backup on “[_1]” failed because the system was unable to connect to the remote [asis,FTP] server ([_2]).', $host, $ftphost ),
+        );
+    }
+
+    if ( !$ftp->login( $ftpuser, $ftppass ) ) {
+        $ftp->quit();
+        my $status  = 'Unable to login to remote FTP server.';
+        my $subject = $status;
+        exit_STDERR_log_and_notify(
+            $status,
+            $subject,
+            $locale->maketext( 'Remote [asis,FTP] backup on “[_1]” failed because the server was unable to log into the remote [asis,FTP] server, [_2], with the provided credentials.', $host, $ftphost ),
+        );
+    }
+    $ftp->quit();
+
+    mkdir( "/home/cpbackuptmp", 0711 );
+    chmod( 0711, "/home/cpbackuptmp" );
+    $basedir = "/home/cpbackuptmp";
+
+    $CONF{'BACKUPINC'}       = "no";
+    $CONF{'BACKUPFILES'}     = "no";
+    $CONF{'BACKUPACCTS'}     = "yes";
+    $CONF{'BACKUPMOUNT'}     = "no";
+    $CONF{'DIEIFNOTMOUNTED'} = "no";
+}
+
+my $original_child_pid = $$;
+
+my $basemount = $basedir;
+
+my $need_to_mount_backup;
+$need_to_mount_backup = !Cpanel::BackupMount::backup_disk_is_mounted($basemount) if ( $CONF{'BACKUPMOUNT'} eq 'yes' );
+if ($need_to_mount_backup) {
+    Cpanel::BackupMount::mount_backup_disk( $basemount, 'cpbackup', 86400 );
+}
+
+die_if_not_mounted_check();
+
+if ( !$basedir ) {
+    if ( !-t STDIN ) {
+        require Cpanel::iContact::Class::Backup::Failure;
+        require Cpanel::Notify;
+        Cpanel::Notify::notification_class(
+            'class'            => 'Backup::Failure',
+            'application'      => 'Backup::Failure',
+            'constructor_args' => [
+                'origin'     => 'Legacy cPanel Backup System',
+                'start_time' => $start_time,
+                'end_time'   => time(),
+                'reason'     => $locale->maketext('The system could not complete the backup because the configuration does not specify the backup directory.')
+            ]
+        );
+    }
+    print STDERR "[cpbackup] Backup failed! Base directory for backups not set!\n";
+    exit 1;
+}
+chmod( 0711, $basedir );
+$basedir .= '/cpbackup';
+$basedir =~ s{//}{/};
+Cpanel::SafeDir::MK::safemkdir( $basedir, 0711 );
+chmod( 0711, $basedir );
+
+Cpanel::OSSys::nice(18);    # needs to be one higher for cpuwatch
+
+if ( $CAPABILITIES->capable_of('ionice') ) {
+    if ( Cpanel::IONice::ionice( 'best-effort', exists $CPCONF{'ionice_cpbackup'} ? $CPCONF{'ionice_cpbackup'} : 6 ) ) {
+        print "[cpbackup] Setting I/O priority to reduce system load: " . Cpanel::IONice::get_ionice() . "\n";
+    }
+}
+
+if ($has_link_dest) {
+    print "[cpbackup] EXPERIMENTAL Hard Linking enabled (link-dest)\n";
+}
+
+if ( $CONF{'PREBACKUP'} && -e '/usr/local/cpanel/scripts/precpbackup' && -x _ ) {
+    print "[cpbackup] Executing user defined pre backup script (/usr/local/cpanel/scripts/precpbackup).\n";
+    system '/usr/local/cpanel/scripts/precpbackup';
+}
+
+#
+# If precpbackup unmounts the disk, mount it again
+#
+if ( $CONF{'BACKUPMOUNT'} eq 'yes' && !Cpanel::BackupMount::backup_disk_is_mounted($basemount) ) {
+    Cpanel::BackupMount::mount_backup_disk( $basemount, 'cpbackup', 86400 );
+    die_if_not_mounted_check();
+}
+
+my %BACKUP_TTLS = (
+    'monthly' => 29,
+    'weekly'  => 6,
+    'daily'   => .5
+);
+
+my ( @backups_to_run, @backups_to_skip );    # We are using an array becuse the order of the backups matter
+                                             # when we push them in below the first backup will be the one we run
+                                             # anything after the first are just retention backups which may or may be due
+                                             # to be copied from the backup we just made.
+
+#
+# Pick the first backup based on the BACKUPINT setting
+#
+if ( exists $BACKUP_TTLS{ $CONF{'BACKUPINT'} } ) {
+    if ( $force || !-e $basedir . '/' . $CONF{'BACKUPINT'} || isolderthan( $BACKUP_TTLS{ $CONF{'BACKUPINT'} }, $basedir . '/' . $CONF{'BACKUPINT'} ) ) {
+        push @backups_to_run, $CONF{'BACKUPINT'};
+    }
+    else {
+        push @backups_to_skip, $CONF{'BACKUPINT'};
+    }
+}
+
+# additionnal backups should be treated only when performing the original BAKUPINT
+#   if not we will not preserve the hardlinks when launch multiple times
+#   you should use --force option for multiple launch
+if (@backups_to_run) {
+
+    #
+    # If we are  doing daily backups we have the option to retain weekly backups
+    #
+    if ( $CONF{'BACKUPINT'} eq "daily" && $CONF{'BACKUPRETWEEKLY'} ) {
+        if ( !-e "${basedir}/weekly" || isolderthan( $BACKUP_TTLS{'weekly'}, "${basedir}/weekly" || $weekly ) ) {
+            push @backups_to_run, 'weekly';
+        }
+        else {
+            push @backups_to_skip, 'weekly';
+        }
+    }
+
+    #
+    # If we are  doing daily or weekly backups we have the option to retain monthly backups
+    #
+    if ( ( $CONF{'BACKUPINT'} eq "weekly" || $CONF{'BACKUPINT'} eq "daily" ) && $CONF{'BACKUPRETMONTHLY'} ) {
+        if ( !-e "${basedir}/monthly" || isolderthan( $BACKUP_TTLS{'monthly'}, "${basedir}/monthly" || $monthly ) ) {
+            push @backups_to_run, 'monthly';
+        }
+        else {
+            push @backups_to_skip, 'monthly';
+        }
+    }
+}
+
+#BACKUPLOGS no
+#MYSQLBACKUP accounts
+if ( $CONF{'MYSQLBACKUP'} eq "both" || $CONF{'MYSQLBACKUP'} eq 'dir' ) {
+    backup_all_mysql_databases( \%CONF );
+}
+
+#
+# Only send the message if there are backups to run
+#
+my $send_message = ( @backups_to_run ? 1 : 0 );
+
+my ( $rsync_err_str, $rsync_stderr );
+
+my $user_error_map;
+if (@backups_to_run) {
+    print "[cpbackup] The following backups will be updated: " . join( ',', @backups_to_run ) . "\n";
+
+    my $current_backup  = $backups_to_run[0];
+    my $curr_backup_dir = "$basedir/$current_backup";
+
+    Cpanel::SafeDir::MK::safemkdir( $curr_backup_dir, 0711 ) if ( !-e $curr_backup_dir );
+    chmod( 0711, $curr_backup_dir );
+
+    $user_error_map = backupaccts( $curr_backup_dir, \@backups_to_run );    # we include the list of backups to run so we can avoid
+                                                                            # having to do the backup process for each backup when ftping
+    update_last_run_time($curr_backup_dir);
+
+    #
+    # Make a copy of the current_backup (BACKUPINT setting) into the next type we need to retain
+    #
+    shift(@backups_to_run);                                     # the first one is the kind of backup we are running
+                                                                # The next are the ones we need to keep (they are only pushed in if we need to make a copy)
+    while ( my $retention_backup = shift @backups_to_run ) {    # We are shifting them out as they are done
+                                                                # so we know they have been completed
+        next if ( !$retention_backup );
+
+        print "[cpbackup] Copying $current_backup backups to $retention_backup backups for retention\n";
+        my $target_dir = "$basedir/$retention_backup";
+
+        my @rsync_opts = (
+            $rsyncopts,
+            '--delete',
+            (
+                $has_link_dest
+                ? (
+                    "--link-dest=../$current_backup",
+                    "--exclude=$curr_backup_dir/cpbackupstatus.cfg",
+                  )
+                : ()
+            ),
+            "$curr_backup_dir/",
+            $target_dir,
+        );
+
+        my $rsync_exit_code;
+
+        ( $rsync_stderr, $rsync_exit_code ) = Capture::Tiny::tee_stderr(
+            sub { cpusystem( $rsync_bin, @rsync_opts ) },
+        );
+
+        my $rsync_status = $rsync_exit_code ? Cpanel::ExitValues::rsync->number_to_string($rsync_exit_code) : q<>;
+
+        if ($has_link_dest) {
+            if ( $rsync_exit_code != 0 ) {
+                $rsync_err_str = "Incremental hard link copy of $current_backup backups to $retention_backup backups failed because of an error: $rsync_status";
+            }
+            else {
+                unlink "$target_dir/cpbackupstatus.cfg" if -e "$target_dir/cpbackupstatus.cfg";
+                Cpanel::FileUtils::Copy::safecopy( "$curr_backup_dir/cpbackupstatus.cfg", "$target_dir/cpbackupstatus.cfg" );
+            }
+        }
+        elsif ( $rsync_exit_code != 0 ) {
+            $rsync_err_str = "Incremental copy of $current_backup backups to $retention_backup backups failed because of an error: $rsync_status";
+        }
+
+        if ($rsync_err_str) {
+            print STDERR "[cpbackup] $rsync_err_str\n";
+        }
+
+        # case 42741: no need to update the file again as it will be copied from the $current_backup
+        #update_last_run_time( $basedir . '/' . $retention_backup );
+        last;    # Only do one per run so at least we have one day where monthly and weekly backups are not the same at the end of the month
+    }
+
+    if (@backups_to_run) {
+        print STDERR "[cpbackup] The following backups will be updated next time cpbackup runs: " . join( ',', @backups_to_run ) . "\n";    # we do not want to cobber the monthly backups
+                                                                                                                                            # at the end of the month so we will wait till the next run
+    }
+}
+
+if (@backups_to_skip) {
+    print "[cpbackup] The following backups were already up to date: " . join( ',', @backups_to_skip ) . "\n";
+}
+
+if ( -e '/usr/local/cpanel/scripts/postcpbackup' && -x _ && ( !exists $CONF{'POSTBACKUP'} || $CONF{'POSTBACKUP'} ) ) {
+    print "[cpbackup] Executing user defined post backup script (/usr/local/cpanel/scripts/postcpbackup).\n";
+    system '/usr/local/cpanel/scripts/postcpbackup';
+}
+
+# unmount the disk if it was initially unmounted
+if ($need_to_mount_backup) {
+    Cpanel::BackupMount::unmount_backup_disk( $basemount, 'cpbackup' );
+}
+
+Cpanel::Backup::Sync::clean_up_pid_files(BACKUP_ID);
+
+my $complete_localtime = localtime();
+print "[cpbackup] Completed at $complete_localtime\n";
+
+sub send_message {
+    my ($signal) = @_;
+    $signal ||= 0;
+    if ($send_message) {
+        my $major_error;
+
+        # Parse the log for known problems to highlight.
+        #Just take the first one due to space restraints in subject line.
+        if ( open( my $log_file, '<', $log_file_path ) ) {
+            while (<$log_file>) {
+                if (m/<<<\s552\s(.*)/) {
+                    $major_error = $locale->maketext("The backup destination server has exceeded storage allocation (for current directory or dataset).");
+                    last;
+                }
+                elsif (m/<<<\s452\s(.*)/) {
+                    $major_error = $locale->maketext("The backup destination server has insufficient storage space.");
+                    last;
+                }
+            }
+            close($log_file);
+        }
+
+        my @transport_errors = ();
+        if ( keys %$user_error_map ) {
+            for my $user ( sort keys %$user_error_map ) {
+                for my $target_type ( sort keys %{ $user_error_map->{$user}{'transport'} } ) {
+                    push @transport_errors,
+                      [
+                        $user,
+                        $target_type,
+                        $user_error_map->{$user}{'transport'}{$target_type}{'error_message'},
+                      ];
+                }
+            }
+        }
+
+        my @account_errors = ();
+        if ( keys %$user_error_map ) {
+            for my $user ( sort keys %$user_error_map ) {
+                if ( $user_error_map->{$user}{'account'} ) {
+                    push @account_errors,
+                      [
+                        $user,
+                        $user_error_map->{$user}{'account'}{'error_message'}
+                      ];
+                }
+            }
+        }
+
+        my @local_copy_errors = (
+            $rsync_err_str
+            ? ( [ $rsync_err_str => $rsync_stderr ] )
+            : ()
+        );
+
+        require Cpanel::Notify;
+
+        my @attach_files = (
+            {
+                "name"                    => "${now}.log.txt",
+                "content"                 => Cpanel::LoadFile::loadfile_r($log_file_path),
+                'number_of_preview_lines' => 25,
+            },
+        );
+
+        my $had_error = $major_error || @account_errors || @transport_errors || @local_copy_errors;
+        my $class     = $had_error ? 'Backup::PartialFailure' : 'Backup::Success';
+        print "[cpbackup] Final state is $class ($signal)\n";
+
+        Cpanel::Notify::notification_class(
+            'application'      => "Legacy cPanel Backup System",
+            'class'            => $class,
+            'status'           => '',
+            'priority'         => 2,
+            'interval'         => 1,                               # Always notify
+            'constructor_args' => [
+                'origin'          => "Legacy cPanel Backup System",
+                is_legacy         => 1,
+                'start_time'      => $start_time,
+                'end_time'        => time(),
+                major_error       => $major_error,
+                transport_errors  => \@transport_errors,
+                account_errors    => \@account_errors,
+                local_copy_errors => \@local_copy_errors,
+                'attach_files'    => \@attach_files,
+                'signal'          => $signal,
+                'log_file_path'   => $log_file_path,
+            ],
+        );
+    }
+}
+
+sub isolderthan {
+    my ( $days, $file ) = @_;
+
+    return 1 if !-e $file;
+
+    my $last_run_time = ( stat($file) )[9];
+
+    # We want the trust the earliest time so we do not miss out on a backup.  Its better to backup again
+    # if we are unsure.  We now create a cpbackupstatus.cfg if it is missing
+    if ( -e $file . '/cpbackupstatus.cfg' ) {
+        my $backup_status_ref = Cpanel::Config::LoadConfig::loadConfig( $file . '/cpbackupstatus.cfg', {}, '=' );
+
+        # Always take the oldest date
+        if ( exists $backup_status_ref->{'last_run_time'} && $backup_status_ref->{'last_run_time'} && $backup_status_ref->{'last_run_time'} < $last_run_time ) {
+            $last_run_time = $backup_status_ref->{'last_run_time'};
+        }
+    }
+    else {
+        my $backup_status_ref = { 'last_run_time' => $last_run_time };
+        Cpanel::Config::FlushConfig::flushConfig( $file . '/cpbackupstatus.cfg', $backup_status_ref, '=' );
+    }
+
+    my $days_old = ( time() - ($last_run_time) ) / ( 60 * 60 * 24 );    #9 =mtime
+
+    print "[cpbackup] backup point $file is " . sprintf( '%0.2f', $days_old ) . " days old\n";
+    return ( ( $days_old < 0 || $days_old > $days ) ? 1 : 0 );          #case 19450:: now time warp safe
+}
+
+sub update_last_run_time {
+    my $dir  = shift;
+    my $time = shift || time();
+    my $backup_status_ref;
+    my $cfg_file = $dir . '/cpbackupstatus.cfg';
+    if ( -e $cfg_file ) {
+        $backup_status_ref = Cpanel::Config::LoadConfig::loadConfig( $cfg_file, {}, '=' );
+
+        #This file gets unlink()ed immediately down below.
+        #It’s conceivable that this is here in event of failure in
+        #flushConfig(), except flushConfig() doesn’t throw exceptions.
+        #So, it’s unclear what’s intended. TODO FIXME XXX
+        Cpanel::FileUtils::Move::safemv( $cfg_file, "$cfg_file.bak" );
+    }
+    $backup_status_ref->{'last_run_time'} = $time;
+    Cpanel::Config::FlushConfig::flushConfig( $cfg_file, $backup_status_ref, '=' );
+    unlink "$cfg_file.bak" if -e "$cfg_file.bak";
+}
+
+sub backup_all_mysql_databases {
+    my ($conf) = @_;
+
+    my $mysqldatadir = Cpanel::MysqlUtils::Dir::getmysqldir() || '/var/lib/mysql';
+    while ( -l $mysqldatadir ) {
+        $mysqldatadir = readlink($mysqldatadir);
+    }
+
+    my $rawdir = $mysqldatadir;
+    $rawdir =~ s/\//_/g;
+
+    my $basedir = $conf->{'BACKUPDIR'};
+    $basedir .= '/cpbackup';
+    my $curr_backup_dir = $basedir . '/' . $conf->{'BACKUPINT'};
+
+    my @EXCLUDES = Cpanel::Backup::SystemResources::get_excludes_args_by_path($mysqldatadir);
+
+    Cpanel::SafeDir::MK::safemkdir("$curr_backup_dir/dirs") if !-d "$curr_backup_dir/dirs";
+
+    # Added exclude for /proc for chroot bind setups to prevent error messages
+    if ( $conf->{'BACKUPINC'} eq "yes" ) {
+        print "[cpbackup] Starting incremental MySQL database backups\n";
+
+        if ( cpusystem( $rsync_bin, $rsyncopts, @EXCLUDES, '--delete', "$mysqldatadir/", "$curr_backup_dir/dirs/$rawdir" ) != 0 ) {
+            print STDERR "[cpbackup] Failed to perform incremental MySQL database backup\n";
+        }
+    }
+    else {
+        print "[cpbackup] Starting full MySQL database backups\n";
+
+        if ( cpusystem( $tar_bin, '--use-compress-program=/usr/local/cpanel/bin/gzip-wrapper', '--create', '--preserve-permissions', '--file', "$curr_backup_dir/dirs/$rawdir.tar.gz", @EXCLUDES, $mysqldatadir ) == 0 ) {
+            chmod( 0600, "$curr_backup_dir/dirs/$rawdir.tar.gz" ) if $status == 0;
+        }
+        else {
+            print STDERR "[cpbackup] Failed to perform full MySQL database backup\n";
+        }
+    }
+    return;
+}
+
+sub backupaccts {    ## no critic qw(Subroutines::ProhibitExcessComplexity)
+    my $target      = shift;
+    my $all_targets = shift;
+
+    Cpanel::FileUtils::TouchFile::touchfile($target);
+
+    #if another cpbackup starts just go bye bye
+
+    if ( !( $CONF{'BACKUPFILES'} eq "no" ) ) {
+        print "[cpbackup] Running dir & file backup with target : $target\n";
+        if ( !-e "$target/files" ) {
+            mkdir( "$target/files", 0700 );
+        }
+        if ( !-e "$target/dirs" ) {
+            mkdir( "$target/dirs", 0700 );
+        }
+        chmod( 0700, "$target/files", "$target/dirs" );
+        my ( $syncstatus, $syncmessage );
+        foreach my $file (@FILES) {
+            next if ( !-e $file );
+            my $rawfile = $file;
+            $rawfile =~ s/\//_/g;
+            if ( $CONF{'BACKUPINC'} eq "yes" ) {
+                ( $syncstatus, $syncmessage ) = Cpanel::SimpleSync::syncfile( $file, "$target/files/$rawfile", 0, 1 );
+            }
+            else {
+                ( $syncstatus, $syncmessage ) = Cpanel::SimpleSync::syncfile( $file, "$target/files/$rawfile", 0, 1 );
+
+                if ( $syncstatus != 0 ) {
+                    if ( cpusystem( $gzip_bin, "-f", "$target/files/$rawfile" ) != 0 ) {
+                        print STDERR "[cpbackup] Failed to compress file $target/files/$rawfile\n";
+                    }
+                }
+            }
+            if ( $syncstatus == 0 ) { print STDERR "[cpbackup] Failed to backup $file ($syncmessage)\n"; }
+        }
+
+        foreach my $dir (@DIRS) {
+            next if ( !-e $dir );
+            my $rawdir = $dir;
+            $rawdir =~ s/\//_/g;
+
+            my @EXCLUDES = Cpanel::Backup::SystemResources::get_excludes_args_by_path($dir);
+
+            # Added exclude for /proc for chroot bind setups to prevent error messages
+            if ( $CONF{'BACKUPINC'} eq "yes" ) {
+                if ( cpusystem( $rsync_bin, $rsyncopts, @EXCLUDES, '--delete', "$dir/", "$target/dirs/$rawdir" ) != 0 ) {
+                    print STDERR "[cpbackup] Failed to perform incremental backup of $dir/ to $target/dirs/$rawdir\n";
+                }
+            }
+            else {
+                if ( cpusystem( $tar_bin, '--use-compress-program=/usr/local/cpanel/bin/gzip-wrapper', '--create', '--preserve-permissions', '--file', "$target/dirs/$rawdir.tar.gz", @EXCLUDES, $dir ) == 0 ) {
+                    chmod( 0600, "$target/dirs/$rawdir.tar.gz" );
+                }
+                else {
+                    print STDERR "[cpbackup] Failed to perform full backup of $dir/ to $target/dirs/$rawdir.tar.gz\n";
+                }
+            }
+        }
+    }
+
+    print "[cpbackup] Running account backup with target : $target\n";
+
+    #BACKUPLOGS no
+    #MYSQLBACKUP accounts
+    #BACKUPBWDATA yes
+    $ENV{'pkgacct-logs'}   = ( $CONF{'BACKUPLOGS'} eq "yes"                                      ? 'yes' : 'no' );
+    $ENV{'pkgacct-mysql'}  = ( ( $CONF{'MYSQLBACKUP'} eq "dir" || $CONF{'MYSQLBACKUP'} eq "no" ) ? 'no'  : 'yes' );
+    $ENV{'pkgacct-psql'}   = ( $CONF{'PSQLBACKUP'} eq "no"                                       ? 'no'  : 'yes' );
+    $ENV{'pkgacct-bwdata'} = ( $CONF{'BACKUPBWDATA'} eq "no"                                     ? 'no'  : 'yes' );
+
+    my %user_error_map = ();
+    if ( $CONF{'BACKUPACCTS'} ne 'no' ) {
+        Cpanel::PwCache::Build::init_passwdless_pwcache();
+
+        my @cpusers = Cpanel::Config::Users::getcpusers();
+        foreach my $user ( sort @cpusers ) {
+            my $user_conf = Cpanel::Config::LoadCpUserFile::load($user);
+            $user_conf->{'LEGACY_BACKUP'} = 0 if !exists $user_conf->{'LEGACY_BACKUP'};
+            next if !$user_conf->{'LEGACY_BACKUP'};
+
+            if ( $CONF{'BACKUPINC'} eq 'yes' ) {
+                my $last_update_time = time();
+                utime( $last_update_time, $last_update_time, "$target/$user" );
+            }
+            if ( cpusystem( $pkgacct, ( $CONF{'COMPRESSACCTS'} eq 'no' ? '--nocompress' : () ), ( $CONF{'BACKUPINC'} eq "yes" ? '--incremental' : () ), $user, $target, 'backup' ) != 0 ) {
+                print STDERR "[cpbackup] Failed to back up account $user\n";
+                $user_error_map{$user}{'account'} = {
+                    'error_message' => ( $LAST_CPUSYSTEM_ERROR || 'Failed to backup account' )    # FIXME: This is a hack to avoid refactoring cpusystem
+                };
+            }
+            else {
+                if ( $CONF{'BACKUPTYPE'} eq 'ftp' ) {
+                    my $target_file = ( $CONF{'COMPRESSACCTS'} eq 'no' ? "$user.tar" : "$user.tar.gz" );
+                    foreach my $remote_target (@$all_targets) {                                   # If we are going to update multiple targets we send the file multiple times
+                                                                                                  # previously we would build the backup once for every target.  Now we just upload it once
+                                                                                                  # instead as we know all the targets before we get here now
+                        my %ftp_error_info = ftpsend( $remote_target, $target . '/' . $target_file, $target_file );
+                        $user_error_map{$user}{'transport'}{$remote_target} = \%ftp_error_info if keys %ftp_error_info;
+                    }
+                    unlink( $target . '/' . $target_file );
+                }
+            }
+
+        }
+    }
+
+    return \%user_error_map;
+}
+
+sub ftpsend {
+    my ( $targetdir, $targetfile, $remotefile ) = @_;
+    my $ftpuser    = $CONF{'BACKUPFTPUSER'};
+    my $ftppass    = $CONF{'BACKUPFTPPASS'};
+    my $ftproot    = $CONF{'BACKUPFTPDIR'};
+    my $ftphost    = $CONF{'BACKUPFTPHOST'};
+    my $ftppassive = ( $CONF{'BACKUPFTPPASSIVE'} eq 'yes' ? 1 : 0 );
+    my $ftptimeout = $CONF{'BACKUPFTPTIMEOUT'} || 120;
+
+    my @FD       = split( /\//, $targetdir );
+    my $backtype = $FD[$#FD];
+
+    my $ftp = Net::FTP->new(
+        $ftphost,
+        Debug   => 1,
+        Passive => $ftppassive,
+        Timeout => $ftptimeout
+    );
+    unless ($ftp) {
+        my $msg               = 'Unable to connect to remote FTP server.';
+        my $localized_message = $locale->maketext('The system was unable to connect to the remote [asis,FTP] server.');
+        print "$msg\n";
+        $logger->info($msg);
+        return ( 'error_message' => $localized_message );
+    }
+
+    my $status = $ftp->login( $ftpuser, $ftppass );
+
+    if ( !$status ) {
+        my $ftp_message = $ftp->message() || get_ftp_error($ftp);
+        $ftp_message = Cpanel::StringFunc::Trim::ws_trim($ftp_message);
+        $ftp->quit();
+        my $msg               = 'Unable to log in to remote FTP server.';
+        my $localized_message = $locale->maketext( 'The system was unable to log in to the remote [asis,FTP] server due to an error: “[_1]”', $ftp_message );
+        print "$msg\n";
+        $logger->info($msg);
+        return ( 'error_message' => $localized_message );
+    }
+
+    $ftp->binary();
+
+    # if $ftproot is not defined by the user, default to cpbackup
+    if ( $ftproot eq "" ) {
+        $ftproot = 'cpbackup';
+    }
+    $ftp->mkdir($ftproot);
+    $ftp->mkdir("${ftproot}/${backtype}");
+    $ftp->cwd("${ftproot}/${backtype}");
+
+    $status = $ftp->put( $targetfile, $remotefile );
+
+    if ( !$status ) {
+        my $ftp_message = $ftp->message() || get_ftp_error($ftp);
+        $ftp_message = Cpanel::StringFunc::Trim::ws_trim($ftp_message);
+        $ftp->quit();
+        my $msg               = 'Unable to upload the backup to the remote FTP server.';
+        my $localized_message = $locale->maketext( 'The system was unable to upload the backup to the remote [asis,FTP] server due to an error: “[_1]”', $ftp_message );
+        print "$msg\n";
+        $logger->info($msg);
+        return ( 'error_message' => $localized_message );
+    }
+    $ftp->quit;
+
+    return;
+}
+
+sub get_ftp_error {
+    my ($ftp_obj) = @_;
+
+    my $response = Cpanel::FtpUtils::ResponseCodes::get_response_text( $ftp_obj->code() );
+    return $response if $response;
+
+    return $locale->maketext('An unknown error occurred.');
+}
+
+#Returns the exit status of the given command, or -1 if the exec() failed.
+#NOTE: If the command died from a signal, this will falsely report success!
+#
+sub cpusystem {
+    my ( $program, @args ) = @_;
+
+    my $sigman;
+
+    $LAST_CPUSYSTEM_ERROR = '';    # FIXME: This is a hack to avoid refactoring cpusystem
+    my $ok;
+    try {
+        # before_exec is slow, avoid it
+        local $ENV{'CPBACKUP'} = 1;
+        Cpanel::CpuWatch::run(
+            program    => $program,
+            args       => \@args,
+            stdout     => \*STDOUT,
+            stderr     => \*STDERR,
+            after_fork => sub {
+                my ($child_pid) = @_;
+
+                my $infanticide_cr = sub {
+                    Cpanel::Kill::Single::safekill_single_pid($child_pid);
+                };
+
+                $sigman = $SIGNAL_MANAGER || Cpanel::SignalManager->new();
+
+                for my $sig ( $sigman->FATAL_SIGNALS() ) {
+                    $sigman->push(
+                        signal  => $sig,
+                        name    => 'infanticide',
+                        handler => $infanticide_cr,
+                    );
+                }
+            },
+        );
+        $ok = 1;
+    }
+    catch {
+
+      NONFATAL: {
+            last NONFATAL if !try { $_->isa('Cpanel::Exception::ProcessFailed::Error') };
+            my $err_code = $_->get('error_code');
+
+            my ($base_program) = $program =~ m<.*/(.+)>;
+
+            if ( $base_program eq 'gtar' || $base_program eq 'gnutar' ) {
+                $base_program = 'tar';
+            }
+
+            my $mod = "Cpanel::ExitValues::$base_program";
+            last NONFATAL if !$mod->can('error_is_nonfatal_for_cpanel');
+
+            if ( $mod->error_is_nonfatal_for_cpanel($err_code) ) {
+                $ok = 1;
+                my $errstr = $mod->number_to_string($err_code);
+
+                #warn() would print a stack trace, which we don’t want.
+                print STDERR "$program returned a non-fatal error code, $err_code ($errstr).\n";
+            }
+        }
+
+        if ( !$ok ) {
+            $LAST_CPUSYSTEM_ERROR = Cpanel::Exception::get_string($_);    # FIXME: This is a hack to avoid refactoring cpusystem
+            warn "[cpbackup] " . Cpanel::Exception::get_string($_);
+        }
+    }
+    finally {
+        if ($SIGNAL_MANAGER) {
+            for my $sig ( $sigman->FATAL_SIGNALS() ) {
+                $sigman->delete( name => 'infanticide', signal => $sig );
+            }
+        }
+    };
+
+    return $ok ? 0 : 1;    #Historical: 0 for success, 1 for failure.
+}
+
+sub _nonzero_status_is_ok {
+
+    return 0;
+}
+
+sub setup_and_clean_logs {
+    if ( !-d $logdir ) {
+        unlink $logdir;
+        mkdir $logdir, 0700;
+    }
+    else {
+        chmod 0700, $logdir;
+    }
+    if ( opendir my $logdir_dh, $logdir ) {
+        while ( my $file = readdir($logdir_dh) ) {
+            if ( -f $logdir . '/' . $file && ( stat(_) )[9] < ( $now - ( 86400 * 10 ) ) ) {
+                unlink $logdir . '/' . $file;
+            }
+        }
+        closedir $logdir_dh;
+    }
+    else {
+        die "Unable to read directory $logdir: $!";
+    }
+}
+
+sub die_if_not_mounted_check {
+    if ( $CONF{'DIEIFNOTMOUNTED'} eq "yes" ) {
+        my ( $ismounted, $mountline ) = Cpanel::BackupMount::backup_disk_is_mounted($basemount);
+        if ( !$ismounted ) {
+            if ( !-t STDIN ) {
+                require Cpanel::iContact::Class::Backup::Failure;
+                require Cpanel::Notify;
+                Cpanel::Notify::notification_class(
+                    'class'            => 'Backup::Failure',
+                    'application'      => 'Backup::Failure',
+                    'constructor_args' => [
+                        'origin'     => 'Legacy cPanel Backup System',
+                        'start_time' => $start_time,
+                        'end_time'   => time(),
+                        'reason'     => $locale->maketext( 'The system could not complete the backup because it could not mount “[_1]”.', $basemount )
+                    ]
+                );
+            }
+            print STDERR "[cpbackup] Backup failed! $basemount is not mounted!\n";
+            exit 1;
+        }
+        else {
+            print "[cpbackup] Mount found ($mountline)\n";
+        }
+    }
+}
+
+sub exit_STDERR_log_and_notify {
+    my ( $status, $subject, $reason ) = @_;
+
+    print STDERR "[cpbackup] $status\n";
+
+    unlink('/var/cpanel/backups_need_to_run');
+
+    require Cpanel::Notify;
+
+    my $app = 'Legacy cPanel Backup System';
+    Cpanel::Notify::notification_class(
+        'class'            => 'Backup::Failure',
+        'application'      => $app,
+        'interval'         => 1,                   # Always notify
+        'priority'         => 2,
+        'status'           => $status,
+        'constructor_args' => [
+            'origin'     => $app,
+            'start_time' => $start_time,
+            'end_time'   => time(),
+            'reason'     => $reason,
+        ],
+    );
+
+    $logger->info($status);
+
+    exit(1);
+}
+
+sub usage {
+    my $prog = $0;
+    $prog =~ s{^.+/(.+)$}{$1};
+    print <<EOF;
+$prog [options]
+
+This script will launch the cpanel daily backup process.
+
+Modifiers Flags:
+
+    --force - will update the file without checking any conditions
+    --weekly - force current day to treat weekly backup
+    --monthly - force current day to treat weekly backup
+    --debug - do not fork before launching ( devel mode )
+    --allow-override
+    --help - dislay this help message and exit
+EOF
+    exit;
+}
+
+1;

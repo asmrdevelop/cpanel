@@ -1,0 +1,117 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/find_pids_with_inotify_watch_on_path
+#                                                  Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::find_pids_with_inotify_watch_on_path;
+
+use strict;
+use warnings;
+
+use parent qw( Cpanel::HelpfulScript );
+
+use Cpanel::Version::Compare ();
+use Cpanel::OSSys            ();
+use Cpanel::LoadFile         ();
+use Cpanel::ProcessInfo      ();
+
+my $PROC_PATH = '/proc';
+
+=encoding utf-8
+
+=head1 NAME
+
+scripts::find_pids_with_inotify_watch_on_path
+
+=head1 SYNOPSIS
+
+    find_pids_with_inotify_watch_on_path <path>
+
+=head1 DESCRIPTION
+
+This command will look at /proc to find which process has an inotify
+watch on a specific path (inode)
+
+=cut
+
+__PACKAGE__->new(@ARGV)->script() unless caller();
+
+sub _ACCEPT_UNNAMED { return 1; }
+sub _OPTIONS        { }
+
+sub script {
+    my ($self) = @_;
+
+    my ($release) = ( Cpanel::OSSys::uname() )[2];
+
+    if ( !Cpanel::Version::Compare::compare( $release, '>=', '3.10' ) ) {
+        die "Kernel version “$release” is too old to find inotify watches. Please upgrade to “3.10” or newer.";
+    }
+
+    my ($path) = $self->getopt_unnamed();
+    my ( $dev, $inode ) = ( stat($path) )[ 0, 1 ];
+
+    if ( !$inode ) {
+        die "The system could not determine the inode for “$path”: $!";
+    }
+
+    my $hexdev   = sprintf( "%x", $dev );
+    my $hexinode = sprintf( "%x", $inode );
+
+    my %procs_holding_inotify;
+    opendir( my $proc_dh, $PROC_PATH ) or die "opendir($PROC_PATH): $!";
+    my $binary_path;
+    foreach my $proc ( grep { $_ !~ tr{0-9}{}c } readdir($proc_dh) ) {    # Only has numbers so its a pid
+        $binary_path = readlink("$PROC_PATH/$proc/exe") or next;
+
+        # no file means it a kernel process that we always want to exclude
+        # stat name is here.  we don't want to ever kill kernel process so not used
+        opendir( my $fd_dh, "$PROC_PATH/$proc/fd" ) or next;
+
+        if ( my @inotify_fds = grep { $_ !~ tr{0-9}{}c && readlink("$PROC_PATH/$proc/fd/$_") =~ m{inotify}i } readdir($fd_dh) ) {
+            foreach my $inotify_fd (@inotify_fds) {
+
+                # use Cpanel::LoadFile::loadfile since it will not exception if the pid goes away while we
+                # are reading
+                my @lines = ( split( m{\n}, Cpanel::LoadFile::loadfile("$PROC_PATH/$proc/fdinfo/$inotify_fd") ) );
+                splice( @lines, 0, 3 );
+                my @data = map {
+                    {
+                        map { ( split( m{:}, $_ ) )[ 0, 1 ] } split( m{ }, $_ )    ## no critic qw(BuiltinFunctions::ProhibitVoidMap)
+                    }
+                } @lines;
+                foreach my $watch (@data) {
+                    if ( index( $watch->{'sdev'}, $hexdev ) == 0 && $watch->{'ino'} eq $hexinode ) {
+                        $procs_holding_inotify{$proc} = $watch->{'wd'};
+                        last;
+                    }
+                }
+            }
+        }
+
+        next;
+    }
+
+    foreach my $proc ( sort keys %procs_holding_inotify ) {
+
+        my $name = Cpanel::ProcessInfo::get_pid_cmdline($proc);
+
+        my $exe;
+        local $@;
+        warn if !eval { $exe = Cpanel::ProcessInfo::get_pid_exe($proc); 1 };
+
+        my $watch_decimal = hex $procs_holding_inotify{$proc};
+        print "$name ($exe) is holding a inotify on $path (watch #$watch_decimal)\n";
+
+    }
+
+    if ( !%procs_holding_inotify ) {
+        print "No processes holding an inotify watch on $path\n";
+    }
+
+    return;
+}
+1;

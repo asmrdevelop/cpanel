@@ -1,0 +1,145 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/resetquotas                     Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::resetquotas;
+
+use strict;
+use warnings;
+
+use Cpanel::Config::LoadCpUserFile ();
+use Cpanel::Config::Users          ();
+use Cpanel::Quota::Common          ();
+use Cpanel::FindBin                ();
+use Cpanel::SafeRun::Errors        ();
+use Cpanel::SysQuota::Cache        ();
+
+__PACKAGE__->run() unless caller();
+
+my %cmd;
+
+sub run {    ## no critic qw(Subroutines::ProhibitExcessComplexity)
+    if ( @ARGV && $ARGV[0] ne '--useplanquotas' ) {
+        print "Note: call resetquota with --useplanquotas to reset all quotas to plan defaults\n";
+    }
+
+    my $quotaconf_ref = {};
+    my @systemusers   = Cpanel::Config::Users::getcpusers();
+
+    %cmd = (
+        'quotaon'  => undef,
+        'quotaoff' => undef,
+        'edquota'  => undef,
+    );
+
+    my @missing_cmds;
+    foreach my $cmd_name ( keys %cmd ) {
+        $cmd{$cmd_name} = Cpanel::FindBin::findbin($cmd_name);
+        if ( !-x $cmd{$cmd_name} ) {
+            push @missing_cmds, $cmd_name;
+        }
+    }
+
+    if ( scalar @missing_cmds ) {
+        print "Incomplete quota kit: unable to reset quotas.\n";
+        print 'Missing commands: ', join( ', ', @missing_cmds ), "\n";
+        exit 1;
+    }
+
+    Cpanel::SafeRun::Errors::saferunnoerror( $cmd{'quotaoff'}, '-a' );
+
+    my %planquota;
+    foreach my $user ( sort @systemusers ) {
+
+        # Safe because it's only loading from cpusers list.
+        my $cpuser = Cpanel::Config::LoadCpUserFile::loadcpuserfile($user);
+
+        next if !$cpuser->{'PLAN'};
+        my $plan = $cpuser->{'PLAN'};
+        $plan =~ tr/\///d;
+        next if ( $plan eq '' || $plan =~ m/^\.+$/ );
+        my $pkgquota;
+        if ( exists $planquota{$plan} ) {
+            $pkgquota = $planquota{$plan};
+        }
+        elsif ( -r '/var/cpanel/packages/' . $plan ) {
+            if ( open my $plan_fh, '<', '/var/cpanel/packages/' . $plan ) {
+                print "Reading package $plan\n";
+                while (<$plan_fh>) {
+                    if (/^QUOTA=(\S+)/) {
+                        my $plan_quota = $1;
+                        if ( $plan_quota =~ m/unlimited/i ) {
+                            $pkgquota = $planquota{$plan} = 0;
+                        }
+                        elsif ( $plan_quota =~ m/(\d+)/i ) {
+                            $pkgquota = $planquota{$plan} = $1;
+                        }
+                    }
+                }
+                close $plan_fh;
+            }
+
+            # Default quota to 'unlimited'
+            if ( !defined $pkgquota ) {
+                $pkgquota = $planquota{$plan} = 0;
+            }
+
+        }
+
+        if ( exists $cpuser->{'DISK_BLOCK_LIMIT'} ) {
+            $quotaconf_ref->{$user} = $cpuser->{'DISK_BLOCK_LIMIT'} ? ( int( $cpuser->{'DISK_BLOCK_LIMIT'} / $Cpanel::Quota::Common::MEGABYTES_TO_BLOCKS ) || 1 ) : 0;
+        }
+        if ( ( !exists $quotaconf_ref->{$user} || $quotaconf_ref->{$user} eq '' ) && $pkgquota ) { $quotaconf_ref->{$user} = $pkgquota; }
+
+        if ( @ARGV && $ARGV[0] eq '--useplanquotas' && $pkgquota ne '' ) {
+            if ( $quotaconf_ref->{$user} != $pkgquota ) {
+                print "Adjusting user $user quota to the package's ($plan) value.\n";
+            }
+            $quotaconf_ref->{$user} = $pkgquota;
+        }
+        next if ( !exists $quotaconf_ref->{$user} || $quotaconf_ref->{$user} eq '' );
+        if ( my $pid = fork() ) {
+            print "Resetting quota for $user to $quotaconf_ref->{$user} M\n";
+            waitpid( $pid, 0 );
+        }
+        else {
+            open( STDOUT, '>', '/dev/null' ) || die;
+            editquota( $user, $quotaconf_ref->{$user} );
+            exit;
+        }
+    }
+
+    # Update quota file mtimes
+    Cpanel::Quota::Common->new()->update_mtimes_to_clear_cache();
+
+    Cpanel::SafeRun::Errors::saferunnoerror( $cmd{'quotaon'}, '-a' );
+
+    Cpanel::SysQuota::Cache::purge_cache();
+
+    exit 0;
+}
+
+sub editquota {
+    my $user = shift || return;
+    my $quot = shift || 0;
+
+    if ( $user =~ /^cpanel(phpmyadmin|phppgadmin|roundcube)$/ ) {
+        $quot = 0;
+    }
+
+    my $megquota = $quot;
+    $quot = int $quot;
+    $quot = ( $quot * 1024 );
+    $quot = sprintf( '%.0f', $quot );
+
+    $ENV{'NQUOTA'} = $quot;
+    $ENV{'VISUAL'} = '/usr/local/cpanel/scripts/pedquota';
+    $ENV{'EDITOR'} = '/usr/local/cpanel/scripts/pedquota';
+
+    system $cmd{'edquota'}, '-u', $user;
+
+    return;
+}

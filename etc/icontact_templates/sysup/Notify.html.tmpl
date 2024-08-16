@@ -1,0 +1,34 @@
+[%#
+Variables passed in:
+
+origin              - The system component from which the action originated
+host_server         - This server's hostname
+failure_message     - Message passed describing failure
+update_version      - The version of cPanel the system attempted to change to
+
+For more information about how to customize notification templates, read our documentation at https://go.cpanel.net/notificationtemplates
+
+-%]
+
+[%
+    PROCESS "include/colors.tmpl";
+    PROCESS "include/styles.tmpl";
+    PROCESS "include/code_block.tmpl";
+
+    WRAPPER 'wrapper/main.html.tmpl';
+
+    NOTICE.email_reason = CPANEL.locale.maketext('[asis,cPanel] [output,amp] [asis,WHM] failed to update.');
+
+%]
+
+<p>
+    [% CPANEL.locale.maketext('The system failed to update to the latest version of [asis,cPanel] [output,amp] [asis,WHM] version [_1] because it could not install basic requirements for [asis,cPanel] [output,amp] [asis,WHM]. The specific failure was:', NOTICE.update_version) %]
+</p>
+<p>
+    [% code_block(formatted_code=CPANEL.format_text_as_html(NOTICE.failure_message)) %]
+</p>
+<p>
+    [% CPANEL.locale.maketext('For more information about this error and guidance on how to resolve the error, go to [output,url,_1,_1,_2].', 'https://go.cpanel.net/sysupfailed','_blank') %]
+</p>
+
+[% END %]

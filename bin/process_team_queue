@@ -1,0 +1,106 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - bin/process_team_queue                  Copyright 2023 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+# This script is normally called by cron hourly, something like this
+# 4 * * * * /usr/local/cpanel/bin/process_team_queue > /dev/null 2>&1
+
+use cPstrict;
+
+package bin::process_team_queue;
+
+use Cpanel::Logger          ();
+use Cpanel::SafeRun::Simple ();
+use Cpanel::Team::Queue     ();
+use Cpanel::IP::Remote      ();
+
+bin::process_team_queue::run() unless caller;
+
+sub run {
+    if ( @ARGV > 0 ) {
+        show_help();
+    }
+
+    if ( $> != 0 ) {
+        die "Sorry, only root can run this.\n";
+    }
+
+    my $logger = Cpanel::Logger->new();
+
+    my $team_queue_obj = Cpanel::Team::Queue->new();
+
+    my @tasks = $team_queue_obj->list_queue();
+
+    my $now = time;
+
+    foreach my $task_file (@tasks) {
+        my ( $epoch, $team_owner, $team_user ) = split /_/, $task_file, 3;
+        if ( $epoch <= $now ) {
+            my $task_file_path = "$team_queue_obj->{queue_dir}/$task_file";
+            open my $fh, '<', $task_file_path or $logger->error("Cannot open team queue task file '$task_file_path'");
+            my @cmd = <$fh>;
+            close $fh;
+            my $error       = '';
+            my $application = Cpanel::Team::Queue::allow_command( $cmd[0] );
+            if ( @cmd == 1 && $application ) {
+
+                $error = Cpanel::SafeRun::Simple::saferunallerrors( '/bin/bash', "$team_queue_obj->{queue_dir}/$task_file" );
+                if ($error) {
+                    $logger->error("Error '$error' when running team queue task in $team_queue_obj->{queue_dir}/$task_file");
+                }
+            }
+            else {
+                $error = "Attempting to run disallowed command '@cmd' in team queue.";
+                $logger->error($error);
+            }
+            $team_queue_obj->dequeue_task("$team_queue_obj->{queue_dir}/$task_file")
+              or $logger->error("Cannot dequeue task: '$task_file'");
+
+            # Mail the team-owner what happened
+            my $ip = Cpanel::IP::Remote::get_current_remote_ip();
+            require Cpanel::Notify;
+            Cpanel::Notify::notification_class(
+                'class'            => $application,
+                'application'      => $application,
+                'constructor_args' => [
+                    username                        => $team_owner,
+                    to                              => $team_owner,
+                    user                            => $team_owner,
+                    task_error                      => $error,
+                    team_user                       => $team_user,
+                    source_ip_address               => $ip,
+                    origin                          => 'cpanel',
+                    notification_cannot_be_disabled => 1
+                ]
+            );
+        }
+        else {
+            last;    # Files are sorted by date order so once we hit something in the future we're done.
+        }
+    }
+
+    return 0;
+}
+
+sub show_help {
+    print STDERR <<~"EOM";
+    $0: Tool to process team queue
+
+    Usage:
+        $0 [--help]
+
+        Options:
+        --help: Print out this message and exit
+
+        Look at each task in team queue and execute those whose time has come.
+
+        Written primarily for expiring team-user accounts but can be used for
+        any team purpose that needs a scheduled time to execute.
+EOM
+    exit 0;
+}
+
+1;

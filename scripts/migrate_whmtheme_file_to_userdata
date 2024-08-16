@@ -1,0 +1,121 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/migrate_whmtheme_file_to_userdata
+#                                                  Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::migrate_whmtheme_file_to_userdata;
+
+=encoding utf-8
+
+=head1 NAME
+
+scripts::migrate_whmtheme_file_to_userdata - moves whmtheme to userdata
+
+=head1 SYNOPSIS
+
+    use scripts::migrate_whmtheme_file_to_userdata;
+
+    scripts::migrate_whmtheme_file_to_userdata::run();
+
+=head1 DESCRIPTION
+
+This script moves the whm theme from the .whmtheme file for resellers to the
+userdata for speed improvement.
+
+=cut
+
+use strict;
+use warnings;
+
+use parent qw( Cpanel::HelpfulScript );
+
+use Cpanel::Autodie             ();
+use Cpanel::NameVariant         ();
+use Cpanel::PwCache             ();
+use Cpanel::StringFunc::Trim    ();
+use Cpanel::AccessIds::LoadFile ();
+use Cpanel::Reseller            ();
+use Whostmgr::Theme             ();
+use Cpanel::Config::Users       ();
+
+use Try::Tiny;
+
+__PACKAGE__->new(@ARGV)->run() if !caller;
+
+use constant _OPTIONS => ();
+
+sub _get_theme_file_path {
+    my ($user) = @_;
+
+    return Cpanel::PwCache::gethomedir($user) . '/.whmtheme';
+}
+
+=head2 run
+
+Runs the migration script
+
+=cut
+
+sub run {
+    my ($self) = @_;
+
+    my $theme_file;
+    my $theme;
+
+    my %usermap = map { $_ => 1 } Cpanel::Config::Users::getcpusers();
+
+    # No need to move root because it will continue to use existing behavior
+    foreach my $reseller ( Cpanel::Reseller::getresellerslist() ) {
+
+        # ensure user is a cpanel user and not just a system-only reseller
+        next unless $usermap{$reseller};
+
+        $theme_file = _get_theme_file_path($reseller);
+        $theme      = undef;
+
+        if ( -e $theme_file ) {
+            $theme = Cpanel::AccessIds::LoadFile::loadfile_as_user( $reseller, $theme_file );
+
+            if ( Whostmgr::Theme::is_theme_name_valid($theme) ) {
+
+                #capturing write action for errors and warning if appropriate
+                try {
+                    $theme = Cpanel::StringFunc::Trim::ws_trim($theme);
+                    Whostmgr::Theme::set_reseller_theme( $reseller, $theme );
+                }
+                catch {
+                    local $@ = $_;
+                    warn;
+                };
+            }
+
+            try {
+                _move_old_theme_file($theme_file);
+            }
+            catch {
+                local $@ = $_;
+                warn;
+            };
+        }
+
+    }
+
+    return;
+}
+
+sub _move_old_theme_file {
+    my ($filename) = @_;
+
+    my $new_filename = Cpanel::NameVariant::find_name_variant(
+        max_length => 254,
+        name       => $filename . '.old',
+        test       => sub { return !-e $_[0] },
+    );
+
+    return Cpanel::Autodie::rename( $filename, $new_filename );
+}
+
+1;

@@ -1,0 +1,49 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/runweblogs                      Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+use warnings;
+use Cpanel::Usage ();
+
+local $| = 1;
+
+Cpanel::Usage::usage( \@ARGV, \&usage );
+
+print "Log checker loaded ok..\n";
+
+my $user = $ARGV[0];
+
+if ( $user && $user eq "" ) {
+    if ( -t STDIN ) {
+        print "What user's logs did you want to update? ";
+        $user = <STDIN>;
+        chomp($user);
+    }
+    else { die "stdin is not a tty and no user was given to us"; }
+}
+
+if ($user) {
+    $user =~ s/[\n\r\s]//g;
+    system( "/usr/local/cpanel/cpanellogd", "$user" );
+}
+else {
+    usage();
+}
+
+sub usage {
+    print <<EOF;
+Usage: $0 <user> [--usage | --help]
+
+
+Run statistics for a user.
+
+where
+    user -- is a valid user name (required)
+
+EOF
+    exit;
+}

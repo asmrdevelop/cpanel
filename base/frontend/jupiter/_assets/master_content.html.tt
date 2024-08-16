@@ -1,0 +1,211 @@
+[%
+    USE Apache;
+    PROCESS core/partials/main_menu_nav_items.html.tt;
+
+    SET banner_module_exists = file_test('f', '/usr/local/cpanel/Cpanel/Template/Plugin/Banner.pm');
+    SET has_component_system = file_test('f', "/usr/local/cpanel/base/frontend/jupiter/_assets/component.html.tt");
+    IF has_component_system;
+        USE Components;
+    END;
+
+%]
+
+<cp-root-variables
+    directory-prefix="[% varcache.directory_prefix %]"
+    app-list="[% applications.json() | html %]"
+    main-menu-links="[% links.json() | html %]"
+    app-name="cpanel"
+    primary-domain="[% domain %]"
+    app-search-results-limit="[% CPANEL.app_search_result_limit %]"
+    company-id="[% get_company_id %]"
+    cpanel-full-version="[% cpanel_full_version %]"
+    cpanel-app-key="[% app_key %]"
+></cp-root-variables>
+
+<!-- skipnav link for screenreader users -->
+<a href="#content" class="sr-only visually-hidden-focusable">[% locale.maketext('Skip to main content') %]</a>
+
+<div id="page-overlay" class="page-overlay"></div>
+
+<div id="wrap" class="cp-layout-page">
+    <div id="glass-navbar-overlay"></div>
+    <a href="#content" class="sr-only visually-hidden-focusable">[% locale.maketext('Skip to main content') %]</a>
+    [% USE VarCache; varcache.set('home_text', locale.maketext('Home')) %]
+    [%  IF display_cpanel_doclinks && app_key.defined;
+            SET major_version = CPANEL.major_version();
+            SET help_key = app_info.plainitemdesc.remove('\W+').uri || 'Home';
+            SET helplink = "//go.cpanel.net/cpaneldocs" _ help_key;
+        END;
+    %]
+
+    [% IF !hide_main_menu %]
+    <aside id="cp-main-menu-container" class="cp-layout-main-menu">
+        <cp-main-menu
+            logo-src="[% varcache.customizations.main_menu_logo %]"
+            logo-alt-text="[% varcache.customizations.logo_description_html %]"
+        ></cp-main-menu>
+    </aside>
+    [% END %]
+
+    <div class="cp-layout-wrapper">
+        [%- IF !hide_header %]
+        <header class="cp-layout-header [% IF !hide_main_menu %] cp-layout-header--with-main-menu [% END %]">
+            <!--  Single quotes needed to pass the props into the web component correctly. -->
+            <cp-header
+                focus-search="[% focus_feature_search ? 'true' : 'false' %]"
+                integrations-info='[% integrations_info.json() %]'
+                logo-alt-text="[% varcache.customizations.logo_description_html %]"
+                logo-src="[% varcache.customizations.header_logo %]"
+            ></cp-header>
+
+            <!-- Content Include point: GLOBAL <html><body><header> content -->
+            [% Content_Includes.render("cpanel_jupiter_header.html.tt") %]
+            <!-- End: Content Include point -->
+
+            <!-- Content Include point: APP HEAD Include-->
+                [% Content_Includes.render("cpanel_jupiter_" _ app_key _ "_header.html.tt") %]
+            <!-- End: Content Include point -->
+        </header>
+
+        <script type="text/javascript">
+            (function() {
+                const header = document.querySelector('cp-header');
+                header.addEventListener('menuItemPress', event => {
+                    if(event.detail.id === "menu-reset-link") {
+                        reset_all_interface_settings('[% cp_security_token %]')
+                    }
+                });
+            })();
+        </script>
+        [% END -%]
+
+        [% Content_Includes.render("cpanel_jupiter_header_after.html.tt") %]
+
+        <!-- Content Include point: APP specific include point after the global header includes. -->
+        [% Content_Includes.render("cpanel_jupiter_" _ app_key _ "_header_after.html.tt") %]
+        <!-- End: Content Include point -->
+
+        <!-- PAGE TEMPLATE'S CONTENT START -->
+        <div id="content" class="cp-layout-main-content [% IF !hide_main_menu %] cp-layout-main-content--with-main-menu [% END %] [% IF !hide_header %] cp-layout-main-content--with-header [% END %]">
+            <div class="container-lg">
+            [% IF CPANEL.CPFLAGS.item('trial') %]
+                <div id="trialWarningBlock" class="alert alert-warning">
+                    <span class="glyphicon glyphicon-exclamation-sign"></span>
+                    <div id="trialWarningMessage" class="alert-message">
+                        [%- locale.maketext('[output,strong,TRIAL LICENSE:] This copy is a trial version and will expire at the end of the trial term. You will need to upgrade to a paid copy to continue using the software after that term.') -%]
+                    </div>
+                </div>
+            [% END %]
+            [% IF CPANEL.CPFLAGS.item('dev') %]
+                <div id="devWarningBlock" class="alert alert-warning">
+                    <span class="glyphicon glyphicon-exclamation-sign"></span>
+                    <div id="devWarningMessage" class="alert-message">
+                        [%- locale.maketext("[output,strong,DEVELOPMENT LICENSE:] This server is running on a development license. If this server is being used in a production environment, please notify [output,url,_1,cs@cpanel.net] immediately.", "mailto:cs@cpanel.net?subject=" _ host_name _ "(" _ main_ip _ "," _ main_server_ip _ ") is using a dev license in a production environment") -%]
+                    </div>
+                </div>
+            [% END %]
+
+            <!-- Banner Section - now controlled via a plugin -->
+            [% IF banner_module_exists && template_exists('/usr/local/cpanel/base/frontend/jupiter/_assets/banner.html.tt'); %]
+            [% INCLUDE '/usr/local/cpanel/base/frontend/jupiter/_assets/banner.html.tt' -%]
+            [% END%]
+
+            [%
+            IF has_component_system && Components.has_components_for('cpanel', app_key, 'page-top');
+                PROCESS "_assets/component.html.tt",
+                    APP_KEY => app_key,
+                    TAG     => 'div',
+                    SLOT    => 'page-top';
+            END;
+            %]
+
+            [% IF !hide_page_heading && page_title -%]
+                <h1 class="page-header">
+                    <div id="pageHeading" class="page-title-section">
+                        <span class="page-title">[% page_title -%]</span>
+                        [% IF page_sub_heading.defined %]
+                        <small id="pageSubHeading">[% page_sub_heading %]</small>
+                        [% END %]
+                        [% IF show_breadcrumb AND !is_ng %]
+                            <breadcrumbs id="breadcrumbs" class="breadcrumbs">
+                            </breadcrumbs>
+                        [% END %]
+                        [% IF is_ng AND !is_jupiter_style %]
+                            <nav id="cpanel-breadcrumbs" class="breadcrumb" role="navigation" aria-label="breadcrumb"></nav>
+                        [% END %]
+                    </div>
+                </h1>
+                [% IF is_ng AND is_jupiter_style %]
+                    <nav id="cpanel-breadcrumbs" class="breadcrumb" role="navigation" aria-label="breadcrumb" data-jupiter-style="1"></nav>
+                [% END %]
+            [% END %]
+
+            [%
+            IF has_component_system && Components.has_components_for('cpanel', app_key, 'content-top');
+                PROCESS "_assets/component.html.tt",
+                    APP_KEY => app_key,
+                    TAG     => 'div',
+                    SLOT    => 'content-top';
+            END;
+            %]
+
+            [% IF authorized_to_access -%]
+                [%- content -%]
+            [% ELSE -%]
+                <div class="body-content">
+                    <div class="alert alert-danger">
+                        <span class="glyphicon glyphicon-remove-sign" aria-hidden="true"></span>
+                        <div class="alert-message">
+                            [% locale.maketext('[output,strong,Error:] This feature, “[_1]”, is not enabled on your account. Please contact your reseller for access.',feature) %]
+                        </div>
+                    </div>
+                </div>
+            [% END -%]
+            <!-- PAGE TEMPLATE'S CONTENT END -->
+            [%
+            IF has_component_system && Components.has_components_for('cpanel', app_key, 'content-end');
+                PROCESS "_assets/component.html.tt",
+                    APP_KEY => app_key,
+                    TAG     => 'div',
+                    SLOT    => 'content-end';
+            END;
+            %]
+            </div>
+        </div>
+
+        [%
+        IF has_component_system && Components.has_components_for('cpanel', app_key, 'page-bottom');
+            PROCESS "_assets/component.html.tt",
+                APP_KEY => app_key,
+                TAG     => 'div',
+                SLOT    => 'page-bottom';
+        END;
+        %]
+
+        <footer class="cp-layout-footer" role="contentinfo">
+            <!-- Content Include point: APP Footer Include -->
+            [% Content_Includes.render("cpanel_jupiter_" _ app_key _ "_footer.html.tt") %]
+            <!-- End: Content Include point -->
+
+            <!-- Content Include point: GLOBAL <html><body><footer> content -->
+            [% Content_Includes.render("cpanel_jupiter_footer.html.tt") %]
+            <!-- End: Content Include point -->
+
+            <cp-footer
+                id="cp-footer"
+                directory-prefix="[% varcache.directory_prefix %]"
+                version="[% cPanel_version %]"
+                logo-src="[% theme_magic_url("brand/cpanel-logo-orange.svg") %]"
+                doc-link="[% varcache.customizations.documentation_url %]"
+            [% IF varcache.customizations.help_url -%]
+                help-link="[% varcache.customizations.help_url %]"
+            [% END %]
+            >
+            </cp-footer>
+        </footer>
+
+        <!-- Content Include point: GLOBAL <html><body> after <footer> content -->
+        [% Content_Includes.render("cpanel_jupiter_footer_after.html.tt") %]
+        <!-- End: Content Include point -->
+    </div>
+</div>

@@ -1,0 +1,121 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/check_unmonitored_enabled_services
+#                                                  Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+#
+
+package scripts::check_unmonitored_enabled_services;
+
+use strict;
+use Cpanel::Usage                      ();
+use Cpanel::Services::Installed::State ();
+
+# This now only runs when we update to a new version
+# unless it is run manually.  The interval has been
+# lowered as a result of this change.
+my $ONE_WEEK_IN_SECONDS = ( 86400 * 7 );
+our $NOTIFICATION_INTERVAL = $ONE_WEEK_IN_SECONDS;
+
+sub script {
+    my ( $class, $argv ) = @_;
+
+    my %opts = (
+        notify => 0,
+        quiet  => 0,
+    );
+    my $self = bless {}, $class;
+    Cpanel::Usage::wrap_options(
+        $argv,
+        sub { my (@args) = @_; $self->usage(@args); },
+        { 'notify' => \$opts{'notify'}, 'quiet' => \$opts{'quiet'} },
+    );
+    $self->{'notify'} = $opts{'notify'};
+    $self->{'quiet'}  = $opts{'quiet'};
+
+    require Cpanel::Locale;
+    my $old = $self->_locale()->set_context_plain();
+
+    my $installed_services_state = Cpanel::Services::Installed::State::get_installed_services_state();
+    my @unmonitored_enabled_services =
+      grep { $_->{'type'} eq 'services' && $_->{'enabled'} && !$_->{'monitored'} && $_->{'name'} ne 'apache_php_fpm' } sort { $a->{'name'} cmp $b->{'name'} } @{$installed_services_state};
+
+    if (@unmonitored_enabled_services) {
+        $self->send_notification( \@unmonitored_enabled_services );
+    }
+    else {
+        print $self->_locale()->maketext(q{OK}), "\n" unless $self->{'quiet'};
+    }
+    $self->_locale()->set_context($old);
+    return 0;
+}
+
+sub usage {
+    my ($self) = @_;
+
+    print $self->_locale()->maketext(q{This tool verifies the services are being monitored.}),  "\n\n";
+    print $self->_locale()->maketext( q{Usage: [_1][comment,a program name] ~[options~]}, $0 ), "\n\n";
+    print $self->_locale()->maketext(q{Options:}),                                              "\n";
+    print "\t--help     ",                                                                      $self->_locale()->maketext(q{Display this help message.}),                                               "\n";
+    print "\t--notify   ",                                                                      $self->_locale()->maketext(q{Send a failure notification to the system administrator.}),                 "\n";
+    print "\t--quiet    ",                                                                      $self->_locale()->maketext(q{Do not display output, and instead set the [output,asis,UNIX] exit code.}), "\n\n";
+
+    exit 0;
+}
+
+sub send_notification {
+    my ( $self, $unmonitored_enabled_services_ref ) = @_;
+    require Cpanel::Notify;
+    my $status = join( ",", sort map { $_->{'name'} } @{$unmonitored_enabled_services_ref} );
+    my $ic_obj = Cpanel::Notify::notification_class(
+        'class'            => 'Check::UnmonitoredEnabledServices',
+        'application'      => 'Check::UnmonitoredEnabledServices',
+        'status'           => $status,
+        'interval'         => $NOTIFICATION_INTERVAL,
+        'constructor_args' => [
+            'origin'    => 'check_unmonitored_enabled_services',
+            'services'  => $unmonitored_enabled_services_ref,
+            'skip_send' => 1,
+        ]
+    );
+
+    unless ( $self->{'quiet'} ) {
+        print $ic_obj->render_template_include_as_text( 'template' => 'subject', 'type' => 'text' ) . "\n\n" . $ic_obj->render_template_include_as_text( 'template' => 'body', 'type' => 'html' );
+    }
+
+    if ( $self->{'notify'} ) {
+        my %notify_check_args = (
+            app      => 'Check::UnmonitoredEnabledServices',
+            status   => $status,
+            interval => $NOTIFICATION_INTERVAL,
+
+        );
+        return 0 if Cpanel::Notify::notify_blocked(%notify_check_args);
+        Cpanel::Notify::update_notification_time_if_interval_reached(%notify_check_args);
+        $ic_obj->send();
+    }
+
+    return 1;
+}
+
+sub _locale {
+    my ($self) = @_;
+    require Cpanel::Locale;
+    return ( $self->{'_locale'} ||= Cpanel::Locale->get_handle() );
+}
+
+exit( __PACKAGE__->script( \@ARGV ) ) unless caller;
+
+__END__
+
+=head1 NAME
+
+check_unmonitored_enabled_services - Checks for services that are enabled to run but not enabled in chkservd
+
+=head1 DESCRIPTION
+
+This script checks the state of services and can notify when one or more is
+unmonitored

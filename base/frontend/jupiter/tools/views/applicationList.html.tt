@@ -1,0 +1,56 @@
+[%
+USE VarCache;
+USE Master;
+-%]
+
+<div ng-controller="applicationListController">
+    <!-- DEV NOTE: If the below container IDs are changed, it is IMPORTANT to also change them in the controller's method trackAppLinkClicks() -->
+    <div id="boxes" search-text="searchText" collapsed-groups="collapsedGroups">
+        <div drop-area drop="handleDrop" id="top-drop-area" class="drop-area"></div>
+        [% FOREACH this_app_group IN varcache.available_applications.groups;
+            varcache.set('this_app_group', this_app_group);
+            SET collapsed_groups = varcache.collapsed_groups;
+            varcache.set('this_app_group_hidden', collapsed_groups.index(varcache.this_app_group.group) > -1 ? 1 : 0);
+        %]
+        <div id="[%- varcache.this_app_group.group -%]-container">
+            <div id="[%- varcache.this_app_group.group -%]-group" data-group-name="[% varcache.this_app_group.group %]" draggable drag="handleDrag" drag-end="handleDragEnd" class="panel panel-widget icon-menu-section" role="group">
+                <div class="panel-heading widget-heading widget-draggable" ng-dblclick="toggleGroup([%- varcache.this_app_group.group -%])">
+                    <span class="group-header-icon icon-group icon-group_[%- varcache.this_app_group.group -%]"></span>
+                    <span role="heading" aria-level="3" id="[%- varcache.this_app_group.group -%]-header" class="group-header-text">[%- varcache.this_app_group.desc -%]</span>
+                    <span
+                        id="[%- varcache.this_app_group.group -%]-collapsed-indicator"
+                        tabindex="0"
+                        class="group-header-indicator pull-right fas [% varcache.this_app_group_hidden ? 'fa-plus' : 'fa-minus' %]"
+                        ng-click='toggleGroup("[%- varcache.this_app_group.group -%]")'
+                        data-collapsed-indicator
+                        aria-label="[% locale.maketext('Expand or collapse “[_1]” application group.', varcache.this_app_group.group) %]"
+                    ></span>
+                </div>
+                <div id="[%- varcache.this_app_group.group -%]-body" data-group-body="[% varcache.this_app_group.group %]" class="panel-body widget-collapsible [% varcache.this_app_group_hidden ? 'minimized ng-hide' : '' %]">
+                    <div class="icon-container-body">
+                        [% FOREACH this_item IN varcache.this_app_group.items; varcache.set('this_item', this_item); %]
+                            <a id="item_[%- varcache.this_item.file -%]" href="[%- varcache.this_item.url -%]" class="item" data-item-search-text="[% varcache.this_item.searchtext %] [% varcache.this_item.itemdesc %]" data-item-group="[% varcache.this_item.group %]"
+                                    [% IF varcache.this_item.target %]
+                                        target="[%- varcache.this_item.target -%]"
+                                    [% END %]
+                                    [% IF varcache.this_item.onclick %]
+                                        onclick="[%- varcache.this_item.onclick -%];"
+                                    [% END %]
+                                        [% varcache.this_item.acontent -%]>
+                                <span id="icon-[%- varcache.this_item.file -%]" aria-label="[%- varcache.this_item.itemdesc -%]" class="itemImageWrapper integrations_icon spriteicon_img icon-[%- varcache.this_item.file -%]"
+                                    [% IF varcache.this_item.base64_png_image %]
+                                        style="background-image: url(data:image/png;base64,[% varcache.this_item.base64_png_image %]);"
+                                    [% END %]
+                                ></span>
+                                <span class="itemTextWrapper link">[%- varcache.this_item.itemdesc -%]</span>
+                            </a>
+                        [% END %]
+                    </div>
+                </div>
+            </div>
+            <div drop-area drop="handleDrop" data-group-name="[% varcache.this_app_group.group %]" id="[%- varcache.this_app_group.group -%]-drop-area" class="drop-area"></div>
+        </div>
+        [% END %]
+    </div>
+</div>
+

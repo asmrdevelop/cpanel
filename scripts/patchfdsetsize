@@ -1,0 +1,92 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/patchfdsetsize                  Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+use warnings;
+use Cpanel::FileUtils::TouchFile ();
+use Getopt::Long;
+use Pod::Usage;
+
+my $force   = 0;
+my $help    = 0;
+my $default = 0;
+
+GetOptions( 'help' => \$help, 'force' => \$force, 'default' => \$default );
+
+pod2usage(1) if $help;
+
+my @fd_setsize_files = qw(/usr/include/linux/posix_types.h /usr/include/bits/types.h /usr/include/bits/typesizes.h /usr/include/sys/select.h);
+
+my $fd_setsize_skip_file = '/var/cpanel/disable_patchfdsetsize';
+
+if ( -e $fd_setsize_skip_file ) {
+    if ($force) {
+        unlink $fd_setsize_skip_file;
+    }
+    elsif ($default) {
+        print qq{FD_SETSIZE has already been reset to default value.\n};
+        print qq{Use "$0 --default --force" to force reverification.\n};
+        exit 0;
+    }
+    else {
+        print "FD_SETSIZE will not be changed because ${fd_setsize_skip_file} exists.\n";
+        print qq{Use "$0 --force" to remove this file and update anyway.\n};
+        exit 0;
+    }
+}
+
+Cpanel::FileUtils::TouchFile::touchfile($fd_setsize_skip_file) if $default;
+
+my $target_fd_setsize = $default ? 1024  : 16384;
+my $bad_fd_setsize    = $default ? 16384 : 1024;
+
+foreach my $header_file (@fd_setsize_files) {
+    next unless ( -e $header_file );
+    if ( open my $header_fh, '<', $header_file ) {
+        my @contents          = ();
+        my $has_bad_fdsetsize = 0;
+
+        while ( my $line = readline($header_fh) ) {
+            if ( $line =~ s/(\s*\#define\s+_*FD_SETSIZE\s+)${bad_fd_setsize}/$1${target_fd_setsize}/ ) {
+                $has_bad_fdsetsize = 1;
+            }
+            push @contents, $line;
+        }
+        close $header_fh;
+        next unless $has_bad_fdsetsize;
+        if ( open $header_fh, '>', $header_file ) {
+            print $header_fh @contents;
+            close $header_fh;
+            print "Updated FD_SETSIZE in $header_file to $target_fd_setsize\n";
+        }
+        else {
+            print "Couldn't open $header_file for writing: $!\n";
+        }
+    }
+    else {
+        print "Couldn't open $header_file for reading: $!\n";
+    }
+}
+
+exit 0;
+
+__END__
+
+=head1 NAME
+
+patchfdsetsize - Update FD_SETSIZE definitions in system header files to 16384
+
+=head1 SYNOPSIS
+
+patchfdsetsize [options]
+
+    Options:
+      --help       Brief help message
+      --force      Rerun configuration routines when /var/cpanel/disable_patchfdsetsize exists
+      --default    Switch back to default FD_SETSIZE value of 1024
+
+=cut

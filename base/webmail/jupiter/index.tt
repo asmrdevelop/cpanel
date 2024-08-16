@@ -1,0 +1,94 @@
+[%-
+   SET NVData = execute( 'NVData', 'get', {"names" =>"default_webmail_app" , "html_encoded" =>"1" } ).data;
+
+   IF !global.mail_client_list;
+        SET global.mail_client_list = execute("WebmailApps", "list_webmail_apps", {theme=CPANEL.CPDATA.RS}).data;
+   END;
+   IF !global.sitemap;
+        SET global.sitemap = execute( 'Branding', 'get_information_for_applications', {}).data;
+   END;
+
+   SET selected_mail_client = FORM.mailclient,
+           default_mail_client = NVData && NVData.0.value ? NVData.0.value : "",
+           mail_client_url = "";
+           mail_client_id = "";
+
+   SET CPANEL.CPVAR.dprefix = "./",
+            has_webmail_access = CPANEL.feature("webmail") ? 1: 0;
+
+    IF selected_mail_client == "none"; # Shows index page when user clicks on logo.
+        mail_client_url = "";
+        mail_client_id = "";
+    ELSIF selected_mail_client != "" && has_webmail_access;
+        FOREACH mail_client IN global.mail_client_list;
+            NEXT IF mail_client.id != selected_mail_client;
+            mail_client_url = mail_client.url;
+            mail_client_id = mail_client.id;
+        END;
+    ELSIF default_mail_client != "" && has_webmail_access;
+        FOREACH mail_client IN global.mail_client_list;
+            NEXT IF mail_client.id != default_mail_client;
+            mail_client_url = mail_client.url;
+            mail_client_id = mail_client.id;
+        END;
+    END;
+
+    SET mail_client_settings = execute('Email','get_client_settings',{account=>CPANEL.FORM.acct}).data;
+
+    js_code_block = PROCESS js_block;
+     WRAPPER '_assets/master.html.tt'
+        page_title = locale.maketext("Main")
+        include_legacy_stylesheets = 1
+        hide_page_heading = 1
+        app_key = "home"
+        page_stylesheets = ['mail_clients/mail_clients.css']
+        page_js = js_code_block
+-%]
+<div class="body-content">
+
+[% IF has_webmail_access && global.mail_client_list.size == 0 %]
+<section id="infoAccountPreference" class="callout callout-info">
+    <p>[% locale.maketext("Your hosting provider has not enabled any Webmail clients.") %]</p>
+</section>
+[% END %]
+[%
+    SET auth_user = ExpVar.expand('$authuser'),
+      autho_user_info = auth_user.split('@');
+%]
+
+[% IF has_webmail_access %]
+    [% INCLUDE mail_clients/mail_clients.tt %]
+[% END #IF %]
+
+[%-
+  IF !FORM.item('acct');
+      SET CPANEL.FORM.acct = ExpVar.expand('$authuser');
+  END;
+  IF !FORM.item('domain');
+      SET CPANEL.FORM.item('domain') = auth_user_info.1;
+  END;
+  IF !FORM.item('archiving');
+      SET FORM.item('archiving') = ExpVar.expand('$isarchiveuser');
+  END;
+-%]
+[% INCLUDE mail/mailconfiglist.html.tt %]
+</div>
+[% END # Ends the WRAPPER block %]
+
+[%- BLOCK js_block -%]
+<script>
+
+    // Set the security token outside of CJT1 since that may die soon
+    window.cp_security_token = "[% CPANEL.ENV.cp_security_token %]";
+
+    var mailClientList = [% global.mail_client_list.json() %];
+    var mailClients = {};
+
+    mailClientList.forEach(function(element) {
+        mailClients[element.id] = element;
+    });
+
+    window.NVData["mail_clients"] = mailClients;
+
+</script>
+[%- END # js_block END -%]

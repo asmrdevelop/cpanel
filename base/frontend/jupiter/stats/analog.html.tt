@@ -1,0 +1,66 @@
+[% SET CPANEL.CPVAR.dprefix = "../" %]
+[%
+    USE CPDate;
+    SET months = CPDate.month_stand_alone_wide();
+
+    SET resp = execute(
+        'Stats',
+        'list_stats_by_domain',
+        {
+            engine => 'analog',
+            ssl    => RAW_FORM.ssl,
+            domain => RAW_FORM.domain,
+        });
+    SET errors = [];
+    IF resp.status == 0;
+        errors = errors.merge(resp.errors);
+    END;
+%]
+[% WRAPPER '_assets/master.html.tt'
+    app_key = 'analog_stats'
+-%]
+<div class="body-content">
+     <section>
+        <h4 id="descViewStatsByMonth">[% locale.maketext("View Statistics by Month") %]</h4>
+        <p id="descSelectMonth">
+            [% locale.maketext("Select the month for which you wish to view statistics for “[_1]”.", FORM.domain) %]
+        </p>
+        <p id="apiOutputListOfMonths">
+            [% IF errors.size %]
+                [% FOREACH message IN errors %]
+            <div class="alert alert-danger" role="alert">
+                <span class='glyphicon glyphicon-remove-sign' aria-hidden="true"></span>
+                <div class='alert-message'>
+                    <strong class="alert-title">
+                        [% locale.maketext('Error:') %]
+                    </strong>
+                    <span class="alert-body">
+                        <span id="error-[% loop.index() %]">
+                            [% message.html() %]
+                        </span>
+                    </span>
+                </div>
+            </div>
+                [% END %]
+            [% ELSE %]
+            [%  FOREACH entry IN resp.data;
+                    SET parts = CPDate.localtime_parts(entry.date);
+                    SET month = parts.4;
+                    SET year  = parts.5 + 1900;
+                    SET month_name = months.$month;
+            %]
+            <div>
+                <a href="[% CPANEL.ENV.cp_security_token _ '/' _ entry.url %]"
+                   title="[% locale.maketext('Analog statistics report for [_1][comment,month name] [_2][comment,year].', month_name, year) %]">
+                    [% month_name _ '-' _ year %]
+                </a>
+            </div>
+            [%  END;
+            END %]
+        </p>
+    <section>
+
+    [% INCLUDE _assets/return_link.html.tt return_location='analog_landing.html' return_link_text=locale.maketext('Go Back') %]
+</div>
+
+[% END #wrapper -%]

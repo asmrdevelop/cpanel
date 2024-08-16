@@ -1,0 +1,41 @@
+[%
+    SET CPANEL.CPVAR.dprefix = "../";
+    SET result = execute('Postgresql', 'delete_user', {'name' => FORM.user});
+%]
+
+[% WRAPPER '_assets/master.html.tt'
+    app_key = 'postgresql_databases'
+-%]
+<div class="body-content">
+
+    [% IF result.status %]
+    <div id="descSuccess" class="alert alert-success">
+        <span id="descSuccessImg" class="glyphicon glyphicon-ok-sign"></span>
+        <div id="descSuccessMsg" class="alert-message">
+            [% locale.maketext("Deleted the user “[_1]”.", FORM.user) %]
+        </div>
+    </div>
+    [% ELSE %]
+        [% IF result.errors.size %]
+            [% FOREACH message IN result.errors %]
+                <div class="alert alert-danger" role="alert">
+                    <span class="glyphicon glyphicon-remove-sign" aria-hidden="true"></span>
+                    <div class="alert-message">
+                        <strong class="alert-title">
+                            [% locale.maketext('Error:') %]
+                        </strong>
+                        <span class="alert-body">
+                        <span id="error-[% loop.index() %]">
+                            [% message.html() %]
+                        </span>
+                    </span>
+                    </div>
+                </div>
+            [% END %]
+        [% END %]
+    [% END %]
+
+    [% INCLUDE _assets/return_link.html.tt return_location='index.html' return_link_text=locale.maketext('Go Back') %]
+
+</div>
+[% END #wrapper %]

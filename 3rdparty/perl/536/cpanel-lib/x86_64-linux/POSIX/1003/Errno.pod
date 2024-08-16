@@ -1,0 +1,108 @@
+=encoding utf8
+
+=head1 NAME
+
+POSIX::1003::Errno - all error codes defined by the OS
+
+=head1 SYNOPSIS
+
+  use POSIX::1003::Errno; # load all names
+
+  use POSIX::1003::Errno qw(errno);
+  # keys are strings!
+  $ticks = errno('EPERM');
+
+  use POSIX::1003::Errno qw(errno EPERM);
+  if($!==EPERM) ...
+
+  use POSIX::1003::Errno '%errno';
+  my $key = $errno{EPERM};
+  $errno{EUNKNOWN} = 1024;
+  $ticks  = errno('EUNKNOWN');
+
+  print "$_\n" for keys %errno;
+
+=head1 DESCRIPTION
+
+The error codes provided by your operating system.
+
+The code modules Errno and POSIX do also contain an extensive
+list of error numbers.  However: Errno have their values hard-coded,
+which is incorrect (higher numbered codes may [do!] differ per platform).
+POSIX only provides a limited subset.
+
+=head1 METHODS
+
+=head1 FUNCTIONS
+
+=head2 Standard POSIX
+
+=over 4
+
+=item B<strerror>($errno)
+
+Returns the string representations of the $errno, as provided by
+the operating system.
+
+=back
+
+=head2 Additional
+
+=over 4
+
+=item B<errno>($name)
+
+Returns the errno value related to the NAMEd constant.  The $name
+must be a string. C<undef> will be returned when the $name is not
+known by the system.
+
+example: 
+
+  my $ticks = errno('EPERM') || 1000;
+
+=item B<errno_names>()
+
+Returns a list with all known names, unsorted.
+
+=back
+
+=head1 CONSTANTS
+
+=over 4
+
+=item B<%errno>
+
+This exported variable is a tied HASH which maps C<E*> names
+on numbers, to be used with the system's C<errno()> function.
+
+=back
+
+The following error names where detected on your system when the
+module got installed.  The second column shows the related value.
+Followed by the text that L<strerror()|POSIX::1003::Errno/"Standard POSIX"> produces for that error.
+Or course, your error messages may be translated.
+
+=for comment
+#TABLE_ERRNO_START
+
+  During installation, a symbol table will get inserted here.
+
+=for comment
+#TABLE_ERRNO_END
+
+=head1 SEE ALSO
+
+This module is part of POSIX-1003 distribution version 1.02,
+built on November 10, 2020. Website: F<http://perl.overmeer.net/CPAN>.  The code is based on L<POSIX>, which
+is released with Perl itself.  See also L<POSIX::Util> for
+additional functionality.
+
+=head1 COPYRIGHTS
+
+Copyrights 2011-2020 on the perl code and the related documentation
+ by [Mark Overmeer]. For other contributors see ChangeLog.
+
+This program is free software; you can redistribute it and/or modify it
+under the same terms as Perl itself.
+See F<http://dev.perl.org/licenses/>
+

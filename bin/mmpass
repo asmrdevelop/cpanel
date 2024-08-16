@@ -1,0 +1,26 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+use bytes;
+if ( -e "/var/cpanel/mmpass" ) {
+    open( HP, "/var/cpanel/mmpass" );
+    my $hp = <HP>;
+    chomp $hp;
+    close(HP);
+    print "$hp";
+    exit;
+}
+else {
+    my $random;
+    open( RANDOM, "/dev/urandom" );
+    read RANDOM, $random, 4096;
+    close(RANDOM);
+    $random =~ s/\W//g;
+    $random = substr( $random, 0, 8 );
+    open( HP, ">/var/cpanel/mmpass" );
+    print HP $random;
+    close(HP);
+    chmod( 0600, "/var/cpanel/mmpass" );
+    print $random;
+    exit;
+}
+no bytes;

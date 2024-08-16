@@ -1,0 +1,136 @@
+[% SET CPANEL.CPVAR.dprefix = "../" %]
+
+[%
+USE HTMLOptions;
+SET domain_response = execute('Email', 'list_mail_domains', {});
+%]
+
+[% css_code = PROCESS css_block %]
+[% js_code = PROCESS js_block %]
+[% WRAPPER '_assets/master.html.tt'
+    app_key = 'error_pages'
+    page_js = js_code
+    page_styles = css_code
+    page_scripts = [
+        'libraries/jquery/current/jquery.js',
+        'libraries/bootstrap/optimized/js/bootstrap.js'
+    ]
+ -%]
+<div class="body-content">
+    [% IF domain_response.status == 0 %]
+    [%  FOREACH message IN file_info.errors %]
+        <div class="alert alert-danger" role="alert">
+            <span class="glyphicon glyphicon-remove-sign" aria-hidden="true"></span>
+            <div class="alert-message">
+                <strong class="alert-title">
+                    [% locale.maketext('Error:') %]
+                </strong>
+                <span class="alert-body">
+                    <span id="error-[% loop.index() %]">
+                        [% message.html() %]
+                    </span>
+                </span>
+            </div>
+        </div>
+    [%  END %]
+    [% ELSE %]
+    <p>
+        [% locale.maketext("An error page informs a visitor when there is a problem accessing your site. Each type of problem has its own code. For example, a visitor who enters a nonexistent URL will see a 404 error, while an unauthorized user trying to access a restricted area of your site will see a 401 error.") %]
+    </p>
+    <p>
+        [% locale.maketext("Basic error pages are automatically provided by the web server (Apache). However, if you prefer, you can create a custom error page for any valid HTTP status code beginning in 4 or 5.") %]
+    </p>
+    <div class="section">
+        <h2 id="hdrSelectDomain">
+            [% locale.maketext("Step 1 - Select Domain to Manage Error Pages") %]
+        </h2>
+        <div id="ep-select-domain">
+            <div class="form-group">
+                <label id='managing' for="domain">
+                    [% locale.maketext("Managing") %]
+                </label>
+                <div class="row">
+                    <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                        <select name="domain" id='domain' onchange="show_pages(this)" class="form-control">
+                            [%
+                                SET domains = domain_response.data;
+                                HTMLOptions.options_as_html(domains, { value => 'domain', text => 'domain', selected => RAW_FORM.domain });
+                            %]
+                        </select>
+                    </div>
+                    <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div id="step2_block" class="section">
+        <h2 id="hdrEditFor">
+            [% locale.maketext("Step 2 - Edit Error Pages for:") %]
+            <span id="working_domain"></span>
+        </h2>
+        <div class="section">
+            <ul class="nav nav-tabs">
+                <li class="active ">
+                    <a href="#tab1" data-toggle="tab">
+                        [% locale.maketext("Edit Common Error Codes") %]
+                    </a>
+                </li>
+                <li>
+                    <a href="#tab2" data-toggle="tab">
+                        [% locale.maketext("Show All HTTP Error Status Codes") %]
+                    </a>
+                </li>
+            </ul>
+            <div class="tab-content">
+                [% INCLUDE 'error_code_include.html.tt' %]
+            </div>
+        </div>
+    </div>
+    [% END %]
+</div>
+[% END #wrapper %]
+
+[% BLOCK css_block %]
+<style type="text/css">
+    .errorpagelist li{
+        margin:5px 0;
+    }
+</style>
+[% END %]
+
+[% BLOCK js_block %]
+<script type="text/javascript">
+    function show_pages(x) {
+        var show_div = document.getElementById('step2_block');
+        var s_value = x.options[x.selectedIndex].value;
+        var skip_value = [% RAW_FORM.domain.json() || "null" %] ;
+        if (skip_value == '') {
+            skip_value = [% CPANEL.CPDATA.DNS.html.json() || "null" %] ;
+        }
+        if (s_value != skip_value) {
+            window.location = "index.html?domain=" + s_value;
+            return false;
+        }
+
+        document.getElementById('working_domain').innerHTML = s_value;
+
+        var a_s = show_div.getElementsByTagName('a');
+
+        for (i = 0; i <= a_s.length; i++) {
+            try {
+                a_s[i].href = a_s[i].href.replace(/(domain\=[\w\.-]*)/, 'domain=' + s_value); //TODO This also needs to change the directory.  Then we can drop Redirect.
+            } catch (e) {}
+        }
+
+        show_div.style.display = 'none';
+        setTimeout(function() {
+            show_div.style.display = 'block'
+        }, 100);
+    }
+
+    show_pages(document.getElementById('domain'));
+</script>
+[% END %]
+
+

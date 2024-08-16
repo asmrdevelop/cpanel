@@ -1,0 +1,100 @@
+#!/bin/bash
+eval 'if [ -x /usr/local/cpanel/3rdparty/bin/perl ]; then exec /usr/local/cpanel/3rdparty/bin/perl -x -- $0 ${1+"$@"}; else exec /usr/bin/perl -x $0 ${1+"$@"}; fi;'    ## no critic qw(ProhibitStringyEval RequireUseStrict)
+  if 0;
+
+#!/usr/bin/perl
+# cpanel - scripts/analyze_config                    Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+# NOTE: This script is designed to run on other systems during a transfer, usually as /usr/bin/perl.
+
+use strict;
+
+BEGIN {
+    unshift @INC, '/usr/local/cpanel';
+    my %seen_inc;
+    @INC = grep { !/(?:^\.|\.\.|\/\.+)/ && !$seen_inc{$_}++ } @INC;
+    undef %seen_inc;
+}
+
+use IO::Handle ();
+
+package main;
+
+our $VERSION = '1.6';
+
+if ( @ARGV && grep( m{version}, @ARGV ) ) {
+    print "analyze_config VERSION $VERSION\n";
+    exit(0);
+}
+
+STDOUT->autoflush(1);
+STDERR->autoflush(1);
+
+# EVAL NOTE:
+#
+# Do not 'use' any non-core perl modules.
+#
+# We want to return as much information as possible to the system
+# requesting this data. If any of the code is missing, we just want
+# want to move on to the next block as the transfer system will
+# gracefully downgrade the experience based on how much information it
+# is able to obtain. For this reason, we do not care about the actual
+# errors that the eval {}s may generate.
+#
+# We cannot use Try::Tiny here because this script is uploaded to the
+# remote machine and may be running on systems as early as 11.30
+#
+
+eval {    # Please see EVAL NOTE above
+    require Cpanel::MysqlUtils::MyCnf::Basic;
+
+    my $mysql_host = Cpanel::MysqlUtils::MyCnf::Basic::getmydbhost() || 'localhost';
+    print "mysql-host: $mysql_host\n";
+};
+
+eval {    # Please see EVAL NOTE above
+    require Cpanel::Ips;
+
+    my %IPS = Cpanel::Ips::fetchipslist();
+    print "ips: " . join( ',', keys %IPS ) . "\n";
+};
+
+eval {    # Please see EVAL NOTE above
+    require Cpanel::MysqlUtils::MyCnf::Full;
+
+    my $local_mycnf = Cpanel::MysqlUtils::MyCnf::Full::etc_my_cnf();
+    print "mysql-open-files-limit:" .   ( $local_mycnf->{'mysqld'}{'open_files_limit'}   || 2048 ) . "\n";
+    print "mysql-max-allowed-packet:" . ( $local_mycnf->{'mysqld'}{'max_allowed_packet'} || '16M' ) . "\n";
+};
+
+eval {    # Please see EVAL NOTE above
+    require Cpanel::MysqlUtils;
+
+    my $mysql_version = Cpanel::MysqlUtils::mysqlversion();    #TODO, change to Cpanel::MysqlUtils::Version::get_mysql_version_with_fallback_to_default(); in v70+
+    ($mysql_version) = $mysql_version =~ m{^([0-9]+\.[0-9]+)};
+    print "mysql-version: $mysql_version\n";
+};
+
+eval {    # Please see EVAL NOTE above
+    my $pkgacct_target = eval { require Cpanel::Filesys::Home; Cpanel::Filesys::Home::get_homematch_with_most_free_space(); } ||    # current function name
+      eval { require Cpanel::Filesys; Cpanel::Filesys::get_homematch_with_most_free_space(); } ||                                   # < 72
+      eval { require Cpanel::Filesys; Cpanel::Filesys::getmntpoint(); };                                                            # If the source < 11.44
+
+    my $filesys_ref = eval { require Cpanel::Filesys::Info; Cpanel::Filesys::Info::_all_filesystem_info(); }                        # 72+
+      || eval { require Cpanel::Filesys; Cpanel::Filesys::_all_filesystem_info(); };
+
+    my $mnt = eval { require Cpanel::Filesys::FindParse; Cpanel::Filesys::FindParse::find_mount( $filesys_ref, $pkgacct_target ); }
+      || eval { require Cpanel::Filesys; Cpanel::Filesys::find_mount( $filesys_ref, $pkgacct_target ); };
+
+    my $info = $filesys_ref->{$mnt};
+
+    print "pkgacct-target: $pkgacct_target\n";
+    print "pkgacct-target-blocks_free: $info->{'blocks_free'}\n";
+    print "pkgacct-target-inodes_free: $info->{'inodes_free'}\n";
+
+};
+
+exit(0);

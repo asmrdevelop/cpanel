@@ -1,0 +1,28 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/zoneexists                      Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+use Cpanel::SafeFile ();
+use Cpanel::DNSLib   ();
+
+my $zone = $ARGV[0];
+$zone =~ s/\s//g;
+$zone =~ s/\n//g;
+
+my $dnslib = Cpanel::DNSLib->new();
+
+my $nclock = Cpanel::SafeFile::safeopen( \*NDC, "<", $dnslib->{'namedconf'} )
+  || die "Unable to read $dnslib->{'namedconf'}!";
+
+while (<NDC>) {
+    if (/zone\s+\"${zone}\"/io) {
+        print "exists\n";
+        last();
+    }
+}
+
+Cpanel::SafeFile::safeclose( \*NDC, $nclock );

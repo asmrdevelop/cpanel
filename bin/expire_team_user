@@ -1,0 +1,74 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - bin/expire_team_user                    Copyright 2023 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use cPstrict;
+
+package bin::expire_team_user;
+
+use Cpanel::Team::Config ();
+use Cpanel::Logger       ();
+use Getopt::Long         ();
+
+our $opts;
+
+bin::expire_team_user::run() unless caller;
+
+sub run {
+
+    Getopt::Long::GetOptions(
+        'help'  => \$opts->{help},
+        'force' => \$opts->{force},
+        'tty'   => \$opts->{tty},
+    ) or show_help();
+
+    if ( $opts->{help} ) {
+        show_help();
+    }
+
+    if ( $> != 0 ) {
+        die "Sorry, only root can expire team-user accounts via the command line.\n";
+    }
+
+    if ( !$opts->{tty} && $ENV{SSH_CONNECTION} ) {
+        die "Sorry, this cannot be run from a terminal.\n";
+    }
+
+    my $logger = Cpanel::Logger->new();
+
+    my ( $team_owner, $team_user ) = @ARGV;
+    Cpanel::Team::Config->new($team_owner)->expire_team_user( $team_user, $opts->{force} ) or $logger->error("Cannot expire $team_user for $team_owner.");
+
+    return 0;
+}
+
+sub show_help {
+    print STDERR <<~"EOM";
+    $0: Tool to expire a team-user account
+
+    Usage:
+        $0 [--help] [--force] [--tty] <team-owner> <team-user>
+    
+        Options:
+          --help:   Print out this message and exit
+          --force:  Force expiration of account even if not scheduled.
+          --tty:    Allow to run in terminal
+
+        Expire a team-user account, disabling it from further use.  Does not
+        delete account.
+ 
+        Account must already be scheduled to expire by the time this runs
+        unless --force option is used. 
+
+        Normally runs in a server task queue.  If you're running this from the
+        command line you're either testing or something went wrong and will
+        have to use the --tty option, even if using --force.
+
+EOM
+    exit 0;
+}
+
+1;

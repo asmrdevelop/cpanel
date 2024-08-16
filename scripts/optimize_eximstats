@@ -1,0 +1,124 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/optimize_eximstats              Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::optimize_eximstats;
+
+use strict;
+## no critic qw(TestingAndDebugging::RequireUseWarnings) -- not fully vetted for warnings
+
+use parent qw( Cpanel::HelpfulScript );
+
+our $VERSION  = 1.4;
+our $PID_FILE = '/var/run/optimize_eximstats.pid';
+
+use Cpanel::Alarm                ();
+use Cpanel::DiskCheck            ();
+use Cpanel::EximStats::ConnectDB ();
+use Cpanel::EximStats::Constants ();
+use Cpanel::PIDFile              ();
+use Cpanel::Sys::Load            ();
+
+use File::Basename ();
+
+=encoding utf-8
+
+=head1 NAME
+
+scripts::optimize_eximstats
+
+=head1 SYNOPSIS
+
+    /usr/local/cpanel/scripts/optimize_eximstats
+
+=head1 DESCRIPTION
+
+This script is used to vacuum (defragment) the eximstats database.
+
+=cut
+
+__PACKAGE__->new(@ARGV)->run() if !caller();
+
+sub _OPTIONS {
+    return;
+}
+
+sub run {
+    my ($self) = @_;
+
+    $self->has_required_diskspace();
+
+    Cpanel::PIDFile->do(
+        $PID_FILE,
+        sub {
+            my $main_alarm = Cpanel::Alarm->new( 2 * 60**2, sub { die "optimize_eximstats ran for longer then two hours."; } );
+            $self->vacuum_database();
+        }
+    );
+
+    return;
+}
+
+sub vacuum_database {
+    my ($self) = @_;
+
+    local $ENV{'SQLITE_TMPDIR'} = File::Basename::dirname($Cpanel::EximStats::Constants::EXIMSTATS_SQLITE_DB);
+    my $dbh = Cpanel::EximStats::ConnectDB::dbconnect();
+
+    my ( $load_one, $load_five, $load_fifteen ) = Cpanel::Sys::Load::getloadavg($Cpanel::Sys::Load::ForceFloat);
+
+    $load_one = sprintf( "%.05f", $load_one );    # Reduce precision on load_one to avoid divide by zero below (FPU fun)
+
+    print "Optimizing eximstats (current load avg: $load_one)......";
+    $dbh->do('VACUUM;');
+    print "Done\n";
+    my ( $post_load_one, $post_load_five, $post_load_fifteen ) = Cpanel::Sys::Load::getloadavg($Cpanel::Sys::Load::ForceFloat);
+
+    print "Load before optimize: $load_one, Load after optimize: $post_load_one.\n";
+    print "Optimization complete.\n";
+
+    return;
+}
+
+sub has_required_diskspace {
+    my ($self) = @_;
+
+    # from: https://sqlite.org/lang_vacuum.html
+    # This means that when VACUUMing a database, as much as twice the size
+    # of the original database file is required in free disk space.
+
+    # https://sqlite.org/tempfiles.html
+    # 5. Temporary File Storage Locations
+    # The directory or folder in which temporary files are created is determined by the OS-specific VFS.
+    # On unix-like systems, directories are searched in the following order:
+    # The directory set by PRAGMA temp_store_directory or by the sqlite3_temp_directory global variable
+    # The SQLITE_TMPDIR environment variable
+    # The TMPDIR environment variable
+    # /var/tmp
+    # /usr/tmp
+    # /tmp
+    # The current working directory (".")
+    # The first of the above that is found to exist and have the write and execute bits set is used.
+    # The final "." fallback is important for some applications that use SQLite inside of chroot jails that
+    # do not have the standard temporary file locations available.
+
+    my $disk_used_bytes = -s $Cpanel::EximStats::Constants::EXIMSTATS_SQLITE_DB;
+    my $dir             = File::Basename::dirname($Cpanel::EximStats::Constants::EXIMSTATS_SQLITE_DB);
+    my $disk_output     = '';
+    my ( $disk_ok, $disk_msg ) = Cpanel::DiskCheck::target_has_enough_free_space_to_fit_source_sizes(
+        'source_sizes'   => [ { 'optimize_eximstats' => $disk_used_bytes } ],
+        'target'         => $dir,
+        'output_coderef' => sub { my ($msg) = @_; $disk_output .= $msg; return 1; }
+    );
+
+    print "$disk_output\n";
+
+    die $disk_msg if !$disk_ok;
+
+    return;
+}
+
+1;

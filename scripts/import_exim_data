@@ -1,0 +1,245 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/import_exim_data                Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::import_exim_data;
+
+=encoding utf-8
+
+=head1 NAME
+
+import_exim_data
+
+=head1 SYNOPSIS
+
+    import_exim_data ( --help | <logfile1> [ <logfile2> .. ] )
+
+=head1 DESCRIPTION
+
+This command re-populates the email statistics database based on the contents
+of the log files at the given paths.
+
+The format of the data in each exim log file should conform to the data format
+of F</var/log/exim_mainlog>. Any of the files may be in gzip format, in which
+case the filename must end with C<.gz>.
+
+=cut
+
+use strict;
+use warnings;
+
+use parent qw( Cpanel::HelpfulScript );
+
+use Cpanel::Config::LoadCpConf          ();
+use Cpanel::EximStats::ImportInProgress ();
+use Cpanel::Finally                     ();
+use Cpanel::IONice                      ();
+use Cpanel::IP::Loopback                ();
+use Cpanel::Locale                      ();
+use Cpanel::PIDFile                     ();
+use Cpanel::Sys::Load                   ();
+use Cpanel::TailWatch                   ();    # PPI USE OK - inline below
+use Cpanel::TailWatch::Eximstats        ();
+use Cpanel::TimeHiRes                   ();
+use Cpanel::IO                          ();
+use Cpanel::Timezones                   ();
+
+use Try::Tiny;
+
+use constant _OPTIONS => ();
+
+use constant _ACCEPT_UNNAMED => 1;
+
+{
+
+    package FakeTailWatch;    # Because Cpanel::TailWatch::Eximstats::process_line()
+                              # thinks it needs a tailwatch obj
+
+    use parent 'Cpanel::TailWatch';    # PPI USE OK - needed to mock this properly
+
+    sub new {
+        my ($class) = @_;
+        return bless {}, $class;
+    }
+
+    sub register_module        { }
+    sub register_reload_module { }
+    sub register_action_module { }
+    *_is_loopback = sub {
+        my $self = shift;
+
+        goto \&Cpanel::IP::Loopback::is_loopback;
+    };
+    sub log              { shift @_; printf STDERR "@_\n" }
+    sub log_sql          { shift @_; printf STDERR "@_\n" }
+    sub debug            { shift @_; printf STDERR "@_\n" }
+    sub error            { shift @_; printf STDERR "@_\n" }
+    sub clear_data_cache { }
+    {
+        no warnings 'once';
+        no warnings 'redefine';
+        *Cpanel::TailWatch::Eximstats::_send_limit_exceeded_notification = sub { return 1; };
+        *Cpanel::TailWatch::Eximstats::_validate_email_limits_data       = sub { return 1; };
+    }
+}
+
+$Cpanel::TailWatch::Eximstats::LOG_DUPLICATES = 0;
+
+# Our for tests
+our $LOOP_SIZE = 10000;
+
+our $MAX_SLEEP_TIME = 120;    # seconds
+
+__PACKAGE__->new(@ARGV)->run() unless caller();
+
+sub run {
+    my ($self) = @_;
+
+    Cpanel::PIDFile->do(
+        $Cpanel::EximStats::ImportInProgress::PATH,
+        sub { $self->script( $self->getopt_unnamed() ) },
+    );
+
+    return;
+}
+
+sub script {
+    my ( $self, @infiles ) = @_;
+
+    local $ENV{'TZ'} = Cpanel::Timezones::calculate_TZ_env();
+
+    if ( !@infiles ) {
+        die $self->help( Cpanel::Locale->get_handle()->maketext('Give at least one filesystem path.') );
+    }
+
+    my $tailwatch_obj = FakeTailWatch->new;
+    $tailwatch_obj->init_global_share();
+    my $logfile = '/dev/null';
+    my $now     = time;
+
+    Cpanel::TailWatch::Eximstats->init($tailwatch_obj);
+
+    my $eximstats = Cpanel::TailWatch::Eximstats->new( $tailwatch_obj, 'buffered_sql' => 1, 'import' => 1 );
+
+    my $cpconf_ref = Cpanel::Config::LoadCpConf::loadcpconf();
+
+    if ( Cpanel::IONice::ionice( 'best-effort', exists $cpconf_ref->{'ionice_import_exim_data'} ? $cpconf_ref->{'ionice_import_exim_data'} : 6 ) ) {
+        print "[import_exim_data] Setting I/O priority to reduce system load: " . Cpanel::IONice::get_ionice() . "\n";
+    }
+
+    setpriority( 0, 0, 19 );
+
+    $eximstats->_ensure_dbh();
+
+    $eximstats->{'dbh'}->do('PRAGMA synchronous = OFF;');
+    my $finally = Cpanel::Finally->new( sub { $eximstats->{'dbh'}->do('PRAGMA synchronous = ON;'); } );
+
+  INFILE: for my $infile (@infiles) {
+        print "$0: Processing input infile: $infile\n";
+        local $0 = "$0 - processing input file: $infile";
+
+        if ( !-f $infile ) {
+            warn "Skipping input file $infile, file does not exist or is not a regular file";
+            next INFILE;
+        }
+
+        my $fh;
+
+        if ( $infile =~ /[.]gz$/ ) {
+            my @cmd = ( qw[ gunzip -c -f ], $infile );
+            if ( !open $fh, '-|', @cmd ) {
+                warn "Skipping $infile: Cannot open pipe to read stdout from command '@{ [ join ' ', @cmd ] }' : $!";
+                next INFILE;
+            }
+        }
+        else {
+            if ( !open $fh, '<', $infile ) {
+                warn "Skipping $infile: Cannot open $infile for reading: $!";
+                next INFILE;
+            }
+        }
+
+        my $loop_count = 0;
+        my $lasttime   = $now = [ Cpanel::TimeHiRes::gettimeofday() ];
+        my ( $load_one, $load_five, $load_fifteen ) = Cpanel::Sys::Load::getloadavg($Cpanel::Sys::Load::ForceFloat);
+
+        $load_one = sprintf( "%.01f", $load_one );    # Reduce precision on load_one to avoid divide by zero below (FPU fun)
+
+        my ( $post_load_one, $post_load_five, $post_load_fifteen );
+
+        my $process_line_regex = $eximstats->{'process_line_regex'}->{'/var/log/exim/mainlog'};
+
+        while ( my $block = Cpanel::IO::read_bytes_to_end_of_line( $fh, 65_535 ) ) {
+            foreach my $line ( grep { m{$process_line_regex}o } split( m{\n}, $block ) ) {
+                if ( ++$loop_count % $LOOP_SIZE == 0 ) {
+                    $eximstats->commit_buffer();
+
+                    ( $post_load_one, $post_load_five, $post_load_fifteen ) = Cpanel::Sys::Load::getloadavg($Cpanel::Sys::Load::ForceFloat);
+                    $lasttime = $now;
+                    $now      = [ Cpanel::TimeHiRes::gettimeofday() ];
+                    print(
+                        "($loop_count) Processed " . sprintf(
+                            '%0.2f',
+                            (
+                                $LOOP_SIZE / (
+                                    (
+
+                                        ( $now->[0] - $lasttime->[0] ) + ( ( $now->[1] - $lasttime->[1] ) / 1000000 )
+                                    )
+                                      || 1
+                                )
+                            )
+                          )
+                          . " records per second\n"
+                    );
+                    if ( $loop_count > 75000 ) {
+                        $eximstats->{'quote_cache'} = {};
+                    }
+                    if ( $post_load_one > 1 && $post_load_one > ( $load_one * 1.1 ) ) {
+                        my $sleep_time = calculate_sleep_time( $load_one, $post_load_one );
+
+                        print "Load before import: $load_one, Load after import: $post_load_one.   Waiting ${sleep_time}s for load to decrease.\n";
+
+                        sleep($sleep_time);
+
+                        # We want to sleep a bit for disk i/o to catch up.   The idea here is to
+                        # prevent this process for hogging the disk and create a large wait backlog.
+
+                        # The goal is to still complete the optimization, however prevent the user
+                        # from having the desire to kill off import_exim_data
+
+                        # If we have driven up the load a bit we sleep in the end as well in order
+                        # to give the system time to return to normal before upcp proceeds to
+                        # prevent normal operations from being slowed down too much.
+                        ( $load_one, $load_five, $load_fifteen ) = Cpanel::Sys::Load::getloadavg($Cpanel::Sys::Load::ForceFloat);
+                    }
+
+                }
+
+                #next if $line !~ m{$process_line_regex}o;
+
+                $eximstats->process_line( $line, $tailwatch_obj, $logfile, $now->[0] );
+            }
+        }
+
+        $eximstats->commit_buffer();
+        close $fh;
+
+        print "Data has been imported to the database from the exim log.\n";
+    }
+
+    return 1;
+}
+
+sub calculate_sleep_time {
+    my ( $load_one, $post_load_one ) = @_;
+
+    # adding .00001 to avoid dividing by 0.0
+    my $sleep = $load_one ? int( 60 * ( $post_load_one / ( $load_one + 0.00001 ) ) ) : 60;
+    return $sleep > $MAX_SLEEP_TIME ? $MAX_SLEEP_TIME : $sleep;
+}
+
+1;

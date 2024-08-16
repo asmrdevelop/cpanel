@@ -1,0 +1,72 @@
+<div id="loadingConfigNotice" class="callout callout-info ng-hide" ng-show="cc.loadingIssuer">
+    <div id="loadingConfigNoticeRow">
+        <div id="loadingConfigNoticeCell">
+            <i id="loadingSpinner" class="fas fa-spinner fa-spin"></i>
+            [% locale.maketext('Loading …') %]
+        </div>
+    </div>
+</div>
+<div id="tfaConfig" class="ng-hide" ng-show="!cc.loadingIssuer">
+    <form class="layout-medium ng-pristine ng-valid"
+        id="config_form"
+        name="config_form"
+        autocomplete="off"
+        novalidate>
+        <div class="section-body">
+            <div class="alert alert-info" ng-hide="cc.currentUser.user_name == 'root'">
+                <span class="glyphicon glyphicon-info-sign"></span>
+                <div class="alert-message" ng-bind-html="cc.systemWideIssuerAlert()"></div>
+            </div>
+            <div class="form-group" ng-class="{'has-error': cc.saveError}">
+                <label class="control-label" id="lblIssuer" for="issuer">
+                [% locale.maketext("Issuer") %]</label>
+                <span class="glyphicon glyphicon-info-sign"
+                    role="tooltip"
+                    tabindex="0"
+                    aria-describedby="lblIssuer"
+                    uib-tooltip="{{cc.issuerHelpText}}"
+                    tooltip-trigger="focus"
+                    tooltip-placement="top"
+                    ng-class="{'has-error': cc.saveError}"></span>
+                <div class="row">
+                    <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                        <input type="text"
+                            autocomplete="off"
+                            class="form-control"
+                            ng-attr-placeholder="{{ cc.currentUser.user_name == 'root' ? cc.rootIssuerPlaceholder : cc.issuerPlaceholder}}"
+                            id="issuer"
+                            name="issuer"
+                            ng-trim="false"
+                            ng-maxlength="32"
+                            ng-pattern="/^[ a-zA-Z0-9\._\-]+$/"
+                            ng-model="cc.issuer"
+                            ng-class="{'has-error': cc.saveError}" />
+                    </div>
+                    <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                        <ul validation-container field-name="issuer">
+                        <validation-item
+                                field-name="issuer"
+                                validation-name="pattern">
+                                [% locale.maketext("This field can only use spaces and the following characters: [join, ,_*]", ["a-z", "A-Z", "0-9", ".", "_", "-"]) %]
+                            </validation-item>
+                            <validation-item
+                                field-name="issuer"
+                                validation-name="maxlength">
+                                [% locale.maketext("The issuer must be no more than 32 characters.") %]
+                            </validation-item>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+            <div class="form-group">
+                <button
+                    type="submit"
+                    spinner-id="saveConfig"
+                    cp-action="cc.saveIssuer(config_form)"
+                    button-class="btn-primary"
+                    ng-disabled="cc.disableSave(config_form)">[% locale.maketext("Save") %]</button>
+            </div>
+        </div>
+    </form>
+</div>
+

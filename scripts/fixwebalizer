@@ -1,0 +1,33 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/fixwebalizer                    Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+
+use Cpanel::AccessIds ();
+
+my $user = $ARGV[0];
+
+if ( !defined($user) ) {
+    print "Warning: this will destory all previous webalizer data!\n";
+    print "Enter Username to fix webalizer for? ";
+    chomp( $user = <STDIN> );
+
+}
+
+my $homedir = ( getpwnam($user) )[7];
+
+if ( !-e $homedir ) {
+    print "Can not find home directory for user '$user'.\n";
+}
+
+my $op = sub {
+    system("rm -fv $homedir/tmp/webalizer/webalizer.*");
+    system("rm -fv $homedir/tmp/webalizer/*.db");
+    system( "/usr/local/cpanel/scripts/runweblogs", "$user" );
+};
+
+Cpanel::AccessIds::do_as_user( $user, $op );

@@ -1,0 +1,72 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/restartsrv_syslogd              Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+use Cpanel::RestartSrv       ();
+use Cpanel::RestartSrv::Lock ();
+use Cpanel::Chkservd::Tiny   ();
+use Cpanel::OS               ();
+use Cpanel::Exception        ();
+
+eval {
+    local $SIG{'__DIE__'};
+    require Cpanel::Rlimit;
+    Cpanel::Rlimit::set_rlimit_to_infinity();
+};
+
+Cpanel::RestartSrv::setuppath();
+
+my ( $action, $check, $status ) = Cpanel::RestartSrv::parseargv();
+
+my $service = 'syslogd';
+
+if ( !Cpanel::OS::supports_syslogd() ) {
+    die Cpanel::Exception::create( 'Services::Deprecated', [ service => $service ] )->to_string . "\n";
+}
+
+my $processowner = 'root';
+my $disabled     = scalar grep { Cpanel::RestartSrv::is_service_disabled($_) } qw(syslog syslogd);
+
+if ( $action && !$disabled ) {
+
+    my $iscript;
+    foreach my $init_file ( 'syslog', 'rsyslog' ) {
+        $iscript = Cpanel::RestartSrv::getinitfile($init_file);
+        last if $iscript;
+    }
+
+    # If the init script is missing, there are likely bigger problems, so fail generically.
+    die Cpanel::Exception::create( 'Services::RestartFailed', 'The system failed to restart “[_1]”.', [$service] )->to_string . "\n" unless $iscript;
+
+    my $lock = Cpanel::RestartSrv::Lock->new($service);
+
+    Cpanel::Chkservd::Tiny::suspend_service( $service, 60 );
+    Cpanel::RestartSrv::nooutputsystem( $iscript, 'stop' );
+    Cpanel::RestartSrv::doomedprocess($service);
+    if ( $action != $Cpanel::RestartSrv::STOP ) {
+        Cpanel::RestartSrv::logged_startup( $service, 1, [ $iscript, 'start' ] );
+    }
+
+    $lock->release() if $lock;
+
+}
+elsif ($status) {
+
+    #--status (show ps)
+    if ($disabled) {
+        print "$service is disabled\n";
+    }
+    else {
+        print Cpanel::RestartSrv::check_service( 'service' => $service, 'user' => $processowner, 'regex' => qr/\b$service\b/, 'pidfile' => '/var/run/syslogd.pid' );
+    }
+}
+elsif ($check) {
+    exit if ($disabled);
+    if ( Cpanel::RestartSrv::check_service( 'service' => $service, 'user' => $processowner, 'regex' => qr/\b$service\b/, 'pidfile' => '/var/run/syslogd.pid' ) eq '' ) {
+        print "$service is not running\n";
+    }
+}

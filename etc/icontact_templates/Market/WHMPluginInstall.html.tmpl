@@ -1,0 +1,29 @@
+[%#
+Variables passed in:
+
+product - Product name
+error   - What went wrong installing said product
+
+For more information about how to customize notification templates, read our documentation at https://go.cpanel.net/notificationtemplates
+
+-%]
+
+[%
+    PROCESS "include/colors.tmpl";
+    PROCESS "include/styles.tmpl";
+
+    PROCESS 'include/code_block.tmpl';
+
+    WRAPPER 'wrapper/main.html.tmpl';
+
+
+    NOTICE.email_reason =  CPANEL.locale.maketext('Install of “[_1]” [asis,WHM] plugin failed!', NOTICE.product);
+
+%]
+
+<p>
+    [% CPANEL.locale.maketext('Encountered the following issues installing “[_1]”:', NOTICE.product) %]
+    <br>[% code_block( formatted_code => '<pre>' _ NOTICE.error() _ '</pre>' ) -%]<br>
+</p>
+[% CPANEL.locale.maketext('Click [output,url,_1,here] for more information.',NOTICE.url) %]
+[% END #wrapper %]

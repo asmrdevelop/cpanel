@@ -1,0 +1,245 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/delpop                          Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::delpop;
+
+use strict;
+use warnings;
+
+use Cpanel::AcctUtils::DomainOwner::Tiny ();
+use Cpanel::PwCache                      ();
+use Cpanel::SafetyBits                   ();
+use Cpanel::SafeFile                     ();
+use Cpanel::Email::Validate              ();
+use Cpanel::Usage                        ();
+use Cpanel::Sys::Setsid::Fast            ();
+use Cpanel::Hooks                        ();
+
+my @attributes = qw{ email user owner domain file };
+
+# call binary
+run(@ARGV) unless caller();
+
+sub run {
+    my (@args) = @_;
+
+    my $debug;
+    my $verbose;
+    my $email;
+
+    my $opts = {
+        email   => \$email,
+        debug   => \$debug,
+        verbose => \$verbose,
+    };
+
+    # compatibility with previous binary version
+    if ( scalar @args == 1 && $args[0] !~ /^\-/ ) {
+        $email = $args[0];
+    }
+    else {
+        Cpanel::Usage::wrap_options( \@args, \&usage, $opts );
+    }
+
+    my $pop = scripts::delpop->new( email => $email || undef );
+
+    # interactive fields
+    my $interactive_fields = {
+        email => 'Please enter the pop account to be removed (e.g. bob@sally.com)? ',
+    };
+    foreach my $field ( sort keys %$interactive_fields ) {
+        while ( !$pop->$field() ) {
+            print $interactive_fields->{$field};
+            my $input;
+            chomp( $input = <STDIN> );
+            $pop->$field($input) if length($input);
+        }
+    }
+
+    Cpanel::Hooks::hook(
+        {
+            'category' => 'scripts',
+            'event'    => 'delpop',
+            'stage'    => 'pre',
+        },
+        { 'email' => $email },
+    );
+
+    $pop->delete();
+
+    Cpanel::Hooks::hook(
+        {
+            'category' => 'scripts',
+            'event'    => 'delpop',
+            'stage'    => 'post',
+        },
+        { 'email' => $email },
+    );
+
+    exit;
+}
+
+sub usage {
+    my $prog = $0;
+    print <<USAGE;
+$0 [--email=]<user\@domain.com>
+
+Delete the specified email account.
+
+    --help  : display this documentation
+    --email : a valid address email ( format: user\@domain.com )
+USAGE
+    exit 1;
+}
+
+sub new {
+    my ( $package, %opts ) = @_;
+    my $self = bless {}, __PACKAGE__;
+
+    # create accessor and hooks
+    $self->_set_attributes();
+
+    # set values
+    map { $self->$_( $opts{$_} ) } keys %opts;
+
+    return $self;
+}
+
+sub _set_attributes {
+
+    # call once at first init
+    return unless @attributes;
+    foreach my $att (@attributes) {
+        my $accessor = __PACKAGE__ . "::$att";
+
+        # allow symbolic refs to typeglob
+        no strict 'refs';
+        *$accessor = sub {
+            my ( $self, $v ) = @_;
+            if ( defined $v ) {
+                foreach (qw{before validate set after}) {
+                    if ( $_ eq 'set' ) {
+                        $self->{$att} = $v;
+                        next;
+                    }
+                    my $sub = '_' . $_ . '_' . $att;
+                    if ( defined &{ __PACKAGE__ . '::' . $sub } ) {
+                        return unless $self->$sub($v);
+                    }
+                }
+            }
+            return $self->{$att};
+        };
+    }
+    @attributes = undef;
+    return 1;
+}
+
+sub _validate_email {
+    my ( $self, $email ) = @_;
+
+    Cpanel::Email::Validate::valid_email($email)
+      or die "'$email' is an invalid email";
+    return 1;
+}
+
+sub _after_email {
+    my ($self) = @_;
+
+    # mix validation and before_save :)
+    my ( $user, $domain ) = split( /\@/, $self->email );
+    $self->user($user);
+    $self->domain($domain);
+    return 1;
+}
+
+# we need to have access to the domain, when setting an owner
+sub _after_domain {
+    my ($self) = @_;
+
+    my $owner = Cpanel::AcctUtils::DomainOwner::Tiny::getdomainowner( $self->domain(), { 'default' => '' } );
+    die "Cannot find the owner of " . $self->domain() . ", try rebuilding /etc/userdomains first with /usr/local/cpanel/scripts/updateuserdomains"
+      unless $owner;
+    $self->owner($owner);
+    return 1;
+}
+
+sub _before_owner {
+    my ( $self, $owner ) = @_;
+
+    # setuids
+    my ( $uid, $gid ) = ( getpwnam($owner) )[ 2, 3 ];
+    die "cannot find user ", $owner unless defined $uid && defined $gid;
+
+    Cpanel::Sys::Setsid::Fast::fast_setsid();
+    Cpanel::SafetyBits::setuids( $uid, $gid );
+
+    # This is very similar to the code in Cpanel::Email::_pop_exists
+    # but it would be a chore to make that module available just for
+    # this script.
+    my $ownerhomedir = ( Cpanel::PwCache::getpwnam($owner) )[7];
+    die "cannot find home dir for user $owner" unless defined $ownerhomedir;
+    my $file = join '/', $ownerhomedir, 'etc', $self->domain(), 'passwd';
+    $file =~ s/\.\.//g;
+
+    $self->file($file);
+    return 1;
+}
+
+sub _before_file {
+    my ( $self, $file ) = @_;
+
+    die "Unable to determine domain owner's passwd file.\n" unless -e $file;
+    return 1;
+}
+
+sub _after_file {
+    my ($self) = @_;
+
+    # Untaint the value
+    if ( $self->file() =~ m/^(.*)$/ ) {
+
+        # direct access to untaint ( to avoid infinite loop )
+        $self->{file} = $1;
+    }
+    return 1;
+}
+
+sub _check_if_account_exists {
+    my ($self) = @_;
+
+    my $sflock = Cpanel::SafeFile::safeopen( \*PASSWD, '<', $self->file() );
+    die "Unable to read from domain owner's passwd file.\n" unless $sflock;
+    my $found;
+    my $user        = $self->user();
+    my $match_regex = qr/^\Q$user\E:/;
+    while ( my $line = <PASSWD> ) {
+        chomp $line;
+        if ( $line =~ $match_regex ) {
+            $found = 1;
+            last;
+        }
+    }
+    Cpanel::SafeFile::safeclose( \*PASSWD, $sflock );
+    die "Account does not exist.\n" unless $found;
+    return 1;
+}
+
+sub delete {
+    my ($self) = @_;
+
+    $self->_check_if_account_exists();
+
+    # perform the deletion
+    $ENV{'REMOTE_USER'} = $self->owner();
+    system '/usr/local/cpanel/cpanel-email', 'delpop', $self->email();
+    die "\nEmail account deletion failed ($?)\n" if ( $? != 0 );
+    print "Deleted " . $self->email() . " for user " . $self->owner() . "\n";
+    return 1;
+}
+
+1;

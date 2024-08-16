@@ -1,0 +1,73 @@
+<div ng-cloak>
+    <h3>[% locale.maketext("Review Changes") %]</h3>
+
+    <h4>{{ selected.name }}</h4>
+
+    <div cp-loading-panel id="determiningAvailableOptions" ng-show="loading">
+         [% locale.maketext("Preparing selected changes for review …") %]
+    </div>
+
+    <div ng-if="!loading">
+
+        <div class="panel panel-success">
+            <div class="panel-heading">[% locale.maketext("This configuration change enables the following roles:") %]</div>
+            <div class="panel-body">
+                <div ng-repeat="role in newEnabled | orderBy:'name'">
+                    {{role.name}}
+                </div>
+                <div ng-if="newEnabled.length === 0">
+                    [% locale.maketext("None") %]
+                </div>
+            </div>
+        </div>
+
+        <div class="panel panel-warning">
+            <div class="panel-heading">[% locale.maketext("This configuration change disables the following roles:") %]</div>
+            <div class="panel-body">
+                <div ng-repeat="role in newDisabled | orderBy:'name'">
+                    {{role.name}}
+                </div>
+                <div ng-if="newDisabled.length === 0">
+                    [% locale.maketext("None") %]
+                </div>
+            </div>
+        </div>
+
+        <div class="panel panel-default">
+            <div class="panel-heading">[% locale.maketext("This configuration change does not affect the following roles:") %]</div>
+            <div class="panel-body">
+                <div ng-repeat="role in unchanged | orderBy:'name'">
+                    {{role.name}}
+                </div>
+                <div ng-if="unchanged.length === 0">
+                    [% locale.maketext("None") %]
+                </div>
+            </div>
+        </div>
+
+        <div class="row" ng-if="newEnabled.length === 0 && newDisabled.length === 0" >
+            <div class="col-sm-6">
+                <div class="alert alert-danger">
+                    [% locale.maketext("There are no roles to enable or disable.") %]
+                </div>
+            </div>
+        </div>
+
+        <div>
+            <button ng-if="loaded"
+                ng-disabled="newEnabled.length === 0 && newDisabled.length === 0"
+                class="btn btn-primary"
+                cp-action="continue(selected)">
+                [% locale.maketext("Set Profile") %]
+            </button>
+            <button ng-if="loaded"
+                class="btn btn-link"
+                ng-disabled="settingProfile"
+                cp-action="cancel()">
+                [% locale.maketext("Cancel") %]
+            </button>
+        </div>
+
+    </div>
+
+</div>

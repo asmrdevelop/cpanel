@@ -1,0 +1,59 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - bin/see_team_queue                      Copyright 2023 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+# This script is intended for debugging and for the curious to see what's
+# currently in the Team Queue.
+
+use cPstrict;
+
+package bin::see_team_queue;
+
+use Cpanel::Team::Queue ();
+use Getopt::Long        ();
+
+bin::see_team_queue::run() unless caller;
+
+sub run {
+
+    my $opts;
+    my $ok = Getopt::Long::GetOptions(
+        'help' => \$opts->{help},
+    );
+
+    if ( $opts->{help} ) {
+        show_help( \*STDOUT );
+        return $ok;
+    }
+
+    if ( !$ok ) {
+        show_help( \*STDERR );
+    }
+    else {
+        Cpanel::Team::Queue->new()->print_queue();
+    }
+    return $ok;
+}
+
+sub show_help {
+    my $fh = shift // \*STDERR;
+    print $fh <<~"_EOHELP_";
+    $0: Tool to view team queue
+
+    Usage:
+        $0 [--help]
+
+        Options:
+        --help: Print out this message and exit
+
+        Print to stdout the tasks curently in the team queue.
+
+        Intended for debugging and the curious.
+    _EOHELP_
+    return 0;
+}
+
+1;

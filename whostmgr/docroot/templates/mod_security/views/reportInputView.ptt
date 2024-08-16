@@ -1,0 +1,139 @@
+<div class="section-heading">
+    <h2 ng-bind-html="getTitleText()">[% locale.maketext('Report a [asis,ModSecurity] Rule') %]</h2>
+    <span>[% locale.maketext('Fill in the form below to report your issue. You can review your submission before transmission.') %]</span>
+</div>
+
+<div class="section-body report-rule-body">
+    <form class="layout-medium" name="view.form" novalidate>
+        <div class="report-rule-form-input">
+            <div class="form-group">
+                <div class="row">
+                    <div class="col-xs-12 col-sm-5">
+                        <label for="report-email">[% locale.maketext('Email') %]</label>
+                    </div>
+                </div>
+                <div class="row">
+                    <div class="col-xs-12 col-sm-5">
+                        <input type="email"
+                               class="form-control"
+                               id="report-email"
+                               name="email"
+                               ng-model="report.inputs.email"
+                               required
+                               title="[% locale.maketext('Your email address.') %]"
+                               placeholder="user@example.com" />
+                    </div>
+                    <div class="col-xs-12 col-sm-5">
+                        <ul validation-container field-name="email">
+                            <li validation-item field-name="email" validation-name="required">
+                                [% locale.maketext('You must enter your email address.') %]
+                            </li>
+                            <li validation-item field-name="email" validation-name="email">
+                                [% locale.maketext('You must enter a valid email address.') %]
+                            </li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+
+            <div class="form-group rule-text-toggle">
+                <button class="btn btn-default" ng-show="view.loading.init" disabled>
+                    <i class="glyph fas fa-sync animate-spin"></i>
+                    <span>[% locale.maketext('Loading Rule…') %]</span>
+                </button>
+                <button class="btn btn-default" ng-show="!view.loading.init && !view.ruleExpanded" ng-click="view.ruleExpanded = true">
+                    [% locale.maketext('Show Rule Text') %]
+                    <span class="caret"></span>
+                </button>
+                <button class="btn btn-default" ng-show="!view.loading.init && view.ruleExpanded" ng-click="view.ruleExpanded = false">
+                    [% locale.maketext('Hide Rule Text') %]
+                    <span class="caret caret-up"></span>
+                </button>
+
+                <div>
+                    <div class="panel panel-default" ng-show="view.ruleExpanded">
+                        <div class="panel-body">
+                            <span ng-bind-html="report.rule.rule | wrap:'[,/]' | break"></span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="form-group">
+                <div class="row">
+                    <div class="col-xs-12 col-sm-5">
+                        <label for="report-reason">[% locale.maketext('Reason for the Report') %]</label>
+                    </div>
+                </div>
+                <div class="row">
+                    <div class="col-xs-12 col-sm-5">
+                        <select class="form-control"
+                                id="report-reason"
+                                name="reason"
+                                ng-model="report.inputs.reason"
+                                required
+                                title=[% locale.maketext('The reason for your submission.') %]>
+                            <option value="">[% locale.maketext('Select a reason') %]</option>
+                            <option value="[% locale.maketext('The rule generates false positive hit entries') %]">[% locale.maketext('The rule generates false positive hit entries') %]</option>
+                            <option value="[% locale.maketext('The rule is too strict') %]">[% locale.maketext('The rule is too strict') %]</option>
+                            <option value="[% locale.maketext('There is an error in the rule') %]">[% locale.maketext('There is an error in the rule') %]</option>
+                            <option value="[% locale.maketext('Another reason - see comments') %]">[% locale.maketext('Another reason - see comments') %]</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+
+            <div class="form-group">
+                <div class="row">
+                    <div class="col-xs-12 col-sm-5">
+                        <label for="report-comments">[% locale.maketext('Additional Comments') %]</label>
+                    </div>
+                </div>
+                <div class="row">
+                    <div class="col-xs-12 col-sm-5">
+                        <textarea class="form-control"
+                                  id="report-comments"
+                                  name="comments"
+                                  ng-model="report.inputs.comments"
+                                  required
+                                  rows="3"
+                                  title=[% locale.maketext('Enter your comments or notes to clarify the issue.') %]
+                                  placeholder="[% locale.maketext('Example: This rule triggers when I submit a form.') %]"></textarea><!-- The closing tag must remain here for the placeholder to show on initial load. -->
+                    </div>
+                </div>
+            </div>
+
+            <div class="form-group" ng-show="view.isDisabled && !view.isDisabled.rule">
+                <div class="checkbox">
+                    <label for="report-form-disable">
+                        <input type="checkbox"
+                               id="report-form-disable"
+                               name="disable"
+                               ng-model="report.inputs.disableRule"
+                               ng-disabled="view.isDisabled.rule" />
+                        <span>[% locale.maketext('Disable this rule') %]</span>
+                    </label>
+                </div>
+                <div class="checkbox">
+                    <label for="report-form-deploy" ng-class="{ 'muted' : view.isDisabled.rule || !report.inputs.disableRule }">
+                        <input type="checkbox"
+                               id="report-form-deploy"
+                               name="deploy"
+                               ng-model="report.inputs.deployRule"
+                               ng-disabled="view.isDisabled.rule || !report.inputs.disableRule" />
+                        <span>[% locale.maketext('Deploy and Restart [asis,Apache]') %]</span>
+                    </label>
+                </div>
+            </div>
+
+            <div class="form-group">
+                <button class="btn btn-primary" ng-click="changeStep('review')" ng-disabled="view.loading.init || view.form.$invalid || report.invalid">
+                    [% locale.maketext('Review Report') %]
+                </button>
+                <button class="btn btn-link" ng-click="cancelSubmission()">
+                    [% locale.maketext('Cancel') %]
+                </button>
+            </div>
+        </div>
+    </form>
+</div>

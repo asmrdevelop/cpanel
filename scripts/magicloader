@@ -1,0 +1,44 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/magicloader                     Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use Cpanel::Config::LoadCpConf  ();
+use Cpanel::ConfigFiles::Apache ();
+use Cpanel::LangMods            ();
+
+my $apacheconf = Cpanel::ConfigFiles::Apache->new();
+
+my $cpconf_ref = Cpanel::Config::LoadCpConf::loadcpconf();
+my @LANGLIST   = Cpanel::LangMods::langlist();
+
+foreach my $lang (@LANGLIST) {
+    if ( @ARGV && !grep( /^$lang$/, @ARGV ) ) { next(); }
+    print "Configuring $lang magic....";
+    if ( $cpconf_ref->{ 'magicloader_' . $lang } ) {
+        if ( Cpanel::LangMods::hasaction( $lang, 'enable_magic' ) ) {
+            my ( $isok, $curstatus ) = Cpanel::LangMods::doaction( $lang, 'magic_status' );
+            if ( $curstatus ne '1' ) {
+                my ( $ok, $result ) = Cpanel::LangMods::doaction( $lang, 'enable_magic' );
+                if ( $ok && $lang eq 'php-pear' ) {
+                    system qw(/usr/local/cpanel/scripts/ensure_vhost_includes --all-users --force-value=1 --only-check=cp_php_magic_include_path.conf --verbose);
+                }
+            }
+        }
+        print "On\n";
+    }
+    else {
+        if ( Cpanel::LangMods::hasaction( $lang, 'disable_magic' ) ) {
+            my ( $isok, $curstatus ) = Cpanel::LangMods::doaction( $lang, 'magic_status' );
+            if ( $curstatus eq '1' ) {
+                my ( $ok, $result ) = Cpanel::LangMods::doaction( $lang, 'disable_magic' );
+                if ( $ok && $lang eq 'php-pear' ) {
+                    system qw(/usr/local/cpanel/scripts/ensure_vhost_includes --all-users --force-value=0 --only-check=cp_php_magic_include_path.conf --verbose);
+                }
+            }
+        }
+        print "Off\n";
+    }
+}

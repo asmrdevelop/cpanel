@@ -1,0 +1,154 @@
+
+<style>
+.redtext {
+    color: #ff0000;
+    font-weight: 700;
+}
+!popupbox=1!
+h3 {
+    padding: 0;
+    margin: 0;
+}
+!popupbox!
+</style>
+%name%
+<form id="mainform" action="%action%" method="POST">
+<blockquote>
+    %listdesc%
+</blockquote>
+<table style="border-collapse:collapse"><tr>
+<td>
+<textarea style="width:400px; height: 120px;" cols="40" rows="20" name="listdata" id="listdata">%filecontents%</textarea>
+</td>
+<td style="padding-left: 8px">
+<span id='listdata_error'></span>
+</td>
+</tr></table>
+
+<h2>Input Formats</h2>
+
+!hosts=0!
+<p><strong>Do not</strong> use hostnames in this list (e.g. mx1.example.com )</p>
+<script type="text/javascript">
+	var allowHosts=false;
+</script>
+!hosts!
+
+!ipblock=0!
+<p><strong>Do not</strong> use IP addresses in this list
+(e.g. 192.168.0.1 ).</p>
+<p><strong>Do not</strong> use IP address blocks in
+this list (e.g. 192.168.0.1/24).</p>
+<script type="text/javascript">
+	var allowIP=false;
+</script>
+!ipblock!
+
+<p>You can use the following formats:</p>
+<ul>
+!hosts=1!
+  <li><strong>hostnames</strong> &mdash; Example: m1.example.com</li>
+  <script type="text/javascript">
+	var allowHosts=true;
+  </script>
+!hosts!
+
+!users=1!
+  <li><strong>Single system usernames</strong> &mdash; Example: bob</li>
+!users!
+
+!ipblock=1!
+  <li><strong>Single IP addresses</strong> &mdash; Example: 192.168.0.1 and 2001:db8:1a34:56cf::</li>
+  <li><strong>A range of IP addresses</strong> &mdash; Example: 192.168.0.0/24 and 2001:db8:1a34:56cf::/64</li>
+  <script type="text/javascript">
+	var allowIP=true;
+  </script>
+!ipblock!
+</ul>
+
+!popupbox=1!
+<input type="hidden" name="popupbox" value="1">
+!popupbox!
+!popupbox=0!
+<input type="submit" id="submit_button" value="Save" class="btn-primary">
+!popupbox!
+<input type="hidden" name="list" value="%list%" />
+</form>
+
+<script type="text/javascript">
+// <![CDATA[
+CPANEL.validate.external_verify_content = function (str) {
+
+		var checkIP = function ( str ) {
+            var range = str.split('/');
+			if ( str.indexOf('/') !== -1 ) {
+
+                // there should be exactly two chunks
+                if (range.length != 2) return false;
+
+                var second_chunk_bits_max;
+
+                // first chunk should be a valid IP
+                if (CPANEL.validate.ip(range[0])) {
+                    second_chunk_bits_max = 32;
+                }else if(CPANEL.validate.ipv6(range[0])) {
+                    second_chunk_bits_max = 128;
+                }else {
+                    // did not match ip or ipv6 //
+                    return false;
+                }
+
+                // second chunk is three or fewer digits
+                if ( /^\d{1,3}$/.test(range[1]) ) {
+                        if ( range[1] <= second_chunk_bits_max ) return true;
+                }
+	        }
+            else {
+		        return CPANEL.validate.ip(str) || CPANEL.validate.ipv6(range[0]);
+            }
+			return false;
+		}
+
+        var textRange = document.getElementById('listdata').value
+            .split(/\n/)
+            .map( String.prototype.trim.call, String.prototype.trim )
+        ;
+
+        var return_value = true;
+        for (var i=0; ((i < textRange.length) && (return_value)); i++ ) {
+            if ( (i==textRange.length-1) && ( textRange[i]== '' ) ) {
+                // The last line can be empty
+            }
+            else {
+                switch ( true ) {
+                    case (allowHosts && allowIP  ): return_value = CPANEL.validate.host(textRange[i]) || (checkIP(textRange[i]) );
+                                                    break;
+                    case (!allowHosts && allowIP ): return_value = checkIP(textRange[i]);
+                                                    break;
+                    case (allowHosts && !allowIP ): return_value = CPANEL.validate.host(textRange[i]) && (!checkIP(textRange[i]) );
+                                                    break;
+                }
+            }
+        }
+        return return_value;
+}
+
+var init = function() {
+        var validation = [];
+        validation = new CPANEL.validate.validator("IP List Editor");
+        validation.add('listdata', 'external_verify_content', 'Each line must contain a valid entry.');
+        validation.attach();
+        validation.verify();
+        CPANEL.validate.attach_to_form('submit_button', validation);
+};
+
+function submit_form() {
+    if ( CPANEL.validate.form_checkers["submit_button"]() ) {
+        document.getElementById('mainform').submit();
+    };
+}
+YAHOO.util.Event.onDOMReady(init);
+
+// ]]>
+</script>
+

@@ -1,0 +1,118 @@
+[%#
+Variables passed in:
+
+origin                  - the system component from which the password change request originated
+user                    - the username used during the authentication.
+user_domain             - the domain name of the user used during authentication.
+ip_address              - the IP address from which the password change request originated
+ip_address_is_public    - whether the “ip_address” is public (i.e., not a loopback, private, &c.)
+reverse_dns_hostnames   - arrayref of whatever a reverse DNS lookup returned, if successful
+country_name            - the name of the country that GeoIP reports is where the IP address’s computer is
+country_code            - the two-letter country code of the “country_name”
+country_lookup_error    - whatever error may have prevented getting a “country_name”
+is_root                 - if the user is root
+is_local                - if the login is from the local machine
+whitelist_ips           - list of hashes {range, href} for easy linking whitelisting
+blacklist_ips           - list of hashes {range, href} for easy linking blacklisting
+sent_to_root            - A default boolean flag sent to all templates that indicates if the message was sent to 'root'
+known_netblock  - If the IP address the user is logging in from is in the previous good login history in the same netblock
+
+
+For more information about how to customize notification templates, read our documentation at https://go.cpanel.net/notificationtemplates
+
+-%]
+
+[%
+    PROCESS "include/colors.tmpl";
+    PROCESS "include/styles.tmpl";
+    PROCESS "include/blacklist_whitelist_links.tmpl";
+    PROCESS "include/icons.tmpl";
+
+    WRAPPER 'wrapper/main.html.tmpl';
+
+    IF NOTICE.is_root;
+        IF NOTICE.is_local;
+          NOTICE.email_reason = get_icon(icon='local_network') _ " " _ CPANEL.locale.maketext('Successful [asis,root] Login from Local Machine');
+        ELSIF NOTICE.known_netblock;
+          NOTICE.email_reason = get_icon(icon='known_network') _ " " _ CPANEL.locale.maketext('Successful [asis,root] Login from a Known Network');
+        ELSE;
+          NOTICE.email_reason = get_icon(icon='unknown_network') _ " " _ CPANEL.locale.maketext('Successful [asis,root] Login from an Unknown Network');
+        END;
+    ELSE;
+        IF NOTICE.is_local;
+          NOTICE.email_reason = get_icon(icon='local_network') _ " " _ CPANEL.locale.maketext('Successful Login as “[_1]” from Local Machine', NOTICE.user);
+        ELSIF NOTICE.known_netblock;
+          NOTICE.email_reason = get_icon(icon='known_network') _ " " _ CPANEL.locale.maketext('Successful Login as “[_1]” from a Known Network', NOTICE.user);
+        ELSE;
+          NOTICE.email_reason = get_icon(icon='unknown_network') _ " " _ CPANEL.locale.maketext('Successful Login as “[_1]” from an Unknown Network', NOTICE.user);
+        END;
+    END;
+%]
+[% SET zebra_login = 0; %]
+
+<table style="
+    margin: 5px 10px;
+    border: 2px solid [% medium_gray %];
+    padding: 0;
+    max-width: [% content_width - 20 %]px"
+    cellpadding="5" cellspacing="0">
+    <tbody>
+        <tr style="background-color:[% zebra_login? light_gray : white %]">
+            [% zebra_login = !zebra_login %]
+            <th align="left">
+                [% CPANEL.locale.maketext('Domain') %]:
+            </th>
+            <td align="left">
+                [% NOTICE.user_domain %]
+            </td>
+        </tr>
+    [% FOREACH item IN NOTICE.report %]
+        <tr style="background-color:[% zebra_login? light_gray : white %]">
+            [% zebra_login = !zebra_login %]
+            <th align="left">
+                [% item.name %]:
+            </th>
+            <td align="left">
+                [% item.value %]
+
+            </td>
+        </tr>
+    [% END %]
+    <tr style="background-color:[% zebra_login? light_gray : white %]">
+        [% zebra_login = !zebra_login %]
+        <th align="left">
+            [% CPANEL.locale.maketext('Known Network †') %]:
+        </th>
+        <td align="left">
+            [% IF NOTICE.is_local %]
+               [% CPANEL.locale.maketext('Yes') %]
+               [% get_icon(icon='local_network') %]
+            [% ELSIF NOTICE.known_netblock %]
+               [% CPANEL.locale.maketext('Yes') %]
+               [% get_icon(icon='known_network') %]
+            [% ELSE %]
+               [% CPANEL.locale.maketext('No') %]
+               [% get_icon(icon='unknown_network') %]
+            [% END %]
+        </td>
+    </tr>
+    </tbody>
+</table>
+
+<p>
+    [% CPANEL.locale.maketext('† A “Known Network” is an [output,abbr,IP,Internet Protocol] address range or netblock that contains an [output,abbr,IP,Internet Protocol] address from which a user successfully logged in previously.') %]
+</p>
+
+[% IF NOTICE.is_root %]
+    <p>
+        [% blacklist_whitelist_table(blacklist_ips=NOTICE.blacklist_ips, whitelist_ips=NOTICE.whitelist_ips); %]
+    </p>
+
+    <p>
+    [% CPANEL.locale.maketext('To configure your [asis,Brute Force Protection] settings, use [asis,WHM]’s [_1] interface at: [output,url,_2,_2,target,_3]', CPANEL.locale.maketext('[asis,cPHulk] Brute Force Protection'), CPANEL.assemble_whm_url("scripts7/cphulk/config"),'_blank') %]
+    </p>
+[% END %]
+
+
+
+[% END %]

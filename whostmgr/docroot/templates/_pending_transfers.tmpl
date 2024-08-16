@@ -1,0 +1,56 @@
+[% IF data.pending_sessions.size %]
+    <div class="row">
+        <div id="pending_sessions" class="col-sm-6 col-md-8">
+            <fieldset>
+                <legend>
+                    [% locale.maketext('Sessions in Progress') %]
+                </legend>
+                <div class="table-responsive">
+                    <table class="table table-condensed">
+                        <thead>
+                            <tr>
+                                <th>[% locale.maketext('Session') %]</th>
+                                <th>[% locale.maketext('Source Host') %]</th>
+                                <th>[% locale.maketext('Start Time') %]</th>
+                                <th>[% locale.maketext('State') %]</th>
+                                <th>[% locale.maketext('Actions') %]</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            [% FOREACH session IN data.pending_sessions %]
+                                [% SET session_state_number = session.value.state %]
+                                [% SET session_state_name = data.transfer_states.$session_state_number %]
+                                <tr>
+                                    <td>[% session.value.sessionid %]</td>
+                                    <td>[% session.value.source_host %]</td>
+                                    <td>[% session.value.starttime %]</td>
+                                    <td>[% IF session_state_name;
+                                            session_state_name;
+                                           ELSE;
+                                              locale.maketext('UNKNOWN: [_1]', session.value.state);
+                                          END; %]</td>
+                                    <td>
+                                        <a href="transfer_session?transfer_session_id=[% session.value.sessionid %]"
+                                            id="view_[% session.value.sessionid %]_link"
+                                            target="_blank">[% locale.maketext('View') %]</a>
+                                        <br /><!-- FIXME: remove br -->
+                                        [% IF session_state_name == 'PAUSED' %]
+                                            <a href="transfer_session?transfer_session_id=[% session.value.sessionid %]&action=resume"
+                                                id="resume_[% session.value.sessionid %]_link"
+                                                target="_blank">[% locale.maketext('Resume') %]</a>
+                                        [% END %]
+                                        [% IF session_state_name == 'PAUSED' || session_state_name == 'PAUSING' || session_state_name == 'RUNNING' %]
+                                            <a href="transfer_session?transfer_session_id=[% session.value.sessionid %]&action=abort"
+                                                id="abort_[% session.value.sessionid %]_link"
+                                                target="_blank">[% locale.maketext('Abort') %]</a>
+                                        [% END %]
+                                    </td>
+                                </tr>
+                            [% END %]
+                        </tbody>
+                    </table>
+                </div>
+            </fieldset>
+        </div>
+    </div>
+[% END %]

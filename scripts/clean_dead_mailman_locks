@@ -1,0 +1,81 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/clean_dead_mailman_locks        Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::clean_dead_mailman_locks;
+
+use strict;
+use warnings;
+
+use parent qw( Cpanel::HelpfulScript );
+
+use Cpanel::ConfigFiles    ();
+use Cpanel::FileUtils::Dir ();
+use Cpanel::LoadFile       ();
+use Cpanel::Autodie        ();
+
+our $LOCK_DIR = "$Cpanel::ConfigFiles::MAILMAN_ROOT/locks";
+
+use constant _OPTIONS => ();
+
+__PACKAGE__->new(@ARGV)->run() unless caller();
+
+=encoding utf-8
+
+=head1 NAME
+
+clean_dead_mailman_locks
+
+=head1 USAGE
+
+    clean_dead_mailman_locks [--help]
+
+=head1 DESCRIPTION
+
+This script removes and dead lock files in the mailman locks directory
+Since cPanel does not run mailman across multiple hosts, we can safely
+check for dead lock files even if mailman cannot.
+
+=cut
+
+sub run {
+    my $lock_nodes = Cpanel::FileUtils::Dir::get_directory_nodes($LOCK_DIR);
+
+    # Our mailman installs are not running cross servers
+    # so we don't have the host boundary problem that
+    # mailman things we do.  This allow us to clean up
+    # dead pid files.
+    foreach my $lock_node (@$lock_nodes) {
+        my $lock_string = Cpanel::LoadFile::load_if_exists("$LOCK_DIR/$lock_node");
+        my ($lock_pid) = $lock_string =~ m{\.([0-9]+)$};
+        next if !$lock_pid || $lock_pid < 10;
+        if ( !_pid_is_alive($lock_pid) ) {
+            print "Removed stale lock file “$lock_node” for pid “$lock_pid”.\n";
+            Cpanel::Autodie::unlink_if_exists("$LOCK_DIR/$lock_node");
+        }
+    }
+    return 1;
+}
+
+sub _pid_is_alive {
+    my ($pid) = @_;
+
+    local $!;
+
+    if ( kill( 0, $pid ) ) {
+        return 1;
+    }
+    elsif ($!) {
+        require Errno;
+
+        #kill() often fails when done as an unprivileged user
+        if ( $! == Errno::EPERM() ) {
+            return !!( stat "/proc/$pid" )[0];
+        }
+    }
+
+    return 0;
+}

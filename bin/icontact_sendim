@@ -1,0 +1,107 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - bin/icontact_sendim                     Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+#----------------------------------------------------------------------
+#NOTE: This script gets mocked in tests; those tests expect this script
+#to have the following input signature:
+#
+#A Cpanel::AdminBin::Serializer stream on STDIN that contains a hashref:
+#   user        the user who will log in to the remote service
+#   password    the “user”’s password.
+#   recipient   the user of the remove service who will receive the notice
+#   message     the message to send
+#----------------------------------------------------------------------
+
+use strict;
+
+use Encode ();
+
+use Cpanel::Logger               ();
+use Cpanel::Daemonizer::Tiny     ();
+use Cpanel::AdminBin::Serializer ();
+use Cpanel::IP::Remote           ();
+use Cpanel::Exception            ();
+use Cpanel::OSCAR                ();
+
+use Try::Tiny;
+
+my $logger;
+
+my @recognized_types = qw(
+  icq
+);
+
+exit( run( \*STDIN ) ) unless caller();
+
+sub run {
+    my ($in_fh) = @_;
+
+    my $opts_hr = Cpanel::AdminBin::Serializer::LoadFile($in_fh);
+
+    if ( Encode::is_utf8( $opts_hr->{'message'} ) ) {
+        $opts_hr->{'message'} = Encode::encode_utf8( $opts_hr->{'message'} );
+    }
+
+    my $sender = $opts_hr->{'user'};
+
+    my @recipients = split m<\s*[,;]+\s*>, $opts_hr->{'recipient'};
+
+    try {
+        Cpanel::Daemonizer::Tiny::run_as_daemon(
+            sub {
+                try {
+                    my $oscar = Cpanel::OSCAR->create($sender);
+
+                    for my $recp (@recipients) {
+                        $oscar->send_message(
+                            $opts_hr->{'password'},
+                            $recp,
+                            $opts_hr->{'message'},
+                        );
+                    }
+                }
+                catch { _catcher( $_, $opts_hr ) };
+            }
+        );
+    }
+    catch { _catcher( $_, $opts_hr ) };
+
+    return;
+}
+
+#----------------------------------------------------------------------
+
+sub _catcher {
+    my ( $err, $opts_hr ) = @_;
+
+    print STDERR "icontact_sendim: sending IM failure notification by email\n";
+
+    my $err_str = Cpanel::Exception::get_string($err);
+
+    $logger ||= Cpanel::Logger->new();
+    $logger->warn("$0: $err_str");
+
+    #This script now only cares about subject vs. body for this error message.
+    my ( $subject, $body ) = split( m<\n+>, $opts_hr->{'message'}, 2 );
+
+    require Cpanel::Notify;
+    Cpanel::Notify::notification_class(
+        'class'            => 'iContact::SendIMFailed',
+        'application'      => 'iContact::SendIMFailed',
+        'constructor_args' => [
+            'application'        => 'icontact_sendim',
+            'origin'             => 'icontact_sendim',
+            'error'              => $err_str,
+            'original_message'   => $body,
+            'original_subject'   => $subject,
+            'original_recipient' => $opts_hr->{'recipient'},
+            'source_ip_address'  => Cpanel::IP::Remote::get_current_remote_ip(),
+        ]
+    );
+
+    die $err;
+}

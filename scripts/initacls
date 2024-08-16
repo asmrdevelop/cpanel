@@ -1,0 +1,159 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/initacls                        Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package Cpanel::Script::Initacls;
+
+use cPstrict;
+
+use Cpanel::Binaries            ();
+use Cpanel::SafeRun::Simple     ();
+use Cpanel::SafeRun::Errors     ();
+use Cpanel::Config::CpConfGuard ();
+use Cpanel::Logger              ();
+use Cpanel::OSSys               ();
+use Cpanel::SafeFile            ();
+use Cpanel::TempFile            ();
+
+our $aclsonfs          = 0;
+our $fstab             = "/etc/fstab";
+our $fileprotect_touch = '/var/cpanel/fileprotect';
+my $logger;
+
+exit main() unless caller();
+
+sub main {
+
+    $logger = Cpanel::Logger->new();
+
+    my ( $system, undef, $release ) = Cpanel::OSSys::uname();
+
+    my $mount_bin = Cpanel::Binaries::path('mount');
+    my $mount     = Cpanel::SafeRun::Simple::saferun($mount_bin);
+    chomp($mount);
+
+    if ( $mount =~ /acl/ ) { $aclsonfs = 1; }
+
+    unless ( -x Cpanel::Binaries::path('setfacl') ) {
+        acldeath("Unable to locate setfacl: your distribution may not support acls\n");
+    }
+
+    $release =~ /^(\d+\.\d+)/;
+    my $nversion = $1;
+
+    if ( $system =~ /linux/i && $nversion < 2.6 ) { acldeath("You must be running at least a 2.6 kernel to use this script."); }
+
+    setuplinuxfstab();
+    acltestandsetup();
+    return 0;
+
+}
+
+sub setuplinuxfstab () {
+    my $mount_bin = Cpanel::Binaries::path('mount');
+
+    #Check if the system is XFS (we only support XFS and ext3/4 as of this writing)
+    my $is_xfs = Cpanel::SafeRun::Errors::saferunallerrors( $mount_bin, '-l' );
+    chomp $is_xfs;
+    if ( $is_xfs =~ m/on \/ type xfs/i ) {
+        print "XFS requires no mount alterations to enable ACLs, skipping...\n";
+        return 1;
+    }
+
+    if ( !$aclsonfs ) {
+        my $acltest = Cpanel::SafeRun::Errors::saferunallerrors( $mount_bin, "-o", "remount,acl", "/" );
+        chomp($acltest);
+        if ( $acltest ne "" ) {
+            acldeath("System error: $acltest when testing for acl support.  Your kernel may not support POSIX acls\n");
+        }
+    }
+    my $modtab = 0;
+    my (@FSTAB);
+    my (@REMOUNT);
+
+    local $| = 1;
+    my $fstablock = Cpanel::SafeFile::safeopen( \*FT, "+<", $fstab );
+    if ( !$fstablock ) {
+        $logger->die("Could not edit $fstab");
+    }
+    while (<FT>) {
+        chomp();
+        if ( !/^[\s\t]*[\#\;]+/ ) {
+            my (@FSLINE) = split( /[\s\t]+/, $_ );
+            my @OPTS     = $FSLINE[3] ? split( /\,/, $FSLINE[3] ) : ();
+            if ( ( $FSLINE[2] && $FSLINE[2] =~ /^ext\d+$/ ) && !grep( /^acl$/, @OPTS ) ) {
+                push( @OPTS, 'acl' );
+                $FSLINE[3] = join( ",", @OPTS );
+                push( @FSTAB,   join( "\t", @FSLINE ) );
+                push( @REMOUNT, $FSLINE[0] );
+                $modtab = 1;
+            }
+            else {
+                push( @FSTAB, $_ );
+            }
+        }
+        else {
+            push( @FSTAB, $_ );
+        }
+    }
+    if ($modtab) {
+        seek( FT, 0, 0 );
+        print FT join( "\n", @FSTAB ) . "\n";
+        truncate( FT, tell(FT) );
+    }
+    foreach (@REMOUNT) {
+        my $res = Cpanel::SafeRun::Errors::saferunallerrors( $mount_bin, '-o', 'remount', $_ );
+        chomp $res;
+        acldeath("System error: $res could not remount $_ with ACLs enabled!") if $res;
+    }
+    return Cpanel::SafeFile::safeclose( \*FT, $fstablock );
+}
+
+sub acltestandsetup () {
+    my $cfiler   = Cpanel::TempFile->new();
+    my $randfile = $cfiler->file();
+    open( my $ACLTESTFILE, ">", $randfile ) or die("Couldn't open ACL test file $randfile for writing!");
+    close($ACLTESTFILE);
+
+    my $acltest  = Cpanel::SafeRun::Errors::saferunallerrors( Cpanel::Binaries::path('setfacl'), "-m", "user:nobody:r", "--", $randfile );
+    my $acltest2 = Cpanel::SafeRun::Errors::saferunnoerror( Cpanel::Binaries::path('getfacl'), $randfile );
+
+    chomp($acltest);
+    if ( $acltest ne "" ) {
+        acldeath("System error: setfacl: $acltest when testing for acl support.  Your kernel may not support POSIX acls.\n");
+    }
+    chomp($acltest2);
+    if ( $acltest2 !~ /nobody/i ) {
+        acldeath("System error: setfacl did not set the permissions that were requested. Your kernel may not support POSIX acls.\n");
+    }
+
+    print "ACLS are now on\n";
+
+    return setacls(1);
+}
+
+sub acldeath ($err) {
+    print "ACLS are now off\n";
+    setacls(0);
+    return die($err);
+}
+
+sub setacls ($val) {
+    my $cpconf_guard = Cpanel::Config::CpConfGuard->new();
+    $cpconf_guard->{'data'}->{'acls'} = $val;
+    $cpconf_guard->save();
+
+    print "Updating Permissions.....";
+    if ( -e $fileprotect_touch ) {
+        Cpanel::SafeRun::Errors::saferunnoerror('/usr/local/cpanel/scripts/enablefileprotect');
+    }
+    else {
+        Cpanel::SafeRun::Errors::saferunnoerror('/usr/local/cpanel/scripts/disablefileprotect');
+    }
+
+    print "Done\n";
+    return 1;
+}

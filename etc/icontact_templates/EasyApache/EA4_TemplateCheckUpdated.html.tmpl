@@ -1,0 +1,73 @@
+[%#
+Purpose
+=======
+
+This notification should be used when the there are any changes made to the templates in EA4 environment
+and the users have local copies of those corresponding templates.
+
+Notifications like this are useful when the users have their local template copy setup for
+any of the cPanel maintained templates so that they are informed of the changes and are
+provided a chance to update their local copies.
+
+The caller for this iContact notification will be from a hook script inside ea-apache24-config rpm.
+
+Required Variables
+==================
+
+templates - A key, value hash of templates:
+
+            templates = [
+                {
+                    'name' => 'abc.default',
+                    'name_full_path' => '/path/to/templates/abc.default',
+                    'local' => 'abc.local',
+                    'local_full_path' => '/path/to/templates/abc.local'
+                },
+                {
+                    'name' => 'xyz.default',
+                    'name_full_path' => '/path/to/templates/xyz.default'
+                    'local_full_path' => '/path/to/templates/xyz.local',
+                    'local' => 'xyz.local'
+                }
+            ]
+
+For more information about how to customize notification templates, read our documentation at https://go.cpanel.net/notificationtemplates
+
+-%]
+
+[%
+    PROCESS "include/colors.tmpl";
+    PROCESS "include/styles.tmpl";
+    PROCESS "include/code_block.tmpl";
+
+    SET reason = NOTICE.first_time ? CPANEL.locale.maketext('The system sends a notification to the administrators when [asis,EasyApache 4] templates are updated.') :
+                CPANEL.locale.maketext('The system detected that one or more templates were updated as a result of a change in the [asis,EasyApache 4] environment.');
+    WRAPPER 'wrapper/main.html.tmpl';
+          NOTICE.email_reason = reason;
+%]
+
+<p>
+[% IF NOTICE.first_time -%]
+    [% CPANEL.locale.maketext('The following “.default” [numerate,_1,template has a,templates have] corresponding “.local” [numerate,_1,copy,copies]. We will notify you when we make changes to the “.default” templates.', NOTICE.templates.size) %]
+[% ELSE -%]
+    [% CPANEL.locale.maketext('The following “.default” [numerate,_1,template has,templates have] changed in a recent update in the [asis,EasyApache 4] environment.', NOTICE.templates.size) %]
+[% END %]
+
+    <ul>
+    [% FOREACH tmpl IN NOTICE.templates -%]
+        <li>
+            <strong>[% tmpl.name %]</strong>
+        </li>
+    [% END -%]
+    </ul>
+</p>
+
+<p>
+[% IF NOTICE.first_time -%]
+    [% CPANEL.locale.maketext('[output,strong,Note]: To avoid any issues, it is strongly recommended that you update your corresponding “.local” [numerate,_1,template,templates] when you see these notifications in future.', NOTICE.templates.size) %]
+[% ELSE -%]
+    [% CPANEL.locale.maketext('We identified corresponding “.local” [numerate,_1,template,templates] for the above mentioned “.default” [numerate,_1,template,templates] on your system. Update them as soon as possible to avoid problems.', NOTICE.templates.size) %]
+[% END %]
+</p>
+
+[% END #END of Wrapper -%]

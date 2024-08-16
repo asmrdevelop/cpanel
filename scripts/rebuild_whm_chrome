@@ -1,0 +1,97 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/rebuild_whm_chrome              Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::rebuild_whm_chrome;
+
+use strict;
+use warnings;
+
+use Cpanel::App                     ();
+use Cpanel::Transaction::File::JSON ();
+
+use Whostmgr::Templates::Chrome::Resellers ();
+use Whostmgr::Templates::Chrome::Directory ();
+
+__PACKAGE__->script(@ARGV) unless caller();
+
+sub script {
+    my ( $class, @args ) = @_;
+
+    require Getopt::Long;
+
+    my ($opt_help);
+    Getopt::Long::GetOptionsFromArray(
+        \@args,
+        'help' => \$opt_help,
+      )
+      and ( !@args )
+      or do {
+        _print_usage();
+        exit 1;
+      };
+
+    if ($opt_help) {
+        _print_usage();
+        exit 0;
+    }
+
+    run();
+    exit 0;
+}
+
+sub run {
+    no warnings 'once';
+    local $Cpanel::App::appname = 'whostmgrd';
+    local $Cpanel::appname      = 'whostmgrd';
+    my $cache_keys = Whostmgr::Templates::Chrome::Resellers::process_all_resellers();
+
+    my $lock = _get_cache_key_lock();
+    $lock->set_data($cache_keys);
+    $lock->save_or_die();
+
+    return;
+}
+
+sub _get_cache_key_lock {
+    my $cache_key_file = Whostmgr::Templates::Chrome::Directory::get_header_cache_directory() . '/cache_keys.json';
+    return Cpanel::Transaction::File::JSON->new( path => $cache_key_file );
+}
+
+sub _print_usage {
+    print <<EOU;
+Usage: $0 [--help]
+
+    --help print help message and exit
+
+EOU
+    return;
+}
+
+1;
+
+__END__
+
+=head1 NAME
+
+rebuild_whm_chrome - rebuild caches for WHM chrome files ( headers and footers )
+
+=head1 SYNOPSIS
+
+rebuild_whm_chrome [options]
+
+  Options:
+    --help      print help message
+
+=head1 DESCRIPTION
+
+This script processes the footer and header templates for all resellers, including 
+root and saves the results to files that can be included directly by third-party
+plugin developers in their interfaces. The processed header templates include the
+left navigation panel for WHM. Each successive run of the script will clean out
+previously saved files and re-create them.
+
+=cut

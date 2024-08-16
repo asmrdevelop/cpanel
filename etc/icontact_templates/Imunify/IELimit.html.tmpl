@@ -1,0 +1,39 @@
+[%
+    PROCESS "include/colors.tmpl";
+    PROCESS "include/styles.tmpl";
+
+    WRAPPER 'wrapper/main.html.tmpl';
+-%]
+<p>[% CPANEL.locale.maketext('Dear Administrator,' ) %]</p>
+<p>
+    [% CPANEL.locale.maketext('Your ImunifyEmail sender limits have been triggered for the following senders:') %]
+</p>
+<br>
+<table>
+  <tr>
+    <th width="100">ACCOUNT</th>
+    <th width="100">DOMAIN</th>
+    <th width="100">SENDER</th>
+    <th width="100">LIMIT</th>
+  </tr>
+    [% FOREACH i IN NOTICE.params.limits; %]
+
+      <tr>
+        <td style="padding: 5px">[%  i.account %]</td>
+        <td style="padding: 5px">[%  i.domain %]</td>
+        <td style="padding: 5px">[%  i.sender %]</td>
+        <td style="padding: 5px">[%  i.limit %]</td>
+      </tr>
+    [% END %]
+</table>
+<br>
+[% CPANEL.locale.maketext('Click [output,url,_1,here,target,"_blank"] to visit Activity Monitor for more information.
+    (in [asis,WHM]: Plugins » Imunify » Activity monitor)',
+    CPANEL.assemble_whm_url(NOTICE.base_url _ '/admin/email/activity-monitor')) %]
+<br>
+<br>
+<p>
+    [% CPANEL.locale.maketext('Regards,') %]<br>
+    [% CPANEL.locale.maketext('Imunify Email team') %]
+</p>
+[% END %]

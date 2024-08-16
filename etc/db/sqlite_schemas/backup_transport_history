@@ -1,0 +1,77 @@
+PRAGMA foreign_keys = ON;
+
+CREATE TABLE IF NOT EXISTS `occurrences` (
+    `id`    INTEGER PRIMARY KEY AUTOINCREMENT,
+    `date`  TEXT NOT NULL UNIQUE
+);
+
+CREATE TABLE IF NOT EXISTS `transports` (
+    `id`    INTEGER PRIMARY KEY AUTOINCREMENT,
+    `transport` TEXT NOT NULL UNIQUE
+);
+
+CREATE TABLE IF NOT EXISTS `users` (
+    `id`    INTEGER PRIMARY KEY AUTOINCREMENT,
+    `user`  TEXT NOT NULL UNIQUE
+);
+
+CREATE TABLE IF NOT EXISTS `transport_history` (
+    `transport_id`  INTEGER NOT NULL,
+    `user_id`   INTEGER NOT NULL,
+    `occurrence_id` INTEGER NOT NULL,
+    `start_timestamp` TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `end_timestamp`   TEXT,
+    FOREIGN KEY(`transport_id`) REFERENCES transports ( id ) ON DELETE CASCADE,
+    FOREIGN KEY(`user_id`) REFERENCES users ( id ) ON DELETE CASCADE,
+    FOREIGN KEY(`occurrence_id`) REFERENCES occurrences ( id ) ON DELETE CASCADE,
+    UNIQUE (transport_id,user_id,occurrence_id)
+);
+
+CREATE VIEW IF NOT EXISTS happenings
+AS SELECT
+    users.user,
+    occurrences.date,
+    transports.transport,
+    start_timestamp,
+    end_timestamp
+FROM
+    transport_history
+AS
+    th
+JOIN
+    users
+ON
+    users.id=th.user_id
+JOIN
+    occurrences
+ON
+    occurrences.id=th.occurrence_id
+JOIN
+    transports
+ON
+    transports.id=th.transport_id;
+
+CREATE VIEW IF NOT EXISTS transport_import
+AS SELECT
+    users.id AS user_id,
+    occurrences.id AS occurrence_id,
+    transports.id AS transport_id,
+    users.user,
+    occurrences.date,
+    transports.transport
+FROM
+    users JOIN occurrences JOIN transports;
+
+CREATE VIEW IF NOT EXISTS timediffs AS SELECT strftime('%s',end_timestamp) - strftime('%s',start_timestamp) as tdiff FROM transport_history;
+CREATE VIEW IF NOT EXISTS elapsed_statistics
+AS SELECT
+    max(tdiff) AS max_elapsed,
+    min(tdiff) AS min_elapsed,
+    avg(tdiff) AS elapsed_mean,
+    sum(tdiff) AS total_elapsed,
+    (SELECT min(start_timestamp) FROM transport_history) AS started_at,
+    (SELECT max(end_timestamp) FROM transport_history) AS completed_at
+FROM timediffs;
+
+CREATE INDEX IF NOT EXISTS start_times ON transport_history(start_timestamp);
+CREATE INDEX IF NOT EXISTS end_times ON transport_history(end_timestamp);

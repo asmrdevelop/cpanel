@@ -1,0 +1,38 @@
+<script>
+    [% INSERT 'sharedjs/jstz.min.js' %]
+    [% INSERT 'sharedjs/cptimezone_optimized.js' %]
+    CPTimezone.set_timezone_and_reload_if_unset();
+</script>
+
+<style type="text/css">
+[% INSERT 'sharedcss/bw_time_graph_optimized.css' -%]
+[% INSERT 'sharedcss/cptimezone_optimized.css' -%]
+</style>
+
+<script>
+    [% INSERT 'sharedjs/d3.min.js' %]
+    [% INSERT 'sharedjs/chart_utilities_optimized.js' %]
+
+    [% SET lex = CPANEL.get_js_lex_app_rel_path('sharedjs/bandwidth_graph.js') %]
+    [% INSERT $lex IF lex %]
+    [% INSERT 'sharedjs/bandwidth_graph_optimized.js' %]
+
+    function wait_for_CLDR_to_load(todo) {
+        var loadInterval = setInterval(
+            function() {
+                if ( !LOCALE.get_cldr('datetime') ) return;
+
+                clearInterval(loadInterval);
+                todo();
+            },
+            5
+        );
+    }
+</script>
+
+[% MACRO your_timezone_is BLOCK -%]
+<span class="your-timezone-is">
+    [% locale.maketext('All times are in the “[_1]” time zone.', CPANEL.cookies.timezone.html()) %]
+    <a class="if-timezone-cookie-needs-update" href="javascript:CPTimezone.reset_timezone_and_reload()">[% locale.maketext('Set the time zone to “[_1]”, and reload.', '<span class="detected-timezone"></span>') %]</a>
+</span>
+[% END -%]

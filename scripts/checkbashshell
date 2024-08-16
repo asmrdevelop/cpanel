@@ -1,0 +1,43 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/checkbashshell                  Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+
+my @shells = (
+    '/usr/local/cpanel/bin/jailshell',
+    '/usr/local/cpanel/bin/noshell',
+    '/bin/bash',
+    '/bin/false',
+    '/bin/ftpsh',
+);
+
+my $contents = slurp_shells();
+
+foreach my $shell (@shells) {
+    if ( $contents !~ m/$shell/ ) {
+        $contents .= "$shell\n";
+    }
+}
+
+write_shells($contents);
+
+exit;
+
+sub slurp_shells {
+    open( my $shells_fh, '<', '/etc/shells' ) or die "Couldn't open /etc/shells for reading: $!";
+    local $/;
+    my $contents = <$shells_fh>;
+    $contents .= "\n" unless $contents =~ m/\n$/;
+    return $contents;
+}
+
+sub write_shells {
+    my ($contents) = @_;
+    open( my $shells_fh, '>', '/etc/shells' ) or die "Couldn't open /etc/shells for writing: $!";
+    print {$shells_fh} $contents;
+    close $shells_fh or die "Couldn't write /etc/shells. Please verify its contents! $!";
+}

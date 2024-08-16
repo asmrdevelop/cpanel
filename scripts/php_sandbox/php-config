@@ -1,0 +1,22 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+$ENV{'LANG'} = 'C';
+
+my @paths   = grep( !/php_sandbox/, split( /:/, $ENV{'PATH'} ) );
+my $homedir = ( getpwuid($>) )[7];
+
+foreach my $path (@paths) {
+    next if ( $path =~ /sandbox/i );
+    if ( -x $path . '/' . 'php-config' ) {
+        if ( grep( /--prefix/, @ARGV ) ) {
+            print "$homedir/php";
+            exit();
+        }
+        if ( grep( /--extension-dir/, @ARGV ) ) {
+            print "$homedir/php/ext";
+            exit();
+        }
+        exec( $path . '/' . 'php-config', @ARGV );
+    }
+}
+die "php-config not found";

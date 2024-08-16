@@ -1,0 +1,73 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/sync_child_accounts             Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::sync_child_accounts;
+
+use cPstrict;
+
+=encoding utf-8
+
+=head1 NAME
+
+scripts/sync_child_accounts
+
+=head1 USAGE
+
+    sync_child_accounts [ --user=$USERNAME | --all | --help ]
+
+=head1 DESCRIPTION
+
+This script synchronizes certain parts of user configuration to the child
+account for any distributed cPanel accounts on the server.
+
+Ordinarily this script is unnecessary; it’s mostly useful if something
+goes wrong that causes parent and child accounts to go out of sync.
+It will not harm anything to run this script, though.
+
+=cut
+
+#----------------------------------------------------------------------
+
+use parent 'Cpanel::HelpfulScript';
+
+use constant _OPTIONS => (
+    'all',
+    'user=s',
+);
+
+use Cpanel::LinkedNode::SyncChildAccounts ();
+
+__PACKAGE__->new(@ARGV)->run() if !caller;
+
+sub run ($self) {
+    Cpanel::LinkedNode::SyncChildAccounts::sync_child_accounts(
+        output_obj => $self->get_output_object(),
+        usernames  => [ $self->_get_usernames() ],
+    );
+
+    return;
+}
+
+sub _get_usernames ($self) {
+    my $username = $self->getopt('user');
+
+    if ( $self->getopt('all') ) {
+        if ($username) {
+            die $self->help('Give a “--user” or “--all”, not both.');
+        }
+
+        require Cpanel::Config::Users;
+        return Cpanel::Config::Users::getcpusers();
+    }
+    elsif ($username) {
+        return $username;
+    }
+
+    die $self->help('Give a “--user” or “--all”.');
+}
+
+1;

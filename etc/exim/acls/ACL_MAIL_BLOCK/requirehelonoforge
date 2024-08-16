@@ -1,0 +1,19 @@
+
+
+drop
+    # if ($sender_helo_name eq $primary_hostname) {
+    #      if (defined $interface_address) {
+    #           return is_loopback($interface_address) ? 0 : 1;  #ok from localhost
+    #      } else {
+    #            return 0; #exim -bs
+    #      }
+    # } else {
+    #      return 0;
+    # }
+    condition = ${if eq{${lc:$sender_helo_name}}{${lc:$primary_hostname}}{${if def:interface_address {${if match_ip{$interface_address}{+loopback}{0}{1}}}{0}}}{0}}
+    message   = "REJECTED - Bad HELO - Host impersonating [$sender_helo_name]"
+
+
+drop
+    condition = ${if eq{[$interface_address]}{$sender_helo_name}}
+    message   = "REJECTED - Interface: $interface_address is _my_ address"

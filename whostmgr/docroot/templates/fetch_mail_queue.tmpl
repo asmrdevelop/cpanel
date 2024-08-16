@@ -1,0 +1,325 @@
+[%
+USE DataURI;
+USE JSON;
+USE NVData;
+USE Whostmgr;
+WRAPPER 'master_templates/master.tmpl' theme="yui"
+    app_key = 'mail_queue_manager'
+    stylesheets = [
+        Whostmgr.find_file_url('yui/assets/skins/sam/calendar.css')
+        Whostmgr.find_file_url('/mail.css')
+        Whostmgr.find_file_url('/cjt/css/wrapped-select.css')
+    ]
+    warn_linked_nodes => 1,
+    scripts = [
+        '/yui-gen/data/data.js'
+    ]
+;
+
+SET spinner_url = '/images/whm-spinner.gif';
+IF CPANEL.ua_is_ie && CPANEL.ua_is_ie < 8;
+    SET spinner_url = MagicRevision(spinner_url);
+    "<img src='$spinner_url' style='display:none'>";
+ELSE;
+    SET spinner_url = DataURI.datauri(spinner_url, 'image/gif');
+END;
+
+SET nvdata = NVData.get_page_nvdata();
+-%]
+<script>CPANEL.nvdata.initial = [% nvdata.json() || 'undefined' %]</script>
+[% PROCESS '_ajaxapp_styles.tmpl' -%]
+[% PROCESS '_ajaxapp_header.tmpl' -%]
+
+[% PROCESS '_loadjs.tmpl' FOR src=[
+    '/cjt/datasource-min.js'
+    '/sharedjs/fetch_mail_queue_optimized.js'
+    '/yui/calendar/calendar-min.js'
+] %]
+
+<style type="text/css">
+/*margin and padding on body element
+can introduce errors in determining
+element position and are not recommended;
+we turn them off as a foundation for YUI
+CSS treatments. */
+body {
+    margin:0;
+}
+#cpanel {
+    width: 973px;
+}
+#dates {
+    float:left;
+    padding:10px;
+    margin:10px;
+    height: 154px;
+
+}
+#dates p {
+    clear:both;
+}
+
+#dates label {
+    float:left;
+    display:block;
+    width:7em;
+    font-weight:bold;
+}
+.emailctls {
+    background-color:#F2F2F2;
+    border: 1px solid #000;
+}
+.yui-skin-sam .yui-calcontainer {
+    border:0;
+}
+.filter-options-right a {
+    color: white;
+    text-decoration: underline !important;
+    margin-right: 50px;
+}
+#contentContainer{
+    position: relative;
+}
+#col_options{
+    position: absolute;
+    right: 0px;
+    top: 0px;
+}
+</style>
+
+<br />
+<p class="description">[% locale.maketext("This interface lets you view, delete, and attempt to deliver queued messages that the system has not yet delivered to their destinations.") %]
+    <br/>[% PROCESS _date_format_copy.tmpl -%]
+</p>
+
+<div id="main_content">
+    <div class="option_box">
+        <div>
+            <div class="top-heading group">
+                <div class="left_float"><h4>[% locale.maketext('Mail Queue Manager') %]</h4></div>
+                <div class="right_float" id="hide_inquiry"><a href="javascript:void(0)" onclick='toggle_inquiry()' id="toggle_inquiry_text">[% locale.maketext('Hide') %]</a></div>
+            </div>
+        </div>
+        <div id='container_box'>
+            <div class="option_contents" id='option_contents'>
+                <form action="javascript:void(0)" name='search-fields' id="search-fields">
+                    <div class="form-contain group">
+                        <div class="search-content">
+                            <div class="search-me">
+                                <input type="text" name="freeform" id='freeform' placeholder="[% locale.maketext('Search …') %]"/> &nbsp;
+                                <select id="type-select" name='mainkey' onChange="this.options[0].disabled=true;">
+                                    <option value=''>[% locale.maketext('Select Query') %]</option>
+                                    <option value='sender'>[% locale.maketext('Search Sender') %]</option>
+                                    <option value='recipients'>[% locale.maketext('Search Recipients') %]</option>
+                                    <option value='msgid'>[% locale.maketext('Search Message ID') %]</option>
+                                    <option value=''>[% locale.maketext('No Filter') %]</option>
+                                </select>
+                            </div>
+                            <br/>
+                            <div style="float:left; width:150px; margin-top: 15px">
+                                <span class="report-label">[% locale.maketext("Search Type:") %]</span></br>
+                                <div style="padding-left: 10px; padding-top: 5px;">
+                                    <label><input type="radio" name="searchmatch" value="begins" checked="checked"> [% locale.maketext("Begins With") %]</label><br/>
+                                    <label><input type="radio" name="searchmatch" value="eq"> [% locale.maketext("Exact") %]</label><br/>
+                                    <label><input type="radio" name="searchmatch" value="contains"> [% locale.maketext("Partial") %]</label> &nbsp;<img src="[% MagicRevision('/images/info.png') %]" id="Search_ToolTip" style="cursor:help"/></br>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="starts">
+                            <div class="report-head">[% locale.maketext('Start Date') %]: <span class="cpanel-date-hint"></span></div>
+                            <div class="group">
+                                <input type="text" name="startdate" id="startdate" size="12" />
+                                <span id='start_cal' onclick="show_start_cal()"><img src="[% MagicRevision('/images/calendar.png') %]" alt="select date" /></span>
+                            </div>
+                            <div id="startcal">
+                                <div class="bd"><div id="cal1Container"></div></div>
+                            </div>
+                            <div class="time-wrap">
+                                <div class="report-head">[% locale.maketext('Start Time') %]:</div>
+                                <input type="text" name="starttime" id="starttime" />
+                            </div>
+                        </div>
+                        <div class="ends">
+                            <div class="report-head">[% locale.maketext('End Date') %]: <span class="cpanel-date-hint"></span></div>
+                            <div class="group">
+                                <input type="text" name="enddate" id="enddate" size="12" />
+                                <span id='end_cal' onclick="show_end_cal()"><img src="[% MagicRevision('/images/calendar.png') %]" alt="select date" /></span>
+                            </div>
+                            <div class="time-wrap">
+                                <div class="report-head">[% locale.maketext('End Time') %]:</div>
+                                <input type="text" name="endtime" id="endtime" />
+                            </div>
+                        </div>
+                    </div>
+                    <div class="the-button">
+                        <input type="hidden" name="deliverytype" id="deliverytype" value="remote" />
+                        <button type="submit" class="input-btn btn-primary" id="run-button" onclick="setSpinner(); doupdate(); return false">
+                            <div id="spinner"><img src="[% spinner_url %]"/></div>
+                            <div id="spinner-text">[% locale.maketext("Run Report") %]</div>
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div id="cjt_pagenotice_container"></div>
+
+<a name="report"></a>
+<div id='table_container'>
+    <div id='page-control'>
+        <div class="results-output">
+            <div style="padding-top:15px;" class="results-header">
+            </div>
+            <div class="total-items">
+                <div id="results-header"></div>
+            </div>
+        </div>
+        <div id="floater">
+            <div id="top-page-nav"></div>
+        </div>
+    </div>
+    <br style="clear: both" />
+    <div id="option_header" style="display:none;">
+        <div class="table-box">
+            <div class="table-top group">
+                <div class="quickfilter">
+                    <form action="javascript:void(0)" class="input-with-button-wrapper" onsubmit="setSpinner(); doupdate()"><input id='quicksearch' type="text" placeholder="[% locale.maketext("Search …") %]" /><button type="submit">[% locale.maketext('Go') %]</button></form>
+                    <div class="advanced"><img src="[% MagicRevision('/images/info.png') %]" id="Search_TT" style="cursor:help"/></div>
+                </div>
+                <div style='float: right; margin-top: 5px; margin-right: 5px; position: relative;' id='toggle_col_options'><a href='javascript:void(0)' onclick='return toggle_options()'><img src="[% MagicRevision('/images/edit-table.png') %]" alt="Table Options" title="Table Options" /></a>
+                <div id="col_options">
+                    <div class="options-top group">
+                        <div class="options-header">[% locale.maketext('Table Options') %]</div>
+                        <div class="closeit"><a href='javascript:void(0)' onclick='header_panel.hide(); return false'>X</a></div>
+                    </div>
+                    <div class="hd"></div>
+                    <div class="options-bd">
+                        <div class="info-blurb">[% locale.maketext("Select the columns you wish to display in the table.") %]</div>
+                        <div id="option_area">
+                        </div>
+                    </div>
+                </div>
+                </div>
+                <br style="clear:both" />
+                <div id='filterItems' style='display:none'>
+                    <div class="top-filterItems">
+                        <div class="filterItems-Arrow"></div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="button-wrap group">
+                <div class="buttons-left">
+                    <button onclick="mailqueuetbl.deliverSelected(); return false">[% locale.maketext('Deliver Selected') %]</button>
+                    <button onclick="mailqueuetbl.deleteSelected(); return false">[% locale.maketext('Delete Selected') %]</button>
+                </div>
+                <div class="buttons-right">
+                    <button onclick="mailqueuetbl.deliverAll(); return false">[% locale.maketext('Deliver All') %]</button>
+                    <button onclick="mailqueuetbl.deleteAll(); return false">[% locale.maketext('Delete All') %]</button>
+                </div>
+            </div>
+            <div id="mailqueuetbl" style="border-top:0;" class="deliveryreport">
+            </div>
+        </div>
+    </div>
+    <div id='bottom-nav'>
+        <div id='floater-bottom' style="float:right; padding:0px; margin:0px">
+            <div id="bottom-page-nav"></div>
+        </div>
+        <br style="clear: both" />
+    </div>
+    <br style="clear: both" />
+</div>
+
+<br />
+<div id="emailreport"></div>
+<div style="width: 1px; height: 1px; position:absolute; top:-999999px; left:-999999px;" id="printpanel"></div>
+<div id="dateSelect" style="display:none"></div>
+
+[% INCLUDE _calendar.tmpl %]
+[% PROCESS '_ajaxapp_footer.tmpl' -%]
+
+<form action="" id="multiactionform" method="POST">
+    <input type="hidden" id="msgids" name="msgids" value="">
+</form>
+
+<script type="text/plain" id="queued_row_template">
+<a href="../scripts2/vieweximmsg?msgid={msgid}" title="[% locale.maketext('View Message') %]" target="_blank"><img src="[% MagicRevision('/images/view-on.gif') %]" class="exim_action_icon" /></a>
+</script>
+
+<script type="text/plain" id="frozen_row_template">
+<a href="../scripts2/vieweximmsg?msgid={msgid}" title="[% locale.maketext('View Message') %]" target="_blank"><img src="[% MagicRevision('/images/view-on.gif') %]" class="exim_action_icon" /></a>
+<a href="../scripts11/unfreeze_messages_mail_queue?msgid={msgid}" title="[% locale.maketext('Unfreeze') %]" target="_blank"><img src="[% MagicRevision('/images/run-on.gif') %]" class="exim_action_icon" /></a>
+<a href="../scripts11/emailstats_search?unixstarttime={unixstarttime}&msgid={msgid}#report" title="[% locale.maketext('View History') %]" target="_blank"><img src="[% MagicRevision('/images/history-on.gif') %]" class="exim_action_icon" /></a>
+<a href="../scripts11/deliver_messages_mail_queue?msgid={msgid}" title="[% locale.maketext('Force delivery of this message.') %]"><img src="[% MagicRevision('/images/email-force-on.png') %]" class="exim_action_icon" /></a>
+</script>
+
+<script>
+var TIMESELECTOR_STYLESHEET = [% MagicRevision('/cjt/css/timeSelector-whm.css').json() -%];
+</script>
+<script src="[% Whostmgr.find_file_url('/sharedjs/email_ui_control_optimized.js') %]"></script>
+<script type="text/javascript">
+
+//<![CDATA[
+var retention = -1;
+var mailqueuetbl = new CPANEL.MailQueue({
+    starttime: [% IF cfg.starttime == "twomonth" %]"twomonth"[% ELSIF cfg.starttime == "month" %]"month"[% ELSE %]"yesterday"[% END %],[% IF cfg.unixstarttime %]
+    unixstarttime: [% cfg.unixstarttime %],[% END %][% IF cfg.unixendtime %]unixendtime: [% cfg.unixendtime %],[% END %]
+    placeholder:null
+});
+
+var eximstatstbl = mailqueuetbl;
+resetColumns = [];
+var default_initial_hidden_columns = [% nvdata.hidden_columns.json() || '[]' %];
+default_locked_columns = { check: true, actions: true};
+
+var set_checkbox_header = function () {
+    var table_header = document.getElementById(eximstatstbl.deliveryreport.dt._sId+'-th-check-liner');
+    table_header.innerHTML='<input type="checkbox" id="mailqueue_toggleAll"/>';
+    YAHOO.util.Event.on('mailqueue_toggleAll', "click", function () {
+        //if (this.checked) {mailqueuetbl.selectAll();} else {mailqueuetbl.unselectAll();}
+        toggle_all(this.checked);
+    });
+}
+
+var initial_setup_callback = function () {
+    // run when the table is first setup
+    set_checkbox_header();
+}
+
+var regex_search = function () {
+    document.getElementById('searchmatch-partial').value = (document.getElementById('searchmatch-fake').checked) ? 'exact' : 'regex';
+}
+
+var toggle_all = function (status) {
+    var records = eximstatstbl.deliveryreport.dt.getRecordSet().getRecords();
+    var paginator = eximstatstbl.deliveryreport.dt.getState().pagination;
+    for (var i=paginator.recordOffset; i<records.length; i++) {
+        records[i].setData("check",status);
+    }
+    var els = DOM.get('mailqueuetbl').getElementsByTagName('input');
+    for (var i = els.length-1; i>=0; i--) {
+        if (els[i].type == 'checkbox') {
+           els[i].checked = status;
+       }
+    }
+}
+
+
+var tt = new YAHOO.widget.Tooltip("tt1", { context:"Strict_ToolTip", text:'[% locale.maketext('Default behavior is to show ALL email transactions, regardless of date range, if that message had some activity within the specified date range. When “Strict Dates” is selected, only transactions that happened within the date range are displayed.') %]', autodismissdelay: 100000, xyoffset: [5,10]  });
+var tt2= new YAHOO.widget.Tooltip("tt2", { context:"Search_TT", text: [% locale.maketext("This search persists until you clear it. Because searching updates the report, new data may appear after you click [output,class,Go,_1].",'ui-term-reference').json() %], autodismissdelay: 100000, xyoffset: [5,10] }) ;
+    var search_tooltip = new YAHOO.widget.Tooltip("tt3", {
+            context:"Search_ToolTip",
+            text:"[% locale.maketext('Partial matching is very slow, and your query may take a long time to complete.') %]",
+            autodismissdelay: 100000,
+            xyoffset: [5,10]
+    });
+var no_date_limits=true;
+DOM.get('run-button').click();
+//]]>
+</script>
+[% END -%]
+
+

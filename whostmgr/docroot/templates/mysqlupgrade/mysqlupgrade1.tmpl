@@ -1,0 +1,224 @@
+[%#
+# cpanel - whostmgr/docroot/templates/mysqlupgrade/mysqlupgrade1.tmpl
+#                                                  Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+%]
+
+[% PROCESS 'master_templates/_defheader.tmpl'
+    app_key = 'mysql_mariadb_upgrade'
+    header = locale.maketext('Upgrade Database Version (Step [numf,_1] of [numf,_2])', 1, 5)
+    theme = 'bootstrap'
+    breadcrumburl = '/scripts/mysqlupgrade'
+    extrastyle = '
+        .no-bold {
+            font-weight: normal;
+            display: block;
+        }
+        .mysql-version-column label {
+            display: block;
+        }
+        .no-bottom-margin {
+            margin-bottom: 0;
+        }
+        .grayed-out {
+            opacity: 0.5;
+        }
+    ';
+-%]
+[%#  Unsupported DB versions are installable through CloudLinux MySQL Governor packages.
+     TTK logic is responsible for relaying this information. Adding the unsupported
+     versions to the data.mysql_version_is_installable structure allows this messaging
+     to populate.
+%]
+[% data.mysql_version_is_installable.import(data.unsupported_db_versions) %]
+[% MACRO add_installed_label BLOCK %]
+    [% IF data.current.short == short_version %]
+        <span class="label label-success">
+            [% locale.maketext('Installed') %]
+        </span>
+    [% END %]
+[% END %]
+[% BLOCK version_menu_item %]
+    [% IF data.mysql_version_is_installable.item(item_short_version) %]
+        [% SET unsupported_version = data.unsupported_db_versions.exists(item_short_version) %]
+        <tr>
+            <td>
+                [% SET current_version  = data.current.short.replace('.','') %]
+                [% SET short_version    = item_short_version.replace('.','') %]
+                [% SET latest_available = data.latest_available.replace('.','') %]
+
+                [% IF current_version > short_version %]
+                    [% locale.maketext('Cannot downgrade from “[_1]”.', data.current_version) %]
+                [% ELSIF latest_available < short_version || !data.mysql_version_is_installable.item(item_short_version) %]
+                    [% locale.maketext('Cannot upgrade from “[_1]”.', data.current_version) %]
+                [% ELSIF latest_available < short_version || !data.mysql_version_is_available.item(item_short_version) %]
+                    [% locale.maketext('[output,url,_1,Blocked,target,_blank][comment,from updating to this version]', 'https://go.cpanel.net/rpmmanagement') %]
+                [% ELSE %]
+                    <input type="radio"
+                        id="selected_version_[% selected_version %]"
+                        name="selected_version"
+                        value="[% item_short_version %]"
+                        [% IF data.current.short == item_short_version %]checked="checked"[% END %]
+                        [% IF unsupported_version %]disabled[% END %]
+                    >
+                [% END %]
+            </td>
+            <td class="mysql-version-column">
+                <label for="selected_version_[% selected_version %]">
+                            <span [% IF unsupported_version %]class="grayed-out"[% END %]>
+                                [% locale.maketext(locale_version) %]
+                            </span>
+                            [% IF unsupported_version %]
+                                <span class="label label-danger">
+                                    [% locale.maketext('Unavailable') %]
+                                </span>
+                            [% ELSIF recommended_version %]
+                                <span class="label label-info">
+                                    [% locale.maketext('Recommended') %]
+                                </span>
+                            [% ELSIF experimental %]
+                                <span class="label label-warning">
+                                    [% locale.maketext('Experimental') %]
+                                </span>
+                            [% END %]
+                    [% add_installed_label(sql_server_name=selected_version,short_version=item_short_version); %]
+                </label>
+                <label class="no-bold" for="selected_version_[% selected_version %]">
+                    [% IF unsupported_version %]
+                    <p id="mdb-no-cloud-linux">[% locale.maketext("[_2][asis,MariaDB] [_4] is not available on [asis,CloudLinux 6] or earlier. Please upgrade to a more recent OS or install [asis,MariaDB] with the [asis,MySQL Governor]. See [asis,CloudLinux’s] [_3][output,url,_1,documentation,target,_blank][_2] for installation instructions using [asis,MySQL Governor].[_3]",'https://go.cpanel.net/mysql-governor','<span class="grayed-out">', '</span>',item_short_version) %]</p>
+                    [% END %]
+                    <p class="no-bottom-margin[% IF unsupported_version %] grayed-out[% END %]">
+                        [% locale.maketext('Features:') %]
+                    </p>
+                    <div >
+                    <ul [% IF unsupported_version %]class="grayed-out"[% END %]>
+                        [% FOREACH feature IN features %]
+                            <li>
+                                [% locale.maketext(feature) %]
+                            </li>
+                        [% END %]
+                        [% IF release_notes %]
+                            <li>
+                                <a href="[% release_notes %]" target="_blank">Release Notes</a>
+                            </li>
+                        [% END %]
+                    </ul>
+                </label>
+            </td>
+            <td>
+                <label class="no-bold[% IF unsupported_version %] grayed-out[% END %]" for="selected_version_[% selected_version %]">
+                    [% locale.datetime(eol_time.start,'date_format_long') %]
+                </label>
+            </td>
+            <td>
+                <label class="no-bold[% IF unsupported_version %] grayed-out[% END %]" for="selected_version_[% selected_version %]">
+                    [% locale.datetime(eol_time.end,'date_format_long') %]
+                </label>
+            </td>
+        </tr>
+    [% END %]
+[% END %]
+
+    <div id="content">
+        <p>
+       [% locale.maketext("This interface allows you to upgrade your database server to a newer version. This interface will automatically upgrade your database installation to newer point releases (the third number in the version string) because these upgrades involve little risk to your users’ data. Upgrades to new major releases (the first two numbers in the version string) are more involved because there is a substantial risk of data loss. This interface attempts to walk you through the major release upgrade process.") %]
+       </p>
+        [% IF !data.mysql_running && data.mysql_enabled %]
+            <div class="alert alert-danger" role="alert" id="mysqlDownAlert">
+                <span class="glyphicon glyphicon-remove-sign" aria-hidden="true"></span>
+                <div class="alert-message">
+                    <span class="alert-body">[% locale.maketext('The database server is not currently running. If this is not intentional, you may experience problems with your upgrade.') %]</span>
+                </div>
+            </div>
+        [% END %]
+        [% IF data.current.is_remote %]
+            <div class="alert alert-danger" role="alert" id="remoteMysqlAlert">
+                <span class="glyphicon glyphicon-remove-sign" aria-hidden="true"></span>
+                <div class="alert-message">
+                    <span class="alert-body">[% locale.maketext('This system uses a remote database server. Perform the database version upgrade on the remote server.') %]</span>
+                </div>
+            </div>
+        [% ELSIF !data.mysql_enabled %]
+            <div class="alert alert-danger" role="alert" id="disabledMysqlAlert">
+                <span class="glyphicon glyphicon-remove-sign" aria-hidden="true"></span>
+                <div class="alert-message">
+                    <span class="alert-body">[% locale.maketext('Your server’s database service is disabled. You cannot use the [output,em,Upgrade Database Version] feature while your server is in this state. For information on upgrading the database version on your server, read our [output,url,_1,Service Manager,target,_blank] documentation.', 'https://go.cpanel.net/whmdocsServiceManager') %]</span>
+                </div>
+            </div>
+        [% ELSIF !data.latest_available %]
+            <div class="alert alert-danger" role="alert" id="uninstalledMysqlAlert">
+                <span class="glyphicon glyphicon-remove-sign" aria-hidden="true"></span>
+                <div class="alert-message">
+                    <span class="alert-body">[% locale.maketext('Your server’s database version target is set to “[_1]”. You cannot use the [output,em,Upgrade Database Version] feature while your server is in this state. To allow [asis,cPanel amp() WHM] to upgrade the database version on your server, read the [output,url,_2,rpm.versions system documentation,target,_blank].', 'uninstalled', 'https://go.cpanel.net/rpmmanagement') %]</span>
+                </div>
+            </div>
+        [% ELSIF data.governor_mysql %]
+            <div class="alert alert-danger" role="alert" id="governorMysqlAlert">
+                <span class="glyphicon glyphicon-remove-sign" aria-hidden="true"></span>
+                <div class="alert-message">
+                    <span class="alert-body">[% locale.maketext('Your server uses [asis,MySQL] [asis,Governor].') %] [% locale.maketext('You cannot use the [output,em,Upgrade Database Version] feature while your server is in this state.') %] [% locale.maketext('For more information, read our [output,url,_1,Upgrade Database Version,target,_blank] documentation.', 'https://go.cpanel.net/whmdocsUpgradeDBVersion') %]</span>
+                </div>
+            </div>
+        [% ELSIF data.unmanaged %]
+            <div class="alert alert-danger" role="alert" id="unmanagedMysqlAlert">
+                <span class="glyphicon glyphicon-remove-sign" aria-hidden="true"></span>
+                <div class="alert-message">
+                    <span class="alert-body">[% locale.maketext('Your server’s database version target is set to “[_1]”. You cannot use the [output,em,Upgrade Database Version] feature while your server is in this state. To allow [asis,cPanel amp() WHM] to manage databases on your server, read the [output,url,_2,rpm.versions system documentation,target,_blank].', 'unmanaged', 'https://go.cpanel.net/rpmmanagement') %]</span>
+                </div>
+            </div>
+        [% ELSIF ! data.mysql_version_is_installable.size > 0 %]
+            <div class="alert alert-danger" role="alert" id="unsupportedMysqlAlert">
+                <span class="glyphicon glyphicon-remove-sign" aria-hidden="true"></span>
+                <div class="alert-message">
+                    <span class="alert-body">[%locale.maketext('Your server’s database version is “[output,strong,_1]”.', data.current.full) %] [% locale.maketext('This version is unsupported and you cannot use the [output,em,Upgrade Database Version] feature to upgrade it.') %] [% locale.maketext('For more information, read our [output,url,_1,Upgrade Database Version,target,_blank] documentation.', 'https://go.cpanel.net/whmdocsUpgradeDBVersion') %]</span>
+                </div>
+            </div>
+        [% ELSE %]
+            <div class="alert alert-info" id="alertGeneralWarnings">
+                <span class="glyphicon glyphicon-info-sign" aria-hidden="true"></span>
+                <div class="alert-message">
+                    <h4 class="alert-title">[% locale.maketext('Information') %]</h4>
+                    <p>[% locale.maketext('Although in-place upgrades are generally safe, you should always perform a full database backup before you begin the upgrade process.') %]</p>
+                    <p>[% locale.maketext('Please note that downgrades to previous versions are unsupported. After you upgrade your system to a newer version, it may be impossible to switch back.') %]</p>
+                    [% IF data.is_mariadb %]
+                        <p>[% locale.maketext('Also note that since MariaDB is installed, moving to MySQL 8 is considered a downgrade, and therefore not supported.') %]</p>
+                    [% END %]
+                </div>
+            </div>
+
+            <h2>[% locale.maketext('Current Version') %]</h2>
+            [% IF data.current.full %]
+                <p>[% (data.current.short > 10) ? 'MariaDB ' : 'MySQL ' %] [% data.current.full %]</p>
+            [% ELSE %]
+                <p>[% locale.maketext('None') %]</p>
+            [% END %]
+
+            <h2>[% locale.maketext('Select a Version') %]</h2>
+            <form action="[% cp_security_token %]/scripts/mysqlupgrade">
+                <input type="hidden" name="step" value="2">
+                <input type="hidden" name="current_version" value="[% data.current.short FILTER html %]">
+
+                <table class="table table-striped table-responsive" id="mysqloptions" role="table">
+                    <thead>
+                    <tr>
+                        <th></th>
+                        <th>[% locale.maketext('Version') %]</th>
+                        <th>[% locale.maketext('Release Date') %]</th>
+                        <th>[% locale.maketext('End of Life Date') %]</th>
+                    </tr>
+                    </thead>
+                    <tbody>
+                    [%
+                        PROCESS version_menu_item FOREACH data.db_metadata;
+                    %]
+                </tbody>
+                </table>
+                <div class="form-group">
+                    <input type="submit" value="[% locale.maketext('Continue') %]" class="btn btn-primary">
+                </div>
+            </form>
+        [% END %]
+    </div>
+[% PROCESS 'master_templates/_deffooter.tmpl' -%]

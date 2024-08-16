@@ -1,0 +1,59 @@
+[%#
+Variables passed in:
+
+report                  - Array of corrupted database
+
+For more information about how to customize notification templates, read our documentation at https://go.cpanel.net/notificationtemplates
+
+-%]
+
+[%
+    PROCESS "include/colors.tmpl";
+    PROCESS "include/styles.tmpl";
+    PROCESS "include/code_inline.tmpl";
+
+    WRAPPER 'wrapper/main.html.tmpl';
+
+    NOTICE.email_reason = CPANEL.locale.maketext('check_mysql has determined that there are corrupted database tables');
+
+%]
+
+<p>
+    [% CPANEL.locale.maketext('[asis,cPanel] [output,amp] [asis,WHM] has determined that the following database tables are corrupt:') %]
+</p>
+<p>
+    <table>
+        <thead>
+            <tr>
+                <th>[% CPANEL.locale.maketext('Database') %]</th>
+                <th align="left">[% CPANEL.locale.maketext('Error') %]</th>
+            </tr>
+        </thead>
+        <tbody>
+        [% FOREACH db IN NOTICE.report.keys %]
+            <tr>
+                <th valign="top">
+                    [% db %]
+                </th>
+                <td>
+                    [% code_inline(term=NOTICE.report.$db) %]
+                </td>
+            </tr>
+        [% END %]
+        </tbody>
+    </table>
+</p>
+<p>
+    [% CPANEL.locale.maketext('We recommend that you repair these tables with [asis,WHM]’s [_1] interface at: [output,url,_2,_2,target,_3]', CPANEL.locale.maketext('Repair a [asis,MySQL]/[asis,MariaDB] Database'), CPANEL.assemble_whm_url("scripts/repairmysqllist"),'_blank') %]
+</p>
+<p>
+    [% CPANEL.locale.maketext('If the repair fails, contact [output,url,_1,cPanel Support,target,_2] for further assistance.', 'https://go.cpanel.net/support','_blank') %]
+</p>
+<p>
+    [% CPANEL.locale.maketext('If the errors in this message indicate a problem with [asis,InnoDB], including [asis, “Unknown storage engine InnoDB”] errors, [asis,cPanel] Support cannot resolve your problem for you. Troubleshooting these issues involves advanced procedures that pose a high risk of data loss or production impact.') %]
+</p>
+<p>
+    [% CPANEL.locale.maketext('While we cannot assist you directly with [asis,InnoDB] issues, [asis,cPanel] Support technicians have created a guide for customers to determine how to move forward. You can find the guide at [output,url,_1,_1,target,_2]. You can also use the official [asis,InnoDB] Troubleshooting guide on the [asis,MySQL] documentation site, found at [output,url,_3,_3,target,_4]. We recommend that you contact a specialist or administrator familiar with [asis,InnoDB]', 'https://go.cpanel.net/fixinnodb', '_blank', 'https://go.cpanel.net/mysqlinnodb', '_blank') %]
+</p>
+
+[% END %]

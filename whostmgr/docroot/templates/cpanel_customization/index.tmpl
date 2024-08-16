@@ -1,0 +1,78 @@
+[%
+    USE Whostmgr;
+    USE JSON;
+
+    SET styleSheets = [
+            Whostmgr.find_file_url('/templates/cpanel_customization/index.min.css')
+            Whostmgr.find_file_url('/libraries/jquery-minicolors/2.1.7/jquery.minicolors.css')
+        ];
+
+    WRAPPER 'master_templates/master.tmpl'
+        app_key = 'customization'
+        header = locale.maketext("Customization")
+        breadcrumburl = '/scripts6/customization',
+        base = '/scripts6/customization/',
+        stylesheets = styleSheets,
+        theme='bootstrap'
+        CJT2_EXCLUSIVE = 1;
+%]
+
+<p class="description">
+[% locale.maketext("Use this interface to customize the cPanel interface.") %]
+</p>
+
+<div id="content"
+    ng-controller="BaseController as base"
+    class="ng-cloak"
+    ng-cloak>
+    <div class="row">
+        <div class="col-xs-12">
+            <div class="tab-panel">
+                <uib-tabset active="activeTab">
+                    [%# Theme TABS %]
+                    <uib-tab ng-repeat="tab in selectedThemeTabList track by tab.index"
+                            index="tab.index"
+                             select="goTo(tab.key)"
+                             data-tab-name="tab.key"
+                             deselect="preventDeselect($event)">
+                        <uib-tab-heading>
+                            <span id="loader-{{tab.key}}" ng-if="loading && isActive(tab.key)"><i class="fas fa-spinner fa-spin"></i></span>
+                            <span id="tab-{{tab.key}}">{{ tab.name }}</span>
+                        </uib-tab-heading>
+                    </uib-tab>
+                </uib-tabset>
+            </div>
+        </div>
+        <div class="col-xs-12" ng-class="{'view-disabled': loading}" class="animate-view" ng-view>
+        </div>
+    </div>
+
+    <div growl>
+    </div>
+
+    <script type="text/ng-template" id="directives/fileConfirmUploadDelete.phtml">
+    [% INSERT 'cpanel_customization/directives/fileConfirmUploadDelete.phtml' %]
+    </script>
+
+    <script type="text/ng-template" id="directives/fileUpload.phtml">
+    [% INSERT 'cpanel_customization/directives/fileUpload.phtml' %]
+    </script>
+</div>
+[% PROCESS 'master_templates/cjt2_header_include.tt' %]
+
+<script type="text/javascript">
+    var PAGE = PAGE || {};
+
+    PAGE.token = "[% cp_security_token %]";
+    PAGE.isRoot = [% Whostmgr.ENV.REMOTE_USER == "root" ? "true" : "false" %];
+    PAGE.data = {
+            // Jupiter branding
+            jupiter: [% data.theme_settings.json() || {} %],
+            default_theme: "[% data.theme %]",
+            // Shared branding
+            public_contact: [% data.public_contact.json() %],
+            has_root: [% Whostmgr.hasroot() ? 1 : 0 %],
+        };
+</script>
+[% END %]
+

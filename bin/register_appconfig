@@ -1,0 +1,78 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - bin/register_appconfig                  Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::register_appconfig;
+
+use strict;
+use Cpanel::AppConfig::Register ();
+use Cpanel::AppConfig           ();
+use Cpanel::LoadFile            ();
+
+run() unless caller;
+
+sub run {
+    my $app_config_register_obj = Cpanel::AppConfig::Register->new();
+
+    my $conf = $ARGV[0];
+
+    if ( !length $conf ) {
+        print "The 'conf_file' argument is required.\n";
+        usage();
+    }
+
+    usage() if $conf =~ m/^-*help/;
+
+    if ( !-r $conf || !-f _ ) {
+        print "The 'conf_file' must be readable and a plain file.\n";
+        usage();
+    }
+
+    my $conf_text = Cpanel::LoadFile::loadfile($conf);
+
+    # For loading v1.0 appconfig files
+    if ( $conf_text !~ m/^[ \t]*name=/mi ) {
+        $conf_text .= "\nname=" . Cpanel::AppConfig::determine_name_from_filename($conf) . "\n";
+    }
+
+    if ( !length $conf_text ) {
+        print "The 'conf_file' must be a valid appconfig conf file.\n";
+        usage();
+    }
+
+    my ( $status, $statusmsg ) = $app_config_register_obj->register( $conf_text, $conf );
+
+    print $statusmsg . "\n";
+
+    usage() if !$status;
+
+    exit(0);
+}
+
+sub usage {
+    print <<EOM;
+
+
+$0: Summary
+
+This tool allows you to install an appconfig file an ensures that it is
+registered with the system and available for use.  For more information
+please see the documentation for this system:
+
+https://go.cpanel.net/appconfig
+
+Example usage:
+
+  $0 <conf_file>
+
+  $0 ./pkg/appconfig/myapp.appconfig
+
+  $0 --help
+
+EOM
+
+    exit(1);
+}

@@ -1,0 +1,716 @@
+[%
+#This template gives localization for YUI 2's Calendar widget
+#as well as a Date.prototype.toCpLocaleString() method
+USE JSON;
+
+SET calendar_localization = {
+    MONTHS_LONG  => 'month_format_wide',
+    MONTHS_SHORT => 'month_format_abbreviated',
+    START_WEEKDAY => 'first_day_of_week',
+    WEEKDAYS_1CHAR => 'day_stand_alone_narrow',
+    #CLDR has no equivalent of YUI's WEEKDAYS_SHORT (2-character abbreviations)
+    WEEKDAYS_MEDIUM => 'day_format_abbreviated',
+    WEEKDAYS_LONG => 'day_format_wide',
+    STRINGS => {
+        previousMonth => locale.maketext("Previous Month"),
+        nextMonth     => locale.maketext("Next Month"),
+        close         => locale.maketext("Close"),
+    },
+};
+
+SET navigator_strings = {
+    month       => locale.maketext("Month"),
+    year        => locale.maketext("Year"),
+    submit      => locale.maketext("OK"),
+    cancel      => locale.maketext("Cancel"),
+    invalidYear => locale.maketext("Invalid Year"),
+};
+
+-%]
+<script type="text/javascript">
+//<![CDATA[
+(function() {
+[% TRY %]
+      [% SET json_file = '/usr/local/cpanel/base/cjt/cldr/' _ locale.get_language_tag() _ '.json'; -%]
+      var _cldr = [% INSERT "$json_file" %];
+      [% CATCH %]
+      [% CLEAR %]
+      [% SET json_file = '/usr/local/cpanel/base/cjt/cldr/en.json'; -%]
+      // Using 'en' CLDR data since '[% locale.get_language_tag() %]' did not have a specific CLDR entry
+      var _cldr = [% INSERT "$json_file" %];
+      [% END %]
+CPANEL.cldr = _cldr;
+
+if ( "CalendarNavigator" in YAHOO.widget ) {
+    YAHOO.widget.CalendarNavigator.DEFAULT_CONFIG.strings = [% navigator_strings.json() %];
+}
+
+if ( "Calendar" in YAHOO.widget ) {
+    //Workaround for YUI 2 issue #2529320 and FB cases 48108 and 48119
+    //so that table cell background gradients don't clobber the cell borders
+    //in IE<9. This slows down the calendar rendering, so only apply it when
+    //necessary.
+    //This was not fixed in YUI 2.9.0.
+    if ( YAHOO.env.ua.ie && YAHOO.env.ua.ie < 9 ) {
+        [   'renderCellDefault',
+            'renderCellNotThisMonth',
+            'renderBodyCellRestricted',
+            'renderOutOfBoundsDate'
+        ].forEach( function(type) {
+            var original = YAHOO.widget.Calendar.prototype[type];
+            YAHOO.widget.Calendar.prototype[type] = function(working_date,cell) {
+                var val = original.apply(this,arguments);
+                cell.innerHTML = "<div class=\"calcell-liner\">"+cell.innerHTML+"</div>";
+            };
+        } );
+    }
+
+    var yui_localization = [% calendar_localization.json() %];
+    var DC = YAHOO.widget.Calendar.DEFAULT_CONFIG;
+    for (var key in yui_localization) {
+        var value = yui_localization[key];
+        if (typeof value === "string") value = _cldr[value];
+        DC[key].value = value;
+    }
+
+    [%#CLDR has no 2-character abbreviation,
+    and the 3-letter ones are too wide for the default CSS. -%]
+    DC.LOCALE_WEEKDAYS.value = "1char";
+    [%# CLDR gives weekdays with Monday first, but YUI expects Sunday first -%]
+    ["WEEKDAYS_1CHAR","WEEKDAYS_MEDIUM","WEEKDAYS_LONG"].forEach( function(k) {
+        var copy = DC[k].value.slice();  //copy the array
+        copy.unshift( copy.pop() );
+        DC[k].value = copy;
+    } );
+//    [%# CLDR is 1..7, but YUI is 0..6. That's ok given the Monday/Sunday thing,
+//        but that just means "7" is "0" for YUI. -%]
+    //fuzzy equality
+    if ( DC.START_WEEKDAY.value == 7 ) DC.START_WEEKDAY.value = 0;
+
+    if ( "Calendar_With_Time" in CPANEL.widgets ) {
+        CPANEL.widgets.Calendar_With_Time.localization = {
+            cldr_time_format_short : _cldr.time_format_short,
+            ampm                   : _cldr.am_pm_abbreviated
+        };
+    }
+}
+
+var format_string = function (s) {
+    var substituter = function () {
+        if (arguments[1]) {
+            return arguments[1].substr( 1, arguments[1].length - 2 );
+        }
+
+        return "{" + arguments[2] + "}";
+    };
+    return s.replace(
+        /('[^']+')|(([a-zA-Z])\3*)/g,
+        substituter
+    );
+};
+
+//enclose consecutive occurrences of the same letter with curly braces
+//so we can use YAHOO.lang.substitute on it
+CPANEL.DateTime = {
+    time_format_short: format_string(_cldr.time_format_short),
+    date_format_medium: format_string(_cldr.date_format_medium),
+    datetime_format_medium: format_string(_cldr.datetime_format_medium),
+};
+var _format = format_string(_cldr.datetime_format)
+    .replace( '{0}', CPANEL.DateTime.time_format_short )
+    .replace( '{1}', CPANEL.DateTime.date_format_medium )
+;
+var lpad = function(obj,length,padder) {
+    if (!padder) padder = "0";
+    obj = obj.toString();
+    var deficit = length - obj.length;
+    var pad = "";
+    while (deficit > 0) {
+        pad += padder;
+        deficit -= padder.length;
+    }
+    return pad + obj;
+};
+Date.prototype.toCpLocaleString = function(format_string) {
+    var my_date = this;
+    var substituter = function(key, value) {
+        switch(key) {
+            case "yy":
+                return my_date.getFullYear().toString().slice(-2);
+            case "yyyyy":
+                return lpad(my_date.getFullYear(), 5);
+            case "y":
+            case "yyy":
+            case "yyyy":
+                return my_date.getFullYear();
+            case "MMMM":
+                return _cldr.month_format_wide[my_date.getMonth()];
+            case "MMM":
+                return _cldr.month_format_abbreviated[my_date.getMonth()];
+            case "MM":
+                return lpad(my_date.getMonth() + 1, 2);
+            case "M":
+                return String(my_date.getMonth() + 1);
+            case "MMMMM":
+                return _cldr.month_stand_alone_narrow[my_date.getMonth()];
+            case "dd":
+                return lpad(my_date.getDate(),2);
+            case "d":
+                return my_date.getDate();
+            case "a":
+            case "U":
+                var hours = my_date.getHours();
+                return _cldr.am_pm_abbreviated[ (hours<12) ? 0 : 1 ];
+            case "h":
+            case "hh":
+                var twelve_hours = my_date.getHours();
+                if ( twelve_hours > 12 ) twelve_hours -= 12;
+                if ( twelve_hours === 0 ) twelve_hours = 12;
+                return ( key === "hh" ) ? lpad(twelve_hours,2) : twelve_hours;
+            case "K":
+            case "KK":
+                var eleven_hours = my_date.getHours();
+                if ( eleven_hours > 11 ) eleven_hours -= 12;
+                return ( key === "KK" ) ? lpad(eleven_hours,2) : eleven_hours;
+            case "H":
+                return my_date.getHours();
+            case "HH":
+                return lpad( my_date.getHours(), 2 );
+            case "m":
+                return my_date.getMinutes();
+            case "mm":
+                return lpad( my_date.getMinutes(), 2 );
+            case "s":
+                return my_date.getSeconds();
+            case "ss":
+                return lpad( my_date.getHours(), 2 );
+            case "EEEE":
+                return weekdays_wide[ my_date.getDay() ];
+            case "EEE":
+            case "EE":
+            case "E":
+                return weekdays_abbreviated[ my_date.getDay() ];
+            case "EEEEE":
+                return weekdays_narrow[ my_date.getDay() ];
+            default:  //timezone, which we can only represent with GMT+offset
+                var seconds = my_date.getTimezoneOffset();
+                var hours = (seconds > 0) ? "-" : "+";
+                hours += lpad( Math.floor(Math.abs(seconds)/60), 2 );
+                var minutes = lpad( seconds%60, 2 );
+                return "GMT"+hours+minutes;
+        }
+    };
+    if ( !format_string ) format_string = _format;
+
+    return YAHOO.lang.substitute( format_string, null, substituter );
+};
+})();
+
+CPANEL.time_selector = function (target_input, opts) {
+
+    opts = (/object/i.test(typeof opts)) ? opts : {}
+
+	// takes a text input line and creates a standard time selector input in its place.
+	// the original input is hidden but otherwise left untouched.
+	// user-selected values will populate the original input for seamless form handling.
+	// The value populated is always hh:mm:00 (military time).
+	// The selector currently has no seconds resolution (if one is added in the future
+	// it should be triggered as a property in opts so as not to interfere with pages
+	// which expect no seconds resolution.
+	//
+	// opts.stylesheet : string -- defines a url path for an alternate stylesheet to use
+	// for selectors on this page.   The first selector construction loads the stylesheet
+	// no subsequent stylesheets are loaded -- ever so one style for all time selectors.
+	// the default stylesheet is /cjt/css/timeSelector-cpanel.css
+	//
+	// Construction fails if the target_element does not exist, if the target_element
+	// is not an input tag, is not type text, or if this input already has been turned
+	// into a standard time selector.
+	//
+	// <input type='text' id='startTime' name='start-time' />
+	// new CPANEL.time_selector('startTime', {stylesheet: '/cjt/css/mystylesheet.css'})
+
+    var original_object = target_input;
+
+	if ( !(this instanceof CPANEL.time_selector) )
+	      return new CPANEL.time_selector( target_input, opts );
+
+	if (/string/i.test(typeof target_input))
+		target_input = document.getElementById(target_input);
+
+    this.failed = false;
+
+	if (!target_input || !target_input.ownerDocument || !(target_input.ownerDocument === document)) {
+		this.failed = locale.maketext("Invalid DOM object or object ID.");
+	}
+	else if (!/input/i.test(target_input.tagName)) {
+		this.failed = locale.maketext("The DOM element must be an input tag.");
+	}
+	else if (!/text|hidden/i.test(target_input.type)) {
+		this.failed = locale.maketext("The [asis,input] tag must declare itself to be [asis,type=chr(34)textchr(34)].");
+	}
+	else if (/cpanel-time-selector-container/i.test(target_input.parentNode.className)) {
+		this.failed = locale.maketext("This element has already been turned into a time selector.");
+	}
+
+	// Failure -- log it if the console is open, otherwise just note the
+	// failure and return.
+    if (this.failed) {
+	   	if (window.console && console.log) {
+			console.log('Time Selector Construction: ' + this.failed);
+			console.log(original_object);
+		}
+		return false;
+    }
+
+    // Localize AM & PM or 24 hours for locales which don't use AM/PM
+	var lang = {}
+	lang.am=CPANEL.cldr.am_pm_abbreviated[0];
+	lang.pm=CPANEL.cldr.am_pm_abbreviated[1];
+	lang.max_hours = (CPANEL.cldr.prefers_24_hour_time) ? 23 : 12;
+	lang.min_hours = (CPANEL.cldr.prefers_24_hour_time) ? 0 : 1;
+
+	// Attach the stylesheet.   Another instance of this object may have already done so.
+	// if the ID of the automatically attached stylesheet isn't present then it's safe
+	// to attach.  Otherwise nothing happens.
+	if (!document.getElementById('time-selector-stylesheet')) {
+		var newCSS = document.createElement('link');
+		newCSS.rel='stylesheet';
+		newCSS.type='text/css';
+		newCSS.href= (opts.stylesheet) ? opts.stylesheet : '/cjt/css/timeSelector-cpanel.css?';
+		newCSS.id='time-selector-stylesheet';
+		document.getElementsByTagName('head')[0].appendChild(newCSS);
+	}
+
+    // Each instance of this object will increase this counter by one
+	// giving us a unique ID for each time selector on a page.
+	if (!('id_cache' in this))
+		CPANEL.time_selector.prototype.id_cache = 1;
+
+
+	// This function just adds a 0 in front of numbers less than 10
+	// and keeps hours and minutes inside their respective ranges.
+	var pretty_numbers = function (num, isHours, direction) {
+		    // make sure num is an integer and isn't being
+			// treated as an octal.
+			num = parseInt(num.toString().replace(/^0+/,''));
+			if (isNaN(num))
+				num = 0;
+			if (direction) {
+				num = direction + num;
+			}
+		    if (isHours) {
+			    if (num < lang.min_hours)
+					num = lang.max_hours;
+				if (num > lang.max_hours)
+					num = lang.min_hours;
+			}
+			else {
+				if (num < 0)
+					num = 59
+				if (num > 59)
+					num = 0;
+			}
+			if (synchronize_original_input)
+				synchronize_original_input();
+			return (num<10) ? '0' + num : num;
+    }
+
+	// Try to make sense of the time in the default input field.
+	// If Javascript can't make it into a real date, use "now".
+	// We expect time to be in its own input field with a default
+	// format of hh:mm:ss anything else will probably cause this
+	// code to consistently fail.
+	var default_time = new Date();
+	if (target_input.value) {
+		var init_time = target_input.value.split(':');
+		default_time.setHours(init_time[0]);
+		default_time.setMinutes(init_time[1]);
+		if (/Invalid Date/i.test(default_time))
+			default_time = new Date();
+	}
+
+	// Convert military time to civilian time and set ampm
+	var initial_hours = default_time.getHours();
+	var ampm = lang.am;
+	if (!CPANEL.cldr.prefers_24_hour_time) {
+		if (initial_hours>11) {
+			initial_hours -= 12;
+			ampm = lang.pm;
+		}
+		if (!initial_hours)
+			initial_hours = 12;
+	}
+	else {
+		ampm = lang.am;
+	}
+	initial_hours = pretty_numbers(initial_hours);
+	var initial_minutes = pretty_numbers(default_time.getMinutes());
+
+	// Grab a unique ID for this selector
+	var unique_id = this.id_cache;
+	CPANEL.time_selector.prototype.id_cache += 1;
+
+	// Build the HTML for the time selector.
+	// Long classnames and ID are used to reduce namespace collision and make it
+	// easier to see what is being styled.
+	var container_div = document.createElement('div');
+    container_div.className = 'cpanel-time-selector-container group';
+    container_div.id = 'cpanel-time-selector-id-' + unique_id;
+
+    var hrs = '';
+	hrs += "<div class='cpanel-time-selector-hours-group'>";
+    hrs += "<input autocomplete='off' size='2' maxlength='2' type='text' id='cpanel-time-selector-hours-"+unique_id+"' class='cpanel-time-selector-input cpanel-time-selector-hours' value='"+ initial_hours+"' />";
+    hrs += "<div class='cpanel-button-group cpanel-hours-button-group'>";
+    hrs += "<button type='button' tabindex='-1' id='cpanel-increment-hours-" + unique_id+"' class='cpanel-time-selector-arrow-button cpanel-time-selector-hours-up'></button>";
+    hrs += "<button type='button' tabindex='-1' id='cpanel-decrement-hours-" + unique_id+"' class='cpanel-time-selector-arrow-button cpanel-time-selector-hours-down'></button>";
+    hrs += "</div>";
+    hrs += "</div>";
+
+    var mins = '';
+    mins += "<div class='cpanel-time-selector-minutes-group'>";
+    mins += "<input autocomplete='off' size='2' maxlength='2' type='text' id='cpanel-time-selector-minutes-"+unique_id+"' value='"+ initial_minutes+"' class='cpanel-time-selector-input cpanel-time-selector-minutes' />";
+    mins += "<div class='cpanel-button-group cpanel-minutes-button-group'>";
+    mins += "<button type='button' tabindex='-1' id='cpanel-increment-minutes-" + unique_id+"' class='cpanel-time-selector-arrow-button cpanel-time-selector-minutes-up'></button>";
+    mins += "<button type='button' tabindex='-1' id='cpanel-decrement-minutes-" + unique_id+"' class='cpanel-time-selector-arrow-button cpanel-time-selector-minutes-down'></button>";
+    mins += "</div>";
+    mins += "</div>";
+
+    var ampmhtml = '';
+    ampmhtml += "<div id='ampm-selector-group-"+ unique_id +"' class='cpanel-time-selector-ampm-group'>";
+    ampmhtml += "<button type='button' id='cpanel-am-" + unique_id+"' class='cpanel-time-selector-ampm-button'>"+lang.am+"</button>";
+    ampmhtml += "<button type='button' id='cpanel-pm-" + unique_id+"' class='cpanel-time-selector-ampm-button'>"+lang.pm+"</button>";
+    ampmhtml += "</div>";
+
+	container_div.innerHTML = YAHOO.lang.substitute( CPANEL.DateTime.time_format_short, null, function(key, value) {
+        switch(key) {
+            case "a":
+            case "aa":
+            case "U":
+				return ampmhtml;
+            case "h":
+            case "hh":
+            case "K":
+            case "KK":
+            case "H":
+            case "HH":
+				return hrs;
+            case "m":
+            case "mm":
+				return mins;
+            default:
+                return '';
+        }
+    });
+
+	// Hide the original input field.
+    target_input.style.display='none';
+
+	// At the position of the original input field attach the new div and
+	// move the hidden original input field under it.
+	target_input.parentNode.replaceChild(container_div, target_input);
+	container_div.appendChild(target_input);
+
+	// Cache some commonly accessed DOM elements.
+	var hours_input = document.getElementById('cpanel-time-selector-hours-'+unique_id);
+	var minutes_input = document.getElementById('cpanel-time-selector-minutes-' + unique_id);
+	var am_button = document.getElementById('cpanel-am-'+unique_id);
+	var pm_button = document.getElementById('cpanel-pm-'+unique_id);
+
+	// Setup allowed keystrokes.
+	var allowed_keystrokes = {
+        37 : true, // left
+        39 : true, // right
+        8  : true, // backspace
+        9  : true, // tab
+        13 : true, // enter
+        35 : true, // end
+        36 : true, // home
+        46 : true, // delete
+        48 : true, // 0
+        49 : true,
+        50 : true,
+        51 : true,
+        52 : true,
+        53 : true,
+        54 : true,
+        55 : true,
+        56 : true,
+        57 : true, // 9,
+        96 : true, // 0, numeric keypad
+        97 : true,
+        98 : true,
+        99 : true,
+        100: true,
+        101: true,
+        102: true,
+        103: true,
+        104: true,
+        105: true  // 9, numeric keypad
+	}
+
+	// This method takes the value of the time selectors and populates the original hidden
+	// input field.  The replace to strip leading zeros from the hours is to eliminate the
+	// chance javascript will treat the number as an octal.
+	var synchronize_original_input = function () {
+		if (!CPANEL.cldr.prefers_24_hour_time) {
+			var military_time = (ampm==lang.pm) ? (parseInt(hours_input.value.replace(/^0/,''))+12) : hours_input.value;
+			if (military_time==24 || military_time==12)
+				military_time = (ampm==lang.pm) ? 12 : 0;
+		}
+		else {
+			military_time = hours_input.value;
+		}
+		target_input.value = military_time + ':' + minutes_input.value + ':00';
+	}
+
+	// Setup the events.
+	var handle_keydown = function (e) {
+		if (/number/i.test(typeof interval_pointer))
+	   		clearInterval(interval_pointer);
+   		interval_pointer = new Date();
+		var srcElement = e.srcElement || e.target;
+		var is_hours = false;
+		if (/hours/i.test(srcElement.id)) {
+			is_hours = true;
+		}
+        if (e.keyCode==38) {
+			srcElement.value = pretty_numbers(srcElement.value, is_hours, 1);
+		}
+		else if (e.keyCode==40) {
+			srcElement.value = pretty_numbers(srcElement.value, is_hours, -1);
+		}
+		if (!(e.keyCode in allowed_keystrokes)) {
+			YAHOO.util.Event.preventDefault(e);
+			YAHOO.util.Event.stopPropagation(e);
+			return false;
+		}
+
+	}
+
+	// Focus event, just cache the contents of the input field
+	// since we know its good.
+	var handle_focus = function (e) {
+		var srcElement = e.srcElement || e.target;
+		last_valid_value = srcElement.value;
+	}
+
+
+	// Blur event.  Check the validity and restore the
+	// focus value if the entry is not valid (IE 99).
+	var handle_blur = function (e) {
+
+		var srcElement = e.srcElement || e.target;
+
+		var is_minute = (/minute/i.test(srcElement.id)) ? true : false;
+
+		if (srcElement.value != '') {
+			var safe_int = parseInt(srcElement.value.replace(/^0/,''));
+			if (srcElement.value == '0') {
+				srcElement.value = pretty_numbers(last_valid_value, !is_minute );
+				return;
+			}
+			if (isNaN(safe_int)) {
+				srcElement.value = pretty_numbers(last_valid_value, !is_minute );
+				return;
+			}
+			var max_value = (is_minute) ? 59 : lang.max_hours;
+			if (safe_int<0 || safe_int > max_value) {
+                                if (!is_minute) {
+                                    var safe_int = parseInt(srcElement.value.replace(/^0/,''));
+                                    if (safe_int > 12 && safe_int < 24 && lang.max_hours==12) {
+                                        safe_int = safe_int - 12;
+                                        ampm = lang.pm;
+                                        pm_button.click();
+                                    } else {
+                                        safe_int=last_valid_value;
+                                    }
+                                    srcElement.value = pretty_numbers(safe_int, !is_minute );
+                                    last_valid_value=safe_int;
+                                } else {
+                                    srcElement.value = pretty_numbers(last_valid_value, !is_minute );
+                                }
+                                return;
+			}
+                        last_valid_value = srcElement.value;
+		}
+		srcElement.value = pretty_numbers(srcElement.value.replace(/^0/,''), !is_minute);
+		synchronize_original_input();
+	}
+
+
+	var handle_click = function (e) {
+		YAHOO.util.Event.preventDefault(e);
+		YAHOO.util.Event.stopPropagation(e);
+		if (/number/i.test(typeof interval_pointer))
+	   		clearInterval(interval_pointer);
+   		interval_pointer = new Date();	}
+
+    // an object global that tracks the set_interval pointer for
+	// repeating upticks or downticks when a direction button is
+	// held.  When not an interval pointer its a date object so we
+	// can wait a few microseconds before instancing another timer.
+	var interval_pointer;
+
+	var handle_mouseup = function (e) {
+		if (/number/i.test(typeof interval_pointer))
+	   		clearInterval(interval_pointer);
+   		interval_pointer = new Date();
+	}
+
+	var handle_mouseout = function (e) {
+		if (/number/i.test(typeof interval_pointer))
+	   		clearInterval(interval_pointer);
+	    interval_pointer=new Date();
+	}
+
+	var handle_mousedown = function(e) {
+		YAHOO.util.Event.preventDefault(e);
+		YAHOO.util.Event.stopPropagation(e);
+		// sometimes a mouseup event generates a new mousedown event.
+		// So we cache the release event with a date object so we
+		// can test to see if enough time has passed for this to be
+		// a _real_ mousedown event.
+		if (interval_pointer instanceof Date) {
+			var now = new Date();
+			if (now.getTime()-interval_pointer.getTime() < 20) return
+			interval_pointer=false;
+		}
+		if (interval_pointer) return;
+
+		var srcElement = e.srcElement || e.target;
+		var is_hours = false;
+
+		var direction = (/increment/i.test(srcElement.id)) ? parseInt(1) : parseInt(-1);
+		if (/hours/i.test(srcElement.id)) {
+			var source_input = hours_input; // hours_input = cached DOM
+			var is_hours = true;
+			hours_input.value = pretty_numbers(source_input.value, is_hours, direction)
+		}
+		else {
+			var source_input = minutes_input;
+			var is_hours = false;
+			minutes_input.value = pretty_numbers(source_input.value, is_hours, direction)
+		}
+        synchronize_original_input();
+
+        // User is holding the mouse down on an increment/decrement button.
+        var first_tick_delay = function () {
+			// After 900ms we start the autotick.
+	       	source_input.value = pretty_numbers(source_input.value, is_hours, direction);
+	       	clearInterval(interval_pointer);
+	       	interval_pointer = setInterval( function () {
+				source_input.value = pretty_numbers(source_input.value, is_hours, direction);
+			}, is_hours ? 300 : 100); // Hours increment at 300ms, Minutes 3x faster at 100ms.
+        }
+		// We wait almost a second before starting the autotick.
+        interval_pointer = setInterval( first_tick_delay, 900);
+		return false;
+	}
+
+	var handle_ampm = function (e) {
+		if (!e) return;
+		var srcElement = e.srcElement || e.target || e;
+		if (/pm/i.test(srcElement.id)) {
+			am_button.className = 'cpanel-time-selector-ampm-button cpanelcpanel-time-selector-ampm-unselected cpanel-time-selector-am-unselected';
+			pm_button.className = 'cpanel-time-selector-ampm-button cpanel-time-selector-ampm-selected cpanel-time-selector-pm-selected';
+			ampm = lang.pm;
+		}
+		else {
+			am_button.className = 'cpanel-time-selector-ampm-button cpanel-time-selector-ampm-selected cpanel-time-selector-am-selected';
+			pm_button.className = 'cpanel-time-selector-ampm-button cpanel-time-selector-ampm-unselected cpanel-time-selector-pm-unselected';
+			ampm = lang.am;
+		}
+		synchronize_original_input();
+		YAHOO.util.Event.preventDefault(e);
+		YAHOO.util.Event.stopPropagation(e);
+        return false;
+	}
+
+	if (ampm == lang.am) {
+		handle_ampm(am_button);
+	} else
+	{
+		handle_ampm(pm_button);
+	}
+
+	synchronize_original_input();
+
+	// Setup the events.
+	EVENT.on('cpanel-time-selector-hours-'+unique_id, 'keydown', handle_keydown, this);
+	EVENT.on('cpanel-time-selector-hours-'+unique_id, 'blur', handle_blur, this);
+	EVENT.on('cpanel-time-selector-hours-'+unique_id, 'focus', handle_focus, this);
+
+	EVENT.on('cpanel-time-selector-minutes-'+unique_id, 'keydown', handle_keydown, this);
+	EVENT.on('cpanel-time-selector-minutes-'+unique_id, 'blur', handle_blur, this);
+	EVENT.on('cpanel-time-selector-minutes-'+unique_id, 'focus', handle_focus, this);
+
+	EVENT.on('cpanel-increment-hours-' + unique_id, 'mousedown', handle_mousedown, this);
+	EVENT.on('cpanel-increment-hours-' + unique_id, 'mouseout', handle_mouseout, this);
+	EVENT.on('cpanel-increment-hours-' + unique_id, 'mouseup', handle_mouseup, this);
+	EVENT.on('cpanel-increment-hours-' + unique_id, 'click', handle_mousedown, this);
+
+	EVENT.on('cpanel-decrement-hours-' + unique_id, 'mousedown', handle_mousedown, this);
+	EVENT.on('cpanel-decrement-hours-' + unique_id, 'mouseout', handle_mouseout, this);
+	EVENT.on('cpanel-decrement-hours-' + unique_id, 'mouseup', handle_mouseup, this);
+	EVENT.on('cpanel-decrement-hours-' + unique_id, 'click', handle_mousedown, this);
+
+	EVENT.on('cpanel-increment-minutes-' + unique_id, 'mousedown', handle_mousedown, this);
+	EVENT.on('cpanel-increment-minutes-' + unique_id, 'mouseout', handle_mouseout, this);
+	EVENT.on('cpanel-increment-minutes-' + unique_id, 'mouseup', handle_mouseup, this);
+	EVENT.on('cpanel-increment-minutes-' + unique_id, 'click', handle_mousedown, this);
+
+	EVENT.on('cpanel-decrement-minutes-' + unique_id, 'mousedown', handle_mousedown, this);
+	EVENT.on('cpanel-decrement-minutes-' + unique_id, 'mouseout', handle_mouseout, this);
+	EVENT.on('cpanel-decrement-minutes-' + unique_id, 'mouseup', handle_mouseup, this);
+	EVENT.on('cpanel-decrement-minutes-' + unique_id, 'click', handle_mousedown, this);
+
+	EVENT.on('cpanel-am-' + unique_id, 'click', handle_ampm, this);
+	EVENT.on('cpanel-pm-' + unique_id, 'click', handle_ampm, this);
+
+
+}
+
+// Autopopulate any date-hint freeforms
+CPANEL.populate_date_hints = function () {
+        // Not ready for prime time.
+        return;
+	var  els = YAHOO.util.Dom.getElementsByClassName('cpanel-date-hint');
+	if (els ) {
+		for (var i=els.length-1; i >= 0; i--) {
+			els[i].innerHTML = YAHOO.lang.substitute( CPANEL.cldr.date_format_short.replace(/(([ymdez])\2*)/gi,"{$1}"), null, function(key, value) {
+		        switch(key) {
+		            case "yy":
+		            case "yyyyy":
+		            case "y":
+		            case "yyy":
+		            case "yyyy":
+		                return 'yyyy';
+		            case "MMMM":
+		            case "MMM":
+		            case "MM":
+		            case "M":
+		            case "MMMMM":
+		                return 'mm';
+		            case "dd":
+		            case "d":
+		                return 'dd';
+		        }
+		    });
+		}
+	}
+}();
+
+//]]>
+</script>
+<style type="text/css">
+.cjt_calendarwithtime {
+    text-align: center;
+    margin-top: 5px;
+}
+.cjt_calendarwithtime_hours,
+.cjt_calendarwithtime_minutes {
+    width: 1.5em;
+    text-align: right;
+}
+</style>

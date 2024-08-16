@@ -1,0 +1,339 @@
+[%
+    USE Geo;
+    USE Whostmgr;
+    USE SSL;
+    USE JSON;
+
+    SET key_types_and_labels = SSL.key_types_and_labels;
+    SET default_key_type = SSL.default_key_type;
+
+    WRAPPER 'master_templates/master.tmpl'
+        app_key = 'generate_an_ssl_certificate_and_signing_request'
+        header = locale.maketext('Generate an SSL Certificate and Signing Request')
+        breadcrumburl = '/scripts2/gencrthtml'
+        theme = 'bootstrap'
+        scripts = [
+            '/sharedjs/form_submit_handler_optimized.js',
+            '/sharedjs/ssl_optimized.js'
+        ]
+        stylesheets = [
+            '/css/notify.css',
+        ]
+-%]
+
+<style type="text/css">
+
+/*
+    This legacy style rule has a 15px bottom padding in notify.css,
+    which causes it to be unbalanced vertically. For this page,
+    at least, it makes sense to zero out the bottom padding.
+*/
+.cjt-pagenotice-container .cjt-notice-content {
+    padding-bottom: 0;
+}
+</style>
+
+<p class="description">
+    [% locale.maketext('Use this interface to generate both a self-signed certificate and a certificate signing request for a domain.') %]
+</p>
+
+<form class="layout-medium" action="[% cp_security_token %]/scripts2/dogencrt" name="mainform" id="mainform" method="POST">
+
+    <fieldset>
+
+        <!-- prevent password autofill -->
+        <input type="text" style="display:none">
+        <input type="password" autocomplete='off' style="display:none">
+
+        <legend>[% locale.maketext('Contact Information') %]</legend>
+        <p>
+            [% locale.maketext('When generating a certificate signing request, we can send a copy of the generated self-signed certificate, the private key and the certificate signing request. Depending on your mail service provider, your mail may be sent over an insecure channel. We do not recommend sending private keys if the email service provider you use does not support secure mail via SSL/TLS.') %]
+        </p>
+
+        <div class="form-group">
+            <div class="row">
+                <div class="col-xs-6">
+                    <div class="checkbox">
+                        <label>
+                            <input type="checkbox" name="sendemail" id="sendemail" value="1" >
+                            <span>[% locale.maketext('When complete, email me the certificate, key, and [output,acronym,CSR,Certificate Signing Request].') %]</span>
+                        </label>
+                   </div>
+                </div>
+            </div>
+        </div>
+        <div class="form-group">
+            <div class="row">
+                <div class="col-xs-6">
+                    <label for="xemail" class="title">[% locale.maketext('Email Address:') %]</label>
+                </div>
+            </div>
+            <div class="row">
+                <div class="col-xs-6">
+                    <input type="text" name="xemail" id="xemail" disabled="disabled" class="form-control" />
+                    <span class="help-block">[% locale.maketext('Provide your email address to receive a copy of the generated certificate, key, and [output,acronym,CSR,Certificate Signing Request].') %]</span>
+                </div>
+                <div class="col-xs-6">
+                    <div>
+                        <span id="xemail_error"></span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+    </fieldset>
+    <fieldset>
+
+        <legend>[% locale.maketext('Private Key Options') %]</legend>
+        <p>
+            [% locale.maketext('When the system generates a self-signed certificate and [output,acronym,CSR,Certificate Signing Request], the system also generates a new private key for the certificate and CSR. To protect the certificate, this key must be confidential. Do not send the private key through an insecure method.') %]
+        </p>
+
+        <div class="form-group">
+            <div class="row">
+                <div class="col-xs-6">
+                    <label for="keytype" class="title">[% locale.maketext('Key Type:') %]</label>
+                </div>
+            </div>
+            <div class="row">
+                <div class="col-xs-6">
+                    <select name="keytype" id="keysize" class="form-control" >
+                        [% FOREACH type_label = key_types_and_labels %]
+                            [% SET is_default = type_label.type == default_key_type -%]
+                            <option value="[% type_label.type %]" [% IF is_default %]selected="selected"[% END %]>
+                                [% type_label.label %]
+                                [% IF is_default %]
+                                    &nbsp;—&nbsp;[% locale.maketext('Default') %]
+                                [% END %]
+                            </option>
+                        [% END %]
+                    </select>
+                </div>
+                <div class="col-xs-6">
+                    <div>
+                        <span id="keysize_error"></span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+    </fieldset>
+    <fieldset>
+
+        <legend>[% locale.maketext('Certificate Information') %]</legend>
+        <p>
+            [% locale.maketext('The information provided below is used to create a self-signed certificate and the corresponding certificate signing request. Since this is the information that users will see when they access a site via SSL, it is important to provide accurate and valid information.') %]
+        </p>
+
+        <div class="form-group">
+            <div class="row">
+                <div class="col-xs-6">
+                    <label for="host" class="title"><span>[% locale.maketext('Domains:') %]</span></label>
+                    <span class="extra pull-right">[% locale.maketext('Required') %]</span>
+                </div>
+            </div>
+            <div class="row">
+                <div class="col-xs-6">
+                    <textarea name="domains" id="domains" class="form-control"></textarea>
+                    <span class="help-block">[% locale.maketext('Provide the [output,acronym,FQDN,Fully Qualified Domain Name]s that you wish to secure, one per line. To create and use a wildcard domain, add an asterisk to the domain name as in the following example: [output,em,_1].','*.example.com') %] [% locale.maketext('NOTE: Many [output,acronym,CA,Certificate Authority]s charge a higher price to issue multiple-domain certificates (sometimes called “[output,acronym,UCC,Unified Communications Certificate]s” or “[output,acronym,SAN,subjectAltName] certificates”) and certificates that include wildcard domains.') %]</span>
+                </div>
+                <div class="col-xs-6">
+                    <span id="domains_error"></span>
+                </div>
+            </div>
+        </div>
+        <div class="form-group">
+            <div class="row">
+                <div class="col-xs-6">
+                    <label for="city" class="title"><span>[% locale.maketext('City:') %]</span></label>
+                </div>
+            </div>
+            <div class="row">
+                <div class="col-xs-6">
+                    <input type="text" name="localityName" id="city"  class="form-control" />
+                    <span class="help-block">[% locale.maketext('Provide the complete name for the city or locality. Do not use abbreviations.') %]</span>
+                </div>
+                <div class="col-xs-6">
+                    <span id="city_error"></span>
+                </div>
+            </div>
+        </div>
+        <div class="form-group">
+            <div class="row">
+                <div class="col-xs-6">
+                    <label for="state" class="title"><span>[% locale.maketext('State:') %]</span></label>
+                </div>
+            </div>
+            <div class="row">
+                <div class="col-xs-6">
+                    <input type="text" name="stateOrProvinceName" id="state" class="form-control" />
+                    <span class="help-block">[% locale.maketext('Provide the complete name for the state or province. Do not use abbreviations.') %]</span>
+                </div>
+                <div class="col-xs-6">
+                    <span id="state_error"></span>
+                </div>
+            </div>
+        </div>
+        <div class="form-group">
+            <div class="row">
+                <div class="col-xs-6">
+                    <label for="country" class="title"><span>[% locale.maketext('Country:') %]</span></label>
+                </div>
+            </div>
+            <div class="row">
+                <div class="col-xs-6">
+                    <select id="country" name="countryName" class="form-control">
+                        <option value="">[% locale.maketext("Choose a country.") %]</option>
+                        [% SET locales_obj = locale.get_locales_obj() -%]
+                        [% FOR country_code = Geo.COUNTRY_CODES -%]
+                            [% SET country_name = locales_obj.get_territory_from_code(country_code) -%]
+                            <option value="[% country_code | upper %]">
+                                [% country_code | upper %]
+                                [% country_name ? " ($country_name)" : '' %]
+                            </option>
+                        [% END -%]
+                    </select>
+                    <span class="help-block">[% locale.maketext("Choose the country of origin for the certificate’s company.") %]</span>
+                </div>
+                <div class="col-xs-6">
+                     <span id="country_error"></span>
+                </div>
+            </div>
+        </div>
+        <div class="form-group">
+            <div class="row">
+                <div class="col-xs-6">
+                    <label for="co" class="title"><span>[% locale.maketext('Company Name:') %]</span></label>
+                </div>
+            </div>
+            <div class="row">
+                <div class="col-xs-6">
+                    <input type="text" name="organizationName" id="co" class="form-control" />
+                    <span class="help-block">[% locale.maketext('Provide the legally-registered name for your business. If your company name includes symbols other than a period or comma, check with your certificate authority to confirm that they are acceptable.') %]</span>
+                </div>
+                <div class="col-xs-6">
+                    <span id="co_error"></span>
+                    <div id="co_warning"></div>
+                </div>
+            </div>
+        </div>
+        <div class="form-group">
+            <div class="row">
+                <div class="col-xs-6">
+                    <label for="cod" class="title">[% locale.maketext('Company Division:') %]</label>
+                </div>
+            </div>
+            <div class="row">
+                <div class="col-xs-6">
+                    <input type="text" name="organizationalUnitName" id="cod" class="form-control" />
+                    <span class="help-block">[% locale.maketext('Provide the name of the division or group within the above company. If the division includes symbols other than a period or comma, check with your certificate authority to confirm that they are acceptable.') %]</span>
+                </div>
+                <div class="col-xs-6">
+                    <span id="cod_error"></span>
+                    <div id="cod_warning"></div>
+                </div>
+            </div>
+        </div>
+        <div class="form-group">
+            <div class="row">
+                <div class="col-xs-6">
+                    <label for="email" class="title">[% locale.maketext('Email:') %]</label>
+                </div>
+            </div>
+            <div class="row">
+                <div class="col-xs-6">
+                    <input type="text" name="emailAddress" id="email" class="form-control" />
+                    <span class="help-block">[% locale.maketext("Email address at which the [output,acronym,CA,Certificate Authority] can contact you to obtain verification of domain ownership.") %]</span>
+                </div>
+                <div class="col-xs-6">
+                    <span id="email_error"></span>
+                </div>
+            </div>
+        </div>
+
+    </fieldset>
+    <fieldset>
+
+        <legend>[% locale.maketext('Shared Secrets') %]</legend>
+        <p>
+            [% locale.maketext('Some certificate authorities may require CSRs to have a passphrase. The certificate authority can use a CSR passphrase to confirm the identity of the person or organization with whom you wish to communicate. CSR passphrases are stored [output,strong,unencrypted] in the CSR. Because of this, and also because you will share this passphrase with a third party, do not use an important password here.') %]
+        </p>
+
+        <div class="form-group">
+            <div class="row">
+                <div class="col-xs-6">
+                    <label for="pass" class="title">[% locale.maketext('Passphrase:') %]</label>
+                </div>
+            </div>
+            <div class="row">
+                <div class="col-xs-6">
+                    <input type="password" autocomplete='off' name="pass" id="pass" class="form-control" />
+                    <span class="help-block"><span class='fas fa-exclamation-circle fa-lg'></span> [% locale.maketext('Do not use an important password. Passphrases stored in CSRs are not encrypted, which means third party attackers can easily read these passphrases.', ) %]</span>
+                </div>
+                <div class="col-xs-6">
+                    <span id="pass_error"></span>
+                </div>
+            </div>
+        </div>
+
+    </fieldset>
+
+    <div class="field form-actions">
+        <button
+            type="submit"
+            id="btnCreate"
+            title="[% locale.maketext('Click to generate a self-signed certificate and the corresponding certificate signing request.') %]"
+            class="btn btn-primary">[% locale.maketext('Create') %]</button>
+    </div>
+
+</form>
+
+<script type="text/javascript">
+
+/* global LOCALE: false, YAHOO: false */
+
+(function() {
+    "use strict";
+    /**
+     * This module contains all the page specific constants generated by the server.
+     * @module PAGE.Properties
+     */
+    var PAGE = {
+        properties : {},
+        lexicon : {
+            "Private Key" : "[% locale.maketext('Private Key') %]",
+            "Domain" : "[% locale.maketext('Domain') %]",
+            "You can only enter valid domains." : "[% locale.maketext('You can only enter valid domains.') %]",
+            "City" : "[% locale.maketext('City') %]",
+            "ValidatorCity" : "[% locale.maketext('You must enter a city.') %]",
+            "State" : "[% locale.maketext('State') %]",
+            "ValidatorState" : "[% locale.maketext('You must enter a state.') %]",
+            "Country" : "[% locale.maketext('Country') %]",
+            "Choose a country." : "[% locale.maketext('Choose a country.') %]",
+            "Company" : "[% locale.maketext('Company') %]",
+            "ValidatorCompany" : "[% locale.maketext('You must enter a company.') %]",
+            "This field should only contain letters, numbers, and basic punctuation (e.g., period, dash, space, underscore, comma)." : "[% locale.maketext('This field should only contain letters, numbers, and basic punctuation (e.g., period, dash, space, underscore, comma).') %]",
+            "Company Division" : "[% locale.maketext('Company Division') %]",
+            "Contact Email Address" : "[% locale.maketext('Contact Email Address') %]",
+            "Certificate Email Address" : "[% locale.maketext('Certificate Email Address') %]",
+            "ForwarderEmailNotEmpty" : "[% locale.maketext('You must enter an email address.') %]",
+            "ValidatorEmailFormat" : "[% locale.maketext('The email address provided is not valid. This address must start with the mailbox name, then the “@” sign, then the mail domain name.') %]",
+            "PassPhrase" : "[% locale.maketext('Passphrase') %]",
+            "You entered an invalid character. The passphrase may contain only letters and numbers." : "[% locale.maketext('You entered an invalid character. The passphrase may contain only letters and numbers.') %]",
+            "The passphrase must be at least 4 characters long." : "[% locale.maketext('The passphrase must be at least [quant,_1,character,characters] long.', 4) %]",
+            "The passphrase must be no longer than 20 characters." : "[% locale.maketext('The passphrase must be no longer than [quant,_1,character,characters].', 20) %]",
+            "ValidatorCompanyDiv" : "[% locale.maketext('The “[_1]” field must be at least [numf,_2] characters long.', locale.maketext('Company Division'), 2) %]"
+        }
+    };
+
+
+    // Publish the PAGE object;
+    window["PAGE"] = PAGE;
+}());
+
+YAHOO.lang.augmentObject( LOCALE.LEXICON, {
+    "Processing …" : "[% locale.maketext('Processing …') %]"
+} );
+</script>
+
+[% END #wrapper -%]

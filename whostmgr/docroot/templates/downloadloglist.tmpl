@@ -1,0 +1,28 @@
+[% USE CPList %]
+[% WRAPPER 'master_templates/master.tmpl'
+   theme='bootstrap'
+   app_key= data.log == 'ftp' ? 'raw_ftp_log_download' : data.log == 'ea-nginx' ? 'raw_ea_nginx_log_download' : 'raw_apache_log_download'
+-%]
+
+<div id="content">
+ [% INCLUDE _raw_log_warnings.tmpl %]
+
+  <form method="post" name="fmain">
+    <div class="form-group">
+      <h3>[% locale.maketext('Please select a domain.') %]</h3>
+    </div>
+    <div class="form-group">
+        <input type="hidden" name="log" value="[% data.log FILTER html %]" />
+        <select name="domain" size="7">
+        [% FOREACH domain = data.domainusers.ofeach('domain').sort() -%]
+          <option value="[% domain FILTER html %]">[% domain FILTER html %]</option>
+        [% END %]
+        </select>
+    </div>
+    <div class="form-group">
+        <button type="submit" class="btn btn-primary">[% locale.maketext('Download') %]</button>
+    </div>
+  </form>
+</div>
+
+[% END #wrapper -%]

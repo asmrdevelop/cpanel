@@ -1,0 +1,54 @@
+#!/bin/bash
+
+uname=`uname -s`
+machine=`uname -m`
+if [ "$1" = "--libz" -a "$machine" = "x86_64" ]; then
+	if [ -e "lib64/libz.so.1" ]; then
+		echo "/usr/local/cpanel/lib64/libz.so.1"
+		exit
+	fi
+	if [ -e "lib64/libz.so.2" ]; then
+		echo "/usr/local/cpanel/lib64/libz.so.2"
+		exit
+	fi
+fi
+if [ "$1" = "--libz" ]; then
+	if [ -e "lib/libz.so.1" ]; then
+		echo "/usr/local/cpanel/lib/libz.so.1"
+		exit
+	fi
+	if [ -e "lib/libz.so.2" ]; then
+		echo "/usr/local/cpanel/lib/libz.so.2"
+		exit
+	fi
+fi
+
+if [ "$1" = '--help' ]; then
+	echo "Usage: cpconf --core or cpconf --libs"
+fi
+
+if [ "$1" = '--core' ]; then
+	if [ "$uname" = "Linux" -a "$machine" = "x86_64" ]; then
+                if [ -e "/var/cpanel/dev_sandbox" ]; then
+                    echo "x86_64-linux-thread-multi";
+                else
+		    echo "x86_64-linux";
+                fi
+	fi
+	if [ "$uname" = "Linux" -a ! "$machine" = "x86_64" ]; then
+		echo "i686-linux";
+	fi
+	if [ "$uname" = "CYGWIN_NT-5.0" ]; then
+		echo "cygwin";
+	fi
+fi
+if [ "$1" = '--libs' ]; then
+	if [ "$uname" = "Linux" ]; then
+#		echo "-lnsl -lndbm -ldb -ldl -lm -lc -lposix -lcrypt";
+		echo "-lnsl -ldl -lm -lc -lcrypt -lutil";
+	fi
+	if [ "$uname" = "CYGWIN_NT-5.0" ]; then
+		echo "-lperl5_6_0  -lm -lcrypt -lcygwin -lkernel32";
+	fi
+fi
+

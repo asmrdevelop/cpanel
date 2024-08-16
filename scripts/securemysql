@@ -1,0 +1,142 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+#                                      Copyright 2024 WebPros International, LLC
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited.
+
+use strict;
+use warnings;
+
+use Getopt::Std;
+use Cpanel::MysqlUtils::Check        ();
+use Cpanel::MysqlUtils::Secure       ();
+use Cpanel::SafeRun::Simple          ();
+use Cpanel::MysqlUtils::Connect      ();
+use Cpanel::MysqlUtils::MyCnf::Basic ();
+use Cpanel::AdminBin::Serializer     ();    # PPI USE OK - loadConfig speed
+use Cpanel::Config::LoadConfig       ();    # PPI USE OK - For MyCnf::Basic
+use Cpanel::PwCache                  ();    # PPI USE OK - For MyCnf::Basic
+use Try::Tiny;
+
+# Only run if executed by root
+exit if ( $> != 0 );
+
+# Don't run if MySQL is not used
+exit if ( -e '/etc/securemysqldisable' || -e '/etc/mysqldisable' );
+
+my $version = qq{0.3};
+my $verbose = 1;
+my $fast    = 0;
+my $help    = 0;
+my $actions = q{};
+
+my %options;
+getopts( 'qFha:', \%options );
+if ( exists $options{'q'} ) {
+    $verbose = 0;
+}
+if ( exists $options{'F'} ) {
+    $fast = 1;
+}
+if ( exists $options{'h'} ) {
+    $help = 1;
+}
+if ( exists $options{'a'} ) {
+    $actions = $options{'a'};
+    if ( !defined $actions || $actions eq '' ) { $actions = 'all'; }
+}
+my @actions;
+if ( $actions ne 'all' && $actions ne '' ) {
+    $actions =~ s{ [^a-z0-9,]+ }{}gxms;
+    @actions = split /,/, $actions;
+}
+my $actionsall = 0;
+if ( $actions eq 'all' || grep m{ \A all \z }xms, @actions ) { $actionsall = 1; }
+if ($actionsall)                                             { print "Performing all actions.\n" if $verbose; }
+my %actions = (
+    'removeanon'         => $actionsall,
+    'removetestdb'       => $actionsall,
+    'removelockntmp'     => $actionsall,
+    'removeremoteroot'   => $actionsall,
+    'chowndatadir'       => $actionsall,
+    'removepublicgrants' => $actionsall,
+);
+foreach my $action (@actions) {
+    if    ( exists $actions{$action} || $actionsall ) { $actions{$action} = 1; }
+    elsif ($verbose)                                  { print "Invalid action $action ignored.\n"; }
+}
+
+$actions{'securemycnf'} = 1;    # we always do this
+
+if ( !-t STDOUT ) { $verbose = 0; }
+
+if ( $help || ( $verbose && !$fast ) ) {
+    print <<"EOM";
+securemysql $version
+
+ Options:
+ -q  - Quiet execution
+ -F  - Bypass the help message
+ -a  - Specify additional actions (comma separated list), or blank for all
+ -h  - Print this message and exit.
+
+This script attempts to secure the MySQL configuration by doing the following:
+ (always executed) Ensure root password for MySQL is set.
+ (always executed) Changes ownership of /var/db/mysql or /var/lib/mysql to mysql
+ Additionally, the following actions can be specified:
+    [optional]
+    removeanon           - Remove any anonymous users
+    removetestdb         - Remove test database
+    removelockntmp       - Remove global lock tables and create tmp table privileges from users
+    removeremoteroot     - Remove remote root login
+    chowndatadir         - Chown the mysql data directory to mysql:mysql
+    removepublicgrants   - Removes insecure public grants on MariaDB 10.11 and later.
+
+ Examples:
+    ./securemysql -q -F -a removeanon,removetestdb,removelockntmp,removeremoteroot
+    ./securemysql -q -F -a "removeanon, removetestdb, removelockntmp"
+
+EOM
+    exit if $help;
+    sleep 5;
+}
+
+if ( Cpanel::MysqlUtils::MyCnf::Basic::is_remote_mysql() ) {
+    print "Remote MySQL configured. Exiting.\n" if $verbose;
+    exit;
+}
+
+my $err;
+my $dbh;
+try {
+    $dbh = Cpanel::MysqlUtils::Connect::get_dbi_handle();
+}
+catch {
+    $err = $_;
+};
+
+if ( !$dbh ) {
+
+    my $ret      = Cpanel::SafeRun::Simple::saferun( '/usr/local/cpanel/scripts/restartsrv_mysql', '--check' ) // '';
+    my $check_ok = $? == 0 ? 1 : 0;
+
+    if ( !$check_ok ) {
+
+        # This will force a password reset if password is wrong/blank
+        $check_ok = Cpanel::MysqlUtils::Check::check_mysql_password_works_or_reset();
+
+        if ( !$check_ok ) {
+
+            # Case 169937, if I die here it will show like an error on the main
+            # screen.
+            print "Mysql is not running: $ret: $err\n";
+            exit;
+        }
+    }
+    $dbh = Cpanel::MysqlUtils::Connect::get_dbi_handle();
+}
+
+if ( values %actions ) {
+    Cpanel::MysqlUtils::Secure::perform_secure_actions( $dbh, \%actions, $verbose );
+}

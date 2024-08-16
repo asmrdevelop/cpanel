@@ -1,0 +1,120 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - cpdavd                                  Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+use warnings;
+
+use Cpanel::Rlimit        ();
+use Cpanel::OSSys         ();
+use Cpanel::Server::Type  ();
+use Cpanel::Services::Hot ();
+
+my $pid_file = '/var/run/cpdavd.pid';
+my @extra_exec_args;
+my $should_daemonize = 1;
+
+use Getopt::Param::Tiny ();
+my $param = Getopt::Param::Tiny->new();
+
+# maybe once the global vars and functions are moved around as per the
+# TODOs this argument control can be done up properly like tailwatchd
+if ( $param->param('stop') ) {
+    stop($pid_file);
+    exit;
+}
+elsif ( $param->param('restart') ) {
+    stop($pid_file);
+
+    # allow to fall through to 'start'
+}
+elsif ( $param->param('help') ) {
+    print <<"END_HELP";
+$0 - cPanel DAV daemon
+  --help
+  --start
+  --stop
+  --restart
+
+END_HELP
+
+    exit;
+}
+elsif ( $param->param('systemd') ) {
+    $should_daemonize = 0;
+    push @extra_exec_args, '--systemd';
+}
+
+exit 1 if Cpanel::Server::Type::is_dnsonly();
+
+sub stop {
+    my ($pid_file) = @_;
+    my $curpid     = Cpanel::Services::Hot::get_pid_from_file($pid_file);
+    my $humantime  = localtime(time);
+    if ( $curpid && Cpanel::Services::Hot::is_pid_file_active($pid_file) ) {
+        my $time = time;
+
+        require Cpanel::Kill::Single;
+
+        if ( Cpanel::Kill::Single::safekill_single_pid( $curpid, 10 ) ) {
+            print "[$humantime] Current process '$curpid' stopped\n";
+        }
+        else {
+            print "[$humantime] Could not stop current process '$curpid'\n";
+            return;
+        }
+        unlink $pid_file;
+    }
+    else {
+        print "[$humantime] No PID in $pid_file\n";
+    }
+    return 1;
+}
+
+# Check to see if service is enabled before starting
+require Cpanel::Config::Services;
+my ( $enabled, $message ) = Cpanel::Config::Services::service_enabled('cpdavd');
+if ( !$enabled ) {
+    print "cPdavd is disabled\n";
+    exit 1;
+}
+
+if ( Cpanel::Services::Hot::is_pid_file_active($pid_file) ) {
+    print "cpdavd is already running.\n";
+    exit;
+}
+
+my @ports2kill = qw{2077 2078 2091};
+system( '/usr/local/cpanel/etc/init/kill_apps_on_ports', @ports2kill );
+
+Cpanel::Rlimit::set_rlimit();
+
+close_filehandles();
+
+if ($should_daemonize) {
+    Cpanel::OSSys::setsid();
+}
+
+# Cases 63039 / 63084: disable compression due to CRIME attack.
+$ENV{'OPENSSL_NO_DEFAULT_ZLIB'} = 1;
+
+# The dormant service will not start up if there is a --pidfile
+# argument, despite not even looking for it or doing anything with it.
+if ( -e '/var/cpanel/dormant_services/cpdavd/enabled' ) {
+    exec '/usr/local/cpanel/libexec/cpdavd-dormant', @extra_exec_args;
+}
+else {
+    exec '/usr/local/cpanel/libexec/cpdavd', '--pidfile', $pid_file, @extra_exec_args;
+}
+
+sub close_filehandles {
+    foreach my $n ( 3 .. 1023 ) {
+        ## note: when running in a debugger, closing FDs 4 and 5 bork the terminal...
+        #next if ($running_in_debugger && grep { $_ == $n } (4 .. 5) );
+        Cpanel::OSSys::close($n);
+    }
+    return;
+}

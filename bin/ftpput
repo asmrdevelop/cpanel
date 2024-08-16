@@ -1,0 +1,107 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - bin/ftpput                              Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package bin::ftpput;
+
+use Net::FTP                 ();
+use Cpanel::Exception        ();
+use Cpanel::Exception::Utils ();
+use Cpanel::FileUtils::Write ();
+use Cpanel::TempFile         ();
+use Cpanel::Locale           qw(lh);
+
+use File::Basename ();
+
+our $FTP_TIMEOUT = 86400 * 2;    # Two Days
+
+use Try::Tiny;
+
+if ( !caller() ) {
+    my $password = readline(STDIN);
+    chomp($password);
+    close(STDIN);
+    my $ok = __PACKAGE__->script( @ARGV, $password );
+    exit( $ok ? 0 : 1 );
+}
+
+sub script {    ## no critic qw(Subroutines::ProhibitManyArgs) -- needs to be refactored later, this is step 1
+
+    my ( $self, $pkgfile, $server, $ruser, $passive, $rdir, $port, $password ) = @_;
+
+    local $SIG{'PIPE'} = 'IGNORE';
+
+    my $err;
+    try {
+        die Cpanel::Exception::create( 'MissingParameter', [ 'name' => 'user' ] )     if !$ruser;
+        die Cpanel::Exception::create( 'MissingParameter', [ 'name' => 'server' ] )   if !$server;
+        die Cpanel::Exception::create( 'MissingParameter', [ 'name' => 'password' ] ) if !$password;
+
+        my $ftp = _get_ftp_connection_or_die( $server, $ruser, $port, $passive );
+        $ftp->login( $ruser, $password ) || die lh()->maketext( "[asis,FTP] Login to “[_1]” as “[_2]” failed because of an error: [_3].", $server, $ruser, $ftp->message() );
+        $ftp->binary() || die lh()->maketext( "Switching the [asis,FTP] connection to binary failed because of an error: [_1].", $ftp->message() );
+        if ( length $rdir ) {
+            $ftp->cwd($rdir) || lh()->maketext( "Failed to change remote [asis,FTP] directory to “[_1]” because of an error: [_2].", $rdir, $ftp->message() );
+        }
+        if ( length $pkgfile ) {
+            $ftp->put($pkgfile) || die lh()->maketext( "Failed to [asis,FTP] upload file “[_1]” because of an error: [_2].", $pkgfile, $ftp->message() );
+        }
+        else {
+            my $temp_file = Cpanel::TempFile->new()->file();
+            my ( $tbasename, $tdirname, $tsuffix ) = File::Basename::fileparse($temp_file);
+            my $temp_fname = $tbasename . $tsuffix;
+
+            Cpanel::FileUtils::Write::overwrite( $temp_file, 'This is a test file for ftpput', 0600 ) || die lh()->maketext( "Failed to write to temporary file “[_1]”.", $temp_file );
+            $ftp->put($temp_file) or do {
+                my $message = $ftp->message();
+                $ftp->delete($temp_fname);
+                unlink($temp_file);
+                if ( $message =~ m{open a connection}i ) {
+                    die lh()->maketext( "Consider using [asis,Passive FTP] because [asis,FTP] failed to upload file a test file because of an error: [_1].", $message );
+                }
+                else {
+                    die lh()->maketext( "Failed to upload a test file using [asis,FTP] because of an error: [_1].", $message );
+                }
+            };
+
+            $ftp->delete($temp_fname);
+
+            unlink($temp_file);
+        }
+        $ftp->quit();
+    }
+    catch {
+        syswrite( STDERR, Cpanel::Exception::Utils::traceback_to_error( Cpanel::Exception::get_string($_) ) );
+        $err = $_;
+    };
+
+    return 0 if $err;
+
+    if ( length $pkgfile ) {
+        print lh()->maketext( "Uploaded file “[_1]” to “[_2]” via [asis,FTP].", $pkgfile, $server );
+    }
+    else {
+        print lh()->maketext( "[asis,FTP] login to “[_1]” successful.", $server );
+    }
+
+    return 1;
+}
+
+sub _get_ftp_connection_or_die {
+    my ( $server, $ruser, $port, $passive ) = @_;
+
+    # Net::FTP->new SETS $@ (doesn't die) to report connection errors. Don't pollute $@ for any possible future callers.
+    local $@;
+    my $ftp = Net::FTP->new( $server, Port => ( $port || 21 ), Passive => ( $passive =~ m{passive}i ? 1 : 0 ), Timeout => $FTP_TIMEOUT )
+      or do {
+
+        # Capture the error before calling mt otherwise the error is lost
+        my $err = $@;
+        die lh()->maketext( "[asis,FTP] Connection to “[_1]” as “[_2]” failed because of an error: [_3].", $server, $ruser, $err || 'Could not connect due to an unknown reason' );
+      };
+
+    return $ftp;
+}

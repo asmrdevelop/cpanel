@@ -1,0 +1,270 @@
+[% USE Whostmgr -%]
+
+[%-
+# The build-tools/extract-go-links tool requires full URLs to
+# properly extract go links.  Using explicit links also ensures we
+# never have a go link that doesn't redirect.
+IF data.apache_version == '2_2';
+    SET RlimitMEM = 'https://go.cpanel.net/apache2_2_rlimitmem';
+ELSE;
+    SET RlimitMEM = 'https://go.cpanel.net/apache2_4_rlimitmem';
+END; -%]
+
+[%# TODO: Remove extra styles when we update bootstrap %]
+[% WRAPPER 'master_templates/master.tmpl'
+    theme = 'bootstrap',
+    app_key = 'apache_configuration'
+    extrastyle='
+/* START - Bootstrap styles that need to be deleted after update */
+.media {
+    margin-top: 15px;
+}
+
+.media:first-child {
+    margin-top: 0;
+}
+
+.media,
+.media-body {
+    zoom: 1;
+    overflow: hidden;
+}
+
+.media-body {
+    width: 10000px;
+}
+
+.media-object {
+    display: block;
+}
+
+.media-object.img-thumbnail {
+    max-width: none;
+}
+
+.media-right,
+.media > .pull-right {
+    padding-left: 10px;
+}
+
+.media-left,
+.media > .pull-left {
+    padding-right: 10px;
+}
+
+.media-left,
+.media-right,
+.media-body {
+    display: table-cell;
+    vertical-align: top;
+}
+
+.media-middle {
+    vertical-align: middle;
+}
+
+.media-bottom {
+    vertical-align: bottom;
+}
+
+.media-heading {
+    margin-top: 0;
+    margin-bottom: 5px;
+}
+
+.media-list {
+    padding-left: 0;
+    list-style: none;
+}
+/* END - Bootstrap styles that need to be deleted after update */
+
+/* page specific custom style */
+.apache-config-item {
+    border-bottom: 1px solid #eee;
+    padding-bottom: 10px;
+    margin-bottom: 20px;
+}
+'
+%]
+
+[% PROCESS _local_template_warning_message.tmpl %]
+
+<section class="well">
+    <div class="media apache-config-item">
+        <div class="media-left">
+            <a href="[% cp_security_token %]/scripts2/globalapachesetup"
+                title="[% locale.maketext("Global Configuration") %]">
+                <img src="[% MagicRevision( Whostmgr.find_file_url('icons/global_configuration.png') ) %]"
+                    class="media-object"
+                    alt="[% locale.maketext("Global Configuration") %]"/>
+            </a>
+        </div>
+        <div class="media-body">
+            <h4 class="media-heading">
+                <a href="[% cp_security_token %]/scripts2/globalapachesetup"
+                    title="[% locale.maketext("Global Configuration") %]">
+                    [% locale.maketext("Global Configuration") %]
+                </a>
+            </h4>
+            <p>
+                [% locale.maketext("Here you can configure some common directives in [asis,httpd.conf]’s main context.") %]
+            </p>
+        </div>
+    </div>
+    [% IF !data.is_ea4 %]
+    <div class="media apache-config-item">
+        <div class="media-left">
+            <a href="[% cp_security_token %]/scripts2/phpandsuexecconf"
+                title="[% locale.maketext("[asis,PHP] and [asis,suEXEC] Configuration") %]">
+                <img src="[% MagicRevision( Whostmgr.find_file_url('icons/configure_php_and_suexec.png') ) %]"
+                    class="media-object"
+                    alt="[% locale.maketext("[asis,PHP] and [asis,suEXEC] Configuration") %]" />
+            </a>
+        </div>
+        <div class="media-body">
+            <h4 class="media-heading">
+                <a href="[% cp_security_token %]/scripts2/phpandsuexecconf"
+                    title="[% locale.maketext("[asis,PHP] and [asis,suEXEC] Configuration") %]">
+                    [% locale.maketext("[asis,PHP] and [asis,suEXEC] Configuration") %]
+                </a>
+            </h4>
+            <p>
+                [% locale.maketext("This tool allows you to configure the Apache PHP Handler, the default PHP version, and [asis,suEXEC] support.") %]
+            </p>
+        </div>
+    </div>
+    [% END %]
+
+    <div class="media apache-config-item">
+        <div class="media-left">
+            <a href="[% cp_security_token %]/scripts2/edit_apache_directoryindex"
+                title="[% locale.maketext("[asis,DirectoryIndex] Priority") %]">
+                <img src="[% MagicRevision( Whostmgr.find_file_url('icons/directoryindex_priority.png') ) %]"
+                    class="media-object"
+                    alt="[% locale.maketext("[asis,DirectoryIndex] Priority") %]" />
+            </a>
+        </div>
+        <div class="media-body">
+            <h4 class="media-heading">
+                <a href="[% cp_security_token %]/scripts2/edit_apache_directoryindex"
+                    title="[% locale.maketext("[asis,DirectoryIndex] Priority") %]">
+                    [% locale.maketext("[asis,DirectoryIndex] Priority") %]
+                </a>
+            </h4>
+            <p>
+                [% locale.maketext("The [asis,DirectoryIndex] directive in [asis,Apache] specifies which filenames will serve as the directory index page and their priority when more than one matching filename exists. This interface allows the priority order to be specified and allows for the addition of new filenames.") %]
+            </p>
+        </div>
+    </div>
+
+    <div class="media apache-config-item">
+        <div class="media-left">
+            <a href="[% cp_security_token %]/scripts2/editinclude"
+                title="[% locale.maketext("Include Editor") %]">
+                <img src="[% MagicRevision( Whostmgr.find_file_url('icons/include_editor.png') ) %]"
+                    class="media-object"
+                    alt="[% locale.maketext("Include Editor") %]" />
+            </a>
+        </div>
+        <div class="media-body">
+            <h4 class="media-heading">
+                <a href="[% cp_security_token %]/scripts2/editinclude"
+                    title="[% locale.maketext("Include Editor") %]">
+                    [% locale.maketext("Include Editor") %]
+                </a>
+            </h4>
+            <p>
+                [% locale.maketext("The [asis,Apache] configuration system is designed to handle the vast majority of configurations. In some cases additional configuration directives are required to allow the [asis,Apache httpd] server function as desired. The [asis,cPanel Apache] configuration system uses [asis,Include] directives to provide hooks in strategic points in order to allow these configurations. These files allow new functionality to be introduced, and are included with the normal [asis,Apache] configuration. Additionally, you can override or disable some default configuration directives completely.") %]
+            </p>
+        </div>
+    </div>
+
+    <div class="media apache-config-item">
+        <div class="media-left">
+            <a href="[% cp_security_token %]/scripts2/edit_apache_reserved_ips"
+                title="[% locale.maketext("Reserved IP Address Editor") %]">
+                <img src="[% MagicRevision( Whostmgr.find_file_url('icons/reserved_ips_editor.png') ) %]"
+                    class="media-object"
+                    alt="[% locale.maketext("Reserved IP Address Editor") %]" />
+            </a>
+        </div>
+        <div class="media-body">
+            <h4 class="media-heading">
+                <a href="[% cp_security_token %]/scripts2/edit_apache_reserved_ips"
+                    title="[% locale.maketext("Reserved IP Address Editor") %]">
+                    [% locale.maketext("Reserved IP Address Editor") %]
+                </a>
+            </h4>
+            <p>
+                [% locale.maketext("By default, [asis,Apache] is configured to listen on all available IP addresses. [asis,Apache] can be configured to only respond on specific IP addresses. This editor provides an interface to specify the [asis,Apache] IP address restrictions.") %]
+            </p>
+        </div>
+    </div>
+
+    <div class="media apache-config-item">
+        <div class="media-left">
+            <a href="[% cp_security_token %]/scripts2/edit_apache_mem_limits"
+                title="[% locale.maketext("Memory Usage Restrictions") %]">
+                <img src="[% MagicRevision( Whostmgr.find_file_url('icons/memory_usage_restrictions.png') ) %]"
+                    class="media-object"
+                    alt="[% locale.maketext("Memory Usage Restrictions") %]" />
+            </a>
+        </div>
+        <div class="media-body">
+            <h4 class="media-heading">
+                <a href="[% cp_security_token %]/scripts2/edit_apache_mem_limits"
+                    title="[% locale.maketext("Memory Usage Restrictions") %]">
+                    [% locale.maketext("Memory Usage Restrictions") %]
+                </a>
+            </h4>
+            <p>
+               [% locale.maketext("This tool calculates and sets new [asis,Apache] memory limits. You can update your Apache configuration with the new limits. See [output,url,_1,RLimitMEM,target,_blank] documentation for more information.", RlimitMEM) %]
+            </p>
+        </div>
+    </div>
+
+    <div class="media apache-config-item">
+        <div class="media-left">
+            <a href="[% cp_security_token %]/cgi/apache_log_rotation.pl"
+                title="[% locale.maketext("Log Rotation") %]">
+                <img src="[% MagicRevision( Whostmgr.find_file_url('icons/log_rotation.png') ) %]"
+                    class="media-object"
+                    alt="[% locale.maketext("Log Rotation") %]" />
+            </a>
+        </div>
+        <div class="media-body">
+            <h4 class="media-heading">
+                <a href="[% cp_security_token %]/cgi/apache_log_rotation.pl"
+                    title="[% locale.maketext("Log Rotation") %]">
+                    [% locale.maketext("Log Rotation") %]
+                </a>
+            </h4>
+            <p>
+               [% locale.maketext("Manage which Apache log files are rotated.") %]
+            </p>
+        </div>
+    </div>
+
+    <div class="media">
+        <div class="media-left">
+            <a href="[% cp_security_token %]/scripts2/piped_log_configuration"
+                title="[% locale.maketext("Piped Log Configuration") %]">
+                <img src="[% MagicRevision( Whostmgr.find_file_url('icons/piped_log_configuration.png') ) %]"
+                    class="media-object"
+                    alt="[% locale.maketext("Piped Log Configuration") %]" />
+            </a>
+        </div>
+        <div class="media-body">
+            <h4 class="media-heading">
+                <a href="[% cp_security_token %]/scripts2/piped_log_configuration"
+                    title="[% locale.maketext("Piped Log Configuration") %]">
+                    [% locale.maketext("Piped Log Configuration") %]
+                </a>
+            </h4>
+            <p>
+               [% locale.maketext("Configure [asis,Apache] to use a single log target for all virtual host access and bandwidth logs. The combined logs will be piped to a helper application where they can be split based upon domain. This option will reduce the number of log files [asis,Apache] manages, which will free system resources. Piped logging is recommended for systems with a large number of domains. This feature defaults to enabled. If you disable this feature, [asis,Apache] will create distinct log files for each virtual host entry.") %]
+            </p>
+        </div>
+    </div>
+</section>
+[% END %]

@@ -1,0 +1,38 @@
+[%#
+# cpanel - whostmgr/docroot/templates/collapsible_wrapper/collapsible_wrapper.tmpl
+#                                                  Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+    Params:
+        label: The section title.
+        id: The id for the div element to display/hide.
+        isExpanded: If you want to initially have an expanded collapsible. Defaults to false.
+        isOptional: If you want the text "optional" to appear next to your label. Defaults to false.
+        smallNotice: A small notice to display directly below the section title. Defaults to nothing.
+        disableCollapse: If you want the section to not be collapsible. Defaults to false.
+%]
+
+<a role="button" class="h3 collapsible-wrapper [% disableCollapse && 'collapsible--disabled' %]" href="#[% id %]">
+    <span>
+        [%- label -%]
+
+        [%- IF isOptional -%]
+            <small> ([% locale.maketext("optional") %])</small>
+        [%- END -%]
+
+        [%- IF smallNotice -%]
+            <div id="[% id -%]-smallNotice" class="smallNotice">
+                <i class="fas fa-exclamation-triangle" aria-hidden="true"></i>
+                <small>
+                    [% smallNotice -%]
+                </small>
+            </div>
+        [%- END -%]
+    </span>
+    [%- IF !disableCollapse -%]
+        <i class="fas [% isExpanded ? 'fa-chevron-up' : 'fa-chevron-down' %]" aria-hidden="true"></i>
+    [%- END -%]
+</a>
+<div class="content width-inherit" style="display: [% isExpanded ? 'block' : 'none' %]" id="[% id %]">[% content %]</div>

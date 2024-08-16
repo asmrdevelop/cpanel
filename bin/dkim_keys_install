@@ -1,0 +1,38 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - bin/dkim_keys_install                   Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+#
+
+use strict;
+use warnings;
+
+use Cpanel::DKIM                ();
+use Cpanel::DKIM::Transaction   ();
+use Cpanel::AcctUtils::Account  ();
+use Cpanel::Config::CpUserGuard ();
+
+my $user = $ARGV[0] or die "$0: usage: $0 <user>";
+
+if ( !Cpanel::AcctUtils::Account::accountexists($user) ) {
+    die "“$user” is not a cPanel user on this system.\n";
+}
+
+if ( !Cpanel::DKIM::mta_has_dkim() ) {
+    die 'DKIM is not installed on this machine.';
+}
+
+my $cpuser_guard = Cpanel::Config::CpUserGuard->new($user);
+my $cpuser_data  = $cpuser_guard->{'data'};
+$cpuser_data->{'HASDKIM'} = 1;
+$cpuser_guard->save();
+
+my $dkim   = Cpanel::DKIM::Transaction->new();
+my $status = $dkim->set_up_user($user);
+$dkim->commit();
+
+# The transaction already warn()ed about any problems.
+exit 1 if !$status || !$status->was_total_success();

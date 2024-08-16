@@ -1,0 +1,73 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/purge_old_config_caches         Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use Cpanel::AccessIds::SetUids ();
+use Cpanel::PwCache::Build     ();
+use Cpanel::Logger             ();
+
+#
+# This script removes any caches in /var/cpanel/configs.cache that are older then 7 days
+#
+
+my $logger;
+my $TTL = ( 86400 * 14 );    # 14 days
+my $now = time();
+
+if ( !-d '/var/cpanel/configs.cache' ) {
+    mkdir( '/var/cpanel/configs.cache', 0700 ) || die;
+}
+Cpanel::PwCache::Build::init_passwdless_pwcache();
+
+my $pwcache_ref = Cpanel::PwCache::Build::fetch_pwcache();
+
+purge_dirs( [ 0, 0, '/var/cpanel/configs.cache' ] );
+
+if ( grep( /--userdirs/, @ARGV ) ) {
+    purge_dirs(
+        map  { [ $_->[2], $_->[3], $_->[7] . '/.cpanel/caches/config' ] }
+        grep { $_->[7] && -e $_->[7] . '/.cpanel/caches/config' } @{$pwcache_ref}
+    );
+}
+
+sub purge_dirs {
+    foreach my $purge_ref (@_) {
+        my ( $uid, $gid, $dir ) = @$purge_ref;
+        if ( $uid == $> || $gid == ( split( /\s+/, $) ) )[0] ) {
+            _purge_dir($dir);
+        }
+        else {
+            if ( my $pid = fork() ) {
+                waitpid( $pid, 0 );
+            }
+            elsif ( defined $pid ) {
+                Cpanel::AccessIds::SetUids::setuids( $uid, $gid ) || die;
+                _purge_dir($dir);
+                exit;
+            }
+            else {
+                $logger ||= Cpanel::Logger->new();
+                $logger->warn("Failed to fork()");
+            }
+        }
+    }
+
+    return;
+}
+
+sub _purge_dir {
+    my $dir = shift;
+    my $mtime;
+    if ( opendir( my $cachefile_dir, $dir ) ) {
+        unlink(
+            map  { $dir . '/' . $_ }
+            grep { !/^\.+$/ && ( ( $mtime = ( stat( $dir . '/' . $_ ) )[9] ) + $TTL < $now || $mtime > $now ) } readdir($cachefile_dir)
+        );
+        closedir $cachefile_dir;
+    }
+
+    return;
+}

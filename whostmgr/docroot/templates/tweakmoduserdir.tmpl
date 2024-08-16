@@ -1,0 +1,40 @@
+[% WRAPPER 'master_templates/master.tmpl' theme="yui" app_key="apache_mod_userdir_tweak" -%]
+[% IF data.webserver_runs_as_user %]
+<div id="cjt_static_notice_container" class="cjt-pagenotice-container cjt-notice-container">
+    <div class="yui-module cjt-notice cjt-pagenotice cjt-notice-warn">
+        <div class="bd">
+            <div class="cjt-notice-content">[% locale.maketext('[asis,mod_userdir] is disabled') %]</div>
+            <div>[% locale.maketext("Web server processes on this system currently run as the user. For security reasons, the system disabled [asis,mod_userdir]. Any changes that you make in this interface will not take effect until you enable [asis,mod_userdir]. To use [asis,mod_userdir], you must disable [list_and,_1] and recompile [asis,EasyApache].", ["mod_ruid2", "mod_itk", "mod_passenger"]) %]</div>
+        </div>
+    </div>
+</div>
+[% END %]
+<p>[% locale.maketext('[asis,Apache httpd]’s [asis,mod_userdir] makes [asis,URL]s like “[_1]” resolve to the indicated user’s (for example, the user “[_2]”’s) primary web virtual host.', 'http://example.com/~fred', 'fred') %]</p>
+
+<p>[% locale.maketext('In the above scenario, the transferred data counts against the bandwidth limit for the user that owns “[_1]”, not against “[_2]”’s bandwidth limit. This is often an undesirable behavior.', 'example.com', 'fred') %]</p>
+
+<p>[% locale.maketext('WHM’s [asis,mod_userdir Protection] feature addresses this problem by restricting [asis,mod_userdir] to [asis,URL]s whose users own the [asis,URL]’s domains.') %]</p>
+
+<form method="POST" action="[% data.action -%]">
+    <input type="checkbox" value="1" name="moduserdir"
+        [% IF data.hasmoddirsec %]checked[% END -%]>[%
+        locale.maketext("Enable [asis,mod_userdir] Protection")
+    %]</input>
+    <table width="90%" class="sortable">
+        <tr class="tblheader0">
+            <th nonsortable="true"><span class="b2">[% locale.maketext("Host") %]</span></th>
+            <th nonsortable="true"><span class="b2">[% locale.maketext("Exclude Protection") %]</span></th>
+            <th nonsortable="true"><span class="b2">[% locale.maketext("Additional Users") %]</span></th>
+        </tr>
+        [% FOREACH d IN data.userdir_domains %]
+        <tr>
+            <td>[% d.domain %] ([% d.user %])</td>
+            <td><input type="checkbox" value="1" name="userdir-[% d.domain %]"
+                [% IF d.checked %]checked[%- END %]/></td>
+            <td><input type="text" value="[% d.add_users %]" name="userdirusers-[% d.domain %]" /></td>
+        </tr>
+        [% END %]
+    </table>
+    <input type="submit" class="btn-primary" value="[% locale.maketext("Save") %]" />
+</form>
+[% END #wrapper -%]

@@ -1,0 +1,129 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/locale_export                   Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+use warnings;
+use Getopt::Param                  ();
+use Cpanel::Locale                 ();
+use Cpanel::Locale::Utils::Display ();
+use Cpanel::Locale::Utils::XML     ();
+use Cpanel::SafeDir::MK            ();
+
+my $prm = Getopt::Param->new(
+    {
+        'no_args_help' => 1,
+        'help_coderef' => sub {
+            print <<"END_USAGE";
+$0 --locale={locale_tag} [--locale=… --locale=… …] [--quiet] [--export-{locale_tag}={path}]  [--dumper-format] [--exclude-bracketed-strings] [--no-fallback]
+
+Export locales from the Locale database in XML format.
+
+Options:
+  --help                       Show this help screen
+  --quiet                      Show less output than normal.
+  --locale={locale_tag}        Specify a locale to export. You may pass the flag multiple times in order to export multiple locales.
+      This creates files in a default location that `/usr/local/cpanel/scripts/locale_import --locale={locale_tag}` knows to use.
+  --export-{locale_tag}={file} Save the export of the locale {locale_tag} to {file} instead of the standard place.
+      This creates files that can be imported with `/usr/local/cpanel/scripts/locale_import --import={file}`
+  --dumper-format              Export into the old format instead of XLIFF (will force an .xml extension on any --export-XX paths)
+  --recover                    Try to recover on encountering an ill-formed phrase.
+  --exclude-bracketed-strings  Exclude strings that contain bracket notion, which may cause problem on some translation platforms.
+  --no-fallback                Do not use orginial strings as fallback if no translation is available, leave target blank.
+
+The XML files that this script creates can be imported via /usr/local/cpanel/scripts/locale_import
+
+If there were problems exporting the script will exit with an error status. To examine the details of what happened do not use --quiet.
+END_USAGE
+            exit;
+        },
+    }
+);
+
+my $verbose = $prm->get_param('quiet') ? 0 : 1;
+my $options = {
+    'recover'     => ( $prm->get_param('recover')                   ? 1 : 0 ),
+    'no-brackets' => ( $prm->get_param('exclude-bracketed-strings') ? 1 : 0 ),
+    'no-fallback' => ( $prm->get_param('no-fallback')               ? 1 : 0 ),
+};
+my $count  = 0;
+my $failed = 0;
+my $locale = Cpanel::Locale->get_handle();
+
+my %locale_lookup;
+
+@locale_lookup{ Cpanel::Locale::Utils::Display::get_locale_list($locale) } = ();
+my $euid_home;
+foreach my $loc ( $prm->get_param('locale') ) {
+    $count++;
+
+    if ( !exists $locale_lookup{$loc} ) {
+        print "Invalid locale\n" if $verbose;
+        $failed++;
+        next;
+    }
+
+    my $path = $prm->get_param('dumper-format') ? "/var/cpanel/locale/export/$loc.xml" : "/var/cpanel/locale/export/$loc.xlf";
+    if ( $prm->get_param("export-$loc") ) {
+        $path = $prm->get_param("export-$loc");
+        $path =~ s/\.[^.]+$//;    # strip any existing extension …
+        if ( $prm->get_param('dumper-format') ) {
+            $path .= '.xml';      # … replace it w/ .xml
+        }
+        else {
+            $path .= '.xlf';      # … replace it w/ .xlf
+        }
+    }
+
+    # expand ~/ that was treated as a string and not expanded by the shell before being put in @ARGV
+    if ( substr( $path, 0, 2 ) eq '~/' ) {
+        $euid_home ||= ( getpwuid($>) )[7];    # only look it up if needed, and only look it up one time
+        substr( $path, 0, 2, "$euid_home/" );
+    }
+
+    my ( $head, @dir ) = reverse( split( /\//, $path ) );
+    my $dir = join( '/', reverse(@dir) );
+    if ( $dir && !-d $dir ) {
+        if ( !Cpanel::SafeDir::MK::safemkdir($dir) ) {
+            print "Could not create path '$dir': $!\n" if $verbose;
+            $failed++;
+            next;
+        }
+    }
+
+    if ( -e $path ) {
+        print "Replacing existing export file '$path'\n" if $verbose;
+        unlink($path);
+        if ( -e $path ) {
+            print "Could not unlink '$path': $!\n" if $verbose;
+            $failed++;
+            next;
+        }
+    }
+
+    my $error = '';
+
+    if ( Cpanel::Locale::Utils::XML::locale_to_xml( $path, $loc, \$error, $options ) ) {
+        print "$error'$loc' has been exported to '$path'.\n" if $verbose;
+    }
+    else {
+        print "Failed to create XML file for locale '$loc': $error\n" if $verbose;
+        $failed++;
+        next;
+    }
+}
+
+if ( !$count || $failed ) {
+    if ($verbose) {
+        if ($failed) {
+            print "$failed out of $count failed to export.\n";
+        }
+        elsif ( !$count ) {
+            print "No locales to export.\n";
+        }
+    }
+    exit 1;
+}

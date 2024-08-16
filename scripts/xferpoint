@@ -1,0 +1,96 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/xferpoint                       Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use cPstrict;
+
+use Cpanel::AcctUtils::Account     ();
+use Cpanel::Validate::Domain::Tiny ();
+use Cpanel::Hostname               ();
+use Cpanel::Validate::IP::v4       ();
+
+use Whostmgr::Transfers::Utils::XferPoint::Params ();
+
+our $VERSION = '0.6';
+if ( $ARGV[0] eq '--version' ) {
+    print "VERSION: $VERSION\n";
+    exit;
+}
+
+my $params_obj = Whostmgr::Transfers::Utils::XferPoint::Params->new(@ARGV);
+
+my $user      = $params_obj->username();
+my $sourceip  = $params_obj->sourceip();
+my $destip    = $params_obj->destip();
+my $domain    = $params_obj->domain();
+my $shared_ip = $params_obj->sharedip();
+
+my @nameservers = $params_obj->nameservers();
+
+my $hostname = Cpanel::Hostname::gethostname();
+
+if ( !$user || !$sourceip || !$destip || !$domain || !$shared_ip ) {
+    die "Usage: $0 user sourceip destip domain sharedip [flagsnum] [nameserver1 nameserver2 ...]";
+}
+
+if ( !Cpanel::AcctUtils::Account::accountexists($user) ) {
+    die "The user '$user' doesn't exist.\n";
+}
+
+foreach my $ip ( $sourceip, $destip, $shared_ip ) {
+    next if $ip eq -1;
+    if ( !Cpanel::Validate::IP::v4::is_valid_ipv4($ip) ) {
+        die "'$ip' is not a valid ip.\n";
+    }
+}
+
+if ( !Cpanel::Validate::Domain::Tiny::validdomainname($domain) ) {
+    die "'$domain' is not valid as a domain name.\n";
+}
+
+if ( @nameservers && scalar @nameservers < 2 ) {
+    die "There must be at least two nameservers given.\n";
+}
+
+print "[xferpoint] server:$hostname user:$user\n";
+
+# Live Transfer mode obviates the need to block dynamic content.
+# With “Express Transfer” mode, though--which is still available via the
+# API--we still need to do the blocking. Since we don’t have an argument
+# to this script that indicates whether we’re in Express or Live mode,
+# we query the system state to determine whether a service proxy was
+# set up for HTTP or not.
+if ( $params_obj->skip_dynamic_block() ) {
+    print "[xferpoint] Per request, skipping creation of dynamic content block.\n";
+}
+else {
+    print "[xferpoint] Blocking dynamic content …\n";
+    system '/usr/local/cpanel/scripts/xfertool', '--blockdynamiccontent', $user;
+}
+
+if ( -x '/usr/local/cpanel/bin/swapip' ) {
+    print "[xferpoint] Updating IP addresses in DNS …\n";
+    system '/usr/local/cpanel/bin/swapip', $sourceip, $destip, $shared_ip, $domain;
+}
+
+if (@nameservers) {
+    print "[xferpoint] Setting nameservers (@nameservers) …\n";
+    foreach my $dns (@nameservers) {
+        if ( !Cpanel::Validate::Domain::Tiny::validdomainname($dns) ) {
+            die "$dns is not valid.\n";
+        }
+    }
+    system '/usr/local/cpanel/scripts/xfertool', '--changenameservers', $user, @nameservers;
+}
+else {
+    print "[xferpoint] not updating nameservers (none provided)\n";
+}
+
+print "[xferpoint] complete\n";
+
+#----------------------------------------------------------------------
+
+1;

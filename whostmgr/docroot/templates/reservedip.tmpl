@@ -1,0 +1,52 @@
+[% WRAPPER 'master_templates/master.tmpl' theme="yui"
+    app_key = 'show_edit_reserved_ips'
+	scripts = ['/js/sorttable.js']
+-%]
+[% USE Net -%]
+[% USE CPSort -%]
+<p>Any IP address you check off here will not be used to setup accounts.</p>
+<form action="[% cp_security_token %]/scripts/savereservedips" method="POST">
+<table class="sortable" id="resip"><tr class="cellheader">
+<!-- <th nonsortable="true"></th> -->
+<th><b>IP</b></th><th nonsortable="true"><b>Reason for Reserving (optional)</b></th></tr>
+[%
+    FOR ip = data.ipdata.keys.cpsort( { 'code' => \Net.inet_aton, 'num' => 1} );
+        SET delegated_to_user = data.ipdata.$ip.delegated.${data.user};
+        IF !data.ipdata.$ip.delegated.size;
+            SET delegated_text = "";
+        ELSIF data.ipdata.$ip.delegated.size <= 5;
+            SET delegated_text = locale.maketext('Delegated to [list_and,_1].',data.ipdata.$ip.delegated);
+        ELSE ;
+            SET delegated_list = data.ipdata.$ip.delegated;
+            SET others_count   = delegated_list.size - 4;
+            SET delegated_text = locale.maketext('Delegated to [_1], [_2], [_3], [_4], and [quant,_5,other,others].',delegated_list.0,delegated_list.1,delegated_list.2,delegated_list.3,others_count);
+        END;
+        IF data.ipdata.$ip.shared.size;
+            NEXT;
+        END;
+        SET dedicated         = data.ipdata.$ip.dedicated_user;
+        SET nameserver        = data.ipdata.$ip.nameserver;
+        SET reserved          = data.ipdata.$ip.reserved;
+-%]
+<tr class="[% loop.index % 2 ? 'tdshade2' : 'tdshade1' %]">
+<td sorttable_customkey='[% Net.inet_aton(data.get_public_ip(ip)) %]'><label><input type="checkbox" [% IF reserved %]checked="checked"[% END %] value="1" name="ip-[% ip %]" />&nbsp;[% data.get_public_ip(ip) %]</label>
+[%-
+    IF delegated_text;
+        "<br />$delegated_text";
+    END;
+    IF shared_text;
+        "<br />$shared_text";
+    END;
+    IF dedicated;
+        "<br />Dedicated to $dedicated";
+    END;
+    IF nameserver;
+        "<br />Nameserver: $nameserver";
+    END;
+-%]
+</td>
+<td><input type="text" name="reason-[% ip %]" value="[% data.reserved_reasons.$ip %]" size="50" /></td></tr>
+[% END -%]
+</table><input type="submit" class="btn-primary" value="Save" />
+</form>
+[% END #wrapper -%]

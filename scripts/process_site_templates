@@ -1,0 +1,267 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/process_site_templates          Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+
+ProcessSiteTemplates::run(@ARGV) unless caller;
+
+package ProcessSiteTemplates;
+
+use Getopt::Long qw(GetOptionsFromArray);
+use Try::Tiny;
+
+use File::Basename;
+
+use Cpanel::Template        ();
+use Cpanel::JSON            ();
+use Cpanel::PwCache         ();
+use Cpanel::SafeDir::MK     ();
+use Cpanel::SafeRun::Errors ();
+use Cpanel::Tar             ();
+
+sub usage {
+    my $exit_code = shift || 0;
+    print <<EO_USAGE;
+process_site_templates --source=/path/to/site/templates --target=/path/to/target/directory
+
+Process Site Publisher templates from a source directory in order to generate HTML files in the target directory.
+This script overwrites any existing files in the target directory.
+
+    Options:
+      --define para1=val1 Provide a value for a parameter that the template uses.
+
+EO_USAGE
+
+    require POSIX;
+    POSIX::_exit($exit_code);
+    return;
+}
+
+sub bail_out {
+    my ($msg) = @_;
+    print STDERR "Error: $msg\n\n";
+    usage(1);
+    return;
+}
+
+my ( $source, $target, $config, %parameters, $help, $tt, $bu_file, $config_file, $homedir );
+
+sub run {
+    my (@args) = @_;
+
+    die "Do not run this script as the root user" if ( $> == 0 );
+
+    $homedir = Cpanel::PwCache::gethomedir();
+
+    my %parameters = ();
+
+    GetOptionsFromArray(
+        \@args,
+        'source=s' => \$source,
+        'target=s' => \$target,
+        'config=s' => \$config,
+        'define=s' => \%parameters,
+        'help'     => \$help,
+    ) || usage(1);
+
+    if ($help) {
+        usage(0);
+    }
+
+    unless ( $target && -d $target && $target =~ m/^\// ) {
+        bail_out("The target directory ($target) is invalid.");
+    }
+
+    my $config_dir = $homedir . '/site_publisher/configurations';
+    unless ( -d $config_dir ) {
+        Cpanel::SafeDir::MK::safemkdir($config_dir);
+    }
+    chmod 0700, $config_dir;
+
+    $config_file = join( '-', split( /\/+/, $target ) );
+    $config_file =~ s{^-}{};
+    $config_file .= '.json';
+    $config_file = $config_dir . '/' . $config_file;
+
+    my $data_file = $target . '/configurations.json';
+
+    my $current_settings = {};
+
+    if ( -e $config_file ) {
+        eval { $current_settings = Cpanel::JSON::LoadFile($config_file) };
+    }
+    elsif ( -e $data_file ) {
+        eval { $current_settings = Cpanel::JSON::LoadFile($data_file) };
+        save_settings($current_settings);
+    }
+    unlink $data_file;
+
+    try {
+        do_archive();
+    }
+    catch {
+        die "Unable to create a backup of the target directory: $_";
+    };
+
+    if ($config) {
+        if ( -e $config ) {
+            eval { $current_settings = Cpanel::JSON::LoadFile($config) };
+        }
+        else {
+            die "Unable to read config file: $config";
+        }
+    }
+
+    unless ( $source && -d $source ) {
+        if ( $current_settings->{path} && $current_settings->{template} ) {
+            $source = $current_settings->{path} . '/' . $current_settings->{template};
+        }
+
+        bail_out("The source directory ($source) is invalid.") unless $source && -d $source;
+    }
+
+    foreach my $k ( keys %parameters ) {
+        $current_settings->{$k} = $parameters{$k};
+    }
+
+    try {
+        process_templates($current_settings);
+    }
+    catch {
+        my $msg = $_;
+
+        if ( $bu_file && -e $bu_file ) {
+            restore_target();
+        }
+
+        die "Publication of site template failed: $msg";
+    };
+
+    my $template = basename($source);
+    my $path     = dirname($source);
+    $current_settings->{'template'} = $template;
+    $current_settings->{'path'}     = $path;
+
+    save_settings($current_settings);
+
+    return 1;
+}
+
+sub process_templates {
+    my ( $data, $current_dir ) = @_;
+
+    my $template_dir = $source;
+    $template_dir .= '/' . $current_dir if ($current_dir);
+    return unless ( -d $template_dir && opendir my $dh, $template_dir );
+
+    my $dest_dir = $target;
+    $dest_dir .= '/' . $current_dir if ($current_dir);
+    die "The system could not create the destination directory: $dest_dir." unless ( -d $dest_dir || mkdir $dest_dir, 0755 );
+
+    my @sub_directories = ();
+    foreach my $tmpl ( readdir($dh) ) {
+        next if $tmpl =~ m/^\./;
+        next if $tmpl eq 'meta.json';
+        next if $tmpl eq 'preview.png';
+        next if $tmpl =~ m/README/i;
+
+        if ( -d $template_dir . '/' . $tmpl ) {
+            push @sub_directories, $current_dir . '/' . $tmpl;
+            next;
+        }
+
+        my $dest = $tmpl;
+        if ( $tmpl =~ m/\.tt$/ ) {
+            $dest =~ s/\.tt$//;
+            $data->{template_file} = $tmpl;
+            die unless open( my $fh, '>', $dest_dir . '/' . $dest );
+            my ( $success, $output ) = Cpanel::Template::process_template(
+                'site_template',
+                $data,
+                {
+                    'print_yn'     => 0,
+                    'include_path' => [ $template_dir, $source ],
+                }
+            );
+            print {$fh} $$output;
+            close $fh;
+        }
+        else {
+            my $ret = Cpanel::SafeRun::Errors::saferunonlyerrors( '/bin/cp', '-f', $template_dir . '/' . $tmpl, $dest_dir . '/' . $dest );
+            die $ret if scalar grep ( /cannot/i, split( /\n/, $ret ) );
+        }
+    }
+    close $dh;
+
+    foreach my $sub (@sub_directories) {
+        process_templates( $data, $sub );
+    }
+
+    return 1;
+}
+
+sub do_archive {
+    $bu_file = join( '-', split( /\/+/, $target ) );
+    $bu_file =~ s{^-}{};
+    $bu_file .= '-' . $$ . '-' . time();
+
+    my $bu_dir = $homedir . '/site_publisher/backups';
+    unless ( -d $bu_dir ) {
+        Cpanel::SafeDir::MK::safemkdir($bu_dir);
+    }
+    chmod 0700, $bu_dir;
+
+    # discard things older than 30 days
+    if ( opendir( my $dh, $bu_dir ) ) {
+        my @old_files = grep /-\d+-\d+\.tar\.gz$/, readdir($dh);
+        closedir $dh;
+
+        my $current = time();
+        my $cutoff  = $current - 30 * 24 * 60 * 60;
+
+        foreach my $f (@old_files) {
+            my @pots  = split( /-/, $f );
+            my $stamp = $pots[-1];
+            $stamp =~ s{\.tar\.gz$}{};
+            if ( $stamp < $cutoff ) {
+                unlink $bu_dir . '/' . $f;
+            }
+        }
+    }
+
+    $bu_file = $bu_dir . '/' . $bu_file . '.tar.gz';
+    my $ret = Cpanel::SafeRun::Errors::saferunonlyerrors( Cpanel::Tar::load_tarcfg()->{'bin'}, '-c', '-v', '-z', '-f', $bu_file, $target );
+    die $ret if scalar grep ( /error/i, split( /\n/, $ret ) );
+
+    return;
+}
+
+sub restore_target {
+    Cpanel::SafeRun::Errors::saferunnoerror( '/usr/bin/rm', '-rf', '--', $target );
+    chdir '/';
+    Cpanel::SafeRun::Errors::saferunnoerror( Cpanel::Tar::load_tarcfg()->{'bin'}, '-x', '-v', '-z', '-f', $bu_file );
+
+    return;
+}
+
+sub save_settings {
+    my ($settings) = @_;
+    my $orig_mask = umask 0077;
+    my $out_fh;
+    unless ( open( $out_fh, '>', $config_file ) ) {
+        die "The system could not save settings to the file: $config_file";
+    }
+
+    require Cpanel::JSON::Sanitize;
+    print {$out_fh} Cpanel::JSON::Dump( Cpanel::JSON::Sanitize::sanitize_for_dumping($settings) );
+    close $out_fh;
+    umask $orig_mask;
+
+    return;
+}
+
+1;

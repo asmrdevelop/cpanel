@@ -1,0 +1,820 @@
+[%
+# cpanel - whostmgr/docroot/templates/edituser.tmpl
+#                                                  Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+
+USE CPList;
+USE JSON;
+USE Postgresql;
+USE Whostmgr;
+USE LinkedNode;
+USE AccountEnhancements;
+USE NVData;
+USE ExpVar;
+
+SET enhancements = AccountEnhancements.list();
+SET linked_nodes = data.linked_nodes;
+SET user_child_nodes = data.user_child_nodes;
+SET child_node_options = LinkedNode.get_child_node_options(data.linked_nodes, data.user_child_nodes);
+
+WRAPPER 'master_templates/master.tmpl' theme="yui"
+    app_key='modify_an_account'
+    stylesheets = [
+        '/cjt/css/ajaxapp-min.css',
+        '/templates/common/revised_notices.min.css',
+        '/templates/packages/common.min.css',
+        '/templates/accounts/edituser.min.css',
+        '/templates/team_manager/max_team_users_field.min.css',
+        '/templates/common/collapsible_wrapper/collapsible_wrapper.min.css',
+    ]
+    extrastyle = ''
+    scripts = [
+        '/templates/common/collapsible_wrapper/collapsible_wrapper.min.js',
+        '/templates/team_manager/max_team_users_field.min.js',
+    ]
+-%]
+[% PROCESS '_ajaxapp_header.tmpl' -%]
+
+[% IF ! data.themes.defined -%]
+<div class="notice notice-error pageNotice">
+    <div class="notice-content error-notice-content">[% locale.maketext("You don’t have access to that account.") -%]</div>
+</div>
+[% ELSE -%]
+
+[% IF data.conversion_in_progress -%]
+<div class="notice notice-warning pageNotice">
+    <div class="notice-content warning-notice-content">[% locale.maketext("There is a linked server node migration in progress. Do not modify this account until that process is complete.") -%]</div>
+</div>
+[% END -%]
+
+[% SET varheaders = {
+    'BWLIMIT'        => locale.maketext('Monthly Bandwidth Limit (MB)'),
+    'QUOTA'          => locale.maketext('Disk Space Quota (MB)'),
+    'DNS'            => locale.maketext('Primary Domain'),
+    'RS'             => locale.maketext('cPanel Theme'),
+    'MAXPOP'         => locale.maketext('Max Email Accounts'),
+    'MAXFTP'         => locale.maketext('Max FTP Accounts'),
+    'MAXLST'         => locale.maketext('Max Mailing Lists'),
+    'MAXSUB'         => locale.maketext('Max Sub Domains'),
+    'MAXSQL'         => locale.maketext('Max SQL Databases'),
+    'MAXPARK'        => locale.maketext('Max Parked Domains'),
+    'MAXADDON'       => locale.maketext('Max Addon Domains'),
+    'MAXMONGREL'     => locale.maketext('Mongrel Instances (Ruby on Rails)'),
+    'MAXPASSENGERAPPS' => locale.maketext('Max [asis,Passenger] Applications'),
+    'MAX_EMAIL_PER_HOUR' => locale.maketext('Maximum Hourly Email by Domain Relayed'),
+    'MAX_DEFER_FAIL_PERCENTAGE' => locale.maketext('Maximum percentage of failed or deferred messages a domain may send per hour.'),
+    'reseller'       => locale.maketext('Reseller Privileges'),
+    'HASCGI'         => locale.maketext('CGI Privilege'),
+    'HASSHELL'       => locale.maketext('Shell Access'),
+    'HASDKIM'        => locale.maketext('Enable [output,acronym,DKIM,DomainKeys Identified Mail] on this account.'),
+    'HASSPF'         => locale.maketext('Enable [output,acronym,SPF,Sender Policy Framework] on this account.'),
+    'LOCALE'         => locale.maketext('Default Locale'),
+    'newuser'        => locale.maketext('Username'),
+    'contactemail'   => locale.maketext('Contact Email'),
+    'ownself'        => locale.maketext('Reseller owns own account.'),
+    'MAX_EMAILACCT_QUOTA' => locale.maketext('Max Quota per Email Address (MB)'),
+    'MAX_TEAM_USERS' => locale.maketext('Max Team Users with Roles')
+} -%]
+
+<div id="content">
+    <h1 class="simpleheading">[% locale.maketext("Editing User “[_1]” ([_2])[comment,this is a title, not a status]", "<span id='editing_user'>" _ data.user _ "</span>", "<span id='editing_domain'>" _ data.cpuser.DOMAIN _ "</span>") %]</h1>
+    <br />
+
+    <div id="edituser_messages" class="change_notice"></div>
+    <div id="edituser_warnings" class="change_notice"></div>
+
+    <form id="edituser_form" method="post" action="javascript:void(0)">
+        <input type="hidden" name="_PACKAGE_EXTENSIONS" value="[% data.PACKAGE_EXTENSIONS %]" />
+        <div class="fatBorder">
+            <fieldset class="groupEditor">
+                [%
+                    WRAPPER common/collapsible_wrapper/collapsible_wrapper.tmpl
+                    label = locale.maketext('Basic Information')
+                    id = "basic_information"
+                    isExpanded = 1
+                    disableCollapse = 1
+                %]
+                <div id="basic_info_notes" class="note" [% (!data.is_reseller && !data.has_digest_auth || data.editing_self) && 'style="display:none"' %]>
+                    <div class="notice">
+                        <div class="notice-content">
+                            <p id="reseller_warning" [% !data.is_reseller && 'style="display:none"' %]>[% locale.maketext('Changing a reseller account’s username will change the names of all of its owned packages.') %]</p>
+                                [% IF data.has_digest_auth %]
+                                    <p>[% locale.maketext('When you change the username, Digest Authentication will need to be re-enabled by changing the account password.') %]</p>
+                                [% END %]
+                        </div>
+                    </div>
+                </div>
+                <div id="domain_change_notice" class="hidden">
+                    <div class="notice">
+                        <div class="notice-content">
+                            <p>
+                                [% locale.maketext('Changing the primary domain will also update usernames for any [asis,Email], [asis,FTP], or [asis,Web Disk] accounts that use the primary domain. The account’s files and home directories for [asis,FTP] and [asis,Web Disk] service accounts will not change.') %]
+                            </p>
+                        </div>
+                    </div>
+                </div>
+                <div id="domain_data_warning" class="hidden">
+                    <div class="notice notice-warning">
+                        <div class="notice-content warning-notice-content">
+                            <p>
+                                [% locale.maketext('The domain you have selected already has some account data associated with it. The domain change may fail, but even if it succeeds, username collisions between the two domains may not be handled gracefully. To avoid this risk, please either choose a different domain or clean up any remaining accounts before making the change.') %]
+                            </p>
+                        </div>
+                    </div>
+                </div>
+
+                [% IF !data.editing_self -%]
+                    <div id="username_change_warning" class="hidden">
+                        <div class="notice notice-warning">
+                            <div class="notice-content warning-notice-content">
+                                <p>
+                                    [% locale.maketext('A username change may take some time to complete and may break websites that are associated with the account. You should verify the account’s integrity after you rename the account.') %]
+                                </p>
+                                [% IF Postgresql.is_configured -%]
+                                    <p>
+                                        [% locale.maketext('NOTE: After you rename an account, this user’s self-named PostgreSQL user will be unable to log in until the user loads the “[_1]” page in cPanel.', locale.maketext('PostgreSQL Databases') ) %]
+                                        [% IF data.database_prefixing -%]
+                                            [% IF Whostmgr.hasroot() -%]
+                                                [% locale.maketext('If you leave “[_1]” enabled, this cPanel user’s [asis,PostgreSQL] users will be unable to log in until their passwords are set.', locale.maketext('Rename prefixed databases and database users.')) %]
+                                            [% ELSE -%]
+                                                [% locale.maketext('Also, this operation will rename the user’s prefixed databases and database users, so this cPanel user’s PostgreSQL users will be unable to log in until their passwords are set.') %]
+                                            [% END -%]
+                                        [% END -%]
+                                    </p>
+                                [% END -%]
+                                <p>
+                                    [% locale.maketext('Please see [output,url,_1,the documentation on modifying usernames,target,blank] for more information.','https://go.cpanel.net/usernamechange') %]
+                                </p>
+                            </div>
+                        </div>
+                    </div>
+                [% END -%]
+
+                [% IF !Whostmgr.is_valid_locale(data.selected_locale)%]
+                <div id="unsupported_locale_warning">
+                    <div class="notice notice-warning">
+                        <div class="notice-content warning-notice-content">
+                            <p>
+                                [% locale.maketext('This account is using the unsupported ‘[get_locale_name,_1,1]’ locale. The account will use ‘[_2]’ until it is set to a supported locale.', data.selected_locale, 'English') %]
+                            </p>
+                        </div>
+                    </div>
+                </div>
+                [% END %]
+                <div class="propertyGroup">
+                    <div class="propertyEditor">
+                        <div class="propertyLabel"><label for="DNS">[% locale.maketext('Primary Domain') %]</label></div>
+                        <div class="propertyValue">
+                            <input type="text" name="domain" id="domain" value="[% data.cpuser.DOMAIN | html %]" />
+                            <span id="domain_error"></span>
+                        </div>
+                    </div>
+                    <div class="propertyEditor">
+                        <div class="propertyLabel"><label for="username">[% locale.maketext('Username') %]</label></div>
+                        <div class="propertyValue">
+                            <input type="text" name="newuser" id="newuser" value="[% data.user | html %]" [% IF data.editing_self %]disabled[% END %] />
+                            <span id="newuser_error"></span>
+
+                            [% IF data.editing_self -%]
+                                <div id="editingSelfNotice" class="callout callout-info">
+                                    <p>[% locale.maketext('Only [list_or_quoted,_1] can rename your account.', data.can_rename) %]</p>
+                                </div>
+                            [% ELSIF Whostmgr.hasroot() && data.database_prefixing -%]
+                                <br>
+                                <input type="checkbox" name="rename_database_objects" id="rename_database_objects" value="1" checked />
+                                <label for="rename_database_objects">[% locale.maketext('Rename prefixed databases and database users.') %]</label>
+                                <img
+                                    src="[% MagicRevision('/images/info.png') %]"
+                                    id="rename_database_objects-info"
+                                    onclick="CPANEL.ajax.toggleToolTip(this,'[% locale.maketext('Information') %]');"
+                                    title="[% locale.maketext('This server has database prefixing enabled. The names of any databases or database users created while database prefixing was enabled will begin with a prefix that consists of the first eight characters of the account’s username. As a result, the names of databases and database users correspond visually with the name of the account that owns them. This helps administrators to see which account owns a database or database user. When you rename an account, you can rename the account’s databases and database users to preserve this correspondence of names. However, this will cause errors in any applications that depend on the previous names.') _ "\n\n" _ locale.maketext('If you wish to avoid these errors, uncheck this checkbox. However, this may cause confusion because the names of databases and database users will no longer correspond visually with the name of the account that owns them. Also, the cPanel user’s PostgreSQL users will be unable to log in until their passwords are set again.') %]"></span>
+                            [% END -%]
+                        </div>
+                    </div>
+                    [% IF Whostmgr.has_multiuser() %]
+                        <div class="propertyEditor">
+                            <div class="propertyLabel"><label for="owner">[% locale.maketext('Account Owner') %]</label></div>
+                            [% IF Whostmgr.hasroot() -%]
+                                <div class="propertyValue"><select id="owner" name="OWNER">
+                                    [% sorted_resellers = ['root']; sorted_resellers = sorted_resellers.merge(data.resellerdomains.keys.ungrep('\Aroot\z').sort) -%]
+                                    [% FOR reseller=sorted_resellers -%]
+                                        [% SET display_text = reseller _ ( data.resellerdomains.$reseller ? " (${data.resellerdomains.$reseller})" : '' ) -%]
+                                        [% IF reseller == data.current_owner -%]
+                                                <option value="[% reseller %]" selected="selected">[% display_text %] [[% locale.maketext('Current Owner') %]]</option>
+                                        [% ELSE -%]
+                                                <option value="[% reseller %]">[% display_text %]</option>
+                                        [% END -%]
+                                    [% END -%]
+                                </select>
+                                </div>
+                            [% ELSE -%]
+                                <div class="propertyValue">[% data.current_owner | html %]</div>
+                            [% END -%]
+                        </div>
+                    [% END -%]
+
+                    <div class="propertyEditor">
+                        <div class="propertyLabel"><label for="contactemail">[% locale.maketext('Contact Email:') %]</label></div>
+                        <div class="propertyValue"><input type="text" name="contactemail" id="contactemail" value="[% data.contactemail | html %]" />
+                            <span id="contactemail_error"></span>
+                        </div>
+                    </div>
+
+                    [% IF data.show_default_locale %]
+                    <div class="propertyEditor">
+                        <!-- WebKit browsers (and some IEs) create window.<id> for form elements. -->
+                        <div class="propertyLabel"><label for="LOCALE-el">[% locale.maketext('Default Locale') %]</label></div>
+                        <div class="propertyValue">
+                            <select id="LOCALE-el" name="LOCALE" class="select-menu">
+                                [% PROCESS '_locale_option_tags.tmpl' %]
+                            </select>
+                            <span class="help-block">
+                                [% user_feedback_text_for_more_locales() %]
+                            </span>
+                        </div>
+                    </div>
+                    [% END -%]
+
+                    [% IF data.show_cpanel_theme %]
+                    <div class="propertyEditor">
+                        <div class="propertyLabel"><label for="LOCALE">[% locale.maketext('cPanel Theme') %]</label></div>
+                        <div class="propertyValue">
+                            <select name="RS" id="RS" class="select-menu">
+                                [% FOREACH theme = data.themes -%]
+                                    <option value="[% theme %]" [% IF data.selected_theme == theme; ' selected="selected"'; END %]>
+                                    [% theme %]
+                                    </option>
+                                [% END -%]
+                            </select>
+                            <span id="package_value_label_RS" class="package-value-label" style="display:none">[%locale.maketext('Package value: [_1]', '<span class="package-value" id="package_value_RS"></span>')%]</span>
+                        </div>
+                    </div>
+                    [% END -%]
+
+                    [% IF data.show_apache_spamassassin %]
+                    <div class="propertyEditor">
+                        <div class="propertyLabel"><label for="spamassassin">[% locale.maketext('Enable [asis,Apache SpamAssassin™]') %]</label></div>
+                        <div class="propertyValue">
+                            <input value="1" type="checkbox" name="spamassassin" id="spamassassin"[% IF data.spamassassin %] checked="checked"[% END %]
+                                [% IF data.spamassassin_globally_enabled %]disabled title="[% locale.maketext('You cannot disable this option when the “[asis,Apache SpamAssassin™]: Forced Global ON” setting is enabled in the “[_1]” interface.', locale.maketext('Exim Configuration Manager')) %]"[% END %]/>
+                        </div>
+                    </div>
+                    [% END -%]
+                </div>
+                [% END -%]
+            </fieldset>
+        </div><!-- end basic information -->
+
+        [% IF data.can_setup_child_node_value -%]
+        [%# Child Nodes %]
+        <div class="fatBorder">
+            <fieldset class="groupEditor">
+                [%
+                    WRAPPER common/collapsible_wrapper/collapsible_wrapper.tmpl
+                    label = locale.maketext('Linked Server Nodes')
+                    id = "linked_server_nodes"
+                    isExpanded = 1
+                    disableCollapse = 1
+                %]
+                [% IF child_node_options.Mail.options %]
+                    <div class="callout callout-warning" id="quotaDangerCallout">
+                        <div class="callout-heading"><strong>[% locale.maketext('Warning') %]</strong></div>
+                        [% IF data.is_demo_user %]
+                        <p>
+                            [% locale.maketext('This feature is not available in Demo Mode.'); %]
+                            <a href="../scripts/listdemoaccts" target="_self" id="manageDemoMode">
+                                [% locale.maketext('Click here to Manage Demo Mode.') %]
+                            </a>
+                        </p>
+                        [% ELSE %]
+                        <p>[% child_node_options.Mail.value == '.local' ? locale.maketext('After successfully distributing an account, the system will remove the mail stored on the parent node.') : locale.maketext('After successfully dedistributing an account, the system will [output,strong,not] remove the account’s data from the child node.'); %]</p>
+                        [% END %]
+                    </div>
+                [% END %]
+                [% IF !data.is_demo_user -%]
+                <div class="propertyGroup">
+                    [% IF child_node_options -%]
+                        [% FOR child_node = child_node_options; -%]
+                            [% NEXT IF child_node.value.options.size == 0 %]
+                            <div class="propertyEditor">
+                                <div class="propertyLabel has-label">
+                                    <span class="label-content">[% child_node.value.label %]</span>
+                                </div>
+                                <div class="propertyValue">
+                                        <select name="[% child_node.value.parameter %]">
+                                            <option value="[% data.local_child_node_value.html() %]" [% child_node.value.value == data.local_child_node_value ? "selected" : "" %]>
+                                                [% locale.maketext('Use only this server.') %]
+                                                [% IF child_node.value.value == data.local_child_node_value %]
+                                                    [[% locale.maketext('Current') %]]
+                                                [% END %]
+                                            </option>
+                                            [% FOREACH option = child_node.value.options %]
+                                                <option value="[% option.alias.html() %]"  [% child_node.value.value == option.alias ? "selected" : "" %]>
+                                                    [% option.alias.html() _ ' (' _ option.hostname.html() _ ')' %]
+                                                    [% IF child_node.value.value == option.alias %]
+                                                        [[% locale.maketext('Current') %]]
+                                                    [% END %]
+                                                </option>
+                                            [% END %]
+                                        </select>
+                                </div>
+                            </div>
+                        [% END -%]
+                    [% ELSE -%]
+                        <div class="callout callout-info node-warning-message" id="noChildNodesInfoBlock">
+                            <p>
+                                [% locale.maketext('You can utilize a remote [asis,cPanel amp() WHM] server to handle certain services, like mail.') %]
+                                [% locale.maketext('You must first link that [asis,cPanel amp() WHM] server node to this one.') %]
+                                <a href="../scripts7/link-server-nodes/create" target="_self" id="linkAServerNodeLink">
+                                    [% locale.maketext('Click here to link a [asis,cPanel amp() WHM] server node.') %]
+                                </a>
+                            </p>
+                        </div>
+                    [% END -%]
+                </div>
+                [% END -%]
+            [% END -%]
+            </fieldset>
+        </div>
+        [%# End Child Nodes %]
+        [% END -%]
+
+        <div class="fatBorder">
+            <fieldset class="groupEditor">
+                [%
+                    WRAPPER common/collapsible_wrapper/collapsible_wrapper.tmpl
+                    label = locale.maketext('Resource Limits')
+                    id = "resource_limits"
+                    isExpanded = 1
+                    disableCollapse = 1
+                %]
+
+                <div class="propertyGroup">
+                    [% IF data.show_package_update %]
+                    <div class="propertyEditor">
+                        [% plan_html = data.cpuser.PLAN | html; -%]
+                        [% plan_html = '<span id="package_name">' _ plan_html _ '</span>'; -%]
+                        [% user_uri  = data.user | uri; -%]
+                        <div class="propertyLabel">
+                            <label>[% locale.maketext('Package') %]</label>
+                        </div>
+                        <div class="propertyValue">
+                            [% locale.get_locales_obj.quote(plan_html) %]
+                            [% IF data.can_upgrade_acct -%]
+                                [% '<span id="selectupgrade_url">' _ locale.maketext('([output,url,_1,Change])', "selectupgrade?user=$user_uri") _ '</span>' %]
+                            [% END -%]
+                        </div>
+                    </div>
+                    [% END %]
+[%
+FOR maxvar IN data.resources;
+
+    SET cur_value = data.cpuser.$maxvar;
+    SET can_edit = 1;
+
+    SWITCH maxvar;
+        CASE 'MAXPASSENGERAPPS';
+            IF !data.cpuser.defined('MAXPASSENGERAPPS');
+                cur_value = data.default_max_running;           # TODO: Use a default value that does not live in Cpanel::RoR
+            END;
+        CASE 'MAXMONGREL';
+            NEXT IF !data.has_ruby;
+            SET cur_default = data.default_max_running;
+            IF !data.cpuser.defined('MAXMONGREL');
+                cur_value = cur_default;
+            END;
+        CASE ['MAX_EMAIL_PER_HOUR', 'MAX_DEFER_FAIL_PERCENTAGE'];
+            NEXT IF !data.cfg.email_limits;
+            SET cur_default = (maxvar == 'MAX_EMAIL_PER_HOUR')
+                ? data.curr_max_emails_per_hour
+                : data.fail_defer_percent
+            ;
+            IF cur_value == '' || cur_value == cur_default;
+                SET cur_value = 'default';
+            END;
+        CASE 'QUOTA';
+            SET can_edit = data.can_modify_quota;
+        CASE 'BWLIMIT';
+            SET can_edit = data.can_modify_bw;
+        CASE 'MAX_TEAM_USERS';
+            IF data.cpuser.defined('MAX_TEAM_USERS');
+                cur_value = data.cpuser.MAX_TEAM_USERS;
+            ELSIF data.package.defined('MAX_TEAM_USERS');
+                cur_value = data.package.MAX_TEAM_USERS;
+            ELSE;
+                cur_value = data.server_max_team_users;
+            END;
+            SET hide = !ExpVar.expand('$has_team_license');
+        CASE;
+            SET cur_default = '';
+            IF cur_value == '';
+                SET cur_value = 'unlimited';
+            END;
+    END;
+
+    SET input_field_value = cur_value;
+
+    IF (maxvar == 'BWLIMIT') || (maxvar == 'QUOTA');
+        IF !cur_value;
+            data.cpuser.$maxvar = 'unlimited';
+            cur_value = 'unlimited';
+            input_field_value = '';
+        ELSIF !cur_value.match('(?i)^unlimited$');
+            cur_value = cur_value / 1048576;
+            input_field_value = input_field_value / 1048576;
+        END;
+    END;
+
+    IF input_field_value == "unlimited" || input_field_value == "default";
+        input_field_value = cur_default.match('^\d+(?:\.\d+)?$') ? cur_default : '';
+    END;
+-%]
+    [% IF !hide -%]
+                        <div class="propertyEditor [% maxvar == 'MAX_EMAILACCT_QUOTA' ? 'border-none' : '' %]">
+                            <div class="propertyLabel">[% varheaders.$maxvar %]
+                                [% SWITCH maxvar; CASE 'QUOTA' -%]
+                                    <br><span id="quotaUsageInfo" class="currentlyUsing">[% locale.maketext('Currently using [format_bytes,_1]', data.diskused) %]</span>
+                                [% CASE 'BWLIMIT' -%]
+                                    <br><span id="bandwidthUsageInfo" class="currentlyUsing">[% locale.maketext('[format_bytes,_1] transferred this month.', data.bwused) %]</span>
+                                [% CASE 'MAX_TEAM_USERS' -%]
+                                    [% WRAPPER team_manager/max_team_users_help.tmpl; END -%]
+                                [% END -%]
+                            </div>
+                            <div class="propertyValue">
+        [% IF can_edit -%]
+                            [% IF maxvar == 'MAX_TEAM_USERS' %]
+                                [% WRAPPER team_manager/max_team_users_field.tmpl
+                                    name = maxvar,
+                                    value = cur_value,
+                                    max = data.server_max_team_users,
+                                -%][% END -%]
+                            [% ELSE %]
+                                <input id="[% maxvar %]_chooser_custom" [% IF cur_value != "unlimited" && cur_value != "default" %]checked="checked"[% END %] type="radio" name="[% maxvar %]_chooser" value="custom">
+                                <input [% IF cur_value == "unlimited" || cur_value == "default" %]disabled="disabled"[% END %] type="text" size="10" id="[% maxvar %]_text" name="[% maxvar %]" value="[% input_field_value %]" class="validation_selector"/>[%# (maxvar == 'MAX_DEFER_FAIL_PERCENTAGE') && ' %' %]
+                                [% IF cur_default.length && cur_default != 'unlimited' -%]
+                                    <input type="radio" id="[% maxvar %]_chooser" name="[% maxvar %]_chooser" value="[% cur_default %]" [% (cur_value == "default") && 'checked="checked"' %]> [% locale.maketext('default ([_1])',cur_default) %]
+                                [% END -%]
+                                [% IF cur_default == 'unlimited' -%]
+                                    <input [% IF cur_value == "unlimited" || cur_value == 'default' %]checked="checked"[% END %] type="radio" name="[% maxvar %]_chooser" id="[% maxvar %]_chooser" value="unlimited" class="unlimitedRadio"><label for="[% maxvar %]_chooser">[% locale.maketext('Unlimited (default)') %]</label>
+                                [% ELSE -%]
+                                    <input id="[% maxvar %]_unlimited" [% IF cur_value == "unlimited" %]checked="checked"[% END %] type="radio" name="[% maxvar %]_chooser" value="unlimited" class="unlimitedRadio" [% !cur_default.length && 'class="leftmost-radio"' %]><label for="[% maxvar %]_unlimited">[% locale.maketext('Unlimited') %]</label>
+                                [% END -%]
+                            [% END -%]
+                            <span id="[% maxvar %]_text_error"></span>
+    [% ELSE -%]
+                                [% cur_value FILTER html -%]
+        [% END -%]
+                                [% IF data.package.exists(maxvar) -%]
+                                    [% SET pkg_val = data.package.$maxvar; -%]
+                                    [% IF ((maxvar == 'BWLIMIT') || (maxvar == 'QUOTA')) -%]
+                                        [% IF pkg_val == 0 -%]
+                                            [% pkg_val = 'unlimited' -%]
+                                        [% ELSIF pkg_val.match('^\d+$') -%]
+                                            [% pkg_val = pkg_val / 1048576 -%]
+                                        [% END -%]
+                                    [% END -%]
+                                    <span id="package_value_label_[% maxvar %]" class="package-value-label" style="display:none">[%locale.maketext('Package value: [_1]', "<span class='package-value' id='package_value_$maxvar'></span>")%]</span>
+                                [% END -%]
+                            </div>
+                        </div>
+                    [% IF maxvar == 'MAX_EMAILACCT_QUOTA' %]
+                        <div class="propertyEditor">
+                            <div class="propertyLabel">
+                            </div>
+                            <div class="propertyValue">
+                                <input type="checkbox" name="update_existing_email_account_quotas" id="update_existing_email_account_quotas" value="1" [% IF data.update_existing_quotas; ' checked="checked"'; END; %] />
+                                <label for="update_existing_email_account_quotas">[% locale.maketext('Update all existing email accounts') %]</label>
+                            </div>
+                        </div>
+                    [% END -%]
+    [% END -%]
+[% END -%]
+                </div>
+                [% END -%]
+            </fieldset>
+        </div><!-- end package & resource limits -->
+
+        [%# start account_enhancements %]
+        [%
+            SET enhancement_limits = AccountEnhancements.list_enhancement_limits( data.current_owner );
+
+            SET spliced_num = 0;
+            FOREACH enhancement IN enhancements.data;
+                SET spliced_iteration = loop.index() - spliced_num;
+                enhancement = enhancements.data.$spliced_iteration;
+
+                SET html_name = enhancement.name.html();
+                SET enhancement_key = 'ACCOUNT-ENHANCEMENT-' _ html_name;
+                SET checked = data.cpuser.$enhancement_key ? 'checked' : '';
+
+                SET enhancement_limit = enhancement_limits.data.item(enhancement.id);
+
+                IF enhancement_limit.limited == 1 && enhancement_limit.limit <= 0 && checked != 'checked' && !Whostmgr.hasroot();
+                    # Setting it, so that it is not rendered.
+                    SET SPLICED_ENHANCEMENT = enhancements.data.splice(spliced_iteration, 1);
+                    spliced_num = spliced_num + 1;
+                END;
+            END;
+        %]
+
+        [%- IF enhancements.data.size || enhancements.errors.size || enhancements.warnings.size %]
+        <div id="account_enhancements_container" class="fatBorder">
+            <fieldset class="groupEditor">
+                [%
+                    WRAPPER common/collapsible_wrapper/collapsible_wrapper.tmpl
+                    label = locale.maketext("Account Enhancements")
+                    id = "account_enhancements"
+                    isExpanded = 1
+                %]
+                    [% IF enhancements.errors.size %]
+                    <div class="callout callout-danger" id="enhancements-danger-callout">
+                        <div class="callout-heading">
+                            <strong>[% locale.maketext('Error') %]</strong>
+                        </div>
+
+                        [% FOREACH error IN enhancements.errors %]
+                            <p>[% error.html() %]</p>
+                        [%- END -%]
+                    </div>
+                    [% END %]
+
+                    [% IF enhancements.warnings.size %]
+                    <div class="callout callout-warning callout-breakword" id="enhancements-warning-callout">
+                        <div class="callout-heading">
+                            <strong>[% locale.maketext('Warning') %]</strong>
+                        </div>
+
+                        [%- FOREACH message IN enhancements.warnings -%]
+                            <p>[% message.html() %]</p>
+                        [%- END -%]
+                    </div>
+                    [% END %]
+
+                    <div class="propertyGroup">
+                        [% FOREACH enhancement IN enhancements.data; -%]
+                            [%
+                                SET html_name = enhancement.name.html();
+                                SET enhancement_key = 'ACCOUNT-ENHANCEMENT-' _ html_name;
+                                SET checked = data.cpuser.$enhancement_key ? 'checked' : '';
+                            %]
+                            <div class="propertyEditor">
+                                <div class="propertyLabel">
+                                    <label id="enhancement__label-[% loop.index() %]" for="enhancement__checkbox-[% loop.index() %]">
+                                        [% html_name %]
+                                    </label>
+                                </div>
+                                <div class="propertyValue">
+                                    <input value="[% html_name %]" type="checkbox" [% checked %] name="account_enhancements-[% loop.index() %]" id="enhancement__checkbox-[% loop.index() %]" />
+                                </div>
+                            </div>
+                        [% END; -%]
+
+                    </div>
+                [% END -%]
+            </fieldset>
+        </div>[%# end account_enhancements %]
+        [% END -%]
+
+[% IF data.show_privileges -%]
+[%
+SET can_set_privilege = {
+    reseller => Whostmgr.hasroot(),
+    HASSHELL => data.allow_shell,
+    HASCGI   => 1,
+    DEMO_USER => data.is_demo_user,
+};
+SET option_state = {
+    reseller => data.is_reseller,
+    HASSHELL => data.has_shell,
+    HASCGI   => data.has_cgi,
+    HASDKIM  => data.has_dkim,
+    HASSPF   => data.has_spf,
+};
+SET option_value = {
+    HASSHELL => data.current_shell,
+};
+
+SET privileges_to_show = ['reseller'];
+IF data.show_cgi;
+    privileges_to_show.push('HASCGI');
+END;
+IF data.show_shell;
+    privileges_to_show.push('HASSHELL');
+END;
+-%]
+
+        <div class="fatBorder">
+            <fieldset class="groupEditor">
+                            [%
+                    WRAPPER common/collapsible_wrapper/collapsible_wrapper.tmpl
+                    label = locale.maketext('Privileges')
+                    id = "privileges_collapsible"
+                    isExpanded = 1
+                %]
+                <div class="propertyGroup">
+[% FOR privilege = privileges_to_show; -%]
+                    <div class="propertyEditor[% IF privilege == 'HASSHELL' -%] last[% END -%]">
+                        <div class="propertyLabel"><label for="[% privilege %]_check">[% varheaders.$privilege %]</label></div>
+                        [% IF can_set_privilege.$privilege -%]
+                            <div class="propertyValue"><input type="checkbox" id="[% privilege %]_check" name="[% privilege %]" value="[% option_value.$privilege || 1 %]" [% IF option_state.$privilege; ' checked="checked"'; END; %][% IF privilege == 'reseller' && can_set_privilege.DEMO_USER == 1 %] disabled [% END %]/>
+                                <span id="package_value_label_[% privilege %]" class="package-value-label" style="display:none">[% locale.maketext('Package value: [_1]', "<span class='package-value' id='package_value_$privilege'></span>")%]</span>
+                            </div>
+                        [% ELSE -%]
+                           <div class="propertyValue">[% option_state.$privilege ? locale.maketext('Yes') : locale.maketext('No') %]</div>
+                        [% END -%]
+                    </div>
+[% END -%]
+                </div>
+            [% END -%]
+            </fieldset>
+        </div><!-- end privileges -->
+[% END -%]
+
+[% IF data.show_dns_settings -%]
+        <div class="fatBorder">
+            <fieldset class="groupEditor">
+                [%
+                    WRAPPER common/collapsible_wrapper/collapsible_wrapper.tmpl
+                    label = locale.maketext('DNS Settings')
+                    id = "dns_settings"
+                    isExpanded = 1
+                %]
+                <div class="propertyGroup">
+[% FOR option = ['HASDKIM', 'HASSPF']; -%]
+                    <div class="propertyEditor[% IF option == 'HASSPF' -%] last[% END -%]">
+                        <div class="propertyLabel">
+                            <label for="[% option %]_check">[% varheaders.$option %]</label>
+                        </div>
+                        <div class="propertyValue">
+                            <input type="checkbox" id="[% option %]_check" name="[% option %]" value="1" [% option_state.$option && 'checked="checked"' %] />
+                            [% IF option == 'HASSPF' -%]
+                                &nbsp;&nbsp;(<span class="spf-string">[% data.default_spf_string FILTER html %]</span>)
+                            [% END -%]
+                        </div>
+                    </div>
+[% END -%]
+                </div>
+                [% END -%]
+            </fieldset>
+        </div><!-- end dns -->
+[% END -%]
+
+        <div id="packageExtensions">
+            [% IF data.missing_extensions.size > 0 %]
+                <div class="fatBorder" id="missingExtensionsGroup">
+                    <fieldset class="groupEditor">
+                        <div id="missingPackageError" class="notice notice-error">
+                            <div id="missingExtensionErrorMsg" class="notice-content error-notice-content">[% locale.maketext("You must install the following extensions before you can edit their values: [list_and,_1]", data.missing_extensions) %]</div>
+                        </div>
+                        <div id="missingExtensionsOption"><input type="checkbox" name="remove_missing_extensions" value="[% data.missing_extensions.join(' ') %]" id="missingPackageExtensionsCheckbox"><label class="bolded" for="missingPackageExtensionsCheckbox">[% locale.maketext('Remove these extensions from the package') %]</label></div>
+                    </fieldset>
+                </div>
+            [% END -%]
+            [% FOREACH package IN data.extensions.keys %]
+            <div id="[% package %]" class="fatBorder">
+                <fieldset class="groupEditor">
+                    <h3>[% locale.makevar(data.extensions.$package) %]</h3>
+                    <div class="propertyGroup">
+                        [% file_to_process = data.extensions_path _ package _ '.tt2' %]
+                        [% PROCESS $file_to_process %]
+                    </div>
+                </fieldset>
+            </div>
+            [% END %]
+        </div>
+        <div id="formButtons">
+            <input type="submit" id="submitit" class="btn-primary" name="_submit" value="[% locale.maketext('Save') %]" onclick="check_submit(this);" />
+        </div>
+    </form>
+</div>
+
+<script type="text/javascript">
+var ORGNAME = [% data.user.json() -%];
+var ORGDOMAIN = document.getElementById('domain').value;
+var VARHEADERS = [% varheaders.json() %];
+var DOMAINS_WITH_DATA = [% data.domains_with_data.json() || '[]' %];
+
+[% SET LANG = {
+    must_be_fqdn => locale.maketext('Value must be a fully qualified domain.'),
+    must_change => locale.maketext('You must change at least one value in order to save.'),
+    must_be_number => locale.maketext('“[_1]” must be a nonnegative integer.','{label}'),
+    success_reload => locale.maketext('Success!') _ ' ' _ locale.maketext('Reloading page …'),
+    saving => locale.maketext('Saving new account properties for account “[_1]” …','{user}'),
+    checking_for_matches => locale.maketext('Matching account properties to packages …'),
+    plan_conflict_resolution => locale.maketext('Package Conflict Resolution'),
+    assigning_account_to_package => locale.maketext('Assigning account “[_1]” to package “[_2]” …','{user}','{pkg}'),
+    creating_package => locale.maketext('Creating package “[_1]” …','{pkgname}'),
+    updating_package => locale.maketext('Updating package “[_1]” and all its accounts …','{pkgname}'),
+    mustConfirmChildSelection => locale.maketext('You must select ‘I understand the risk.’ to proceed.'),
+};
+-%]
+var LANG = [% LANG.json() %];
+
+var PAGE = {
+    SERVER_MAX_TEAM_USERS: [% data.server_max_team_users %]
+};
+
+var ON_OFF = {
+    "true":  [% locale.maketext('Enabled').json() %],
+    "false": [% locale.maketext('Disabled').json() %]
+};
+
+var HAS_DB_PREFIX = [% data.database_prefixing ? 1 : 0 -%];
+
+var username_regexp = [% data.username_regexp.json() %];
+
+var can_add_package = [% data.can_add_package ? 'true' : 'false' %];
+
+var user_package = [% data.package.json() || 'null' %];
+var childNodeOptions = [];
+
+var original_values = [% data.cpuser.json() %];
+original_values.reseller = [% data.is_reseller ? 1 : 0 %];
+original_values.HASSHELL = [% data.has_shell.json() %];
+original_values.CONTACTEMAILS = [% data.contactemail.json() %];
+
+[% IF !data.cpuser.defined('MAXMONGREL') -%]
+original_values.MAXMONGREL = [% data.default_max_running %];
+[% END -%]
+
+[% FOR child_node = child_node_options; -%]
+    [% NEXT IF !child_node.value.options.size > 0 %]
+original_values['[% child_node.value.parameter %]'] = '[% child_node.value.value %]';
+childNodeOptions.push([% child_node.value.json() %]);
+[% END -%]
+
+[% IF !data.cpuser.defined('MAXPASSENGERAPPS') -%]
+original_values.MAXPASSENGERAPPS = [% data.default_max_running %];
+[% END -%]
+
+[% IF data.cpuser.defined('MAX_TEAM_USERS') -%]
+    original_values.MAX_TEAM_USERS = [% data.cpuser.MAX_TEAM_USERS %];
+[% ELSIF data.package.defined('MAX_TEAM_USERS') -%]
+    original_values.MAX_TEAM_USERS = [% data.package.MAX_TEAM_USERS %];
+[% ELSE -%]
+    original_values.MAX_TEAM_USERS = [% data.server_max_team_users %];
+[% END -%]
+
+[% FOREACH setting IN data.defaults.keys %]
+original_values.[% setting %] = "[% data.defaults.$setting %]";
+[% END %]
+
+original_values.spamassassin = [% data.spamassassin ? 1 : 'null' %];
+
+[%- FOREACH enhancement IN enhancements.data;
+    SET json_name = enhancement.name.json();
+    SET enhancement_key = 'ACCOUNT-ENHANCEMENT-' _ enhancement.name;
+    SET value = data.cpuser.$enhancement_key ? json_name : 0;
+-%]
+
+original_values['account_enhancements-[% loop.index() %]'] = [% value %];
+[%- END -%]
+</script>
+[% PROCESS '_ajaxapp_footer.tmpl' -%]
+
+<script type="text/plain" id="submit_with_match_template">
+<p>[%locale.maketext('Please select one of the options below:')%]</p>
+<label>
+<input type="radio" id="change_pkg_radio" name="plan_change_resolution" value="change_pkg" />
+[%locale.maketext('Upgrade/downgrade the account to a package that matches the new properties:')%]</label>
+<select id="change_pkg_select" name="CHANGEPLAN">{package_options_html}</select>
+<br />
+</script>
+
+<script type="text/plain" id="submit_no_match_template">
+<p>[%locale.maketext('These settings do not match any existing package on the system.')%]
+[%locale.maketext('Please select one of the options below:')%]</p>
+</script>
+
+[% IF data.can_add_package -%]
+<script type="text/plain" id="_submit_add_pkg_template">
+<label>
+<input type="radio" id="add_pkg_radio" name="plan_change_resolution" value="add_pkg" />
+[%locale.maketext('Create a new package with this name:')%]</label>
+<input type="text" name="ADDPLAN" value="{PLAN}_[% data.user FILTER html %]" />
+<br />
+</script>
+[% END -%]
+
+<script type="text/plain" id="_submit_include_template">
+[% IF data.package && Whostmgr.checkacl('edit-pkg') -%]
+<label>
+<input type="radio" name="plan_change_resolution" value="modify_pkg" />
+[%locale.maketext('Update package “[_1]” with these new values. (This will propagate the values to all accounts under package “[_1]”.)','{PLAN}')%]
+</label><br />
+[% END -%]
+<label>
+<input type="radio" name="plan_change_resolution" value="undefined" />
+[%locale.maketext('Set this account to have no package.')%]
+</label><br />
+<label>
+<input type="radio" name="plan_change_resolution" value="ignore" />
+[%locale.maketext('Keep this account on package “[_1]” (not recommended).','{PLAN}')%]
+</label>
+</script>
+
+[% END -%]
+[% END -%]

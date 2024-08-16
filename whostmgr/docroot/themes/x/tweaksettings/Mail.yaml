@@ -1,0 +1,445 @@
+# This file is in the YAML format.
+--- # Indentation is important here!
+TS_display:
+    -
+        - ACL Options
+        -
+            - acl_deny_spam_score_over_int
+            - acl_dictionary_attack
+            - acl_primary_hostname_bl
+            - acl_spam_scan_secondarymx
+            - acl_ratelimit
+            - acl_ratelimit_spam_score_over_int
+            - acl_slow_fail_block
+            - acl_requirehelo
+            - acl_delay_unknown_hosts
+            - acl_dont_delay_greylisting_trusted_hosts
+            - acl_dont_delay_greylisting_common_mail_providers
+            - acl_requirehelonoforge
+            - acl_requirehelonold
+            - acl_requirehelosyntax
+            - acl_dkim_disable
+            - acl_dkim_bl
+            - acl_deny_rcpt_soft_limit
+            - acl_deny_rcpt_hard_limit
+    -
+        - Access Lists
+        -
+            - spammer_list_ips_button
+            - sender_verify_bypass_ips_button
+            - trusted_mail_hosts_ips_button
+            - skip_smtp_check_ips_button
+            - backup_mail_hosts_button
+            - trusted_mail_users_button
+            - blocked_domains_button
+            - filter_emails_by_country_button
+    -
+        - Domains and IPs
+        -
+            - per_domain_mailips
+            - use_rdns_for_helo
+            - rebuild_rdns_cache
+            - custom_mailhelo
+            - custom_mailips
+    -
+        - Filters
+        -
+            - systemfilter
+            - filter_attachments
+            - filter_spam_rewrite
+            - filter_fail_spam_score_over_int
+            - spam_header
+    -
+        - Mail
+        -
+            - acl_0tracksenders
+            - callouts
+            - smarthost_routelist
+            - smarthost_auth_required
+            - smarthost_username
+            - smarthost_password
+            - smarthost_autodiscover_spf_include
+            - spf_include_hosts
+            - rewrite_from
+            - malware_deferok
+            - senderverify
+            - setsenderheader
+            - spam_deferok
+            - srs
+            - query_apache_for_nobody_senders
+            - trust_x_php_script
+            - dsn_advertise_hosts
+            - smtputf8_advertise_hosts
+            - suspended_account_deliveries
+            - message_linelength_limit
+            - hosts_avoid_pipelining
+            - mailbox_quota_query_timeout
+    -
+        - RBLs
+        -
+            - manage_rbls_button
+            - acl_spamcop_rbl
+            - acl_spamhaus_rbl
+            - rbl_whitelist_neighbor_netblocks
+            - rbl_whitelist_greylist_common_mail_providers
+            - rbl_whitelist_greylist_trusted_netblocks
+            - rbl_whitelist
+    -
+        - Security
+        -
+            - allowweakciphers
+            - require_secure_auth
+            - exiscanall
+            - acl_outgoing_malware_scan
+            - openssl_options
+            - tls_require_ciphers
+    -
+        - Apache SpamAssassin&trade; Options
+        -
+            - globalspamassassin
+            - max_spam_scan_size
+            - acl_outgoing_spam_scan
+            - acl_outgoing_spam_scan_over_int
+            - no_forward_outbound_spam
+            - no_forward_outbound_spam_over_int
+            - spamassassin_plugin_BAYES_POISON_DEFENSE
+            - spamassassin_plugin_P0f
+            - spamassassin_plugin_KAM
+            - spamassassin_plugin_CPANEL
+
+acl_0tracksenders:
+    label: Log sender rates in the exim mainlog.  This can be helpful for tracking problems and/or spammers.
+
+acl_deny_spam_score_over_int:
+    label: 'Apache SpamAssassin&trade; reject spam score threshold'
+    help: Reject mail at SMTP time if the spam score is greater than this number. (positive or negative, single digit after a decimal point allowed)
+    undef: 'No reject rule by spam score'
+
+acl_dictionary_attack:
+    label: Dictionary attack protection
+    help: 'Block dictionary attacks by dropping and ratelimiting hosts with more than 4 failed recipients'
+
+acl_primary_hostname_bl:
+    label: "Reject remote mail sent to the server's hostname"
+    help: 'Reject mail at SMTP time if the recipient is an address of the primary hostname of this server. No remote mail should normally be received for the primary hostname, and this has recently become a common spam target.'
+
+acl_spam_scan_secondarymx:
+    label: "Enable Apache SpamAssassin&trade; for secondary MX domains"
+    help: 'When enabled, mail that is sent to the primary mail exchanger for domains that are listed in /etc/secondarymx will be scanned with Apache SpamAssassin&trade;'
+
+acl_ratelimit:
+    label: Ratelimit suspicious SMTP servers
+    help: Ratelimit incoming SMTP connections that do not send QUIT (violates RFCs), have recently matched an RBL, or have attacked the server.
+
+acl_slow_fail_block:
+    label: 'Ratelimit incoming connections with only failed recipients'
+    help: 'Ratelimit incoming SMTP connections that have only sent to failed recipients five separate connection times in the last hour.'
+
+acl_ratelimit_spam_score_over_int:
+    label: 'Apache SpamAssassin&trade;: ratelimit spam score threshold'
+    help: 'Ratelimit hosts which transport messages with a spam score above this number. (positive or negative, single digit after a decimal point allowed)'
+    undef: 'No ratelimiting by spam score'
+
+acl_delay_unknown_hosts:
+    label: 'Introduce a delay into the SMTP transaction for unknown hosts and messages detected as spam.'
+    help: 'The SMTP receiver will wait a few additional seconds for a connection when it detects spam messages in order to reduce inbound spam. The system excludes the following remote hosts from the delay: Neighbor IP addresses in the same netblock, Loopback addresses, Trusted Mail Hosts, Relay Hosts, Backup MX Hosts, Skip SMTP Checks Host, Sender Verify Bypass Hosts.'
+
+acl_dont_delay_greylisting_trusted_hosts:
+    label: 'Do not delay the SMTP connections for hosts in the Greylisting “Trusted Hosts” list'
+
+acl_dont_delay_greylisting_common_mail_providers:
+    label: 'Do not delay the SMTP connections for hosts in the Greylisting “Common Mail Providers” list'
+
+acl_requirehelo:
+    label: Require HELO before MAIL
+    help: Require incoming SMTP connections to send HELO before MAIL
+
+acl_requirehelonoforge:
+    label: Require remote (hostname/IP address) HELO
+    help: 'Require incoming SMTP connections to send a HELO that does not match the primary hostname or a local IP address.'
+
+acl_requirehelonold:
+    label: Require remote (domain) HELO
+    help: 'Require incoming SMTP connections to send a HELO that does not match this server&rsquo;s local domains.'
+
+acl_requirehelosyntax:
+    label: Require RFC-compliant HELO
+    help: 'Require incoming SMTP connections to send HELO conforming to internet standards (RFC2821 4.1.1.1)'
+
+acl_spamcop_rbl:
+    label: 'RBL: bl.spamcop.net'
+    help: 'Reject mail at SMTP time if the sender host is in the bl.spamcop.net RBL. [<a href="http://spamcop.net/bl.shtml" target="_blank">INFO</a>]'
+
+rbl_whitelist_neighbor_netblocks:
+    label: 'Exempt servers in the same netblock as this one from RBL checks'
+    help: 'If enabled, any server in the same IANA netblock will not be subject to RBL checks.'
+
+rbl_whitelist_greylist_common_mail_providers:
+    label: 'Exempt servers in the Greylisting “Common Mail Providers” list from RBL checks'
+    help: 'If enabled, the system will not run RBL checks on mail from an IP address block in the Greylisting “Common Mail Providers” list.'
+
+rbl_whitelist_greylist_trusted_netblocks:
+    label: 'Exempt servers in the Greylisting “Trusted Hosts” list from RBL checks'
+    help: 'If enabled, the system will not run RBL checks on mail from an IP address block in the Greylisting “Trusted Hosts” list.'
+
+acl_spamhaus_rbl:
+    label: 'RBL: zen.spamhaus.org'
+    help: 'Reject mail at SMTP time if the sender host is in the zen.spamhaus.org RBL. [<a href="http://www.spamhaus.org/zen/index.lasso" target="_blank">INFO</a>]. This option requires the use of a non-public DNS resolver. Public resolvers like Google or OpenDNS will not return correct results.'
+
+acl_outgoing_malware_scan:
+    label: 'Scan outgoing messages for malware'
+    help: 'If you have the ClamAVconnector plugin installed, enabling this option will reject mail bound for non-local domains that test positive for malware.'
+
+acl_outgoing_spam_scan:
+    label: 'Scan outgoing messages for spam and reject based on the Apache SpamAssassin™ internal spam_score setting'
+    help: 'Scan and reject mail bound for non-local domains that Apache SpamAssassin™ classifies as spam.'
+
+acl_outgoing_spam_scan_over_int:
+    label: 'Scan outgoing messages for spam and reject based on defined Apache SpamAssassin™ score'
+    help: 'Scan and reject mail bound for non-local domains that Apache SpamAssassin™ classifies as spam.'
+    undef: 'Disabled'
+
+srs:
+    label: 'Enable Sender Rewriting Scheme (SRS) Support'
+    help: 'This option rewrites sender addresses so that the email appears to come from the forwarding mail server. This allows forwarded email to pass an SPF check on the receiving server.'
+
+no_forward_outbound_spam:
+    label: 'Do not forward mail to external recipients if it matches the Apache SpamAssassin™ internal spam_score setting'
+    help: 'This option requires that each user enable Apache SpamAssassin™ or the “Apache SpamAssassin™: Forced Global ON” is enabled.'
+
+no_forward_outbound_spam_over_int:
+    label: 'Do not forward mail to external recipients based on the defined Apache SpamAssassin™ score'
+    help: 'This option requires that each user enable Apache SpamAssassin™ or the “Apache SpamAssassin™: Forced Global ON” is enabled.'
+    undef: 'Disabled'
+
+spamassassin_plugin_P0f:
+    label: 'Enable Passive OS Fingerprinting for Apache SpamAssassin™'
+    help: 'Passive OS Fingerprinting must be enabled in the Service Manager for this plugin to be effective'
+
+spamassassin_plugin_CPANEL:
+    label: 'Enable the Apache SpamAssassin™ ruleset that cPanel uses on cpanel.net'
+    help: 'This is a collection of rules from the SPAM we commonly see on cpanel.net that makes it past the base rules.'
+
+spamassassin_plugin_BAYES_POISON_DEFENSE:
+    label: 'Enable BAYES_POISON_DEFENSE Apache SpamAssassin™ ruleset'
+    help: 'Increase the scoring thresholds needed for bayes to learn HAM and SPAM to reduce the effectiveness of bayes poisoning employed by spammers.'
+
+spamassassin_plugin_KAM:
+    label: 'Enable KAM Apache SpamAssassin™ ruleset'
+    help: 'Use the ruleset provided by Kevin A. McGrail with significant contributions from Joe Quinn'
+
+acl_dkim_disable:
+    label: 'Allow DKIM verification for incoming messages'
+    help: "By default, Exim verifies syntactically valid signatures in incoming mail, even when Exim is not configured to act on the results of the check. This verification process can degrade your server's performance."
+
+acl_dkim_bl:
+    label: 'Reject DKIM failures'
+    help: 'Reject mail at SMTP time if the sender fails DKIM key validation.'
+
+allowweakciphers:
+    label: Allow weak SSL/TLS ciphers
+    help: 'Enabling this setting violates PCI Compliance.'
+
+backup_mail_hosts_button:
+    label: 'Backup MX hosts'
+    help: Hosts with reverse DNS from which connections are allowed regardless of rate limits.
+    button: Edit
+
+trusted_mail_users_button:
+    label: 'Trusted mail users'
+    help: 'Users on the system that may set the From: header to anything they like when "Rewrite From: header to match actual sender" is enabled.'
+    button: Edit
+
+smarthost_routelist:
+    label: Smarthost support
+    help: 'To use a smarthost to send outgoing messages, enter a valid route_list entry. For example: "* 192.168.0.1", "* outbound.example.com" or ''* "&lt;/ 2001:0db8:85a3:0042:1000:8a2e:0370:7334"''. If you enter IPv6 addresses, you <strong>must</strong> change the separator and <strong>cannot</strong> use colons as separators. For more information, read the <a target="_blank" href="http://www.exim.org/exim-html-current/doc/html/spec_html/ch20.html">Exim Documentation on the manualroute router</a>.'
+
+smarthost_auth_required:
+    label: 'Smarthost requires SMTP authentication'
+    help: 'If set to On, the system will configure Exim to authenticate to the configured smarthost with a username and password.'
+
+smarthost_username:
+    label: Smarthost username
+    help: 'Due to limitations with Exim, this value cannot start or end with spaces or start with a caret character (^)'
+
+smarthost_password:
+    label: Smarthost password
+    help: 'Due to limitations with Exim, this value cannot start or end with spaces or start with a caret character (^)'
+
+smarthost_autodiscover_spf_include:
+    label: 'Autodiscovery SPF include hosts from the smarthost route list'
+    help: 'The system will check each label in the smarthost route list for SPF entries and add an include entry to the SPF records. For example, if the smarthost routelist is set to "* outbound.example.tld" and an SPF record exists for "example.tld", the system adds an SPF include entry for all domains on the system with SPF enabled.'
+
+spf_include_hosts:
+    label: 'SPF include hosts for all domains on this system'
+    help: 'A comma-separated list of hosts that the system will add as SPF include entries for all domains on the system with SPF enabled.'
+
+rewrite_from:
+    label: 'EXPERIMENTAL: Rewrite From: header to match actual sender'
+    help: 'If you enabled this option, the From: header will be rewritten to be the email address of the actual message sender.   If you choose the "remote" option, only messages that are being sent to remote destinations will be affected.'
+
+callouts:
+    label: Sender Verification Callouts
+    help: 'Use callouts to verify the existence of email senders. Exim will connect to the mail exchanger for a given address to verify it exists before accepting mail from it.'
+
+custom_mailhelo:
+    label: Reference /etc/mailhelo for custom outgoing SMTP HELO
+    help: 'Send HELO based on the domain name in /etc/mailhelo (<a href="https://go.cpanel.net/eximdiffip" target="_blank">more information</a>)'
+
+custom_mailips:
+    label: Reference /etc/mailips for custom IP on outgoing SMTP connections
+    help: 'Send outgoing mail from the IP address that matches the domain name in /etc/mailips (<a href="https://go.cpanel.net/eximdiffip" target="_blank">more information</a>)'
+
+filter_attachments:
+    label: 'Attachments: Filter messages with dangerous attachments'
+
+filter_fail_spam_score_over_int:
+    label: 'Apache SpamAssassin&trade;: bounce spam score threshold'
+    help: 'Bounce mail when the spam score is above this number. (positive or negative, single digit after a decimal point allowed)'
+    undef: 'No bouncing by spam score'
+
+filter_spam_rewrite:
+    label: 'Apache SpamAssassin&trade;: Global Subject Rewrite'
+    help: 'Prefixes the &ldquo;X-Spam-Subject&rdquo; header prefix (set below) onto the &ldquo;Subject&rdquo; header and omits the &ldquo;X-Spam-Subject&rdquo; header <noscript class="jsnuke">(requires recent ACL-based Apache SpamAssassin system)</noscript>.'
+
+globalspamassassin:
+    label: 'Apache SpamAssassin&trade;: Forced Global ON'
+    help: 'Turn on Apache SpamAssassin&trade; for all accounts (i.e. with no option to disable).'
+
+malware_deferok:
+    label: Allow mail delivery if malware scanner fails
+    help: 'If the virus/malware scanner fails, you can choose to defer all mail delivery that would normally be scanned by disabling this option. Note: if you do choose to disable this option and the virus/malware scanner fails, mail users will not get new messages until it is repaired.'
+
+manage_rbls_button:
+    button: Manage
+    label: 'Manage Custom RBLs'
+
+max_spam_scan_size:
+    label: 'Apache SpamAssassin&trade;: message size threshold to scan'
+    help: 'Maximum size (in kilobytes) of a message that Apache SpamAssassin™ will scan. Spam emails are usually about 1-4 kB in size; therefore, it is generally wasteful to scan larger emails.'
+
+per_domain_mailips:
+    label: 'Send mail from the account’s IP address'
+    help: 'Automatically send outgoing mail from the account’s IPv4 address rather than the servers’ default IP address.'
+
+use_rdns_for_helo:
+    label: 'Use the reverse DNS entry for the mail HELO/EHLO if available'
+    help: 'The system will use the reverse DNS name for each IP address as the HELO for all outgoing SMTP connections. This only applies during the HELO/EHLO commands.'
+
+rebuild_rdns_cache:
+    label: 'Rebuild Reverse DNS Cache and Update Mail HELO'
+    help: 'This updates the reverse DNS cache and user domains for mail HELO. This option only appears when you enable the “Use the reverse DNS entry for the mail HELO/EHLO if available” setting.'
+    button: 'Rebuild RDNS Cache'
+
+rbl_whitelist:
+    label: 'Whitelist: IP addresses that should not be checked against RBLs'
+    help: 'A list of IP addresses that should not be RBL checked (whitelist).'
+
+sender_verify_bypass_ips_button:
+    label: Sender verification bypass IP addresses
+    help:  IP addresses for which to bypass SMTP-time sender verification checks
+    button: Edit
+
+senderverify:
+    label: Sender Verification
+    help: 'Verify that the domain&#39;s mail account actually exists at the origin.'
+
+setsenderheader:
+    label: 'Set SMTP Sender: headers'
+    help: '(-f flag passed to sendmail) This will create &ldquo;On behalf of&rdquo; notices in Microsoft<sup>&reg;</sup> Outlook, but it may also help track abuse of the mail system since recipients will see the SMTP login used to send each message.'
+
+skip_smtp_check_ips_button:
+    label: 'Trusted SMTP IP addresses'
+    help: IP addresses exempt from all SMTP sender, recipient, spam, and relaying checks. IP addresses you enter here are stored in /etc/skipsmtpcheckhosts. These senders must still use an RFC-compliant HELO name if the Require RFC-compliant HELO setting is enabled.
+    button: Edit
+
+spam_deferok:
+    label: Allow mail delivery if spam scanner fails
+    help: 'If the spam scanner fails, you can choose to defer all mail deliveries that would normally be scanned by disabling this option. Note: if you do choose to disable this option and the spam scanner fails, mail users will not get new messages until it is repaired.'
+
+trust_x_php_script:
+    label: 'Trust X-PHP-Script headers to determine the sender of email sent from processes running as nobody'
+    help: 'If the MailHeaders patch is installed in EasyApache, cPanel will use the X-PHP-Script to determine the sender of a message for Email Archiving and Limits.'
+
+query_apache_for_nobody_senders:
+    label: 'Query Apache server status to determine the sender of email sent from processes running as nobody'
+    help: 'If X-PHP-Script headers are not available (MailHeaders patch is not installed in EasyApache) or not trusted, cPanel will query the webserver in order to determine the sender.   This requires more resources then simply trusting the X-PHP-Script headers.'
+
+spam_header:
+    label: 'Apache SpamAssassin&trade;: X-Spam-Subject/Subject header prefix for spam emails'
+    help: 'Text to prefix either to the &ldquo;X-Spam-Subject&rdquo; or &ldquo;Subject&rdquo; header (see &ldquo;Global Subject Rewrite&rdquo; setting) for messages that Apache SpamAssassin marks as spam. Exim variables like &ldquo;$spam_score&rdquo; are acceptable. For a complete list of variables, visit <a href="http://exim.org/exim-html-current/doc/html/spec_html/ch11.html#SECTexpvar" target="_blank">http://exim.org/exim-html-current/doc/html/spec_html/ch11.html#SECTexpvar</a>.'
+
+spammer_list_ips_button:
+    label: 'Blacklisted SMTP IP addresses'
+    help: IP addresses from which SMTP connections are dropped unconditionally
+    button: Edit
+
+systemfilter:
+    label: System Filter File
+    help: 'The system filter file is usually stored as /etc/cpanel_exim_system_filter. [<a target="_blank" href="http://www.exim.org/exim-html-current/doc/html/spec_html/ch43.html">INFO</a>] Custom values must be existing files.'
+    undef: None (disable)
+
+trusted_mail_hosts_ips_button:
+    label: 'Only-verify-recipient'
+    help: Hosts or IP addresses that should be exempt from all spam checks at SMTP time, except recipient verification. Hosts or IP addresses you enter here are stored in /etc/trustedmailhosts.
+    button: Edit
+
+exiscanall:
+    label: Scan messages for malware from authenticated senders (exiscan).
+    help: 'If you have the ClamAVconnector plugin installed, messages from authenticated senders are not scanned until you enable this option.  It is recommended that you scan mail for authenticated senders when possible to reduce the risk of viruses spreading inside your network.'
+
+acl_deny_rcpt_soft_limit:
+    label: Maximum message recipients (soft limit)
+    help: 'Reject any recipient addresses after this number have been specified for a single message. NOTE: The RFCs specify that SMTP servers should accept at least 100 RCPT commands for a single message.'
+    undef: 'No rejection based on number of recipients'
+
+acl_deny_rcpt_hard_limit:
+    label: Maximum message recipients before disconnect (hard limit)
+    help: 'Disconnect and ratelimit any connection that specifies more than this number of recipients for a single message. NOTE: The RFCs specify that SMTP servers should accept at least 100 RCPT commands for a single message.'
+    undef: 'No disconnection based on number of recipients'
+
+require_secure_auth:
+    label: Require clients to connect with SSL or issue the STARTTLS command before they are allowed to authenticate with the server.
+    help: Disabling this option will significantly decrease the security of the server by allowing the plaintext transmission of authentication credentials.
+
+openssl_options:
+    label: Options for OpenSSL
+    help: This option is used for configuring SSL and TLS protocols in OpenSSL.
+
+tls_require_ciphers:
+    label: SSL/TLS Cipher Suite List
+
+dsn_advertise_hosts:
+    label: Hosts to which to advertise the SMTP DSN option
+    help: 'A list of hosts to which to advertise SMTP DSN support (RFC 3461).  Specify "*" for all hosts, or use Exim host list syntax.'
+    undef: 'Disabled for all hosts'
+
+smtputf8_advertise_hosts:
+    label: Hosts to which to advertise the SMTPUTF8 SMTP option
+    help: 'A list of hosts to which to advertise SMTPUTF8 support (RFC 6531).  Specify "*" for all hosts, or use Exim host list syntax.'
+    undef: 'Disabled for all hosts'
+
+blocked_domains_button:
+    label: Blocked Domains
+    help: 'Your server rejects mail that originates from these domains. (A new browser tab will appear.)'
+    button: 'Manage <i class="fas fa-external-link-alt" aria-hidden="true"></i>'
+
+filter_emails_by_country_button:
+    label: 'Blocked Countries'
+    help: 'Your server rejects mail that originates from these countries. (A new browser tab will appear.)'
+    button: 'Manage <i class="fas fa-external-link-alt" aria-hidden="true"></i>'
+
+suspended_account_deliveries:
+    label: 'Delivery behavior for suspended cPanel accounts'
+    help: 'Configures what action the server should perform when an email message is sent to a suspended account. Warning: Delivering email to a suspended account requires the evaluation of filters, redirection lists and other data that can be abused to retain access to the server. <a href="https://go.cpanel.net/suspended_account_deliveries" target="_blank">More Information</a>'
+
+message_linelength_limit:
+    label: 'Maximum line length for SMTP transports'
+    help: 'This option sets the maximum line length in bytes, that the SMTP transports will send. Any messages with lines exceeding the given value will fail and a failure ("bounce") message will, if possible, be returned to the sender.'
+
+hosts_avoid_pipelining:
+    help: 'Prevent Exim from using pipelining when delivering to remote hosts'
+    label: 'Disable pipelining'
+mailbox_quota_query_timeout:
+    help: 'Exim can timeout checking the quota for large mailboxes. If you are experiencing that problem, increase this value'
+    label: 'Mailbox quota query timeout'

@@ -1,0 +1,397 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/sshcontrol                      Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+#----------------------------------------------------------------------
+# This script controls a Net::OpenSSH session.
+#
+#It can authenticate a connection via password or SSH private key.
+#
+#It can connect via:
+#   1) root login
+#   2) user login, then su to root
+#   3) user login, then sudo to root
+#
+#Additionally, existing connections may persist and be reused.
+#
+#Once connected, it can:
+#   1) copy a file from/to local/remote
+#   2) AS ROOT: execute an arbitrary command on the remote server
+#
+#Inputs:
+#   key/value are read from STDIN as a hash,
+#   serialized with Cpanel::AdminBin::Serializer::Dump()
+#
+#
+#   Required arguments:
+#       authuser    The user as which to identify during the SSH login.
+#
+#       host        The remote host.
+#
+#       ctl         "ssh" or (usually "scp", but anything defined will do)
+#
+#
+#   Additional, optional arguments:
+#       external_master             ctl_pass parameter for Net::OpenSSH
+#                                   Required if die_on_pid is not given.
+#
+#       die_on_pid                  ID of a specific process for the SSH control process
+#                                   to watch and self-destruct upon the end of that
+#                                   process. Defaults to the script's process ID.
+#
+#       port                        passed to Net::OpenSSH
+#
+#       root_pass                   If authuser is "root", used to login;
+#                                   otherwise, used to escalate privileges via su.
+#                                   (Don’t submit if you mean to do sudo.)
+#
+#       ssh_private_key_password    passphrase for sshkey
+#
+#       sshkey                      filename under $HOME/.ssh/
+#
+#       stay_alive                  boolean; whether to keep the SSH control
+#                                   process around and pass back its PID and
+#                                   path in the response
+#
+#       wheel_pass                  Used to login as a non-root user.
+#                                   If there is no root_pass, also used to escalate
+#                                   privileges via sudo.
+#
+#
+#   Additional arguments when ctl is "ssh":
+#       cmd                         if ctl is "ssh", executed AS ROOT on the remote server
+#
+#
+#   Additional arguments when ctl is "scp":
+#       destfile                    if ctl ne "ssh", passed to Cpanel::SSHControl::scp
+#                                   NOTE: If ".", value is read from the last node in the
+#                                   path from srcfile
+#
+#       direction                   if ctl ne "ssh", passed to Cpanel::SSHControl::scp
+#
+#       srcfile                     if ctl ne "ssh", passed to Cpanel::SSHControl::scp
+#
+#
+#Output:
+#   This speaks the "protocol" that Whostmgr/Remote/Parser.pm understands.
+#   Note that this prints even error statuses to STDOUT.
+#
+#----------------------------------------------------------------------
+
+package Script::SSHControl;
+
+use strict;
+use warnings;
+
+use IO::Pipe                     ();
+use Cpanel::AdminBin::Serializer ();
+use Cpanel::ForkAsync            ();
+use Cpanel::SSHControl           ();
+use Cpanel::Locale::Lazy 'lh';
+use Cpanel::TimeHiRes         ();
+use Cpanel::Exception         ();
+use Cpanel::Sys::Setsid::Fast ();
+use Cpanel::BinCheck::Lite    ();
+
+my $ONEDAY = (86400);
+
+my @REQUIRED_ARGS = qw( authuser host ctl );
+
+Cpanel::BinCheck::Lite::check_argv();
+
+my $debug = 0;
+__PACKAGE__->script() unless caller();
+
+sub script {    ## no critic qw(Subroutines::ProhibitExcessComplexity)
+    my ($class) = @_;
+
+    local $| = 1;
+
+    local $ENV{'TERM'} = 'dumb';
+
+    my $self = {};
+    bless $self, $class;
+
+    my $parsed_args = Cpanel::AdminBin::Serializer::SafeLoadFile( \*STDIN );
+
+    my @missing = grep { !length $parsed_args->{$_} } @REQUIRED_ARGS;
+    if (@missing) {
+        _leave( lh()->maketext( 'Specify the [list_and_quoted,_1] [numerate,_2,parameter,parameters].', \@missing, ( scalar @missing ) ) );
+    }
+
+    my $escalation_method;
+    if ( $parsed_args->{'root_escalation_method'} && $parsed_args->{'root_escalation_method'} eq 'none' ) {
+        $escalation_method = 'none';
+    }
+    else {
+
+        # NB: Avoid length() here because we want to interpret
+        # root_pass==0 as no root password.
+        my $gave_root_pass = !!$parsed_args->{'root_pass'};
+
+        if ( length $parsed_args->{'wheel_pass'} ) {
+            if ( $parsed_args->{'authuser'} eq 'root' ) {
+                _leave( lh()->maketext( 'If “[_1]” is “[_2]”, you cannot specify “[_3]”.', qw(authuser root wheel_pass) ) );
+            }
+
+            # Just a wheel/sudo password? Gotta be sudo.
+            if ( !$gave_root_pass ) {
+                $escalation_method = 'sudo';
+            }
+        }
+
+        # Root password + non-root = su
+        if ($gave_root_pass) {
+            if ( $parsed_args->{'authuser'} ne 'root' ) {
+                $escalation_method = 'su';
+            }
+        }
+    }
+
+    my $cmd = $parsed_args->{'cmd'};
+
+    my $ssh_key = $parsed_args->{'sshkey'} ? ( ( getpwuid($>) )[7] . "/.ssh/" . $parsed_args->{sshkey} ) : undef;
+
+    my $ssh_username = $parsed_args->{'authuser'};
+
+    $parsed_args->{'die_on_pid'} ||= $$;
+
+    my $auth_info = {
+        'ssh_username'             => $ssh_username,
+        'ssh_ip'                   => $parsed_args->{'host'},
+        'ssh_port'                 => $parsed_args->{'port'},
+        'root_pass'                => $parsed_args->{'root_pass'} || ( $ssh_username eq 'root' ? $parsed_args->{'wheel_pass'} : undef ),
+        'wheel_pass'               => $parsed_args->{'wheel_pass'},
+        'ssh_private_key_password' => $parsed_args->{'ssh_private_key_password'},
+        'root_escalation_method'   => $escalation_method,
+        'ssh_private_key'          => $ssh_key,
+        'key_or_pass'              => ( $ssh_key ? 1 : 0 ),
+    };
+
+    my ( $status, $master_pid, $data );
+    my $ssh_obj;
+
+    if ( $parsed_args->{'external_master'} ) {
+        $0       = "sshcontrol parent: $auth_info->{'ssh_ip'} - external master";
+        $ssh_obj = Net::OpenSSH->new( 'child', external_master => 1, ctl_path => $parsed_args->{'external_master'} );
+    }
+    else {
+        $0 = "sshcontrol parent: $auth_info->{'ssh_ip'} - create connection";
+    }
+
+    my $keep_ssh_master = $parsed_args->{'stay_alive'} ? 1 : 0;
+
+    if ( $ssh_obj && $ssh_obj->check_master() ) {
+        print "Reused existing connection.\n";
+        $0 = "sshcontrol parent: $auth_info->{'ssh_ip'} - reused external master";
+    }
+    else {
+        $0 = "sshcontrol parent: $auth_info->{'ssh_ip'} - creating connection";
+        if ( $parsed_args->{'external_master'} ) {
+            $keep_ssh_master = 1;
+        }
+        ( $status, $master_pid, $data ) = $self->_create_ssh_master_connection( $auth_info, $parsed_args->{'die_on_pid'} );
+        if ( !$status ) {
+            _ssh_error_to_whm_remote_error_and_leave($data);
+        }
+        $ssh_obj = Net::OpenSSH->new( 'child', external_master => 1, ctl_path => $data );
+    }
+
+    if ( $ssh_obj->error() ) {
+        my $ssh_error = $ssh_obj->error();
+        _ssh_error_to_whm_remote_error_and_leave($ssh_error);
+    }
+
+    $0 = "sshcontrol parent: $auth_info->{'ssh_ip'} - attaching to external";
+    my $ssh_control = Cpanel::SSHControl->new_from_external( 'debug' => 0, 'quiet' => 0, 'verbose' => 0, 'auth_info' => $auth_info, 'ssh' => $ssh_obj );
+    $0 = "sshcontrol parent: $auth_info->{'ssh_ip'} - attached to external";
+
+    $SIG{'TERM'} = sub {
+        $ssh_control->disconnect();
+    };
+
+    if ( $parsed_args->{ctl} eq 'ssh' ) {
+        $0 = "sshcontrol parent: $auth_info->{'ssh_ip'} - ssh";
+        my ( $status, $msg ) = $ssh_control->exec_as_root($cmd);
+
+        if ( !$status ) {
+            _ssh_error_to_whm_remote_error_and_leave($msg);
+        }
+    }
+    elsif ( $parsed_args->{'ctl'} eq 'scp' ) {
+        $0 = "sshcontrol parent: $auth_info->{'ssh_ip'} - scp";
+        my $destfile = $parsed_args->{'destfile'} eq '.' ? ( split( m{/+}, $parsed_args->{'srcfile'} ) )[-1] : $parsed_args->{'destfile'};
+        my ( $status, $msg ) = $ssh_control->scp(
+            'direction' => $parsed_args->{'direction'},
+            'srcfile'   => $parsed_args->{'srcfile'},
+            'destfile'  => $destfile,
+        );
+
+        if ( !$status ) {
+            _ssh_error_to_whm_remote_error_and_leave($msg);
+        }
+        elsif ( $parsed_args->{'direction'} eq 'download' && !-e $destfile ) {
+            _ssh_error_to_whm_remote_error_and_leave("The destination file: “$destfile” failed to download.");
+        }
+    }
+    else {
+        die "Invalid “ctl”: [$parsed_args->{'ctl'}]";
+    }
+
+    $self->_write_sshcontrol_info( $master_pid, $ssh_obj );
+
+    if ( !$keep_ssh_master || !$master_pid ) {
+        $ssh_control->disconnect_master();
+    }
+    undef $ssh_obj;
+
+    return $self;
+}
+
+sub _write_sshcontrol_info {
+    my ( $self, $master_pid, $ssh_obj ) = @_;
+
+    if ($master_pid) {
+        print "\n==sshcontrolpid=$master_pid==\n";
+    }
+
+    print "\n==sshcontrolpath=" . $ssh_obj->get_ctl_path() . "==\n";
+
+    return;
+}
+
+sub _leave {
+    my @args = @_;
+
+    print @args;
+
+    die "\n";
+}
+
+sub _create_ssh_master_connection {
+    my ( $self, $auth_info, $die_on_pid ) = @_;
+
+    my $ssh_pipe = IO::Pipe->new();
+    my $child_result;
+
+    my $sshcontrol_pid = Cpanel::ForkAsync::do_in_child(
+        sub {
+            $ssh_pipe->writer();
+            open( STDOUT, '>&=' . fileno($ssh_pipe) );    ## no critic qw(RequireCheckedOpen)
+
+            if ($die_on_pid) {
+                $0 = "sshcontrol child: $auth_info->{'ssh_ip'} - waiting on pid $die_on_pid";
+            }
+            else {
+                $0 = "sshcontrol child: $auth_info->{'ssh_ip'}";
+            }
+
+            my $ssh_control = Cpanel::SSHControl->new( 'debug' => 0, 'quiet' => 0, 'verbose' => 0, 'auth_info' => $auth_info );
+
+            {
+                local $@;
+                eval { $ssh_control->connect() };
+                if ($@) {
+                    my $error_as_string = Cpanel::Exception::get_string_no_id($@);
+                    $error_as_string =~ s/\n/ /g;
+
+                    # This is going to the parent
+                    print "\nsshcontrol:0:" . $error_as_string . "\n";
+                    exit(1);
+                }
+
+            }
+
+            my $master_pid = $ssh_control->{'ssh'}->get_master_pid();
+
+            if ( !$master_pid ) {
+                print "\nsshcontrol:0:failed to create sshcontrol master\n";
+                exit(1);
+            }
+
+            $SIG{'HUP'}  = 'IGNORE';
+            $SIG{'ALRM'} = $SIG{'TERM'} = sub {
+                $ssh_control->disconnect_master();
+                exit(0);
+            };
+
+            # This is going to the parent
+            print "\nsshcontrol:1:" . $ssh_control->{'ssh'}->get_ctl_path() . "\n";
+            Cpanel::Sys::Setsid::Fast::fast_setsid();
+            open( STDIN,  '<', '/dev/null' );    ## no critic qw(RequireCheckedOpen)
+            open( STDOUT, '>', '/dev/null' );    ## no critic qw(RequireCheckedOpen)
+            open( STDERR, '>', '/dev/null' );    ## no critic qw(RequireCheckedOpen)
+            alarm($ONEDAY);                      # If something gets killed off expire in one day
+
+            while ( waitpid( $master_pid, 1 ) != -1 && kill( 0, $die_on_pid ) ) {
+                Cpanel::TimeHiRes::sleep(0.1);
+            }
+            $ssh_control->disconnect_master();
+            waitpid( $master_pid, 0 );
+
+            exit(0);
+        }
+    );
+
+    $ssh_pipe->reader();
+    while ( readline($ssh_pipe) ) {
+        if (m{^sshcontrol:}) { $child_result = $_; last; }
+        print;
+    }
+
+    chomp($child_result);
+
+    my ( $sshcontrol_tag, $status, $data ) = split( m{:}, $child_result, 3 );
+
+    return ( $status, $sshcontrol_pid, $data );
+}
+
+my @SSH_ERRORS;
+
+sub _ssh_error_to_whm_remote_error_and_leave {
+    my ($ssh_error) = @_;
+
+    if ( !@SSH_ERRORS ) {
+        @SSH_ERRORS = (
+            [ qr{master process exited unexpectedly:\s+([^:]+).*?No such file or directory} => 'RemoteSSHMissing' ],
+            [ qr{No such file or directory}                                                 => 'RemoteSSHMissing' ],
+            [ qr{normalize shell}                                                           => 'RemoteSSHMissing' ],
+            [ qr{Name or service not known}                                                 => 'RemoteSSHHostNotFound' ],
+            [ qr{Connection timed out}                                                      => 'RemoteSSHTimeout' ],
+            [ qr{(scp failed)}                                                              => 'RemoteSCPError' ],
+            [ qr{(^scp:.*)}                                                                 => 'RemoteSCPError' ],
+            [ qr{(Connection (?:to [^ ]+? )?closed)}                                        => 'RemoteSSHConnectionFailed' ],
+            [ qr{(No route to host)}                                                        => 'RemoteSSHConnectionFailed' ],
+            [ qr{(Connection refused)}                                                      => 'RemoteSSHConnectionFailed' ],
+            [ qr{(lost connection)}                                                         => 'RemoteSSHConnectionFailed' ],
+            [ qr{(Failed to escalate to root)}i                                             => 'RemoteSSHRootEscalationFailed' ],
+            [ qr{(timeout)}i                                                                => 'RemoteSSHTimeout' ],
+            [ qr{master process exited unexpectedly:\s+(.*)}                                => 'RemoteSSHAccessDenied' ],
+
+            #A catch-all, must be last.
+            [ qr<> => 'RemoteSSHAccessDenied' ],
+        );
+    }
+
+    for my $re_code (@SSH_ERRORS) {
+        if ( $ssh_error =~ $re_code->[0] ) {
+            my $raw_error = $1 || $ssh_error;
+            $raw_error =~ s/=//g;
+            $raw_error =~ s/\r*\n/ /g;
+            _leave("\n==sshcontrol_error=$re_code->[1]=$raw_error==\n");
+        }
+    }
+
+    # If we did not parse the error, we need to show it
+    # but only if we haven't already to avoid showing it twice
+    print $ssh_error . "\n";
+
+    #This error is meant to look a bit more "professional" than
+    #"Oops! We should never get here!". :)
+    die "Misdirected execution flow!";
+}
+
+1;

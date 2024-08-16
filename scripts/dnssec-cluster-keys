@@ -1,0 +1,110 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+package scripts::dnssec_cluster_keys;
+
+# cpanel - scripts/dnssec-cluster-keys
+#                                                     Copyright 2022 cPanel, L.L.C.
+#                                                            All rights reserved.
+#  copyright@cpanel.net                                         http://cpanel.net
+#  This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+use warnings;
+
+=encoding utf-8
+
+=head1 NAME
+
+dnssec-cluster-keys
+
+=head1 SYNOPSIS
+
+ dnssec-cluster-keys [--sync|--revoke] [--zone=] [--tag=] {--nolocal} {--rebuild-cache}
+
+ Options:
+    --sync              Action to sync keys to the cluster.
+    --revoke            Action to revoke keys from the cluster.
+    --zone              Required. The zone to take action on.
+    --tag               Required for revoke. Optional for sync.
+                        If not defined during a sync, all active keys will be used.
+                        Multiple tags can be defined.
+    --nolocal           Optional. Do not perform the action on the local server.
+                        Useful for testing.
+    --rebuild-cache     Rebuild the local cache of domains with DNSSEC enabled.
+
+ Examples:
+
+ Sync all currently active DNSSEC keys:
+ ./dnssec-cluster-keys --sync --zone=example.zone
+
+ Sync only specific DNSSEC keys. If any of the keys are disabled locally, they will be enabled.
+ ./dnssec-cluster-keys --sync --zone=example.zone --tag=46547 --tag=31016 --tag=44233
+
+ Revoke specific DNSSEC keys from the cluster. WARNING: This will delete the keys locally also.
+ ./dnssec-cluster-keys --revoke --zone=example.zone --tag=46547 --tag=31016 --tag=44233
+
+ Revoke a DNSSEC key from the cluster, but keep the local copy.
+ ./dnssec-cluster-keys --revoke --zone=example.zone --tag=12345 --nolocal
+
+=head1 DESCRIPTION
+
+This script is used to manage DNSSEC keys in a cPanel cluster. You must be using PowerDNS
+as a nameserver, cPanel DNS clustering must be enabled, and have root privileges. This script
+provides two actions, sync and revoke.
+
+=cut
+
+use Cpanel::NameServer::DNSSEC::SyncKeys ();
+
+use parent qw( Cpanel::HelpfulScript );
+
+use constant _OPTIONS => ( 'zone=s', 'sync', 'revoke', 'tag=s@', 'nolocal', 'rebuild-cache' );
+
+if ( !caller() ) {
+    __PACKAGE__->new(@ARGV)->run();
+    exit 0;
+}
+
+sub run {
+    my ($self) = @_;
+
+    die "This must run as root!\n" if $>;
+
+    if ( $self->getopt('rebuild-cache') ) {
+        print "Rebuilding the dnssec enabled cache...\n";
+        require Cpanel::NameServer::DNSSEC::Cache;
+        Cpanel::NameServer::DNSSEC::Cache::rebuild_cache();
+        print "Done\n";
+        return 1;
+    }
+
+    my $zone    = $self->getopt('zone') // die "Must specify a zone.\n" . $self->help();
+    my $nolocal = $self->getopt('nolocal') ? 0 : 1;
+
+    unless ( defined( $self->getopt('sync') ) ^ defined( $self->getopt('revoke') ) ) {
+        die "Must specify either --sync or --revoke.\n" . $self->help();
+    }
+
+    my $dnssec = Cpanel::NameServer::DNSSEC::SyncKeys->new( $zone, $nolocal );
+
+    if ( $self->getopt('sync') ) {
+        my $keys = $self->getopt('tag') // [];
+        if (@$keys) {
+            print "Syncing DNSSEC keys for $zone with tags: " . join( " ", @$keys ) . "\n";
+            $dnssec->sync_keys( $keys, { skip_verify => 1 } );
+        }
+        else {
+            print "Syncing all active DNSSEC keys for zone $zone...\n";
+            $dnssec->sync_active_keys( { skip_verify => 1 } );
+        }
+    }
+    elsif ( $self->getopt('revoke') ) {
+        my $keys = $self->getopt('tag') // die "Please specify the keytags to revoke with --tag.\n" . $self->help();
+        print "Removing DNSSEC keys for $zone with tags: " . join( " ", @$keys ) . "\n";
+        $dnssec->revoke_keys($keys);
+    }
+
+    print "Done.\n";
+    return 1;
+}
+
+1;

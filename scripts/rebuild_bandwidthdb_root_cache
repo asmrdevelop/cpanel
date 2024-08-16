@@ -1,0 +1,58 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/rebuild_bandwidthdb_root_cache  Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::rebuild_bandwidthdb_root_cache;
+
+#----------------------------------------------------------------------
+#NOTE: It might be good to make this an API call and put a button in the UI
+#to the effect of: “If this doesn’t look right, try [rebuilding].”
+#----------------------------------------------------------------------
+
+use strict;
+
+use Cpanel::BandwidthDB::RootCache ();
+
+__PACKAGE__->script() if !caller;
+
+sub script {
+    Cpanel::BandwidthDB::RootCache::delete();
+
+    #So we immediately see which user the system is converting.
+    local $| = 1;
+
+    Cpanel::BandwidthDB::RootCache->new(
+        import_options => {
+            before_start => \&_before_start,
+            before_user  => \&_before_user,
+            after_user   => \&_after_user,
+        },
+    );
+
+    return;
+}
+
+sub _before_start {
+    my $users_ar = shift;
+
+    my $count = scalar @$users_ar;
+    print "Rebuilding bandwidth cache for this system’s $count cPanel user(s):\n\n";
+
+    return;
+}
+
+sub _before_user {
+    my ($user) = @_;
+
+    return print "$user …";
+}
+
+sub _after_user {
+
+    return print " Done!\n";
+}
+
+1;

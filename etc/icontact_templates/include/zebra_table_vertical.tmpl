@@ -1,0 +1,58 @@
+[% MACRO zebra_table_vertical BLOCK %]
+[%#
+
+    Usage:
+
+    items              - hash of key value pairs to display.  the key will be the title and the value the content.
+
+-%]
+
+[%
+    PROCESS "include/code_standout.tmpl";
+
+    DEFAULT no_information_text = CPANEL.locale.maketext('No information found.');
+%]
+
+[%
+    # Ensure that we aren't creating a completely empty table.
+    SET items_to_display = 0;
+
+    FOREACH item IN items.keys;
+        IF items.$item;
+            items_to_display = 1;
+            LAST;
+        END;
+    END;
+%]
+    [% IF title %]
+        <p style="font-family:[% font_family %];font-size:14px;color:[% header_txt_color %]">
+            [% title %]
+        </p>
+    [% END %]
+
+    [% SET zebra_counter = 1; %]
+    [% IF items_to_display %]
+       <table  style="
+            margin: 5px 10px;
+            border: 2px solid [% medium_gray %];
+            padding: 0;"
+            cellpadding="5" cellspacing="0"
+            width="[% content_width - 20 %]px">
+            [% FOREACH item IN items.keys %]
+                [% IF items.$item %]
+                    [% zebra_counter = !zebra_counter %]
+                    <tr style="background-color:[% zebra_counter? light_gray : white %]">
+                        <th align="left">
+                            [% item %]
+                        </th>
+                        <td>
+                            [% items.$item %]
+                        </td>
+                    </tr>
+                [% END %]
+            [% END %]
+       </table>
+    [% ELSIF title %]
+        [% code_standout(command=no_information_text); %]
+    [% END %]
+[% END %]

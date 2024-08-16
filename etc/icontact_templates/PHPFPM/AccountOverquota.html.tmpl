@@ -1,0 +1,36 @@
+[%#
+
+NOTE: This template is for PHP-FPM.
+
+In the event that restartsrv_apache_php_fpm has to take actions
+to bring PHP-FPM up and running, because an account is overquota.
+
+Variables passed in:
+
+user       - The user account that is overquota.
+domain     - The user domain that caused PHP-FPM to fail to start.
+conf_file  - The configuration file for that domain.
+moved_file - The file the configuration file was temporarily moved to.
+
+For more information about how to customize notification templates, read our documentation at https://go.cpanel.net/notificationtemplates
+
+-%]
+
+[%
+    PROCESS "include/colors.tmpl";
+    PROCESS "include/styles.tmpl";
+    PROCESS "include/code_block.tmpl";
+
+    WRAPPER 'wrapper/main.html.tmpl';
+
+    NOTICE.email_reason = CPANEL.locale.maketext('[asis,PHP-FPM] User account over quota prevented startup.');
+%]
+
+<p>
+    [% CPANEL.locale.maketext ('User “[_1]” Domain “[_2]” prevented [asis,PHP-FPM] from starting.', NOTICE.user, NOTICE.domain ) %]
+    [% CPANEL.locale.maketext ('[asis,cPanel] moved the configuration file “[_1]” temporarily to “[_2]”.', NOTICE.conf_file, NOTICE.moved_file) %]
+    [% CPANEL.locale.maketext ('The file was moved back into place after restart but [asis,PHP-FPM] is not functional on this domain.') %]
+    [% CPANEL.locale.maketext ('Consider disabling [asis,PHP-FPM] for this domain.') %]
+</p>
+
+[% END %]

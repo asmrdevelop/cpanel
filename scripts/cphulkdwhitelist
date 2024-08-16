@@ -1,0 +1,44 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/cphulkdwhitelist                Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+use warnings;
+use Cpanel::Hulk::Admin     ();
+use Cpanel::Config::Hulk    ();
+use Cpanel::Validate::IP    ();
+use Cpanel::Hulk::Admin::DB ();
+
+my $app  = $0;
+my $list = 'white';
+if ( grep( /-black/, @ARGV ) ) {
+    $list = 'black';
+    @ARGV = grep( !/-black/, @ARGV );
+    $app =~ s/white/black/g;
+}
+
+if ( Cpanel::Config::Hulk::is_enabled() ) {
+    if ( !$ARGV[0] || !Cpanel::Validate::IP::is_valid_ip_cidr_or_prefix( $ARGV[0] ) ) {
+        print "Usage: $app <ip/cidr>\n";
+        print "Examples:\n\t\t$app 1.1.1.1\n";
+        print "Examples:\n\t\t$app 0:33:ad\n";
+        print "\t\t$app 1.1.1.0/24\n";
+        exit;
+    }
+
+    my $dbh;
+    eval { $dbh = Cpanel::Hulk::Admin::DB::get_dbh(); };
+    if ( $@ || !$dbh ) {
+        warn "Failed to connect to cPHulk DB: $@";
+        exit 1;
+    }
+
+    Cpanel::Hulk::Admin::add_ip_to_list( $dbh, $ARGV[0], $list );
+    print "$ARGV[0] has been ${list}listed\n";
+}
+else {
+    print "cphulkd is not enabled\n";
+}

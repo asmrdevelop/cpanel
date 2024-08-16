@@ -1,0 +1,24 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+$ENV{'LANG'} = 'C';
+
+sub sixtyfoursort {
+    if ( $a =~ /64/ ) {
+        return 999999;
+    }
+    $a cmp $b;
+}
+
+my @paths = grep( !/cpan_sandbox/, split( /:/, $ENV{'PATH'} ) );
+foreach my $path (@paths) {
+    if ( -x $path . '/' . 'gcc' ) {
+        my @LDS    = grep( /^\-L/,  @ARGV );
+        my @NONLDS = grep( !/^\-L/, @ARGV );
+        @ARGV = sort sixtyfoursort @LDS;
+        push( @ARGV, @NONLDS );
+        print STDERR "gcc-64bit-hack: enabled\n";
+        local $ENV{'PATH'} = join( ':', @paths );
+        exec( $path . '/' . 'gcc', @ARGV );
+    }
+}
+die;

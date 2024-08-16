@@ -1,0 +1,76 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - bin/checksshconf                        Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package bin::checksshconf;
+
+use strict;
+use warnings;
+
+use Cpanel::SafeFile ();
+use Cpanel::Debug    ();
+
+__PACKAGE__->script() unless caller();
+
+sub script {
+    my ($self) = @_;
+
+    # TODO: This modulino needs to have its core functionality moved to
+    # a module and have its test coverage improved.  Once done the
+    # install/* scripts should call the module directly instead of
+    # loading this modulino.
+    if ( -e '/etc/pam.d/sshd'
+        && ( -e '/lib/security/pam_shells.so' || -e '/lib64/security/pam_shells.so' ) ) {
+        my $missing = 1;
+        my $sl      = Cpanel::SafeFile::safeopen( \*SSHC, '+<', '/etc/pam.d/sshd' );
+        if ( !$sl ) { Cpanel::Debug::log_die("Could not edit /etc/pam.d/sshd \n"); }
+        while (<SSHC>) {
+            if (   /^[\s\t]*auth[\s\t]+required[\s\t]+\/lib\/security\/pam_shells.so/
+                || /^[\s\t]*auth[\s\t]+required[\s\t]+pam_shells.so/ ) {
+                $missing = 0;
+            }
+        }
+        if ($missing) {
+            print SSHC "\nauth       required     pam_shells.so\n";
+            print "SECURITY: Updated /etc/pam.d/sshd to prevent logins when no shell is set\n";
+        }
+        truncate( SSHC, tell(SSHC) );
+        Cpanel::SafeFile::safeclose( \*SSHC, $sl );
+        return;
+    }
+
+    my $restart = 0;
+    my @SSDC    = qw(
+      /etc/ssh/sshd_config
+      /usr/local/etc/ssh/sshd_config
+      /usr/etc/ssh/sshd_config
+    );
+    foreach my $sshdconf (@SSDC) {
+        next if ( !-f $sshdconf );
+
+        my $missing = 1;
+        my $sl      = Cpanel::SafeFile::safeopen( \*SSHC, '+<', $sshdconf );
+        if ( !$sl ) { Cpanel::Debug::log_die("Could not edit /etc/pam.d/sshd \n"); }
+        while (<SSHC>) {
+            if ( /AllowTcpForwarding[\s\t]+(no|yes)/i && !/^[\s\t]+#/ ) {
+                $missing = 0;
+            }
+        }
+        if ($missing) {
+            print SSHC "\nAllowTcpForwarding no\n";
+            $restart = 1;
+            print "SECURITY: Updated $sshdconf to disallow tcp forwards!\n";
+        }
+        truncate( SSHC, tell(SSHC) );
+        Cpanel::SafeFile::safeclose( \*SSHC, $sl );
+    }
+
+    if ($restart) {
+        require Cpanel::ServerTasks;
+        eval { Cpanel::ServerTasks::queue_task( ['CpServicesTasks'], "restartsrv sshd" ); };
+    }
+    return;
+}

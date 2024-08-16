@@ -1,0 +1,31 @@
+[%#
+Variables passed in:
+
+origin              - the system component from which the password change request originated
+service             - the service the ssl cert was bound to
+hostname            - the hostname of the cert
+url_host            - the cPanel ssl login hostname
+-%]
+
+[%
+    PROCESS "include/colors.tmpl";
+    PROCESS "include/styles.tmpl";
+    PROCESS "include/code_block.tmpl";
+    PROCESS "include/certificate_info.tmpl";
+
+    WRAPPER 'wrapper/main.html.tmpl';
+
+    NOTICE.email_reason =  CPANEL.locale.maketext('The [output,abbr,SSL,Secure Sockets Layer] certificate for “[_1]” on “[_2]” will expire in less than [quant,_3,day,days].', NOTICE.service, NOTICE.hostname, 30);
+%]
+
+<p>
+    <u>[% CPANEL.locale.maketext('The certificate has the following properties:') %]</u>
+    [% certificate_info(certificate=NOTICE.certificate, certificate_error=NOTICE.certificate_error) %]
+</p>
+
+<p>
+    [% CPANEL.locale.maketext('You need to install a new certificate as soon as possible.'); %]
+    [% CPANEL.locale.maketext("You can do this with [asis,WHM]’s “[_1]” interface at [output,url,_2,_2,target,_3].", CPANEL.locale.maketext('Manage Service SSL Certificates'), NOTICE.manage_service_certificates_url,'_blank') %]
+</p>
+
+[% END %]

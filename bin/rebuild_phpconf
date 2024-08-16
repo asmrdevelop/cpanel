@@ -1,0 +1,246 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - bin/rebuild_phpconf                     Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package bin::rebuild_phpconf::ea4;
+
+use strict;
+use warnings;
+
+use Try::Tiny;
+use Cpanel::Exception      ();
+use Cpanel::Hooks          ();
+use Cpanel::ProgLang       ();
+use Cpanel::ProgLang::Conf ();
+use Cpanel::WebServer      ();
+use Getopt::Long           ();
+use Cpanel::Rlimit         ();
+
+our %Actions = (
+    'set'       => \&do_set,
+    'current'   => \&do_current,
+    'available' => \&do_available,
+);
+
+sub usage {
+    my $msg = shift;
+
+    print STDERR "\nERROR: $msg\n\n" if $msg;
+
+    print << "EOF";
+Usage $0 [--default=<ver>] [--<ver>=<handler> ... ] [--dryrun] [--no-restart] [--current|--available] [--errors]
+Actions
+ --default      : Set the default PHP version used by Apache.
+ --<ver>        : Set the type of Apache handler used for by a PHP version (may be used with --default)
+ --current      : Show current settings
+ --available    : Show available Apache handlers and PHP SAPIs
+ --help         : Show this screen!
+
+Options
+ --dryrun       : Only display the changes that would be made to Apache
+ --no-restart   : Don't restart Apache after making changes
+ --errors       : Also print errors to STDERR, instead of only writing to log file
+ --no-users     : Do not update user settings when updating a version’s handler
+
+EOF
+
+    exit( $msg ? 1 : 0 );
+}
+
+sub getopt_warn {
+    my $msg = shift;
+    chomp $msg;
+    usage($msg);
+}
+
+sub get_args {
+    my $argv = shift;
+    my $php  = shift;
+    my %args;
+
+    usage("Missing parameters.") unless @$argv;
+
+    local $SIG{__WARN__} = \&getopt_warn;
+
+    my %opts = (
+        'help'     => sub { usage() },
+        'dryrun'   => \$args{dryrun},
+        'restart!' => \$args{restart},
+        'users!'   => \$args{users},
+        'current'  => sub {
+            usage("You can only specify a single action") if defined $args{action};
+            $args{action} = 'current';
+        },
+        'available' => sub {
+            usage("You can only specify a single action") if defined $args{action};
+            $args{action} = 'available';
+        },
+        'errors'    => \$args{errors},
+        'default=s' => sub {
+            my ( $self, $arg ) = @_;
+            usage("You can only specify a single action") if ( defined $args{action} && $args{action} ne 'set' );
+            $args{default} = $arg;
+            $args{action}  = 'set';
+        },
+    );
+
+    # autofill options for php packages so getopt can pick them up
+    my $installed = $php->get_installed_packages();
+    for my $package (@$installed) {
+        $opts{"$package=s"} = sub {
+            my ( $self, $arg ) = @_;
+
+            usage("You can only specify a single action")     if ( defined $args{action} && $args{action} ne 'set' );
+            usage("You already specify the $package setting") if defined $args{package}{$package};
+            $args{package}{$package} = $arg;
+            $args{action} = 'set';
+        };
+    }
+
+    # get command-line options
+    Getopt::Long::GetOptionsFromArray(
+        $argv,
+        %opts
+    );
+
+    $args{restart} = 1 unless defined $args{restart};
+    $args{users}   = 1 unless defined $args{users};
+    $args{dryrun}  = 0 unless defined $args{dryrun};
+    $args{errors}  = 0 unless defined $args{errors};
+
+    return \%args;
+}
+
+sub validate_args {
+    my $args   = shift;
+    my $php    = shift;
+    my $server = shift;
+
+    # make sure user specified an action
+    usage("You must specify at least 1 action") unless $args->{action};
+
+    # validate parameters if 'set' action
+    if ( $args->{action} eq 'set' ) {
+        my $installed = $php->get_installed_packages();
+
+        if ( $args->{default} ) {
+            usage("You must specify a valid PHP package") unless grep( /^$args->{default}$/, @$installed );
+        }
+
+        if ( $args->{package} ) {
+            while ( my ( $package, $handler ) = each( %{ $args->{package} } ) ) {
+                my $ref = $server->get_available_handlers( lang => $php, package => $package );
+                usage("The $package PHP package does not support the $handler Apache handler") unless $ref->{$handler};
+            }
+        }
+    }
+
+    return 1;
+}
+
+# Applies a new configuration to the web stack
+# TODO: Implement --errors flag (EA-3796)
+sub do_set {
+    my ( $args, $php, $server ) = @_;
+
+    # Use this variable to reboot on the last apache handler call
+    my $remain = 0;
+    $remain++                                       if $args->{default};
+    $remain += scalar( keys %{ $args->{package} } ) if $args->{package};
+
+    # Update each PHP package's handler, before setting default.
+    # This gives the admin a chance to set the handler of the
+    # default PHP package before switching to it.
+
+    if ( $args->{package} ) {
+        while ( my ( $package, $handler ) = each( %{ $args->{package} } ) ) {
+            $remain--;
+            _do_hook( { 'handler' => $handler, 'version' => $package }, 'Lang::PHP::set_handler', 'pre' );
+            my $restart = ( $remain < 1 && $args->{restart} ) ? 1 : 0;
+            try {
+                $server->set_package_handler( type => $handler, lang => $php, package => $package, restart => $restart );
+                $server->update_user_package_handlers( lang => $php, package => $package ) if $args->{users};
+            }
+            catch {
+                warn Cpanel::Exception::get_string($_);
+            };
+            _do_hook( { 'handler' => $handler, 'version' => $package }, 'Lang::PHP::set_handler', 'post' );
+        }
+    }
+
+    if ( $args->{default} ) {
+        $remain--;
+        _do_hook( { 'version' => $args->{default} }, 'Lang::PHP::set_system_default_version', 'pre' );
+        my $restart = ( $remain < 1 && $args->{restart} ) ? 1 : 0;
+        $server->set_default_package( lang => $php, package => $args->{default}, restart => $restart );
+        _do_hook( { 'version' => $args->{default} }, 'Lang::PHP::set_system_default_version', 'post' );
+    }
+
+    return 1;
+}
+
+# Displays current configuration
+sub do_current {
+    my ( $args, $php, $server ) = @_;
+    my $conf = Cpanel::ProgLang::Conf->new( type => $php->type() );
+
+    print "DEFAULT PHP: " . $conf->get_system_default_package() . "\n";
+
+    for my $package ( sort @{ $php->get_installed_packages() } ) {
+        my $handler_type = $conf->get_package_info( package => $package );
+        my $handler      = $server->make_handler( lang => $php, package => $package, type => $handler_type );
+        print "$package SAPI: " . $handler->type() . "\n";
+    }
+
+    return 1;
+}
+
+# Displays available Apache handlers for each PHP version
+sub do_available {
+    my ( $args, $php, $server ) = @_;
+
+    for my $package ( sort @{ $php->get_installed_packages() } ) {
+        my $ref      = $server->get_available_handlers( lang => $php, package => $package );
+        my @handlers = sort keys %$ref;
+        print "$package: @handlers\n";
+    }
+}
+
+sub run {
+    my $argv = shift;
+
+    Cpanel::Rlimit::set_rlimit( 512 * 1024 * 1024 );
+
+    my $php    = Cpanel::ProgLang->new( type => 'php' );
+    my $ws     = Cpanel::WebServer->new();
+    my $server = $ws->get_server( type => 'apache' );
+
+    my $args = get_args( $argv, $php, $server );
+    validate_args( $args, $php, $server );
+
+    # perform the action
+    my $act = $Actions{ $args->{action} };
+    $act->( $args, $php, $server );
+
+    return 1;
+}
+
+sub _do_hook {
+    my ( $args, $event, $stage ) = @_;
+
+    Cpanel::Hooks::hook(
+        {
+            'category' => 'Whostmgr',
+            'event'    => $event,
+            'stage'    => $stage,
+        },
+        $args,
+    );
+
+    return 1;
+}
+
+run( \@ARGV ) unless ( caller() );

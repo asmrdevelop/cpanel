@@ -1,0 +1,68 @@
+[% USE Whostmgr; -%]
+[% WRAPPER 'master_templates/master.tmpl' theme="yui"
+    app_key='locale_xml_download' -%]
+
+<link rel="stylesheet" type="text/css" href="/yui/container/assets/container.css" /><script type="text/javascript" src="/yui/utilities/utilities.js"></script><script type="text/javascript" src="/yui/container/container.js"></script>
+<script type="text/javascript" src="/js/popupbox.js"></script>
+<style type="text/css">
+        .info_box {
+            background-color:#FFFFCC;
+            border:1px solid #666666;
+            margin-left:20px;
+            padding:5px;
+            width:500px;
+        }
+        .info_box_transparent {
+            font-weight: bold;
+            border:1px solid #666666;
+            margin-left:20px;
+            padding:5px;
+            width:500px;
+        }
+        .highlight{
+        width:550px;
+        }
+        .externalLink:after {
+            font-family: "Font Awesome 5 Free";
+            font-weight: 600;
+            content: "\f35d";
+            display: inline-block;
+            padding: 0 3px 0 3px;
+        }
+        .help-block {
+            padding-top: 10px;
+        }
+
+
+</style>
+
+<div class="uniform_page_padding">
+[% IF data.formref.error == 1 %]<p class="error">[% locale.maketext("Invalid locale. Choose one from the menu below.") %]</p>[% END %]
+[% IF data.formref.error == 2 %]<p class="error">[% locale.maketext("Export failed. Try again.") %]</p>[% END %]
+
+<p>[% locale.maketext("You can download a locale in XML or XLF format for offline editing. It includes entries for all files in root, including addons, and in all themes. The download will include any local edits.") %]</p>
+
+<div class="highlight">
+<form method="post" action="[% cp_security_token %]/scripts9/download_locale">
+ <strong>[% locale.maketext("Choose Locale") %]</strong>
+   <select name="locale">
+     [% PROCESS '_locale_option_tags.tmpl' %]
+   </select>
+    <div class="help-block">
+        [% user_feedback_text_for_more_locales() %]
+    </div>
+  <hr size="1" class="hr" />
+  <input type="submit" class="btn-primary" name="dumper-format" value="[% locale.maketext("Download XML") %]" />
+  <input type="submit" class="btn-primary" value="[% locale.maketext("Download XLF") %]" />
+</form>
+</div>
+
+[% IF Whostmgr.checkacl('locale-edit') %]
+<p>[% locale.maketext("You can upload the edited XML file via the [output,url,_1,Locale XML Upload] feature or via the command line script `/scripts/locale_import --import=path/to/your/file.xlf` (pass it --help for more information).",cp_security_token _ "/scripts9/upload_locale_form") %]</p>
+[% END %]
+<p><em>Note:</em>
+ <br />
+ <p>If a locale seems to be missing you may need to <a href="javascript:display_quickpopupbox('Compiling locale databases','<iframe height=90% width=100% src=[% cp_security_token %]/cgi/build_locale_databases.pl />')">rebuild the locale databases</a> in order to bring it into the system.<p>
+</p>
+</div>
+[% END %]

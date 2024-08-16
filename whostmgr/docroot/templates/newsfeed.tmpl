@@ -1,0 +1,78 @@
+[%
+    USE Whostmgr;
+    USE NVData;
+    USE JSON;
+    WRAPPER 'master_templates/master.tmpl'
+        header = locale.maketext('News')
+        breadcrumburl = '/cgi/news.cgi'
+        theme = 'bootstrap'
+        scripts = [
+            Whostmgr.find_file_url('/libraries/jquery/current/jquery.min.js'),
+        ]
+        extrastyle = '
+            .long-text {
+                word-wrap: break-word;
+            }
+        '
+-%]
+
+<div id="content" class="container-fluid">
+[% IF local_news %]
+   <div class="row">
+     <div class="col-md-12 col-xs-12">
+       <div class="panel panel-default">
+         <div class="panel-heading">
+           <h3 class="panel-title">[% locale.maketext( 'Latest Server News' ) %]</h3>
+         </div>
+         <div class="panel-body long-text">
+           [% local_news %]
+         </div>
+       </div>
+     </div>
+   </div>
+   <hr />
+[% END %]
+[% IF feed.error -%]
+    <div class="alert alert-danger" role="alert">
+      <span class="glyphicon glyphicon-remove-sign"></span>
+      <div class="alert-message">
+        [% feed.error %]
+      </div>
+    </div>
+[% ELSE -%]
+    [%- IF feed.defined( 'hasentries' ) -%]
+    [% feed.delete( 'hasentries' ) %]
+    <h2>[% locale.maketext('Latest News from [asis,cPanel]' ) %]</h2>
+    <div class="row">
+    [%- FOREACH e IN feed.keys.nsort.reverse -%]
+    [% LAST IF loop.count > 3 %]
+      <div class="col-lg-4 col-xs-12 news">
+        <div class="panel panel-[%- feed.$e.type -%] news_panel">
+          <div class="panel-heading">
+             <h3 class="panel-title">[% feed.$e.title %]</h3>
+             <div><small>By: [% feed.$e.author %] - [% feed.$e.published %]</small></div>
+          </div>
+          <div class="panel-body long-text">
+            <p>[% feed.$e.content %][% IF feed.$e.uselink %] &#8230; <span name="readmore"><a href="[% feed.$e.link %]" target="_blank">[% locale.maketext("Continue Reading") %] &#8594;</a></span>[% END %]</p>
+          </div>
+        </div>
+      </div>
+    [%- END -%]
+    </div>
+    <hr />
+    <div class="list-group">
+      [%- FOREACH n IN feed.keys.nsort.reverse -%]
+        [% NEXT IF loop.count < 4 %]
+        <a class="list-group-item" href="[% feed.$n.link %]" target="_blank">
+           <h4 class="list-group-item-heading">[%- feed.$n.title -%]</h4>
+           <div class="text-muted"><small>By: [%- feed.$n.author -%] - [%- feed.$n.published -%]</small></div>
+           <p class="list-group-item-text">[% feed.$n.content %] &#8230; <span name="readmore" class="text-primary">[%- locale.maketext("Continue Reading") -%] &#8594;</p>
+        </a>
+      [% END %]
+    </div>
+    [%- ELSE -%]
+        <div class="alert alert-info">[% locale.maketext('No news found.') %]</div>
+    [%- END -%]
+[% END -%]
+</div>
+[% END -%]

@@ -1,0 +1,14 @@
+   warn
+        #only rate limit port 25
+        condition = ${if eq {$received_port}{25}{yes}{no}}
+        # host had a success in the last hour
+        ratelimit = 1 / 1h / noupdate / per_conn / slow_fail_accept_$sender_host_address
+        set acl_m4 = 1
+
+   defer
+        #only rate limit port 25
+        condition = ${if eq {$received_port}{25}{yes}{no}}
+        condition = ${if eq {${acl_m4}}{1}{0}{1}}
+        log_message = "Host is ratelimited due to multiple failure only connections ($sender_rate/$sender_rate_period max:$sender_rate_limit)"
+        ratelimit = 5 / 1h / noupdate / per_conn / slow_fail_block_$sender_host_address
+

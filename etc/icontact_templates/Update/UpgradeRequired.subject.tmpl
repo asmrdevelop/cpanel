@@ -1,0 +1,16 @@
+[%-
+    PROCESS "include/icons.tmpl";
+    IF NOTICE.custom_subject;
+        get_icon(icon='warning') _ " " _ NOTICE.custom_subject;
+    ELSE;
+        IF NOTICE.days_left.defined && NOTICE.hrs_left.defined;
+            get_icon(icon='info') _ " " _ CPANEL.locale.maketext('The system will automatically upgrade the “[_1]” service in [quant,_2,day,days] and [quant,_3,hour,hours] in order to continue receiving updates.', NOTICE.service_name, NOTICE.days_left, NOTICE.hrs_left);
+        ELSE;
+            IF NOTICE.failed_to_upgrade;
+                get_icon(icon='failed') _ " " _ CPANEL.locale.maketext('Failed to automatically upgrade the “[_1]” service on the server.', NOTICE.service_name);
+            ELSE;
+                get_icon(icon='success') _ " " _ CPANEL.locale.maketext('The system upgraded the service: “[_1]”.', NOTICE.service_name);
+            END;
+        END;
+    END;
+-%]

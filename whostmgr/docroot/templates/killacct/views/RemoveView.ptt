@@ -1,0 +1,292 @@
+<div class="list-container">
+    <div class="global-action-buttons">
+        <button id="action-remove-selected"
+                type="button"
+                class="btn-danger"
+                spinner-id="spinner-action-remove-selected"
+                ng-disabled="selected_accounts.length == 0 || confirming_accounts_removal"
+                cp-action="confirming_accounts_removal = true">
+            [% locale.maketext('Remove selected accounts') %]
+        </button>
+        <button id="action-cancel-remove"
+                ng-if="removal_queue.length"
+                type="button"
+                class="btn-danger"
+                spinner-id="spinner-action-cancel-remove"
+                cp-action="clear_removal_queue()">
+                <i class="fas fa-spinner fa-spin"></i>
+                <span ng-bind="cancel_removal_label()"></span>
+        </button>
+    </div>
+    <div class="callout callout-danger collapse cancel-cert-block" ng-class="{'in':confirming_accounts_removal}">
+        <p>[% locale.maketext('[output,strong,Important:] This will irrevocably remove the following accounts:' ) %]</p>
+        <p ng-bind-html="selected_account_name_string()"></p>
+        <p>[% locale.maketext("Are you sure that you want to remove these accounts?") %]</p>
+        <button id="action-remove-selected-confirm"
+                type="button"
+                class="btn-danger"
+                spinner-id="spinner-action-remove-selected-confirm"
+                cp-action="request_multi_delete_confirmation()">
+            [% locale.maketext('Yes, remove the selected accounts') %]
+        </button>
+        <button class="btn btn-default" ng-disabled="removing_multiple_accounts" type="button" ng-click="confirming_accounts_removal = false">[% locale.maketext('Cancel') %]</button>
+    </div>
+    <div class="row search-page-container">
+        <div class="col-xs-12 col-sm-12 col-md-4 col-lg-4">
+            <search ng-model="meta.filterValue" ng-change="searchList()"></search>
+        </div>
+        <div class="col-xs-12 col-sm-12 col-md-8 col-lg-8">
+            <div class="pagination-container hidden-xs hidden-sm">
+                <page-size id="pageSize"
+                    allowed-sizes="meta.pageSizes"
+                    total-items="meta.totalItems"
+                    ng-model="meta.pageSize"
+                    show-all="true"
+                    ng-show="showPager"
+                    ng-change="selectPageSize()">
+                </page-size>
+                <uib-pagination id="paginateItems"
+                    total-items="meta.totalItems"
+                    ng-model="meta.currentPage"
+                    max-size="4"
+                    boundary-links="true"
+                    rotate="false"
+                    previous-text="<"
+                    next-text=">"
+                    first-text="<<"
+                    last-text=">>"
+                    items-per-page="meta.pageSize"
+                    ng-show="showPager"
+                    ng-change="selectPage()">
+                </uib-pagination>
+            </div>
+        </div>
+    </div>
+    <div class="row hidden-xs hidden-sm">
+        <div class="col-xs-4">
+            <div class="page-stats pull-right">
+                <span class="title" ng-bind="get_table_showing_text()"></span>
+            </div>
+        </div>
+    </div>
+    <div class="row">
+        <div class="col-xs-12">
+            <div class="pull-left">
+                <div class="checkbox">
+                 <label>
+                   <input id="checkbox-only-suspended" type="checkbox" ng-model="show_only_suspended_accounts" ng-change="fetch()">
+                   <span>[% locale.maketext("Show only suspended accounts") %]</span>
+                 </label>
+               </div>
+            </div>
+        </div>
+    </div>
+    <table class="table table-striped responsive-table">
+        <thead>
+            <tr>
+                <th class="check-column-header">
+                    <div class="input-group advanced-checkbox">
+                        <span class="input-group-addon">
+                            <input type="checkbox"
+                                id="select_all_visable_accts"
+                                ng-model="account_checkbox_control"
+                                ng-click="toggleCheckAll(filteredAccounts, 'selected', account_checkbox_control)"
+                                ng-change="">
+                        </span>
+                        <div class="input-group-btn" uib-dropdown>
+                            <button type="button" class="btn btn-default dropdown-toggle" data-toggle="dropdown" uib-dropdown-toggle>
+                                <span class="caret"></span>
+                                <span class="sr-only">[% locale.maketext('Toggle Dropdown') %]</span>
+                            </button>
+                            <ul class="dropdown-menu" role="menu" uib-dropdown-menu>
+                                <li><a href="" ng-click="toggleCheckAll(accounts, 'selected', 0); account_checkbox_control = false" id="select_no_accts">[% locale.maketext('None') %]</a></li>
+                            </ul>
+                        </div>
+                    </div>
+                </th>
+                <th>
+                    <span toggle-sort id="sortUsername" sort-meta="meta"
+                              sort-field="username"
+                              onSort="sortList">
+                        [% locale.maketext('Username') %]
+                    </span>
+                </th>
+                <th >
+                    <span toggle-sort id="sortDomain" sort-meta="meta"
+                              sort-field="domain"
+                              onSort="sortList">
+                        [% locale.maketext('Domain') %]
+                    </span>
+                </th>
+                <th>
+                    <span toggle-sort id="sortOwner" sort-meta="meta"
+                              sort-field="owner"
+                              onSort="sortList">
+                        [% locale.maketext('Owner') %]
+                    </span>
+                </th>
+                <th class="text-center">
+                    <span toggle-sort id="sortSuspended" sort-meta="meta"
+                              sort-field="suspended"
+                              onSort="sortList">
+                        [% locale.maketext('Account State') %]
+                    </span>
+                </th>
+                <th class="text-center">
+                    [% locale.maketext('Keep [output,abbr,DNS,Domain Name Server] Zone') %]
+                </th>
+                <th class="col-xs-2"></th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr ng-repeat="account in filteredAccounts track by $index">
+                <td colspan="7" ng-if="account.delete_requested" class="delete-confirm-container">
+                    <div id="deleteConfirm_{{$index}}" class="callout callout-danger delete-confirm collapse" ng-class="{'in':account.delete_requested}" >
+                        <div class="delete-confirm-message">
+                            <i class="delete-dialog-icon fas fa-question-circle"></i>
+                            <strong ng-bind-html="wrappedDeleteText(account.username)"></strong>
+                            <table ng-if="account.summary" class="table account-summary-table responsive-table">
+                                <thead>
+                                    <tr>
+                                        <th>[% locale.maketext('[asis,IP] Address') %]</th>
+                                        <th>[% locale.maketext('Owner') %]</th>
+                                        <th>[% locale.maketext('Email') %]</th>
+                                        <th>[% locale.maketext('Start Date') %]</th>
+                                        <th>[% locale.maketext('Theme') %]</th>
+                                        <th>[% locale.maketext('Package') %]</th>
+                                        <th>[% locale.maketext('Disk Used') %]</th>
+                                        <th>[% locale.maketext('Disk Limit') %]</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <td data-title="[% locale.maketext('[asis,IP] Address') %]">{{ account.summary.ip }}</td>
+                                    <td data-title="[% locale.maketext('Owner') %]">{{ account.summary.owner }}</td>
+                                    <td data-title="[% locale.maketext('Email') %]">{{ account.summary.email }}</td>
+                                    <td data-title="[% locale.maketext('Start Date') %]">{{ account.summary.startdate }}</td>
+                                    <td data-title="[% locale.maketext('Theme') %]">{{ account.summary.theme }}</td>
+                                    <td data-title="[% locale.maketext('Package') %]">{{ account.summary.plan }}</td>
+                                    <td data-title="[% locale.maketext('Disk Used') %]">{{ account.summary.diskused }}</td>
+                                    <td data-title="[% locale.maketext('Disk Limit') %]">{{ account.summary.disklimit }}</td>
+                                </tbody>
+                            </table>
+                            <div ng-if="account.requesting_summary" class="account-summary-loading">
+                                <span><i class="fas fa-spinner fa-spin"></i> [% locale.maketext('Loading Account Summary …') %]</span>
+                            </div>
+                            <div ng-if="!account.requesting_summary && !account.summary" class="account-summary-error">
+                                [% locale.maketext('The system failed to load the account summary.') %]
+                            </div>
+                            <div class="form-group action-group">
+                                <button id="btnConfirmDelete_{{ account.username }}"
+                                    type="button"
+                                    class="btn"
+                                    button-class="btn-danger"
+                                    ng-disabled="account.removing"
+                                    spinner-id="spinnerDelete_{{$index}}"
+                                    cp-action="remove(account)">
+                                    [% locale.maketext('Yes, remove this account') %]
+                                </button>
+                                <button id="btnCancelDelete_{{ account.username }}"
+                                    type="button"
+                                    class="btn btn-link"
+                                    ng-click="account.delete_requested = false"
+                                    ng-disabled="account.removing">
+                                    [% locale.maketext('Cancel') %]
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </td>
+
+                <td ng-if="!account.delete_requested" class="check-column">
+                    <input id="checkbox-{{ account.username }}" ng-disabled="account.removing" type="checkbox" ng-model="account.selected" ng-change="update_selected()" bool-to-int></input>
+                </td>
+                <td ng-if="!account.delete_requested" data-title="[% locale.maketext('Username') %]">
+                    {{ account.username }}
+                </td>
+                <td ng-if="!account.delete_requested" data-title="[% locale.maketext('Domain') %]">
+                    {{ account.domain }}
+                </td>
+                <td ng-if="!account.delete_requested" data-title="[% locale.maketext('Owner') %]">
+                    {{ account.owner }}
+                </td>
+                <td ng-if="!account.delete_requested" data-title="[% locale.maketext('Account State') %]"  class="text-center">
+                    {{ account.suspended }}
+                </td>
+                <td ng-if="!account.delete_requested" class="text-center"  data-title="[% locale.maketext('Keep [asis,DNS] Zone') %]">
+                    <input id="checkbox-keepdns-{{ account.username }}" type="checkbox" ng-model="account.keep_dns"></input>
+                </td>
+                <td ng-if="!account.delete_requested">
+                    <button id="action-{{account.username}}"
+                            type="button"
+                            ng-disabled="account.removing"
+                            class="btn-danger"
+                            spinner-id="spinner-action-{{account.username}}"
+                            cp-action="request_delete_account(account)">
+                        [% locale.maketext('Remove') %]
+                    </button>
+                </td>
+            </tr>
+            <tr ng-if="accounts.length" ng-hide="filteredAccounts.length" class="info empty-row">
+                <td colspan="6">[% locale.maketext('No results match') %]</td>
+            </tr>
+            <tr ng-hide="accounts.length" class="info empty-row">
+                <td colspan="6">[% locale.maketext('No users') %]</td>
+            </tr>
+        </tbody>
+    </table>
+    <div class="row hidden-md hidden-lg">
+        <div class="col-xs-8 pull-right">
+            <div class="page-stats pull-right">
+                <span class="title" ng-bind="get_table_showing_text()"></span>
+            </div>
+        </div>
+    </div>
+    <div class="row search-page-container visible-sm-block visible-xs-block hidden-lg hidden-md">
+        <div class="col-xs-12 col-sm-12">
+            <div class="pagination-container">
+                <page-size id="pageSize"
+                    allowed-sizes="meta.pageSizes"
+                    total-items="meta.totalItems"
+                    ng-model="meta.pageSize"
+                    show-all="true"
+                    ng-show="showPager"
+                    ng-change="selectPageSize()">
+                </page-size>
+                <uib-pagination id="paginateItems"
+                    total-items="meta.totalItems"
+                    ng-model="meta.currentPage"
+                    max-size="4"
+                    boundary-links="true"
+                    rotate="false"
+                    previous-text="<"
+                    next-text=">"
+                    first-text="<<"
+                    last-text=">>"
+                    items-per-page="meta.pageSize"
+                    ng-show="showPager"
+                    ng-change="selectPage()">
+                </uib-pagination>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script type="text/ng-template" id="updateModalContent.tmpl">
+    <div class="modal-header">
+        <h3 class="modal-title" id="updateModalLabel">[% locale.maketext("Confirm Your Action") %]</h3>
+    </div>
+    <div class="modal-body">
+        <h3>[% locale.maketext("Delete selected accounts?") %]</h3>
+        <div class="checkbox">
+         <label>
+           <input id="checkbox-confirm-deletion" type="checkbox" ng-model="confirm_deletion">
+           <span ng-bind-html="get_selected_accounts_text()"></span>
+         </label>
+       </div>
+
+    </div>
+    <div class="modal-footer">
+        <button class="btn btn-link" ng-focus="true" ng-click="closeModal()">[% locale.maketext("No, do not delete the accounts.") %]</button>
+        <button ng-disabled="!confirm_deletion" class="btn btn-primary" ng-click="runIt()">[% locale.maketext("Yes, permanently remove the selected accounts.") %]</button>
+    </div>
+</script>

@@ -1,0 +1,72 @@
+[%
+    USE Whostmgr;
+    USE JSON;
+    USE EximLocalOpts;
+
+    SET APP_KEY = "email_deliverability";
+
+    SET PAGE_BASE = '/scripts11/' _ APP_KEY;
+    SET PAGE_NAME = Whostmgr.get_page_name_by_url(PAGE_BASE);
+
+    WRAPPER 'master_templates/master.tmpl'
+        app_key = APP_KEY
+        breadcrumburl = PAGE_BASE,
+        base =  PAGE_BASE _ '/',
+        stylesheets = [
+            Whostmgr.find_file_url('/templates/email_deliverability/index.min.css')
+        ],
+        theme='bootstrap';
+
+    SET REQUIRED_FEATURES = ['emailauth'];
+%]
+
+<div id="content"
+    class="ng-cloak"
+    ng-cloak>
+
+    <!-- NOTE: leave the alert-group in single quotes -->
+    <cp-alert-list id="mainAlertList"></cp-alert-list>
+
+    <div class="row" ng-controller="RouteController as routeController">
+        <div class="col-md-12">
+            <p class="description">
+                [% locale.maketext("Use this interface to reduce the number of emails sent from this server that end up in spam folders. For more information, read our [output,url,_1,Email Deliverability,target,_blank] documentation.", 'https://go.cpanel.net/EmailDeliverabilityinWHM') %]
+            </p>
+
+            <div id="body-content" class="body-content ng-cloak">
+
+                <cp-loading-panel id="loadingRoutePanel" ng-show="loading">[% locale.maketext('Loading …') %]</cp-loading-panel>
+
+                <div ng-show="currentTab && !loading">
+                    <h2 ng-hide="currentTab.hideTitle" ng-bind="currentTab.title" class="break-on-mobile"></h2>
+                    <p ng-if="currentTab.description" class="current-tab-description" ng-bind-html="currentTab.description"></p>
+                    <div id="viewContent"
+                        class="ng-cloak section animate-view"
+                        ng-view
+                        ng-cloak>
+                    </div>
+                </div>
+
+            </div>
+
+        </div>
+    </div>
+
+    <script id="views/additionalResourcesPanel.ptt" type="text/ng-template">
+        [%- PROCESS "email_deliverability/views/additionalResourcesPanel.ptt" -%]
+    </script>
+
+</div>
+
+<script type="text/javascript">
+    var PAGE = PAGE || {};
+    PAGE.CAN_SKIP_LISTER = true;
+    PAGE.domains = [% JSON.stringify(data.domains) %];
+    PAGE.mainDomain = [% JSON.stringify(data.main_domain) %];
+    PAGE.skipPTRLookups = [% EximLocalOpts.is_using_smart_host() ? 'true' : 'false' %];
+    PAGE.zoneEditorUrl = "[% cp_security_token %]/scripts7/zone_editor/manage/?domain=";
+</script>
+
+[% PROCESS 'master_templates/cjt2_header_include.tt' %]
+
+[% END %]

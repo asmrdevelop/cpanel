@@ -1,0 +1,164 @@
+=encoding utf8
+
+=head1 NAME
+
+POSIX::1003::Proc - POSIX handling processes
+
+=head1 SYNOPSIS
+
+  use POSIX::1003::Proc qw/abort setpgid/;
+
+  abort();
+  setpgid($pid, $pgid);
+
+=head1 DESCRIPTION
+
+Functions which are bound to processes.
+
+=head1 FUNCTIONS
+
+=head2 Standard POSIX functions from stdlib.h
+
+=over 4
+
+=item B<abort>()
+
+Abnormal process exit.
+
+=back
+
+=head2 Standard POSIX functions from sys/wait.h
+
+These functions have captial names because in C they are implemented
+as macro's (which are capitalized by convension)
+
+=over 4
+
+=item B<WEXITSTATUS>($?)
+
+Returns the normal exit status of the child process. Only meaningful
+if C<WIFEXITED($?)> is true.
+
+=item B<WIFEXITED>($?)
+
+Returns true if the child process exited normally: "exit()" or by
+falling off the end of "main()".
+
+=item B<WIFSIGNALED>($?)
+
+Returns true if the child process terminated because of a signal.
+
+=item B<WIFSTOPPED>($?)
+
+Returns true if the child process is currently stopped. Can happen only
+if you specified the C<WUNTRACED> flag to waitpid().
+
+=item B<WSTOPSIG>($?)
+
+Returns the signal the child process was stopped for. Only meaningful
+if C<WIFSTOPPED($?)> is true.
+
+=item B<WTERMSIG>($?)
+
+Returns the signal the child process terminated for. Only meaningful
+if C<WIFSIGNALED($?)> is true.
+
+=item B<wait>()
+
+Simply L<perlfunc/wait>.
+
+=item B<waitpid>($pid, $flags)
+
+Simply L<perlfunc/waitpid>.
+
+=back
+
+=head2 Standard POSIX functions from unistd.h
+
+=over 4
+
+=item B<_exit>(CODE)
+
+Leave the program without calling handlers registered with C<atexit>
+(which is not available in Perl)
+
+=item B<ctermid>()
+
+Generates the path name for the controlling terminal of this process.
+  my $path = ctermid();
+
+=item B<cuserid>()
+
+Get the login name of the effective user of the current process.
+See also C<perldoc -f getlogin>
+  my $name = cuserid();
+
+=item B<getcwd>()
+
+Returns the name of the current working directory.  See also Cwd.
+
+=item B<getpid>()
+
+Not exactly the same as C<$$>
+
+=item B<getppid>()
+
+=item B<nice>($integer)
+
+  use POSIX::1003::Proc 'nice';
+  $new_prio = nice($increment);
+
+=item B<pause>()
+
+=item B<setpgid>($pid, $ppid)
+
+=item B<setsid>()
+
+=item B<tcgetpgrp>($fd)
+
+=item B<tcsetpgrp>($fd, $pid)
+
+=item B<times5>()
+
+The CORE C<times()> function returns four values, conveniently converted
+into seconds (float).  The POSIX C<times()> returns five values in
+clock tics. To disambique those two, we offer the POSIX function under
+a slightly different name.
+
+Be warned that the clock ticks will overflow which the count of clock tics
+does not fit in a C<clock_t> type anymore.  That will happen in 49.7 days,
+when a tick is a millisecond and clock_t an uint32.
+
+          ($user, $sys, $cuser, $csys) = CORE::times();
+ ($elapse, $user, $sys, $cuser, $csys) = POSIX::times();
+ ($elapse, $user, $sys, $cuser, $csys) = times5();
+
+=back
+
+=head1 CONSTANTS
+
+=for comment
+#TABLE_PROC_START
+
+The constant names for this math module are inserted here during
+installation.
+
+=for comment
+#TABLE_PROC_END
+
+=head1 SEE ALSO
+
+This module is part of POSIX-1003 distribution version 1.02,
+built on November 10, 2020. Website: F<http://perl.overmeer.net/CPAN>.  The code is based on L<POSIX>, which
+is released with Perl itself.  See also L<POSIX::Util> for
+additional functionality.
+
+=head1 COPYRIGHTS
+
+Copyrights 2011-2020 on the perl code and the related documentation
+ by [Mark Overmeer]. For other contributors see ChangeLog.
+
+This program is free software; you can redistribute it and/or modify it
+under the same terms as Perl itself.
+See F<http://dev.perl.org/licenses/>
+

@@ -1,0 +1,165 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - bin/is_script_stuck                     Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package bin::is_script_stuck;
+
+use strict;
+
+use Cpanel::Exception       ();
+use Cpanel::Usage           ();
+use Cpanel::Hostname        ();
+use Cpanel::ProcessInfo     ();
+use Cpanel::Proc::PID       ();
+use Cpanel::Proc::Bin       ();
+use Cpanel::PsParser        ();
+use Cpanel::Kill::Single    ();
+use Cpanel::Binaries        ();
+use Cpanel::SafeRun::Object ();
+use Try::Tiny;
+
+# modulino call at end
+
+sub usage {
+    my $prog = $0;
+
+    print <<USAGE;
+     $0 --script=script_path --time=amount_of_time [--notify=user] [--kill] [--help]
+
+         This script searches for a script's process. If that process has run longer than
+         --time, this script prints to the screen or sends an email.
+
+         You can run this script in a cron job.
+
+                 --script=script_path : The path to the script to check (for example, /bin/backup).
+                 --time=time :          For example, 24h or 3d or 47m. This value defaults to seconds.
+                 --notify=user :        The WHM user to notify. Typically, use the root user.
+                 --kill  :              Kill the specified process if it has run too long.
+                 --help  :              Print this message.
+                 --quiet :              Suppress output messages.
+
+USAGE
+
+    exit 0;
+}
+
+sub run {
+    my $script   = "";
+    my $too_long = "";
+    my $notify   = "";
+    my $kill_it;
+    my $quiet;
+
+    my $opts = {
+        script => \$script,
+        time   => \$too_long,
+        notify => \$notify,
+        kill   => \$kill_it,
+        quiet  => \$quiet,
+    };
+
+    Cpanel::Usage::wrap_options( \@ARGV, \&usage, $opts );
+
+    if ( !defined $script || $script eq "" ) {
+        print "Script not provided\n";
+        usage();
+    }
+
+    if ( !defined $too_long || $too_long eq "" ) {
+        print "Time not provided\n";
+        usage();
+    }
+
+    my $time_too_long = 0;
+
+    if ( $too_long =~ m/^\s*(\d+)\s*([dhms]+)$/ ) {
+        my $num  = $1;
+        my $xday = $2;
+
+        $num *= 86400 if $xday eq "d";
+        $num *= 3600  if $xday eq "h";
+        $num *= 60    if $xday eq "m";
+        $num *= 1     if $xday eq "s";
+
+        $time_too_long = $num;
+    }
+    elsif ( $too_long =~ m/^\s*(\d+)\s*$/ ) {
+        $time_too_long = $1;
+    }
+    else {
+        print "Invalid time format\n";
+        usage();
+    }
+
+    my $is_stuck = 0;
+    my %immune   = map       { $_ => 1 } Cpanel::ProcessInfo::get_pid_lineage();
+    my @pids     = sort grep { !$immune{$_} } Cpanel::PsParser::get_pids_by_name(qr/\Q$script\E/);
+
+    foreach my $pid (@pids) {
+        my $err;
+        my $proc_obj;
+        try {
+            $proc_obj = Cpanel::Proc::PID->new($pid);
+        }
+        catch {
+            $err = $_;
+        };
+
+        next if $err;    # died while we were checking
+        my $elapsed_time = $proc_obj->elapsed_time();
+
+        if ( $elapsed_time > $time_too_long ) {
+            my $cmdline_ar   = $proc_obj->cmdline();
+            my $cmdline      = ref $cmdline_ar ? join( ' ', @{$cmdline_ar} ) : $script;
+            my $hostname     = Cpanel::Hostname::gethostname();
+            my $actual_fname = Cpanel::Proc::Bin::getbin($pid);
+            my $notification = "On $hostname, the ($pid) PID for the ($actual_fname) file at ($cmdline) has run longer than the specified time: $too_long";
+
+            $is_stuck = 1;
+
+            my $lsof_bin = Cpanel::Binaries::path('lsof');
+            -x $lsof_bin or die Cpanel::Exception->create_raw("The system is missing the “lsof” binary.");
+            my $lsof_run = Cpanel::SafeRun::Object->new( 'program' => $lsof_bin, 'args' => [ '-p', $pid, '-n' ] );
+
+            if ($kill_it) {
+                Cpanel::Kill::Single::safekill_single_pid( $pid, 5 );
+                $notification .= " has been killed";
+            }
+
+            print $notification . "\n" if !$quiet;
+            if ( length $notify ) {
+                require Cpanel::Notify;
+                Cpanel::Notify::notification_class(
+                    'class'            => 'StuckScript::Notify',
+                    'application'      => 'StuckScript::Notify',
+                    'constructor_args' => [
+                        'origin'            => 'is_script_stuck',
+                        'pid'               => $pid,
+                        'file_name'         => $actual_fname,
+                        'command_line_path' => $cmdline,
+                        'duration'          => $too_long,
+                        ( $notify !~ m{^(?:1|root)$} ? ( 'to' => $notify, 'username' => $notify, ) : () ),
+                        'lsof' => $lsof_run->stdout(),
+                    ]
+                );
+            }
+        }
+    }
+
+    print "The script “$script” is not stuck\n" if ( !$is_stuck && !$quiet );
+
+    return 1 if !$is_stuck;
+    return 0;
+}
+
+if ( !caller() ) {
+    my $is_not_stuck = run();
+    exit(0);
+}
+
+1;
+
+__END__

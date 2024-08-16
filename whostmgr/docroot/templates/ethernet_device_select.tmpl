@@ -1,0 +1,22 @@
+<script type="text/javascript">
+//<![CDATA[
+var check_ETHDEV_display = function(selEl) {
+    var ifEl = document.getElementById('iflist');
+    var ifName = (ifEl ? ifEl.options[ifEl.selectedIndex].value : '');
+    document.getElementById('ETHDEVdisp').style.display =  (ifName == 'other' ? '' : 'none');
+    VALIDATION['ETHDEVOther'].verify();
+};
+//]]>
+</script>
+<select id="iflist" name="ETHDEV" onchange="check_ETHDEV_display(this);">
+    [% SET hasif = 0 %]
+[%# case 44176 safe -%]
+    [% FOR if IN data.iflist.keys -%]
+        [% IF if.match('eth\d+:') %][% NEXT %][% END %]
+        <option [% IF if == data.ethernetdev %][% SET hasif = 1 %]selected="selected"[% END %] value="[% if %]">[% if %]</option>
+    [% END %]
+    <option [% IF hasif == 0 %]selected="selected"[% END %] value="other">Other</option>
+</select>
+&nbsp;
+<span id="ETHDEVdisp" [% IF hasif == 1 %]style="display: none;"[% END %]><input type="text" id="ETHDEVother" name="ETHDEVother" value="[% IF hasif == 0 %][% Encoder.safe_html_encode_str(data.ethernetdev) %][% END %]" id="ETHDEVother" size="8" /> <img src='' alt='' id='ETHDEVother_error' /></span>
+

@@ -1,0 +1,111 @@
+<div class="row">
+    <div class="col-xs-12">
+        <h3>[% locale.maketext('Common Mail Providers') %]</h3>
+        <p class="description">
+            [% locale.maketext('[asis,Greylisting] will never defer emails from trusted mail providers.') %]
+        </p>
+    </div>
+</div>
+<div id="mailServices" class="row">
+    <form class="layout-medium ng-pristine ng-valid"
+        id="mail_services_form"
+        name="mail_services_form"
+        autocomplete="off"
+        novalidate>
+        <div class="section-body mailServicesSection">
+            <div class="form-group">
+                <div class="row">
+                    <div class="col-xs-12">
+                        <div id="autotrustCheckbox" class="checkbox">
+                            <label>
+                                <input id="autotrust"
+                                    name="autotrust"
+                                    type="checkbox"
+                                    tabindex="0"
+                                    ng-model="autotrust_new_common_mail_providers">
+                                <span class="configCheckboxLabel"
+                                    id="autotrustLabel">
+                                    [% locale.maketext("Automatically trust newly added mail providers") %]
+                                </span>
+                            </label>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <table class="table table-striped">
+                <thead>
+                    <tr>
+                        <th>[% locale.maketext('Mail Provider') %]</th>
+                        <th class="provider_setting_col">[% locale.maketext('Trust') %]</th>
+                        <th class="provider_setting_col">[% locale.maketext('Auto Update') %]</th>
+                        <th class="gear_column">
+                        <span class="dropdown" uib-dropdown>
+                        <a href class="dropdown-toggle" uib-dropdown-toggle>
+                          <span class="fas fa-cog fa-lg"></span>
+                        </a>
+                        <ul class="dropdown-menu[%- IF locale.get_html_dir_attr() != 'rtl' -%] dropdown-menu-right[% END %] gear_menu" uib-dropdown-menu>
+                            <li>
+                                <a href ng-disabled="areAllProvidersTrusted()" ng-click="trustAll(mail_services_form, true);">[% locale.maketext('Check Trust for All') %]</a>
+                            </li>
+                            <li>
+                                <a href ng-disabled="areAllProvidersUntrusted()" ng-click="trustAll(mail_services_form, false);">[% locale.maketext('Uncheck Trust for All') %]</a>
+                            </li>
+                            <li class="divider"></li>
+                            <li>
+                                <a href ng-disabled="autoUpdateAllChecked()" ng-click="autoUpdateAll(mail_services_form, true)">[% locale.maketext('Check Auto Update for All') %]</a>
+                            </li>
+                            <li>
+                                <a href ng-disabled="autoUpdateNoneChecked()" ng-click="autoUpdateAll(mail_services_form, false)">[% locale.maketext('Uncheck Auto Update for All') %]</a>
+                            </li>
+                            <li class="divider"></li>
+                            <li>
+                                <a href ng-click="forceLoadMailProviders(mail_services_form)">[% locale.maketext('Reload Mail Providers from Server') %]</a>
+                            </li>
+                        </ul>
+                      </span>
+                    </th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr ng-repeat="(key, settings) in commonMailProviders">
+                        <td>{{settings.display_name}}</td>
+                        <td class="provider_setting_col">
+                            <input id="trust_{{key}}"
+                                name="trust_{{key}}"
+                                type="checkbox"
+                                tabindex="0"
+                                ng-model="settings.is_trusted">
+                        </td>
+                        <td class="provider_setting_col">
+                            <input id="auto_update_{{key}}"
+                                name="auto_update_{{key}}"
+                                type="checkbox"
+                                tabindex="0"
+                                ng-model="settings.autoupdate">
+                        </td>
+                        <td>&nbsp;</td>
+                    </tr>
+                    <tr class="info emptyrow" ng-hide="isCommonMailProvidersPopulated()" ng-switch="loadingProviders">
+                        <td colspan="4" id="loadingRecords" ng-switch-when="true">
+                            <i class="fas fa-spinner fa-spin"></i>
+                            [% locale.maketext('Loading Common Mail Provider settings.') %]
+                        </td>
+                        <td colspan="4" id="noRecords" ng-switch-default>
+                            [% locale.maketext('No Common Mail Provider settings found.') %]
+                        </td>
+                    </tr>
+                </tbody>
+            </table>
+            <div class="form-group" id="saveButtonContainer">
+                <button
+                    type="submit"
+                    spinner-id="saveMailProviders"
+                    cp-action="save(mail_services_form)"
+                    button-class="btn-primary"
+                    tabindex="0"
+                    ng-disabled="disableSave(mail_services_form)">[% locale.maketext("Save") %]</button>
+            </div>
+        </div>
+    </form>
+</div>
+

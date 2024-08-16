@@ -1,0 +1,151 @@
+
+=pod
+
+=head1 NAME
+
+The Cpanel:Lang class hierarchy
+
+Note: All Cpanel::ProgLang namespaces and some attribute inconsistencies will change in ZC-1202. If you need to use Cpanel::ProgLang please note the specifics in ZC-1202 so the needful can be had.
+
+=head1 DESIGN GOALS
+
+The original design goal was to allow users to define their own PHP
+handlers, and supply the code needed to configure them correctly.  The
+existing framework was designed with the language and the webserver
+tightly coupled, so adding an external module as a first-class citizen
+would have been prohibitive.
+
+We needed to separate language and webserver, with the languages
+knowing about only themselves, and the webservers knowing about only
+themselves, and keep those knowledge-bases separate.  Modelling the
+real world in the resulting objects was paramount.
+
+The resulting design abstracted the "webserver" and "language" into
+fairly loose concepts; a "webserver" could be a typical webserver like
+Apache, or a language-specific binary such as php-fpm.  Each of them
+understands its own configuration, and general concepts such as
+"virtual host".  They can query a language object for what support the
+language offers, and configure themselves appropriately.  Each
+language understands the idea of "version", and can allow multiple
+versions to be installed at a time.  They also understand the concept
+of a "SAPI".
+
+One of the benefits of such a design allows adding other languages as
+first-class citizens, as long as they adhere to the required
+interfaces.  Third-party users can create and maintain webserver
+support for any language they desire, as long as the requirements for
+language support are met, and those languages can be managed by the
+cPanel/WHM interfaces with little or no special-case code.
+
+=head1 NOMENCLATURE
+
+There are several terms which have many different meanings, such as
+"version", which we have tried to avoid.  We have attempted to be very
+specific with function names, and parameters, so that it is easy(er)
+to tell what objects are flying around in the various functions.
+
+=over 4
+
+=item lang
+
+An object from the Cpanel::ProgLang::Supported hierarchy, that we receive
+from the Cpanel::ProgLang-E<gt>new method.
+
+=item lang_obj
+
+An object of type Cpanel::ProgLang::Object.
+
+=item package
+
+The name of an SCL package of a given language.
+
+=back
+
+=head1 CLASS HIERARCHY
+
+                 +-----------------+
+                 |  Cpanel::ProgLang   |
+                 +--------+--------+
+                          |
+           +--------------+--------------+
+           |              |              |
+      +----+----+    +----+----+    +----+----+
+      |  Conf   |    | Object  |    |Supported|
+      +---------+    +---------+    +----+----+
+                                         |
+                                  +------+-----+-------------+------...
+                                  |            |             |
+                              +---+----+   +---+----+    +---+----+
+                              |  php   |   | python |    |  ruby  |
+                              +---+----+   +--------+    +--------+
+                                  |
+                                  |
+                              +---+----+
+                              |  Ini   |
+                              +--------+
+
+=head1 DESCRIPTION
+
+=head2 Cpanel::ProgLang
+
+The Lang object provides little more than an interface to create other
+language-specific objects under the Supported hierarchy.
+
+=head2 Cpanel::ProgLang::Supported
+
+Each supported language will have a module within this namespace,
+named in lowercase.  Cpanel::ProgLang loads these modules and creates
+objects of these types.  These are 'lang' objects.
+
+Each module may have submodules of its own, to handle
+language-specific requirements.  For example, the php language has an
+Ini module of its own, which allows handling of the php.ini files
+which set parameters for the language.  Most of the methods contained
+within these classes will be language-specific, so there are no
+interface requirements or restrictions on names or contents.
+
+=head2 Cpanel::ProgLang::Object
+
+The defining interface of a language, we determined to be the SAPI
+(Server Application Programming Interface).  For example, PHP
+provides, through various packages, the CGI, CLI, FPM, and Apache2
+SAPIs.  These can't do much on their own, so the webserver will have
+to be the one which understands how to apply each of these SAPIs to
+the configuration it is trying to create.
+
+Each language also understands a package name.  In the EasyApache4
+project, we are using the SCL (Software Collections) mechanism
+provided by RHEL/CentOS to be able to install more than one version of
+a language at a time.  We refer to each installation as a 'package'.
+For example, at the time of this writing, PHP provided versions 5.4,
+5.5, and 5.6, so we created the packages ea-php54, ea-php55, and
+ea-php56 respectively.  They may be comprised of many RPMs, which can
+place files within the respective SCL directory trees.  cPanel SCLs
+currently live in /opt/cpanel.
+
+The combination of the language and package results in the
+Cpanel::ProgLang::Object, which we refer to as 'lang_obj' in our
+parameters.  It has all the information about the SAPIs that the given
+language package supports, along with path information, and any other
+SAPI-specific information that may be relevant.  Many of the
+operations within the webserver modules pass around these objects.
+
+=head2 Cpanel::ProgLang::Conf
+
+We needed an opaque representation of the configuration of a given
+language for the webserver:  which language packages were installed,
+and what sort of configuration they should be given.  This is the
+Cpanel::ProgLang::Conf object.  Typically this was in a configuration file
+of some sort, but could also include parameters in different
+locations.  The resulting configurations reside in
+/etc/cpanel/ea4/E<lt>languageE<gt>.conf.  Having a single object which
+controls the configuration allows us to move things as necessary; it
+can find files or directives in legacy locations, present them
+seamlessly, and also move the configuration directives to the correct
+locations.
+
+=head1 SEE ALSO
+
+L<Cpanel::WebServer::Overview>, L<Cpanel::ProgLang>
+
+=cut

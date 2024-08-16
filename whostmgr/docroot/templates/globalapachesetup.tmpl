@@ -1,0 +1,37 @@
+[% USE Encoder %]
+[% USE Whostmgr -%]
+[% WRAPPER 'master_templates/master.tmpl'
+    theme = 'bootstrap',
+    extrastyle = '
+    .searchhide {
+        display:none;
+    }
+    td.label_and_help, th.label_and_help {
+        width: 30%;
+    }
+    ',
+    stylesheets = [
+        Whostmgr.find_file_url('css/_gentweakpage.css')
+    ]
+%]
+<div id="tweak_content">
+    <div class="alert alert-info">
+        <span class="glyphicon glyphicon-info-sign"></span>
+        <div class="alert-message">
+            [% locale.maketext('Changes to these settings do not take effect until the main Apache configuration file is rebuilt.') %]
+        </div>
+    </div>
+
+    [% PROCESS _local_template_warning_message.tmpl %]
+
+    <form method="post" action="[% action %]">
+    [% SET tweakcfg = { 'display_label' => 1 } -%]
+    [% INCLUDE '_gentweakpage.tmpl' bootstrap = 1 -%]
+
+    <div style="text-align:center">
+    <button class="btn btn-primary" type="submit">[% locale.maketext('Save') %]</button>
+    </div>
+    <input type="hidden" name="its_for_real" value="1" />
+    </form>
+</div>
+[% END -%]

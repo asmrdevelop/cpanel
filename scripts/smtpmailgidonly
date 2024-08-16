@@ -1,0 +1,205 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/smtpmailgidonly                 Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+use warnings;
+
+use Cpanel::Exim::Config::Ports ();
+use Cpanel::Chkservd            ();
+use Cpanel::PwCache             ();
+
+my $version = '2.4';
+my $action  = lc( ( grep( m/^-*(?:on|off|status|refresh|start|stop)$/i, @ARGV ) )[0] // '' ) || 0;
+$action =~ s/^-*//g;
+my $no_run_header = "$0 version $version - Copyright(C) 2020 cPanel, L.L.C.\nThis may be freely redistributed under the terms of the Artistic License.";
+
+if ( !$action ) {
+    print STDERR <<"EOM";
+$no_run_header
+
+    usage:  $0 <on|off|status|refresh|start|stop>
+
+EOM
+    exit 1;
+}
+
+my $cpaneluid  = ( Cpanel::PwCache::getpwnam('cpanel') )[2];
+my $mailgid    = ( Cpanel::PwCache::getpwnam('mail') )[3];
+my $mailmangid = ( Cpanel::PwCache::getpwnam('mailman') )[3];
+
+my $exim_alt_port = Cpanel::Chkservd::geteximport(1);    #first arg allows fetch more then the first port
+if ($exim_alt_port) {
+    foreach my $port ( split( m/\s*\,\s*/, $exim_alt_port ) ) {
+        $Cpanel::Exim::Config::Ports::LISTEN_PORTS{$port} = 1 if ( $port =~ /^[0-9]+$/ && $port < 65535 && $port > 0 );
+    }
+}
+
+my @PORTS      = sort { $a <=> $b } keys %Cpanel::Exim::Config::Ports::LISTEN_PORTS;
+my @RULE_TYPES = (
+    { 'table' => 'nat', 'target' => 'RETURN', 'method' => '-I' },
+    { 'table' => '',    'target' => 'ACCEPT', 'method' => '-I' }
+);
+my @RULES = (
+    { 'type' => 'uid', 'value' => 0, 'name' => 'root' },    #aka root
+    $cpaneluid  ? { 'type' => 'uid', 'value' => $cpaneluid, 'name' => 'cpanel', 'args' => [ '-d', '127.0.0.1' ] } : (),
+    $mailgid    ? { 'type' => 'gid', 'value' => $mailgid,    'name' => 'mail' }    : (),
+    $mailmangid ? { 'type' => 'gid', 'value' => $mailmangid, 'name' => 'mailman' } : ()
+);
+
+# for future expension
+if ( -e '/var/cpanel/smtpmailgidonly/conf.yaml' ) {
+    print "Loaded custom smtpmailgidonly/conf.yaml\n";
+    require Cpanel::YAML::Syck;
+    my $cfg = YAML::Syck::LoadFile('/var/cpanel/smtpmailgidonly/conf.yaml');
+    push @PORTS, @{ $cfg->{'PORTS'} } if exists $cfg->{'PORTS'};
+    push @RULES, @{ $cfg->{'RULES'} } if exists $cfg->{'RULES'};
+}
+
+require Cpanel::SafeRun::Errors;
+
+my $enabled = -e '/var/cpanel/smtpgidonlytweak';
+
+if ( $action eq 'status' ) {
+    print "Protection is: " . ( $enabled ? 'on' : 'off' ) . "\n";
+    exit 0;
+}
+
+if ( $action eq 'refresh' ) {
+    $action = ( $enabled ? 'on' : 'off' );
+    print "Refreshing SMTP Mail protection.\n";
+}
+remove_firewall_rules( $action =~ /^(?:start|stop)$/ );
+
+if ( $action =~ /^(?:on|start)$/ ) {
+    add_firewall_rules( $action eq 'start' );
+    print "SMTP Mail protection has been enabled.\n";
+    print "All outbound SMTP connections will be redirected to localhost except:\n";
+    foreach my $rule (@RULES) {
+        print "\t$rule->{'type'} is $rule->{'name'} (ports: " . join( ',', @PORTS ) . ")\n";
+    }
+}
+else {
+    print "SMTP Mail protection has been disabled.  All users may make outbound smtp connections.\n";
+}
+
+exit;
+
+sub add_firewall_rules {
+    my ($start_only) = @_;
+
+    foreach my $type (@RULE_TYPES) {
+
+        foreach my $rule (@RULES) {
+            my $result = _iptables( ( $type->{'table'} ? ( '-t', $type->{'table'} ) : () ), $type->{'method'}, 'OUTPUT', '-p', 'tcp', ( ref $rule->{'args'} ? @{ $rule->{'args'} } : () ), '-m', 'multiport', '--dports', join( ',', @PORTS ), '-m', 'owner', '--' . $rule->{'type'} . '-owner', $rule->{'value'}, '-j', $type->{'target'} );
+            if ( $result =~ m/(?:No\s+chain|target\s+problem|Unknown\s+error|cannot\s+open\s+shared\s+object\s+file)/i ) {
+                remove_firewall_rules();
+                print "SMTP Mail protection has been disabled.  All users may make smtp connections.\n";
+                print "There was a problem setting up iptables.  You either have an older kernel or a broken iptables install, or ipt_owner could not be loaded.\n";
+                exit 1;
+            }
+        }
+    }
+    _iptables( '-t', 'nat', '-A', 'OUTPUT', '-p', 'tcp', '-m', 'multiport', '--dports', join( ',', @PORTS ), '-j', 'REDIRECT' );
+
+    return if $start_only;
+
+    require Cpanel::Config::CpConfGuard;
+
+    my $cpconf = Cpanel::Config::CpConfGuard->new();
+    $cpconf->{data}->{smtpmailgidonly} = 1;
+    $cpconf->save();
+
+    require Cpanel::FileUtils::TouchFile;
+
+    Cpanel::FileUtils::TouchFile::touchfile('/var/cpanel/smtpgidonlytweak');
+}
+
+sub remove_firewall_rules {
+    my ($stop_only) = @_;
+
+    debug("Removing old rules");
+    if ( !-e '/etc/csf' ) {    #case 57565: removing these breaks outbound mail if csf has SMTP_BLOCK=1
+
+        # Old method needs to be removed
+        foreach my $rule (@RULES) {
+            _iptables( '-D', 'OUTPUT', '--protocol', 'tcp', ( ref $rule->{'args'} ? @{ $rule->{'args'} } : () ), '--dport', '25', '-m', 'owner', '--' . $rule->{'type'} . '-owner', $rule->{'value'}, '-j', 'ACCEPT' );
+        }
+        _iptables( '-D', 'OUTPUT', '--protocol', 'tcp', '-d', '127.0.0.1', '--dport', '25', '-j', 'ACCEPT' );
+        _iptables( '-D', 'OUTPUT', '--protocol', 'tcp', '--dport', '25', '-j', 'REJECT' );
+    }
+    debug("Removing new type rules");
+    {
+
+        # New Method
+        foreach my $type (@RULE_TYPES) {
+
+            foreach my $rule (@RULES) {
+                _iptables( ( $type->{'table'} ? ( '-t', $type->{'table'} ) : () ), '-D', 'OUTPUT', '-p', 'tcp', ( ref $rule->{'args'} ? @{ $rule->{'args'} } : () ), '-m', 'multiport', '--dports', join( ',', @PORTS ), '-m', 'owner', '--' . $rule->{'type'} . '-owner', $rule->{'value'}, '-j', $type->{'target'} );
+
+            }
+        }
+        _iptables( '-t', 'nat', '-D', 'OUTPUT', '-p', 'tcp', '-m', 'multiport', '--dports', join( ',', @PORTS ), '-j', 'REDIRECT' );
+
+    }
+    debug("Removing multiport rules matching 25...");
+    {
+        foreach my $type (@RULE_TYPES) {
+
+            # Remove any remaining port 25 rules
+            my %port_lists;
+            foreach my $line ( split( /\n/, _iptables( ( $type->{'table'} ? ( '-t', $type->{'table'} ) : () ), '-L', '-n' ) ) ) {
+
+                #RETURN     tcp  --  0.0.0.0/0            127.0.0.1           multiport dports 25,26,122,125,232,434,465,587,809,5454 OWNER UID match 32001
+                if ( $line =~ m/multiport\s+dports\s+(25,[,0-9]+)\s+(?i:OWNER)\s+[UG]ID\s+match/ ) {
+                    $port_lists{$1} = 1;
+                }
+            }
+            foreach my $port_list ( keys %port_lists ) {
+                foreach my $rule (@RULES) {
+                    _iptables( ( $type->{'table'} ? ( '-t', $type->{'table'} ) : () ), '-D', 'OUTPUT', '-p', 'tcp', ( ref $rule->{'args'} ? @{ $rule->{'args'} } : () ), '-m', 'multiport', '--dports', $port_list, '-m', 'owner', '--' . $rule->{'type'} . '-owner', $rule->{'value'}, '-j', $type->{'target'} );
+
+                }
+
+                if ( $type->{'table'} && $type->{'table'} eq 'nat' ) {
+                    _iptables( '-t', 'nat', '-D', 'OUTPUT', '-p', 'tcp', '-m', 'multiport', '--dports', $port_list, '-j', 'REDIRECT' );
+                }
+            }
+        }
+    }
+
+    return if $stop_only;
+
+    require Cpanel::Config::CpConfGuard;
+
+    my $cpconf = Cpanel::Config::CpConfGuard->new();
+    $cpconf->{data}->{smtpmailgidonly} = 0;
+    $cpconf->save();
+
+    unlink '/var/cpanel/smtpgidonlytweak';    # For WHM
+}
+
+sub debug {
+    print "[$_[0]]\n" if $ENV{'CPANEL_DEBUG'};
+}
+
+sub _iptables {
+    my @rule_content = @_;
+    if ( -x '/sbin/ip6tables' ) {
+        my @rule6_content = @rule_content;
+        foreach my $part (@rule6_content) {
+            $part =~ s/127\.0\.0\.1/\:\:1\/128/g;    # change local host to ipv6 equiv
+        }
+        debug( "EXEC: " . join( ' ', '/sbin/ip6tables', @rule6_content ) );
+        my $result6 = Cpanel::SafeRun::Errors::saferunallerrors( '/sbin/ip6tables', @rule6_content ) . "\n";
+        debug("EXEC RESULT: $result6");
+    }
+
+    debug( "EXEC: " . join( ' ', '/sbin/iptables', @rule_content ) );
+    my $result = Cpanel::SafeRun::Errors::saferunallerrors( '/sbin/iptables', @rule_content ) . "\n";
+    debug("EXEC RESULT: $result");
+    return $result;
+}

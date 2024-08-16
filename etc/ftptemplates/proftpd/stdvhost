@@ -1,0 +1,49 @@
+<VirtualHost %ip%>
+  ServerName ftp.%domain%
+  AuthUserFile /etc/proftpd/%user%
+  MaxClients 3 "Sorry, this ftp server has reached its maximum user count (%m).  Please try again later"
+  DirFakeGroup On ftpgroup
+  DirFakeUser On ftpuser
+  DefaultRoot ~
+
+  <IfModule mod_tls.c>
+      TLSEngine on
+      TLSRequired off
+      TLSRSACertificateFile /etc/ftpd-rsa.pem
+      TLSRSACertificateKeyFile /etc/ftpd-rsa-key.pem
+      TLSVerifyClient off
+      TLSCipherSuite HIGH:MEDIUM:+TLSv1:!SSLv2:+SSLv3
+  </IfModule>
+  <IfModule mod_wrap.c>
+      TCPServiceName ftp
+  </IfModule>
+
+  <Directory />
+    AllowOverwrite                on
+    HideGroup %sudoers%
+    HideUser root
+  </Directory>
+  <Anonymous %homedir%/public_ftp>
+    UseFtpUsers                   on
+    RequireValidShell             off
+    User                          ftp
+    Group                         ftp
+    UserAlias                     anonymous ftp
+    DisplayLogin                  welcome.msg
+    # DisplayChdir                  .message true
+
+    <Limit WRITE>
+      DenyAll
+    </Limit>
+
+    <Directory incoming>
+      <Limit STOR>
+        AllowAll
+      </Limit>
+      <Limit WRITE READ>
+        DenyAll
+      </Limit>
+    </Directory>
+  </Anonymous>
+</VirtualHost>
+

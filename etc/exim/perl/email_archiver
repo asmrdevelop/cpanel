@@ -1,0 +1,155 @@
+
+my $archived_at_domain_level = 0;
+my $archived_outgoing        = 0;
+my $archived_mailman         = 0;
+
+sub should_archive_incoming_domain_message {
+    return ( $archived_at_domain_level = !_message_has_been_seen() );
+}
+
+sub _message_has_been_seen {
+
+    #ARCHIVE ONLY IF
+    #
+    #$parent_domain = ""
+    #
+    #OR
+    #
+    #$parent_domain != $domain
+
+    # Delivery was not a result of an expansion
+    my $parent_domain = Exim::expand_string('$parent_domain');
+    if ( !length $parent_domain ) {
+        return 0;
+    }
+
+    # Delivery was the result of an expansion / alias.  Since its a diffrent domain we don't
+    # know if it was archived so we need to archive if enabled
+    my $domain = Exim::expand_string('$domain');
+    if ( $domain ne $parent_domain ) {
+        return 0;
+    }
+
+    my $parent_local_part = Exim::expand_string('$parent_local_part');
+    my $local_part        = Exim::expand_string('$local_part');
+
+    # case 60975: If any deliveries happened, parent_domain and parent_local_part
+    # will get set to match domain and local_part. Since we need to
+    # still archive outgoing if it to our same domain or a local
+    # user we need to accept when they all match
+    if ( $parent_domain eq $domain && $local_part && $parent_local_part ) {
+        return 0;
+    }
+
+    # parent_local_part ne local_part and
+    # parent_domain == domain so it already got archived if we have it on
+
+    return 1;
+}
+
+sub archive_headers {
+    my ($router) = @_;
+
+    if ( $router eq 'archive_incoming_email_domain_method' ) {
+        return "X-Archive-Type: incoming\nX-Archive-Recipient: " . Exim::expand_string('$local_part') . '@' . Exim::expand_string('$domain');
+    }
+    elsif ( $router eq 'archive_incoming_email_local_user_method' ) {
+        return "X-Archive-Type: incoming\nX-Archive-Recipient: " . Exim::expand_string('$local_part');
+    }
+    elsif ( $router eq 'archive_outgoing_email' ) {
+        return "X-Archive-Type: " . $outgoing_sender_archive_directory . "\nX-Archive-Sender: $outgoing_sender";
+    }
+
+}
+
+sub should_archive_incoming_localuser_message {
+
+    # case 60999: Do not archive a message at the localuser level
+    # if we have already archived it at the domain level (avoid two copies)
+    return 0 if $archived_at_domain_level;
+
+    my $local_part      = Exim::expand_string('$local_part');
+    my $incoming_domain = getusersdomain($local_part);
+    if ($incoming_domain) {
+        my $home = gethomedir($local_part);
+        if ( file_exists("$home/etc/$incoming_domain/archive/incoming") ) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+sub get_incoming_domain {
+    return getusersdomain( Exim::expand_string('$local_part') );
+}
+
+sub should_archive_outgoing_message {
+    return 0 if _message_has_been_seen();
+
+    return determine_sender_and_check_if_archive_needed();
+}
+
+sub determine_sender_and_check_if_archive_needed {
+    my $uid = int( Exim::expand_string('$originator_uid') );
+    my $gid = int( Exim::expand_string('$originator_gid') );
+
+    # outgoing_sender_domain is the domain of the actual sender
+    # outgoing_sender_counted_domain is the domain we actually count the message against
+
+    # Currently these are always the same except domain may be
+    # rewritten if we are coming from a mailman list in order
+    # to count against the owner of the list instead of the mailman
+    # user assuming /var/cpanel/email_send_limits/count_mailman exists
+    ( $outgoing_sender, $outgoing_sender_domain, $outgoing_sender_counted_domain, $outgoing_sender_is_mailman ) = get_message_sender( $uid, $gid );
+
+    if ( $outgoing_sender_domain && $outgoing_sender_domain ne '-system-' ) {
+        $outgoing_sender_sysuser = getdomainowner($outgoing_sender_domain);
+
+        my $home = gethomedir($outgoing_sender_sysuser);
+
+        if ( $outgoing_sender_is_mailman && file_exists("$home/etc/$outgoing_sender_domain/archive/mailman") ) {
+            $outgoing_sender_archive_directory = 'mailman';
+            return 0 if $archived_mailman;    # already archived
+            return ( $archived_mailman = 1 );
+        }
+        elsif ( file_exists("$home/etc/$outgoing_sender_domain/archive/outgoing") ) {
+            $outgoing_sender_archive_directory = 'outgoing';
+            return 0 if $archived_outgoing;    # already archived
+            return ( $archived_outgoing = 1 );
+        }
+    }
+    return 0;
+
+}
+
+sub pack_archive_address_data {
+    my ($router) = @_;
+    return join( ' ',
+                 'router=' . Cpanel::Encoder::Exim::encode_string_literal($router),
+                 'sender=' . Cpanel::Encoder::Exim::encode_string_literal($outgoing_sender),
+                 'sender_domain=' . Cpanel::Encoder::Exim::encode_string_literal($outgoing_sender_domain),
+                 'sender_sysuser=' . Cpanel::Encoder::Exim::encode_string_literal($outgoing_sender_sysuser),
+                 'sender_archive_directory=' . Cpanel::Encoder::Exim::encode_string_literal($outgoing_sender_archive_directory)
+                 );
+}
+
+sub get_outgoing_sender {
+    return ( $outgoing_sender // Exim::expand_string('${extract{sender}{$address_data}}'));
+}
+
+sub get_outgoing_sender_domain {
+    return ( $outgoing_sender_domain // Exim::expand_string('${extract{sender_domain}{$address_data}}'));
+}
+
+sub get_outgoing_sender_sysuser {
+    return ( $outgoing_sender_sysuser // Exim::expand_string('${extract{sender_sysuser}{$address_data}}'));
+}
+
+sub get_outgoing_archive_directory {
+    return ( $outgoing_sender_archive_directory // Exim::expand_string('${extract{sender_archive_directory}{$address_data}}'));
+}
+
+sub YYYYMMDDGMT {
+    my ( $sec, $min, $hour, $mday, $mon, $year ) = gmtime( $_[0] || time() );
+    return sprintf( '%04d-%02d-%02d', $year + 1900, $mon + 1, $mday );
+}

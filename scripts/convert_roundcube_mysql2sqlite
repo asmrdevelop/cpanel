@@ -1,0 +1,728 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/convert_roundcube_mysql2sqlite  Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package Script::RCube::Mysql2Sqlite;
+
+use strict;
+## no critic (RequireUseWarnings)
+use Try::Tiny;
+
+use Cpanel::AccessIds::ReducedPrivileges ();
+use Cpanel::Config::LoadCpConf           ();
+use Cpanel::MysqlUtils                   ();
+use Cpanel::DbUtils                      ();
+use Cpanel::MysqlUtils::Connect          ();
+use Cpanel::MysqlUtils::Command          ();
+use Cpanel::MysqlRun                     ();
+use Cpanel::Config::LoadUserDomains      ();
+use Cpanel::Email::RoundCube             ();
+use Cpanel::Email::RoundCube::DBI        ();
+use Cpanel::Quota::Temp                  ();
+
+use Cpanel::PwCache       ();
+use Cpanel::Logger        ();
+use Cpanel::Filesys::Home ();
+
+use File::Basename ();
+use File::Copy     ();
+use File::Path     ();
+use File::Slurper  ();
+use DBI;
+use XML::Simple ();
+use IPC::Open3  ();
+
+$XML::Simple::PREFERRED_PARSER = "XML::SAX::PurePerl";
+
+my $sqlite_table_file = '/usr/local/cpanel/base/3rdparty/roundcube/SQL/sqlite.initial.sql';
+
+my $log_file = '/usr/local/cpanel/logs/roundcube_sqlite_convert_log';
+my %opts     = ( 'alternate_logfile' => $log_file );
+my $logger   = Cpanel::Logger->new( \%opts );
+
+my $mysql_dbname = 'roundcube';
+my $dbh;
+
+# If this updates, then do_all_rcube_xml_to_db() needs to be updated to match
+my @dumptables = qw(users identities contacts contactgroups contactgroupmembers calendars caldav_calendars events caldav_events attachments caldav_attachments itipinvitations);
+
+my $time = time();
+
+## if invoked as a script, there is nothing in the call stack
+my $invoked_as_script = !caller();
+__PACKAGE__->script(@ARGV) if ($invoked_as_script);
+
+my $mysql_plus_sqlite;
+
+sub script {
+    my ( $package, $opt_user, $opt_dbname ) = @_;
+    my $cpconf = Cpanel::Config::LoadCpConf::loadcpconf();
+
+    my $db_type = 'mysql';
+    if ( exists $cpconf->{'roundcube_db'} ) {
+        $db_type           = 'sqlite' if $cpconf->{'roundcube_db'} eq 'sqlite';
+        $mysql_plus_sqlite = $cpconf->{'roundcube_db'} eq 'mysql_plus_sqlite';
+    }
+
+    if ( defined $opt_user ) {
+        ## the optional user arg feature is currently *only* called as a script;
+        ##   otherwise, all these exits would check $invoked_as_script
+
+        ## Transfers.pm is the only user of $opt_user, which it uses in conjunction with $opt_user;
+        ##   this changes the global variable $opt_dbname just in time to be used in &init_check
+        if ( defined $opt_dbname ) {
+            $mysql_dbname = $opt_dbname;
+        }
+
+        if ( $db_type eq 'sqlite' && init_check($cpconf) ) {
+            my $wasSuccess = convert_mysql_roundcube_to_sqlite($opt_user);
+            if ($wasSuccess) {
+
+                ## Transfers.pm operates over a different dbname, and is responsible for the
+                ##   removal of the temporary database
+                unless ( defined $opt_dbname ) {
+                    Cpanel::Email::RoundCube::archive_and_drop_mysql_roundcube($logger);
+                }
+                return 1;
+            }
+            die "Conversion for user '$opt_user' was not successful.\n";
+        }
+
+        ## SOMEDAY @GOLIVE: update-roundcube-sqlite-db gets moved to update-roundcube-db. Update this message and the conditional @GOIVE.
+        die "The optional user argument is to be used only when Roundcube has been converted to sqlite. Use bin/update-roundcube-sqlite-db Exiting.\n";
+    }
+
+    ## Has the roundcube conversion already happened?
+    ## note: this check is here, and not in init_check, because Transfers.pm calls into this
+    ##   from a different context. The src server uses MySQL but the dest machine has done
+    ##   the sqlite conversion.
+    if ( $db_type eq 'sqlite' ) {
+        $logger->info("Roundcube conversion already occurred, bailing out.");
+        if ($invoked_as_script) {
+            exit(0);
+        }
+        return 1;
+    }
+
+    unless ( init_check($cpconf) ) {
+        if ($invoked_as_script) {
+            exit(0);
+        }
+        return 1;
+    }
+
+    my %TRUEDOMAINS;
+    Cpanel::Config::LoadUserDomains::loadtrueuserdomains( \%TRUEDOMAINS );
+    my @users          = sort values %TRUEDOMAINS;
+    my $success_cnt    = 0;
+    my $success_verify = scalar @users;
+
+    for my $user (@users) {
+        $success_cnt += convert_mysql_roundcube_to_sqlite($user);
+    }
+
+    unless ( $success_cnt == $success_verify ) {
+        $logger->warn("Roundcube Mysql to sqlite conversion was not completely successful. Please check $log_file for details.");
+
+        if ($invoked_as_script) {
+            exit(1);
+        }
+        return;
+    }
+
+    ## Conversion is a success, so switch Roundcube configuration to use SQLite before dropping the database.
+    my $DIR = '/usr/local/cpanel/base/3rdparty';
+    Cpanel::Email::RoundCube::generate_roundcube_config_sqlite( $DIR, $logger );
+
+    ## if the conversion was a complete success (as checked above), we can safely archive and
+    ##   delete the MySQL roundcube database. This will prevent future problems with transfers,
+    ##   and in fact is the final solution for the original Roundcube case 12162!
+    ## already asserted via &init_check
+    my $archive_success = Cpanel::Email::RoundCube::archive_and_drop_mysql_roundcube($logger);
+
+    require Cpanel::Config::CpConfGuard;
+    my $cpconf_guard = Cpanel::Config::CpConfGuard->new();
+    $cpconf->{'roundcube_db'} = $cpconf_guard->{'data'}->{'roundcube_db'} = 'sqlite';
+    $cpconf_guard->save();
+
+    if ($invoked_as_script) {
+        Cpanel::Email::RoundCube::restart_cpsrvd();
+        exit(0);
+    }
+
+    return 1;
+}
+
+sub convert_mysql_roundcube_to_sqlite {
+    my ($user) = @_;
+    my @domains = Cpanel::Email::RoundCube::collect_domains($user);
+
+    my @uid_name_pairs = collect_roundcube_user_info( \@domains, $user );
+
+    ## returning 1: no conversion necessary
+    return 1 unless ( scalar @uid_name_pairs );
+
+    ## e.g. '/home'
+    my $best_mnt_point   = Cpanel::Filesys::Home::get_homematch_with_most_free_space();
+    my $tmpdir_root_base = "$best_mnt_point/roundcube_convert";
+
+    if ( -d $tmpdir_root_base ) {
+        rename( $tmpdir_root_base, "$tmpdir_root_base.$time" );
+    }
+    mkdir($tmpdir_root_base);
+
+    my $tmpdir_root_sys = "$tmpdir_root_base/$user";
+    mkdir($tmpdir_root_sys);
+
+    my @pwinfo = Cpanel::PwCache::getpwnam($user);
+    my ( $mmuid, $mmgid, $homedir ) = @pwinfo[ 2, 3, 7 ];
+    my $tmpdir_emailuser_base = "$homedir/tmp/roundcube_convert";
+
+    my $success_cnt = 0;
+    my %has_sqlite_trapper_keeper;
+
+    for my $email_user_info (@uid_name_pairs) {
+        my ( $uid, $email_user ) = @$email_user_info;
+
+        if ($mysql_plus_sqlite) {
+            my $db_path = _roundcube_db_path( $user, $homedir, $email_user );
+            $has_sqlite_trapper_keeper{$db_path} = -f $db_path;
+            next if $has_sqlite_trapper_keeper{$db_path};
+        }
+
+        my $tmpdir_root_sys_emailuser = "$tmpdir_root_sys/$email_user";
+        mkdir($tmpdir_root_sys_emailuser);
+
+        do_mysqldumps_for_user( $uid, $tmpdir_root_sys_emailuser );
+    }
+
+    ## ensures that $best/rcube/$sysuser/$emailuser is readable by $sysuser,
+    ##   so that $sysuser can move it to their $homedir after the setuid
+    my $tempquota = Cpanel::Quota::Temp->new( user => $user, log => 1 );
+    $tempquota->disable();
+
+    my $rv_chmod = system("chmod -R 700 $tmpdir_root_sys");
+    my $rv_chown = system("chown -Rf $mmuid:$mmgid $tmpdir_root_sys");
+
+    for my $email_user_info (@uid_name_pairs) {
+        my ( $uid, $email_user ) = @$email_user_info;
+
+        if ($mysql_plus_sqlite) {
+            my $db_path = _roundcube_db_path( $user, $homedir, $email_user );
+            if ( $has_sqlite_trapper_keeper{$db_path} ) {
+                $logger->info("$email_user already has an SQLite DB, skipping...");
+                $success_cnt++;
+                next;
+            }
+        }
+
+        chdir($tmpdir_root_base);
+
+        my $tmpdir_root_sys_emailuser = "$tmpdir_root_sys/$email_user";
+        my $rv_convert                = xml_to_sqlite( $user, $tmpdir_root_sys_emailuser, $tmpdir_emailuser_base, $email_user, $homedir );
+
+        unless ($rv_convert) {
+            $logger->warn("Conversion was not successful for user '$user'.");
+        }
+        $success_cnt += $rv_convert;
+
+        ## note: no need to "rmdir($tmpdir_root_sys_emailuser)", as this dir was moved
+        ##   to $homedir/tmp/rcube/$emailuser (during the setuid)
+
+        ## SOMEDAY @GOLIVE: remove the mysql roundcube database (steal mysql/roundcube backup/archive
+        ##   clauses from update-roundcube-db, the mysql version)
+    }
+
+    $tempquota->restore();
+
+    rmdir($tmpdir_root_sys);
+    rmdir($tmpdir_root_base);
+
+    return $success_cnt == scalar(@uid_name_pairs);
+}
+
+sub collect_roundcube_user_info {
+    my ( $ar_domains, $user ) = @_;
+    my $regexp = '@(' . join( '|', map { s/\./\\./gr } @$ar_domains ) . ')$';
+    my @ids;
+
+    try {
+        @ids = $dbh->selectall_array( "SELECT user_id, username FROM users WHERE username REGEXP ? or username = ?", {}, $regexp, $user );
+    };
+
+    return @ids;
+}
+
+## Stolen from pkgacct; needs to be modularized!
+## SOMEDAY: this version has converged; move pkgacct version to module, and get rid of below
+sub mysqldumpdb {
+    my ($args) = @_;
+
+    my @options   = @{ $args->{'options'} };
+    my $db        = $args->{'db'};
+    my $table     = $args->{'table'};
+    my $file      = $args->{'file'};
+    my $file_mode = $args->{'append'} ? '>>' : '>';
+
+    # for testing
+    my @extra_options = _get_extra_options();
+
+    my $mysqldump = Cpanel::DbUtils::find_mysqldump();
+    my @db        = ($db);
+    if ($table) {
+        push @db, $table;
+    }
+
+    my $pid = IPC::Open3::open3( my $w, my $r, '', $mysqldump, @extra_options, @options, @db );
+
+    my $first_line = 1;
+    if ( open( my $fh, $file_mode, $file ) ) {
+        while (<$r>) {
+            if ( $first_line && ( !$_ || m/^mysqldump:/ ) ) {
+                warn join( '.', @db ) . ': ' . $_;
+                close $w;
+                close $r;
+                waitpid( $pid, 0 );
+                $first_line = 0;
+                my $mysqlcheck = Cpanel::DbUtils::find_mysqlcheck();
+                system( $mysqlcheck, '--repair', @extra_options, @db );
+                $pid = IPC::Open3::open3( $w, $r, '', $mysqldump, @extra_options, @options, @db );
+            }
+            else {
+                print {$fh} $_;
+            }
+        }
+    }
+    close $w;
+    close $r;
+    waitpid( $pid, 0 );
+    return;
+}
+
+sub do_mysqldumps_for_user {
+    my ( $uid, $tmp_convertdir ) = @_;
+
+    for my $tbl (@dumptables) {
+        ## these two tables do not key off user_id
+        next if grep { $tbl eq $_ } qw{contactgroupmembers events ical_events caldav_events attachments ical_attachments caldav_attachments caldav_calendars};
+
+        ## XML output, not suppressing table structure, with a where clause on user_id list
+        my @opts = ( '--xml', '-w', qq{user_id = $uid} );
+        mysqldumpdb(
+            {
+                'options' => [@opts],
+                'db'      => $mysql_dbname,
+                'file'    => "$tmp_convertdir/rcube.$tbl.xml",
+                'table'   => $tbl
+            }
+        );
+    }
+
+    ## contactgroupmembers is gathered in two steps, otherwise would be a LEFT JOIN that
+    ##   &mysqldumpdb can not currently support
+
+    my $contacts = _get_ids_from_col( 'contactgroups', 'contactgroup_id', $uid, 'user_id' );
+    _dump_stuff_in( 'contactgroupmembers', 'contactgroup_id', $contacts, $tmp_convertdir ) if scalar(@$contacts);
+
+    # Handle events & attachments for calendaring, as those are identified by
+    # calendar & event respectively.
+    my $cals = _get_ids_from_col( "calendars", 'calendar_id', $uid, 'user_id' );
+    next if !scalar(@$cals);
+    my @events2export;
+    my @attachments2export;
+    foreach my $cal (@$cals) {
+        my $events = _get_ids_from_col( "events", 'event_id', $cal, 'calendar_id' );
+
+        # Can't have attachments if no events exist to attach em to, so
+        # next here is appropriate.
+        next if !scalar(@$events);
+        push @events2export, @$events;
+
+        my $attachments = _get_ids_from_col( "attachments", 'attachment_id', $events, 'event_id' );
+        next if !scalar(@$attachments);
+        push @attachments2export, @$attachments;
+    }
+    _dump_stuff_in( "events",      'event_id',      \@events2export,      $tmp_convertdir ) if @events2export;
+    _dump_stuff_in( "attachments", 'attachment_id', \@attachments2export, $tmp_convertdir ) if @attachments2export;
+
+    return undef;
+}
+
+# Only here so that I don't "repeat myself".
+sub _get_ids_from_col {
+    my ( $tbl, $col, $search_term, $filter_on, $filter_mode ) = @_;
+    my @ids;
+    try {
+
+        # Quoting anything other than values here is actually harmful.
+        # Don't do it as such. Same for IN statement here.
+        my $where_clause = "WHERE $filter_on = ?";
+        if ( ref $search_term eq 'ARRAY' ) {
+            my $count = scalar(@$search_term);
+            die "Bad call to _get_ids_from_col: no search term specified!" if !$count;
+            my $qs = ( '?,' x ( $count - 1 ) ) . '?';
+            $where_clause = "WHERE $filter_on IN ($qs)";
+            @ids          = map { $_->[0] } $dbh->selectall_array( "SELECT $col FROM $tbl $where_clause", {}, @$search_term );
+        }
+        else {
+            @ids = map { $_->[0] } $dbh->selectall_array( "SELECT $col FROM $tbl $where_clause", {}, $search_term );
+        }
+    }
+    catch {
+        $logger->warn( "Attempt to find necessary data from $col in $tbl failed: " . $dbh->errstr() );
+    };
+    return \@ids;
+
+}
+
+# Only here so that I don't "repeat myself".
+sub _dump_stuff_in {
+    my ( $tbl, $col, $in, $tmp_convertdir ) = @_;
+    my $csv = join( ',', @$in );
+    mysqldumpdb(
+        {
+            'options' => [ '--xml', '-w', qq{$col IN ($csv)} ],
+            'db'      => $mysql_dbname,
+            'file'    => "$tmp_convertdir/rcube.$tbl.xml",
+            'table'   => $tbl,
+        }
+    );
+    return;
+}
+
+sub create_rcube_sqlite_tables {
+    my ($dbh) = @_;
+    Cpanel::Email::RoundCube::DBI::ensure_schema_update( $dbh, 'sqlite' );
+    return undef;
+}
+
+# This used to do all sorts of things like telling rcube_xml_to_db what needed
+# quoting, what needed to be set to NULL, etc. -- thankfully all that is
+# absolutely unnecessary with sqlite3.
+sub do_all_rcube_xml_to_db {
+    my ( $dbh, $xmldir ) = @_;
+
+    my $success_cnt = 0;
+    ## verify the number of XML docs to convert to SQL
+    my $success_verify = scalar(@dumptables);
+    {
+        ## note: there is a disparity in the sqlite.initial.sql, and the "table_structure" for "users";
+        ##   preferences is not NULLABLE.
+        my @_cols = qw(user_id username mail_host created last_login language preferences);
+        $success_cnt += rcube_xml_to_db( $xmldir, 'users', $dbh, \@_cols );
+    }
+
+    {
+        my @_cols = qw( identity_id user_id changed del standard name organization email
+          reply-to bcc signature html_signature);
+        $success_cnt += rcube_xml_to_db( $xmldir, 'identities', $dbh, \@_cols );
+    }
+
+    {
+        my @_cols = qw(contact_id user_id changed del name email firstname surname vcard);
+        $success_cnt += rcube_xml_to_db( $xmldir, 'contacts', $dbh, \@_cols );
+    }
+
+    ## new contactgroups table
+    {
+        my @_cols = qw( contactgroup_id user_id changed del name );
+        $success_cnt += rcube_xml_to_db( $xmldir, 'contactgroups', $dbh, \@_cols );
+    }
+
+    ## new contactgroupmembers table
+    ## guard clause: contactgroupmembers is gathered conditionally, so it is the only file which
+    ##   may not exist
+    if ( -e _xml_file( $xmldir, 'contactgroupmembers' ) ) {
+        my @_cols = qw( contactgroup_id contact_id created );
+        $success_cnt += rcube_xml_to_db( $xmldir, 'contactgroupmembers', $dbh, \@_cols );
+    }
+    else {
+        $success_cnt++;
+    }
+
+    # Restore calendar data
+    foreach my $cal_tbl (qw{calendars caldav_calendars}) {
+        unless ( -e _xml_file( $xmldir, $cal_tbl ) ) {
+            $success_cnt++;
+            next;
+        }
+        my @_cols = qw( calendar_id user_id name color showalarms );
+        push( @_cols, qw{ical_url ical_user ical_pass ical_last_change} )                                                   if $cal_tbl eq 'ical_calendars';
+        push( @_cols, qw{readonly caldav_url caldav_tag caldav_user caldav_pass caldav_oauth_provider caldav_last_change} ) if $cal_tbl eq 'caldav_calendars';
+        $success_cnt += rcube_xml_to_db( $xmldir, $cal_tbl, $dbh, \@_cols );
+    }
+    foreach my $evt_tbl (qw{events caldav_events}) {
+        unless ( -e _xml_file( $xmldir, $evt_tbl ) ) {
+            $success_cnt++;
+            next;
+        }
+        my @_cols = qw( event_id calendar_id recurrence_id uid instance isexception created changed sequence start end recurrence title description location categories url all_day free_busy priority sensitivity status alarms attendees notifyat );
+        push( @_cols, qw{ical_url ical_last_change} )                if $evt_tbl eq 'ical_events';
+        push( @_cols, qw{caldav_url caldav_tag caldav_last_change} ) if $evt_tbl eq 'caldav_events';
+
+        $success_cnt += rcube_xml_to_db( $xmldir, $evt_tbl, $dbh, \@_cols );
+    }
+    foreach my $atc_tbl (qw{attachments caldav_attachments}) {
+        unless ( -e _xml_file( $xmldir, $atc_tbl ) ) {
+            $success_cnt++;
+            next;
+        }
+        my @_cols = qw( attachment_id event_id filename mimetype size data );
+        $success_cnt += rcube_xml_to_db( $xmldir, $atc_tbl, $dbh, \@_cols );
+    }
+    if ( -e _xml_file( $xmldir, 'itipinvitations' ) ) {
+        my @_cols = qw(token event_uid user_id event expires cancelled);
+        $success_cnt += rcube_xml_to_db( $xmldir, 'itipinvitations', $dbh, \@_cols );
+    }
+    else {
+        $success_cnt++;
+    }
+
+    return $success_cnt == $success_verify;
+}
+
+sub _xml_file {
+    my ( $xmldir, $tbl ) = @_;
+    return "$xmldir/rcube.$tbl.xml";
+}
+
+sub rcube_xml_to_db {
+    my ( $xmldir, $tbl, $dbh, $ar_cols ) = @_;
+
+    my $xml_fname = _xml_file( $xmldir, $tbl );
+
+    my %common_opts = ( ForceArray => 1, KeyAttr => [], ContentKey => '__content' );
+
+    ## $ref->{database}->[0]->{table_data}->[0]->{row}->[$x]->{field}->[$x]->{__content}
+    my $ref;
+    my $err;
+    try {
+        $ref = XML::Simple::XMLin( $xml_fname, %common_opts );
+    }
+    catch {
+        $err = $_;
+    };
+
+    if ($err) {
+        $logger->warn("Failed to load xml for $tbl: $err");
+        return;
+    }
+
+    my $rows = $ref->{'database'}->[0]->{'table_data'}->[0]->{'row'};
+
+    ## FWIW, Perl does not complain if $rows is undef, when called in a for loop context.
+    for my $row (@$rows) {
+
+        # XXX Placeholders don't work on columns, but stuff with dashes
+        # still needs quoting. As such, quote all col names.
+        # Sorry, couldn't find a way around it.
+        my $update_hr = { map { $dbh->quote_identifier( $_->{'name'} ) => $_->{'__content'} || '' } @{ $row->{'field'} } };
+        my $rv        = $dbh->do( rcube_make_sql( $tbl, $update_hr ) );
+        unless ($rv) {
+            $logger->warn( "Conversion was not successful: " . $dbh->errstr() );
+            return;
+        }
+    }
+
+    return 1;
+}
+
+sub rcube_make_sql {
+    my ( $table, $update_hr ) = @_;
+
+    # Lets hope these actually are nonzero
+    my @values = values(%$update_hr);
+    my $qs     = ( '?,' x ( scalar(@values) - 1 ) ) . '?';
+    return (
+        "INSERT OR REPLACE INTO $table (" . join( ",", keys(%$update_hr) ) . ") VALUES ($qs)",
+        undef,
+        @values,
+    );
+}
+
+sub check_mysqlup {
+    ## note: this call is cached with a ttl of 600
+    my $isrunning = Cpanel::MysqlRun::running();
+    if ($isrunning) {
+        return 1;
+    }
+
+    return undef;
+}
+
+sub ensure_roundcube_tables {
+    my ($dbh) = @_;
+
+    my %tables = map { $_ => undef } $dbh->tables();
+
+    # system table is created during a migration
+    my @expected = qw(session cache system);
+    push( @expected, @dumptables );
+
+    for my $exp (@expected) {
+        next if $exp =~ /^caldav_|^ical_/;    ## ignoring as of 120
+        if ( !exists $tables{$exp} && !exists $tables{qq{"main"."$exp"}} ) {
+            $logger->warn("ERROR: missing $exp table");
+            return;
+        }
+    }
+
+    return 1;
+}
+
+sub init_check {
+    my ($cpconf) = @_;
+    ## Ensure root
+    return unless ( 0 == $> );
+
+    unless ( -e $sqlite_table_file ) {
+        $logger->info("Roundcube is not installed; conversion is irrelevant.");
+        return;
+    }
+
+    if ( exists $cpconf->{'skiproundcube'} and $cpconf->{'skiproundcube'} ) {
+        $logger->info("Roundcube should be skipped, bailing out.");
+        return;
+    }
+
+    my $mysqlup = check_mysqlup();
+    unless ($mysqlup) {
+        $logger->warn("Mysql not currently running, bailing out.");
+        return;
+    }
+
+    ## Does this installation use Roundcube/MySQL?
+    unless ( Cpanel::MysqlUtils::Command::db_exists($mysql_dbname) ) {
+        $logger->warn("mysql database $mysql_dbname is missing");
+        return;
+    }
+
+    my $error;
+
+    try {
+        my $dbc = Cpanel::MysqlUtils::Connect->new( database => $mysql_dbname );
+        $dbh = $dbc->db_handle();
+    }
+    catch {
+        $error = $_;
+    };
+
+    if ($error) {
+        $logger->warn("Failed to connect to MySQL database '$mysql_dbname'.");
+        return;
+    }
+
+    return 1;
+}
+
+##############################################################
+# These functions allow tests to use a temporary MySQL server
+
+sub _get_extra_options_string {
+
+    if ( scalar _get_extra_options() ) {
+        return join( ' ', _get_extra_options() );
+    }
+
+    return;
+}
+
+sub _get_extra_options {
+    return @Cpanel::MysqlUtils::_EXTRA_MYSQL_ARGS;
+}
+
+#
+##############################################################
+
+sub xml_to_sqlite {
+    my ( $user, $tmpdir_root, $tmpdir_convert_base, $email_user, $homedir ) = @_;
+    my $code_ref = _closure_maker( $user, $tmpdir_root, $tmpdir_convert_base, $email_user, $homedir );
+
+    #fixup a user who's purposefully deleted their "etc" dir
+    Cpanel::AccessIds::ReducedPrivileges::call_as_user( sub { File::Path::make_path( File::Basename::dirname( _roundcube_db_path( $user, $homedir, $email_user ) ), { chmod => 0750 } ); }, $user, 'mail' );
+    my $rv = Cpanel::AccessIds::ReducedPrivileges::call_as_user( $code_ref, $user );
+    return $rv;
+}
+
+sub _roundcube_db_path {
+    my ( $system_user, $homedir, $mail_account ) = @_;
+    my ( $mail_user, $mail_domain ) = split( '@', $mail_account );
+    my $db_path = ( defined $mail_domain ) ? "$homedir/etc/$mail_domain/$mail_user.rcube.db" : "$homedir/etc/$mail_user.rcube.db";
+    return $db_path;
+}
+
+## defining as a closure, as ::run_as_user does not currently handle sub args
+sub _closure_maker {
+    my ( $system_user, $tmpdir_root, $tmpdir_convert_base, $email_user, $homedir ) = @_;
+
+    my $code_ref = sub {
+        my $tmp_convertdir = "$tmpdir_convert_base/$email_user";
+
+        if ( -d $tmp_convertdir ) {
+            rename( $tmp_convertdir, "$tmp_convertdir.$time" );
+        }
+
+        # Copy the XML files over to the user's tempdir.
+        # Hopefully these are simple renames. But directories may be on different
+        # mount points requiring a copy.
+
+        File::Path::make_path($tmp_convertdir);
+
+        for my $table (@dumptables) {
+            my $src  = _xml_file( $tmpdir_root,    $table );
+            my $dest = _xml_file( $tmp_convertdir, $table );
+            if ( -e $src ) {
+                File::Copy::move( $src, $dest );
+            }
+        }
+
+        # Clean up empty source directory.
+        # This will fail if the above moves failed.
+
+        rmdir($tmpdir_root);
+
+        ## note: similar clause in cpsrvd to set up $ENV{'_RCUBE'}
+        my ( $mail_user, $mail_domain ) = split( '@', $email_user );
+
+        my $rcube_sqlite_loc8 = _roundcube_db_path( $system_user, $homedir, $email_user );
+
+        if ( -e $rcube_sqlite_loc8 ) {
+            rename( $rcube_sqlite_loc8, "$rcube_sqlite_loc8.$time" );
+        }
+
+        my $dbh = DBI->connect( "dbi:SQLite:dbname=$rcube_sqlite_loc8", "", "" ) or do {
+            $logger->info("Connection error to $rcube_sqlite_loc8: $!");
+            return;
+        };
+        ## note: $dbh->{sqlite_version} is confirmed 2.8.15
+        create_rcube_sqlite_tables($dbh);
+        return unless ensure_roundcube_tables($dbh);
+
+        unless ( do_all_rcube_xml_to_db( $dbh, $tmp_convertdir ) ) {
+            $logger->info("Conversion of roundcube XML dump to sqlite database failed");
+            return;
+        }
+
+        $dbh->disconnect();
+
+        chmod( 0600, $rcube_sqlite_loc8 );
+
+        ## the return values on these rm calls are not critical
+        ## only remove the /tmp directory if the XML converion has been successful thus far
+
+        try {
+            File::Path::remove_tree($tmp_convertdir);
+        };
+
+        ## attempt to rmdir, which will intentionally fail if any of the converts did not succeed
+        rmdir($tmpdir_convert_base);
+
+        return 1;
+    };
+    return $code_ref;
+}
+
+1;

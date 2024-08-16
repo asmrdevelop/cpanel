@@ -1,0 +1,21 @@
+
+  # The only problem with this setup is that if the message is for multiple users on the same server
+  # and they are on different unix accounts, the settings for the first recipient which has spamassassin enabled will be used.
+  # This shouldn't be a problem 99.9% of the time, however its a very small price to pay for a massive speed increase.
+
+  warn
+         domains    = +local_domains
+         condition  = ${if <= {$message_size}{[% ACL_MAX_SPAM_SCAN_SIZE %]K}}
+         condition  = ${if !eq{${acl_m0}}{1}}
+         condition  = ${if exists{/etc/global_spamassassin_enable}{1}{${if exists{${extract{5}{::}{${lookup passwd{${if eq{$domain}{$primary_hostname}{${sg{$local_part}{\N[/+].*\N}{}}}{${lookup{$domain}lsearch{/etc/userdomains}}}}}}}}/.spamassassinenable}}}}
+         set acl_m0 = 1
+
+         # $local_part should work here rather than $local_part_data, but
+         # $local_part_data sidesteps a taint-checking bug in Exim 4.94.
+         #
+         # Commit 12b7f811de is advertised as the fix for it, but during
+         # testing an Exim built with that change still had the bug.
+         # cf. https://www.mail-archive.com/exim-users@exim.org/msg54624.html
+         #
+         set acl_m1 = ${if eq{$domain}{$primary_hostname}{${sg{$local_part_data}{\N[/+].*\N}{}}}{${lookup{$domain}lsearch{/etc/userdomains}}}}
+

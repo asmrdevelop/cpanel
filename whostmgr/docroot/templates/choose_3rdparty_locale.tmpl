@@ -1,0 +1,70 @@
+[% WRAPPER 'master_templates/master.tmpl'
+    theme="yui"
+    app_key='configure_application_locales'
+ -%]
+
+<link rel="stylesheet" type="text/css" href="/yui/container/assets/container.css" /><script type="text/javascript" src="/yui/utilities/utilities.js"></script><script type="text/javascript" src="/yui/container/container.js"></script>
+<script type="text/javascript" src="/js/popupbox.js"></script>
+<style type="text/css">
+        .info_box {
+            background-color:#FFFFCC;
+            border:1px solid #666666;
+            margin-left:20px;
+            padding:5px;
+            width:500px;
+        }
+        .info_box_transparent {
+            font-weight: bold;
+            border:1px solid #666666;
+            margin-left:20px;
+            padding:5px;            width:500px;
+        }
+</style>
+
+<p>[% locale.maketext("cPanel provided statistics software supports a variety of languages. This software does not have a direct mapping from a locale to a language. Default values are set based upon the closest mapping. However, this mapping may sometimes be inaccurate depending upon your customer’s region or needs. This screen allows you to specify the language of the statistics software associated with each locale setting.") %]</p>
+<p>[% locale.maketext("For example, you can associate the cPanel language option for ‘de’ with the Webalizer option ‘german’. This will allow users to view Webalizer statistics software in “german”.") %]</p>
+
+<form action="[% cp_security_token %]/scripts9/save_choose_3rdparty_locale" method="post">
+
+<table class="datatable indent">[%# does not need to be sortable %]
+   <tr>
+      <th>&nbsp;[% locale.maketext("Provider") %]&nbsp;</th><th>&nbsp;[% locale.maketext("Locale Name") %]&nbsp;</th><th>&nbsp;[% locale.maketext("Locale Code") %]&nbsp;</th>
+      [% FOREACH appname IN data.application_names %]
+      <th>&nbsp;[% appname %]&nbsp;</th>
+      [% END %]
+[% SET rowcount = 0 %] [%# isn't there a class that auto-alternates row color ? %]
+[% FOREACH tag IN data.locale_menu.1 %]
+    [% rowcount = rowcount + 1 %]
+    <tr class="[% rowcount % 2 ? 'tdshade1' : 'tdshade2' %]">
+       [% IF data.cpanel_provided.exists(tag) %]
+           <td title="The locale '[% tag %]' is included as part of cPanel/WHM.">&nbsp;<img src="[% MagicRevision('/images/cpanel.png') %]"/>&nbsp;</td>
+       [% ELSE %]
+           <td title="The locale '[% tag %]' is not included as part of cPanel/WHM.">&nbsp;<img src="[% MagicRevision('/images/3rdparty.png') %]"/>&nbsp;</td>
+       [% END %]
+       <td [% IF data.locale_menu.2.exists(tag) %] dir="[% data.locale_menu.2.$tag %]"[% END %]>&nbsp;[% data.locale_menu.0.$tag %]&nbsp;</td>
+       <td>&nbsp;[% tag %]&nbsp;</td>
+       [% FOREACH app IN data.applications %]
+       <td>
+       [% SET param_name = app _ '-' _ tag %]
+       <select name="[% param_name %]">
+           [%- SET setting = data.formref.$param_name || data.get_app_setting(tag,app) || data.get_3rdparty_lang(tag,app) || data.get_3rdparty_lang('en',app) -%]
+           [% FOREACH app_val IN data.get_app_options(app) %]
+           <option [%  setting.length == app_val.length && setting.match(app_val) ? 'selected="selected" ' : '' %]value="[% app_val %]">[% app_val %]</option>
+           [% END %]
+       </select>
+       </td>
+       [% END %]
+
+    </tr>
+[% END %]
+
+</table>
+<p><input type="submit" class="btn-primary" value="[% locale.maketext("Save") %]"/></p>
+</form>
+<p><em>[% locale.maketext("Comments") %]:</em>
+    <ul>
+        <li>[% locale.maketext("Changes made for statistics software will not be reflected until the next statistics update.") %]</li>
+        <li>If a locale seems to be missing you may need to <a href="javascript:display_quickpopupbox('Compiling locale databases','<iframe height=90% width=100% src=[% cp_security_token %]/cgi/build_locale_databases.pl />')">rebuild the locale databases</a> in order to bring it into the system.</li>
+    </ul>
+</p>
+[% END %]

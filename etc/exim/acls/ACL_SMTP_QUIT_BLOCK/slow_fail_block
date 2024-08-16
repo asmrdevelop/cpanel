@@ -1,0 +1,23 @@
+
+  warn
+    log_message = "Detected session with all messages failed"
+    condition = ${if >= {${eval:$rcpt_count}}{1}{${if == {${eval:$rcpt_fail_count}}{${eval:$rcpt_count}}{yes}{no}}}{no}}
+    set acl_m6 = 1
+
+  warn
+    condition = ${if eq {${acl_m6}}{1}{1}{0}}
+    ratelimit = 0 / 1h / strict / per_conn / slow_fail_block_$sender_host_address
+    log_message = "Increment slow_fail_block Ratelimit - $sender_fullhost because of all messages failed"
+
+  warn
+    ratelimit = 1 / 1h / noupdate / per_conn / slow_fail_block_$sender_host_address
+    condition = ${if >= {${eval:$rcpt_count}}{1}{${if < {${eval:$rcpt_fail_count}}{${eval:$rcpt_count}}{yes}{no}}}{no}}
+    set acl_m5 = 1
+    log_message = "Detected session with ok message that previous had all failed"
+
+  warn
+    condition = ${if eq {${acl_m5}}{1}{1}{0}}
+    ratelimit = 0 / 1h / strict / per_conn / slow_fail_accept_$sender_host_address
+    log_message = "Decrement slow_fail_lock Ratelimit - $sender_fullhost because one message was successful"
+
+

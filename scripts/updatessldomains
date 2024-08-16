@@ -1,0 +1,59 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/updatessldomains                Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+# ignore our parent if it dies as this could result in
+# a blank domainips files
+$SIG{'HUP'} = 'IGNORE';
+$SIG{'INT'} = 'IGNORE';
+
+use strict;
+use Cpanel::Config                  ();
+use Cpanel::Config::userdata::Cache ();
+use Cpanel::SafeFile                ();
+use IO::Handle                      ();
+use Getopt::Long                    ();
+use Pod::Usage                      ();
+
+my $help = 0;
+Getopt::Long::GetOptions( 'help' => \$help );
+Pod::Usage::pod2usage(1) if $help;
+
+my $ssl_port = Cpanel::Config::get_ssl_httpd_port();
+my %SSLDOMAINIPS;
+
+my $userdata = Cpanel::Config::userdata::Cache::load_cache();
+for my $dns_name ( keys %{$userdata} ) {
+    my ( $type, $ssl_ip ) = @{ $userdata->{$dns_name} }[ 2, 6 ];
+    next unless $ssl_ip;
+    next unless ( $type eq 'main' || $type eq 'sub' );
+    $ssl_ip =~ s/:.*//;    # Strip off port number
+    $SSLDOMAINIPS{$dns_name} = $ssl_ip;
+}
+
+my $ssldomains_fh  = IO::Handle->new();
+my $ssldomainslock = Cpanel::SafeFile::safeopen( $ssldomains_fh, '>', '/etc/ssldomains' ) || die "Unable to write: $!";
+foreach my $ssldomain ( sort keys %SSLDOMAINIPS ) {
+    print $ssldomains_fh "$ssldomain: $SSLDOMAINIPS{$ssldomain}\n";
+}
+Cpanel::SafeFile::safeclose( $ssldomains_fh, $ssldomainslock );
+
+chmod oct(600), '/etc/ssldomains';
+
+__END__
+
+=head1 NAME
+
+updatessldomains - Update the /etc/ssldomains list of SSL domains assigned to IP addresses
+
+=head1 SYNOPSIS
+
+updatessldomains [options]
+
+    Options:
+      --help       Brief help message
+
+=cut

@@ -1,0 +1,79 @@
+[%#
+Variables passed in:
+
+origin              - the system component from which the request originated
+
+cpanel_stats_log_path - The path to the cpanel stats log
+
+cpanel_error_log_path - The path to the cpanel error log
+
+
+stats_cycle_length  - configured time (seconds) between stats processing runs
+
+user_lags           - how long users’ stats processing has lagged behind.
+                      An arrayref of: [
+                        { username => '..', lag => <seconds> },
+                        ...,
+                      ]
+
+For more information about how to customize notification templates, read our documentation at https://go.cpanel.net/notificationtemplates
+
+-%]
+
+[%
+    PROCESS "include/colors.tmpl";
+    PROCESS "include/code_block.tmpl";
+    PROCESS "include/styles.tmpl";
+    PROCESS "include/system_info_table.tmpl";
+    PROCESS 'include/zebra_table.tmpl';
+    PROCESS 'include/system_info_views.html.tmpl';
+
+    NOTICE.email_reason = CPANEL.locale.maketext('Statistics Processing Lag');
+
+    WRAPPER 'wrapper/main.html.tmpl';
+%]
+
+<p>
+    [% CPANEL.locale.maketext('The system’s statistics processor may not be able to keep pace with its configured schedule.') %]
+</p>
+<p>[% CPANEL.locale.maketext('The following table shows which users’ statistics processing cycles have lasted longer than the configured delay ([_1]) between cycles.', split_time_view.print(NOTICE.stats_cycle_length)) %]
+</p>
+
+[%
+SET table_data = [];
+FOR ul = NOTICE.user_lags.sort('username');
+    table_data.push( [ ul.username, split_time_view.print(ul.lag) ] );
+END;
+
+zebra_table(
+    titles = [
+        CPANEL.locale.maketext('Username'),
+        CPANEL.locale.maketext('Lag Time'),
+    ],
+    items = table_data,
+);
+-%]
+
+<p>
+[% CPANEL.locale.maketext('To manually process the bandwidth statistics for an individual user, use [asis,WHM]’s [_1] interface at: [output,url,_2,_2,target,_3]', CPANEL.locale.maketext('Statistics Software Configuration'), CPANEL.assemble_whm_url("cgi/statmanager"),'_blank') %]
+
+</p>
+<p>
+[% CPANEL.locale.maketext('If you encounter any errors during this process, submit a ticket with [output,url,_1,_2,target,_3]', 'https://go.cpanel.net/support', CPANEL.locale.maketext('[asis,cPanel] Support'),'_blank') %]
+</p>
+
+<p>
+    [% CPANEL.locale.maketext('The server’s current health statistics are:') %]
+</p>
+<p>
+    [% system_info_table() %]
+</p>
+<p>
+    [% CPANEL.locale.maketext('If the system’s health statistics are within normal parameters, you should examine the following logs in order to determine the cause of the timeout:') %]
+    [% code_block(formatted_code=NOTICE.log_preview.0, title=CPANEL.locale.maketext('[asis,cPanel] Stats Log: [_1]', code_inline(term=NOTICE.cpanel_stats_log_path) )) %]
+    [% code_block(formatted_code=NOTICE.log_preview.1, title=CPANEL.locale.maketext('[asis,cPanel] Error Log: [_1]', code_inline(term=NOTICE.cpanel_error_log_path) )) %]
+    [% CPANEL.locale.maketext('The last few lines of these logs in reverse order have been included in this message.'); %]
+</p>
+
+
+[% END %]

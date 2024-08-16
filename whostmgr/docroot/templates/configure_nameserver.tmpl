@@ -1,0 +1,210 @@
+[% WRAPPER 'master_templates/master.tmpl' theme="yui" -%]
+[% PROCESS '_ajaxapp_styles.tmpl' -%]
+[% PROCESS '_ajaxapp_header.tmpl' -%]
+[% USE CPList -%]
+<style type="text/css">
+    #main_content {
+        font-family: helvetica, Arial, sans-serif;
+        font-size: 11pt;
+        line-height: 20px;
+        color: #666;
+        padding: 30px;
+    }
+    #main_content a {
+        text-decoration: underline;
+    }
+    #main_content h2 {
+        font-family: Helvetica, Arial, sans-serif;
+        font-weight: bold;
+        font-size: 15px;
+        color: #4C5355;
+    }
+    .option_box {
+        width: 100%;
+        background-color: #E0E9EA;
+        border: 1px solid #ffffff;
+        outline: 1px solid #C1D0D3;
+        margin-bottom: 10px;
+    }
+    .option_header {
+        font-family: Helvetica, Arial, sans-serif;
+        font-size: 14px;
+        font-weight: bold;
+        color: #4C3555;
+        padding: 10px;
+        border-bottom: 1px solid #C1D0D3;
+    }
+    .option_contents {
+        border-top: 1px solid #ffffff;
+        padding: 10px;
+    }
+    .option_contents input[type="text"] {
+        border-radius: 5px;
+        width: 200px;
+        color: #666;
+        margin-bottom: 10px;
+    }
+    .option_contents input[type="checkbox"] {
+        margin-bottom: 10px;
+        margin-left: 0;
+    }
+    .option_contents .radio_group_wrapper {
+        margin-bottom: 10px;
+    }
+    .freeform {
+        margin-bottom: 10px;
+    }
+    table td {
+        vertical-align: text-top;
+    }
+    textarea {
+        margin-top: 0px;
+    }
+    .lbl {
+        font-weight: bold;
+    }
+    .notes {
+        margin-bottom: 15px;
+    }
+    select {
+        font-family: helvetica, arial, sans-serif;
+        font-size: 14px;
+    }
+    #remote_link {
+        visibility: hidden;
+        margin-left: 20px;
+        font-size: 9pt;
+    }
+</style>
+
+[% IF data.hasroot %]
+   [% INCLUDE _cluster_masquerade.tmpl %]
+[% END %]
+
+<div id="main_content">
+    <div class="option_box">
+        <div class="option_header">
+            [% locale.maketext('“[_1]” DNS Remote Configuration.', data.config.name) FILTER html %]
+        </div>
+        <div class="option_contents">
+            <form autocomplete="off" action='[% cp_security_token %]/cgi/activate_remote_nameservers.cgi' method="post">
+            <input type="hidden" name="cluster_user" value="[% data.cluster_user FILTER html %]">
+                <input type="hidden" name='module' value='[% data.module %]'>
+                <table width=100% cellspacing="0" cellpadding="0" style="table-layout: fixed;">
+                    <thead>
+                        <th width="300px">&nbsp;</th>
+                        <th>&nbsp;</th>
+                    </thead>
+                    <tbody>
+            [% FOR config = data.config.options %]
+
+            [% IF config.type == 'text' %]
+            <tr>
+                <td class="lbl"><label for="[% config.name FILTER html %]">[% config.locale_text FILTER html %]</label>:</td>
+                <td><input id="[% config.name FILTER html %]" type="text" name="[% config.name FILTER html %]" [% IF data.is_edit %]value="[% data.server.${config.name} FILTER html %]"[% END %] />
+                    [% IF data.module == 'cPanel' && config.name == 'host' %]
+                        <a id="remote_link" href="javascript:void(0)" target="_blank">Generate a remote API token</a>
+                    [% END %]
+                </td>
+            </tr>
+
+            [% ELSIF config.type == 'binary' %]
+                [% IF data.is_edit;
+                    IF data.server.exists(config.name);
+                        is_checked = data.server.${config.name};
+                    ELSE;
+                        # If the option isn't in the config, it is an action.
+                        # Actions during edits should default to unchecked.
+                        is_checked = 0;
+                    END;
+                   ELSE;
+                        is_checked = config.default;
+                   END;
+                %]
+                <tr><td colspan="2"><label><input type="checkbox" name=[% config.name FILTER html %] id="[% config.name FILTER html %]" [% IF is_checked %]checked[% END %]> <b>[% config.locale_text FILTER html %]</b></label></td></tr>
+            [% ELSIF config.type == 'radio' %]
+            <tr><td class="lbl">[% config.locale_text FILTER html %]:</td><td>
+                <div class="radio_group_wrapper">
+                [%
+                    SET set_value = data.server.${config.name} || config.default;
+                    #Unsure of a way to make Template Toolkit do grep with \Q\E regexes
+                    IF !set_value || !config.options.ofeach('value').grep("^$set_value$").size;
+                        set_value = config.options.0.value;
+                    END;
+                -%]
+                [% FOR option = config.options %]
+                    [% SET is_checked = option.value == set_value -%]
+                <label><input type="radio" name="[% config.name FILTER html %]" value="[% option.value FILTER html %]" id="[% "${config.name}-${option.value}" FILTER html %]" [% IF is_checked %]checked[% END %] > [% option.label FILTER html %]</label><br />
+                [% END # End foreach in radio options generations %]
+                </div>
+            </td></tr>
+
+            [% ELSIF config.type == 'bigtext' %]
+            <tr><td colspan="2">
+            <div class="freeform lbl"><label for="[% config.name FILTER html %]">[% config.locale_text FILTER html %]</label>:</div>
+            <textarea name="[% config.name FILTER html %]" style="width:95%" rows=20 id="[% config.name FILTER html %]">[% IF data.is_edit %][% data.server.${config.name} FILTER html %][% END %]</textarea><br />
+            </td></tr>
+
+            [% ELSIF config.type == 'ip' %]
+            <tr><td class="lbl">[% config.locale_text FILTER html %]</td><td><input type="text" name="[% config.name FILTER html %]" /></td></tr>
+            [% END -%]
+
+            [% END # End main loop -%]
+
+
+            <tr>
+                <td class="lbl">
+                        <label for="dnsrole">[% locale.maketext("[asis,DNS] Role") %]</label>:
+                </td>
+                <td>
+                    <select onchange="doRoleSelect();" id="dns_role_select" name="dnsrole">
+                        [% SET dnsrole = data.server.dnsrole %]
+                        [% PROCESS _dnsroles.tmpl %]
+                    </select>
+                </td>
+            </tr>
+            <tr>
+                <td colspan="2">
+                    [% PROCESS _dnsroles_explained.tmpl %]
+                </td>
+            </tr>
+            </tbody>
+            </table><br/><br/>
+
+            <input type="submit" value="[% locale.maketext('Submit') %]" class="btn-primary" /> &nbsp;&nbsp;&nbsp; <a href='[% cp_security_token %]/scripts7/clusterstatus?cluster_user=[% data.cluster_user FILTER html %]'>[% locale.maketext('Cancel') %]</a>
+            </form>
+        </div>
+    </div>
+</div>
+<script type="text/javascript">
+var host = DOM.get('host');
+var remote = DOM.get('remote_link');
+
+var populate_remote = function () {
+    if (host && remote) {
+        remote.href = "https://" + host.value.trim().replace(/^https?\:\/\//i,'') + ":2087/scripts7/apitokens/home";
+        DOM.setStyle( remote, 'visibility', host.value ? 'visible' : 'hidden' );
+    }
+}
+EVENT.on(host, 'keyup', populate_remote);
+EVENT.on(host, 'mousedown', populate_remote);
+EVENT.on(host, 'change', populate_remote);
+
+function doRoleSelect () {
+    var elem = document.getElementById('recurse');
+    var select = document.getElementById('dns_role_select');
+    if (select.value === "write-only") {
+        elem.checked = false;
+        elem.setAttribute('disabled','');
+    } else {
+        elem.removeAttribute('disabled');
+        elem.checked = true;
+    }
+};
+document.addEventListener("DOMContentLoaded", function(event) {
+    doRoleSelect();
+});
+
+</script>
+
+[% END %]

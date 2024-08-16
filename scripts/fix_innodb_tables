@@ -1,0 +1,131 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/fix_innodb_tables               Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::fix_innodb_tables;
+
+use strict;
+
+use Cpanel::MysqlUtils::Connect ();
+use Cpanel::MysqlUtils::Quote   ();
+use Cpanel::Config::LoadCpConf  ();
+use Cpanel::Logger              ();
+use Cpanel::Usage               ();
+
+our $cpconf             = Cpanel::Config::LoadCpConf::loadcpconf();
+our $configured_version = $cpconf->{'mysql-version'};
+our $logger             = Cpanel::Logger->new();
+
+exit( run() ) unless caller();
+
+sub usage {
+    print <<USAGE;
+    $0 [--anyversion] [--help]
+        Repairs InnoDB tables after upgrade from MySQL 5.0 to MySQL 5.1
+        or from 4.1 to 5.0.
+
+        Only will run if you are on MySQL 5.1 or MySQL 5.0, set
+        --anyversion if you want to run this on a different version.
+
+        NOTE: this will rebuild each table and may not correct serious
+        corruptions.   This is designed more as an upgrade task then
+        a real repair.
+
+USAGE
+
+    exit 0;
+}
+
+sub run {
+    my $anyversion = 0;
+
+    my $opts = {
+        anyversion => \$anyversion,
+    };
+
+    Cpanel::Usage::wrap_options( \@ARGV, \&usage, $opts );
+
+    # we only need to perform this task when upgrading to 5.0 or 5.1
+    # in that version the InnoDB tables are left in a repair mode
+    # after the upgrade.   MySQL 4.1 does not have the information schema
+    # table for us to operate on so do not run on MySQL 4.1.
+
+    if ( $anyversion == 0 && ( $configured_version gt "5.1" || $configured_version lt "5.0" ) ) {
+        print "Designed to run on MySQL 5.0 or 5.1 during an upgrade\n";
+        return 1;
+    }
+
+    $logger->info("fix_innodb_tables called :$configured_version:");
+
+    print "Repairing InnoDB tables after upgrade\n";
+
+    # I am forcing this to localhost, as this should only be called during
+    # a cpanel rpm install
+
+    my $database  = "information_schema";
+    my $mysqlhost = 'localhost';
+    my $dbh;
+
+    eval { $dbh = Cpanel::MysqlUtils::Connect::get_dbi_handle( 'database' => $database, 'dbserver' => $mysqlhost, ); };
+    if ( $@ || !$dbh ) {
+        warn "fix_innodb_tables: Failed to connect to db: $database: $@";
+        print "Failed to connect to db: $database: $@";
+        return 1;
+    }
+
+    #
+    #NOTES:
+    #
+    #http://bugs.mysql.com/bug.php?id=44640
+    #http://www.mysqlperformanceblog.com/2010/05/14/mysql_upgrade-and-innodb-tables/
+    #
+
+    my $sql     = qq~SELECT table_schema, table_name, engine FROM tables;~;
+    my $sth     = $dbh->prepare($sql);
+    my $results = $sth->execute();
+
+    if ( $sth->rows ) {
+        print "\nChecking " . $sth->rows . " tables.  This may take some time.\n\n";
+        while ( my $ref = $sth->fetchrow_hashref ) {
+            if ( uc( $ref->{'engine'} ) eq "INNODB" ) {
+                my $schema = Cpanel::MysqlUtils::Quote::quote_identifier( $ref->{'table_schema'} );
+                my $name   = Cpanel::MysqlUtils::Quote::quote_identifier( $ref->{'table_name'} );
+
+                print qq~Checking $schema.$name~;
+
+                my $sql2    = qq~CHECK TABLE $schema.$name;~;
+                my $sth2    = $dbh->prepare($sql2);
+                my $results = $sth2->execute();
+
+                if ( $sth2->rows ) {
+                    my $array_ref = $sth2->fetchrow_arrayref;
+
+                    if ( $array_ref->[2] eq "error" ) {
+                        print "-- Repairing Table\n";
+
+                        my $sql3 = qq~ALTER TABLE $schema.$name ENGINE=INNODB;~;
+                        my $sth3 = $dbh->prepare($sql3);
+                        $sth3->execute();
+                        $sth3->finish();
+                    }
+                    else {
+                        print "-- Table Clean\n";
+                    }
+                }
+
+                $sth2->finish();
+            }
+        }
+    }
+
+    $sth->finish();
+
+    return 0;
+}
+
+1;
+
+__END__

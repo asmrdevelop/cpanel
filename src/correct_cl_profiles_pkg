@@ -1,0 +1,110 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+#                                      Copyright 2024 WebPros International, LLC
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited.
+
+package autofixer2::correct_cl_profiles_pkg;
+
+use strict;
+use warnings;
+
+BEGIN { unshift @INC, '/usr/local/cpanel'; }
+
+exit run() unless caller;
+
+sub run {
+
+    # return 0 == exit clean
+    return 0 unless supported_on_this_major( 109, 120 );
+
+    # CL used to make ea-profiles-cpanel (i.e. instead of proper ea-profiles-cloudlinux) that had their profiles
+    # Their ea-profiles-cpanel always had an epoch
+    # Now:
+    #     They properly do ea-profiles-cloudlinux
+    #     We bumped our epoch to 5 so our newer one would take precedence
+    # Some systems may still have their old ea-profiles-cpanel
+
+    eval { require Cpanel::OS };
+    return 0 if $@;
+    return 0 if !Cpanel::OS::is_cloudlinux();
+
+    my $rpm =
+        -x '/usr/bin/rpm' ? '/usr/bin/rpm'
+      : -x '/bin/rpm'     ? '/bin/rpm'
+      :                     '';
+
+    if ($rpm) {
+        my $pkg_epoch = `$rpm -qa --queryformat %{epoch} ea-profiles-cpanel`;
+
+        if ( $pkg_epoch eq "(none)" ) {
+            warn "ea-profiles-cpanel does not appear to be available, pkg repo misconfigured?\n";
+            return 0;
+        }
+
+        if ( length($pkg_epoch) && $pkg_epoch > 0 ) {    # if it is installed (empty string if not installed/available) …
+            if ( $pkg_epoch =~ m/^[1-9]+$/ ) {           # … and has a numeric epoch that is not 0 (non-number if installed but no epoch) …
+                my $type = readlink("/usr/local/cpanel/server.type") // "";
+                if ( $pkg_epoch < 5 ) {                  # … and the epoch is older than cPanel’s ea-profiles-cpanel
+                                                         # … then we have the old CL ea-profiles-cpanel
+
+                    if ( $type eq "wp2" ) {
+                        print "Updating old CL ea-profiles-cpanel for WordPress Squared\n";
+                        system('yum erase -y ea-profiles-cpanel');    # remove first in case the the current one has old provides/conflicts
+                        system('yum erase -y ea-profiles-cloudlinux');
+                        system('yum install -y ea-profiles-cpanel');
+                    }
+                    else {
+                        print "Replacing old CL ea-profiles-cpanel w/ ea-profiles-cloudlinux\n";
+                        system('yum erase -y ea-profiles-cpanel');    # remove first in case they own the same files
+                        system('yum install -y ea-profiles-cloudlinux');
+                    }
+                }
+
+                if ( $pkg_epoch > 4 ) {    # … or they have our new one
+                    if ( $type eq "wp2" ) {
+                        print "Ensuring no stale ea-profiles-cloudlinux under new ea-profiles-cpanel\n";
+                        system('yum erase -y ea-profiles-cloudlinux');
+                        system('yum install -y ea-profiles-cpanel')    # reinstall second in case ea-profiles-cloudlinux had old provides/conflicts
+                    }
+                    else {
+                        print "Replacing stale ea-profiles-cpanel w/ ea-profiles-cloudlinux\n";
+                        system('yum erase -y ea-profiles-cpanel');
+                        system('yum install -y ea-profiles-cloudlinux');    # reinstall second in case ea-profiles-cloudlinux had old provides/conflicts
+                    }
+                }
+            }
+        }
+    }
+
+    return 0;
+}
+
+sub supported_on_this_major {
+    my ( $min_ver, $max_ver ) = @_;
+
+    my $major = get_major_version();
+
+    return 0 if $major < $min_ver;
+    return 0 if $major > $max_ver;
+
+    return 1;
+}
+
+sub get_major_version {
+    my $major_version;
+
+    if ( open( my $fh, '<', '/usr/local/cpanel/version' ) ) {
+        my $full_version = <$fh>;
+        close($fh);
+        if ( length $full_version ) {
+            chomp $full_version;
+            ($major_version) = $full_version =~ /^[0-9]+\.([0-9]+)/;
+        }
+    }
+
+    # Safe default.
+    return $major_version || 30;
+}
+
+1;

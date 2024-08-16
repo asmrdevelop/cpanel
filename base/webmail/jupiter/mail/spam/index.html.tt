@@ -1,0 +1,112 @@
+[%
+USE SpamAssassin;
+
+SET CPANEL.CPVAR.dprefix = '../../';
+
+SET spam_settings = execute(
+    'Email',
+    'get_spam_settings',
+    { account => CPANEL.authuser },
+).data();
+
+SET page_data = {
+    spam_settings => spam_settings,
+    authuser => CPANEL.authuser,
+};
+
+SET can_disable_filter = spam_settings.spam_status_changeable;
+
+SET max_spam_threshold = spam_settings.cpuser_spam_auto_delete ? (spam_settings.cpuser_spam_auto_delete_score - 1) : '';
+-%]
+
+[% WRAPPER '_assets/master.html.tt'
+    app_key = 'apache_spam_assassin',
+
+    include_legacy_stylesheets = 0,
+
+    page_stylesheets = [
+        'mail/spam/index.css',
+    ],
+-%]
+
+[%
+    PROCESS '_assets/cjt2_header_include.tt';
+
+%]
+<script>
+    if (!window.CPANEL) CPANEL = {};
+    CPANEL.PAGE = [% JSON.stringify(page_data) %];
+</script>
+
+<div class='body-content'>
+    [% IF CPANEL.feature('spamassassin') && spam_settings.spam_enabled -%]
+        <p class="description">
+            [% locale.maketext('This utility lets you filter unwanted “spam” email before it reaches your inbox.') %]
+        </p>
+
+        <div ng-cloak id="ng_content" class="body-content"
+            ng-controller="BaseController"
+        >
+            <cp-alert-list></cp-alert-list>
+
+            <h4>[% locale.maketext('Spam Auto-Delete Threshold') %]</h4>
+
+            <p class="description">[% locale.maketext('This server assigns a spam score (via the [output,class,_1,code] header) to each email that you receive. Use this control to tell the server to discard any emails whose spam score meets or exceeds a designated threshold. [output,strong,The lower the threshold~, the more emails the server will discard.]', 'X-Spam-Bar') %]</p>
+
+            [% IF spam_settings.cpuser_spam_auto_delete -%]
+                <div class="alert alert-info">
+                    <span class="glyphicon glyphicon-info-sign"></span>
+                    <div class="alert-message">
+                        [% IF CPANEL.authuser == CPANEL.user -%]
+                            [% locale.maketext('You have set an account-wide auto-delete threshold of [numf,_1] in the [asis,cPanel] interface. The current interface controls an optional auto-delete threshold that is specific to your system email account. This threshold, if defined, must be lower than the account-wide threshold.') -%]
+                        [% ELSE -%]
+                            [% locale.maketext('Your account owner has set an auto-delete threshold of [numf,_1]. You can use that threshold or set a lower one for your own account, but you cannot disable the auto-deletion.', spam_settings.cpuser_spam_auto_delete_score) -%]
+                        [% END -%]
+                    </div>
+                </div>
+            [% END -%]
+
+           <form class="main-page-form" cp-form-waiting="save()" cp-form-waiting-spinner-size="2">
+                <div class="form-group">
+                    <div class="main-page-form-content">
+                        <div>
+                            <span ng-click="!spam_auto_delete && deferred_focus('spam_score_input'); spam_auto_delete = true;">
+                                <label><input type="radio" name="spam_auto_delete" ng-model="spam_auto_delete" ng-value="true">
+                                    [% IF CPANEL.authuser == CPANEL.user -%]
+                                        [% locale.maketext('Set a custom threshold for your system email account:') %]
+                                    [% ELSE -%]
+                                        [% locale.maketext('Set a custom threshold:') %]
+                                    [% END -%]
+                                </label>
+                                <input type="number" id="spam_score_input" class="disabled-receive-click" ng-model="spam_auto_delete_score" ng-disabled="!spam_auto_delete" min="1" max="[% max_spam_threshold %]">
+                            </span>
+                        </div>
+                        <div>
+                            <label><input type="radio" name="spam_auto_delete" ng-model="spam_auto_delete" ng-value="false">
+                                [% IF spam_settings.cpuser_spam_auto_delete -%]
+                                    [% IF CPANEL.authuser == CPANEL.user -%]
+                                        [% locale.maketext('Use your account-wide threshold from [asis,cPanel] ([numf,_1])', spam_settings.cpuser_spam_auto_delete_score) -%]
+                                    [% ELSE -%]
+                                        [% locale.maketext('Use the account owner’s threshold ([numf,_1])', spam_settings.cpuser_spam_auto_delete_score) -%]
+                                    [% END -%]
+                                [% ELSIF can_disable_filter -%]
+                                    [% locale.maketext('Disable Spam Auto-Delete') -%]
+                                [% ELSE -%]
+                                    [% locale.maketext('Use the system-wide default threshold ([numf,_1]). [output,strong,The server may discard a significant amount of your mail.]', SpamAssassin.DEFAULT_REQUIRED_SCORE) -%]
+                                [% END -%]
+                            </label>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="form-group main-page-form-content">
+                    <button class="btn btn-primary" type="submit">[% locale.maketext('Submit') %]</button>
+                </div>
+           </form>
+        </div>
+    [% ELSE -%]
+        <h4>[% locale.maketext('This feature is disabled.') -%]</h4>
+    [% END -%]
+</div>
+
+[% END #wrapper -%]

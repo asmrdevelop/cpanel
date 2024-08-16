@@ -1,0 +1,593 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/cpuser_port_authority           Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+use warnings;
+
+package scripts::cpuser_port_authority;
+
+use Cpanel::JSON                    ();
+use Cpanel::Transaction::File::JSON ();
+use Cpanel::Config::LoadUserDomains ();
+use Cpanel::Debug                   ();
+use Cpanel::Validate::Username      ();
+use Cpanel::FileUtils::Write        ();
+use Cpanel::PwCache                 ();
+
+our $port_authority_conf = "/etc/cpanel/cpuser_port_authority.json";
+
+my $cmds = {
+    give => {
+        code     => \&give,
+        clue     => "give <user> <number of ports> [--service=my_app]",
+        abstract => 'Give a user 1 or more ports.',
+        help     => "Give a user 1 or more ports, that only they can run a service on.\n  --service=<NAME>  this will tie a service name, as appropriate for scripts/cpuser_service_manager, to the ports for reference",
+    },
+    take => {
+        code     => \&take,
+        clue     => "take <user> <port-number> [<port-number> <port-number> …]",
+        abstract => "Take 1 or more ports from a user.",
+        help     => "Take 1 or more ports from a user. Errors out completely if any of the given ports do not belong to them.",
+    },
+    list => {
+        code     => \&list,
+        clue     => "list [<user>]",
+        abstract => "List port assignment information.",
+        help     => "List port assignment information. If given a user it lists only that user’s information. The output is in human friendly JSON format.",
+    },
+    fw => {
+        code     => \&fw,
+        clue     => "fw",
+        abstract => "Setup Firewall",
+        help     => "Setup the firewall rules to match the configured port assignments",
+    },
+    user => {
+        code     => \&user,
+        clue     => "user (remove|change) <user> [<new_user>]",
+        abstract => "Operate on a given user’s port assignments",
+        help     => "Remove all ports owned by the given user. Change port ownership from <user> to <new_user>.",
+    },
+};
+
+my $hint_blurb = "Usage: `$0 {command} …`.\n\tThis tool supports the following commands:";
+my $opts       = {
+    'help:pre_hint'  => $hint_blurb,
+    'help:pre_help'  => "Various user-assigned-port related admin utilities\n\n$hint_blurb",
+    default_commands => "help",
+    alias            => { free => "take", firewall => "fw" },
+};
+
+run(@ARGV) if !caller;
+
+sub run {
+    my (@argv) = @_;
+    die "This script should only be called as root\n" if $> != 0;
+
+    local $ENV{TERM} = $ENV{TERM} || "xterm-256color";    # non-CLI modulino avoid needless: Cannot find termcap: TERM not set at …/Term/ReadLine.pm line 373.
+    require App::CmdDispatch;
+    import App::CmdDispatch;
+
+    # need to have App::CmdDispatch do this automatically see CPANEL-22328
+    if ( @argv && grep { defined && m/\A\-\-help\z/ } @argv ) {
+        App::CmdDispatch->new( $cmds, $opts )->help();
+        exit(0);
+    }
+
+    my $orig_command_hint = \&App::CmdDispatch::command_hint;
+    no warnings "redefine";
+    local *App::CmdDispatch::command_hint = sub {
+        $orig_command_hint->(@_);
+        exit(1);
+    };
+    no warnings 'once';
+    require App::CmdDispatch::IO;
+    local *App::CmdDispatch::IO::print = sub {
+        shift;
+        if ( ref($@) && $@ =~ m/^App::CmdDispatch::Exception/ ) {
+            CORE::print STDERR @_;
+            return;
+        }
+        CORE::print(@_);
+        return;
+    };
+    local *App::CmdDispatch::MinimalIO::print = \&App::CmdDispatch::IO::print;
+    use warnings 'once';
+
+    # ^^^ /need to have App::CmdDispatch do this automatically see CPANEL-22328
+
+    if ( $ARGV[0] && $ARGV[0] eq 'help' ) {
+        require Cpanel::Services::Firewall;
+        if ( Cpanel::Services::Firewall::is_firewalld() ) {
+            $opts->{'help:post_help'} = _get_firewalld_caveat();
+        }
+    }
+
+    my $app = App::CmdDispatch->new( $cmds, $opts );
+    if ( ref( $app->{io} ) eq "1" ) {    # To work around https://rt.cpan.org/Ticket/Display.html?id=132309
+        $app->{io} = bless {}, "App::CmdDispatch::MinimalIO";
+    }
+    return $app->run(@argv);
+}
+
+################
+#### commands ##
+################
+
+sub give {
+    my ( $app, $user, $count, @flags ) = @_;
+    _validate_user_arg( $app, $user );
+
+    if ( !defined $count || $count !~ m/^[1-9][0-9]*$/ ) {
+        _bail( $app, "The number of ports you want assigned must be a whole number greater than 0." );
+    }
+
+    my @ports = _get_next_n_ports($count);          # dies if it can't get $count ports
+    _add_conf( $app, $user => \@ports, @flags );    # dies if port is already assigned (i.e. raced from _get_next_n_ports()), dies if it can’t save
+
+    for my $port (@ports) {
+        print "$port\n";
+    }
+
+    _setup_firewall();
+    return;
+}
+
+sub take {
+    my ( $app, $user, @ports ) = @_;
+    _validate_user_arg( $app, $user );
+
+    die "No ports given.\n" if !@ports;
+
+    my $transaction = Cpanel::Transaction::File::JSON->new(
+        path        => $port_authority_conf,
+        permissions => 0640,
+    );
+
+    my $data = $transaction->get_data();
+    my $hr   = ref($data) eq 'HASH' ? $data : {};
+
+    for my $port (@ports) {
+        if ( !defined $port || $port !~ m/^[1-9][0-9]*$/ ) {
+            die "Invalid port.\n";
+        }
+        elsif ( !exists $hr->{$port} ) {
+            die "“$port” is not assigned.\n";
+        }
+        elsif ( $hr->{$port}{owner} ne $user ) {
+            die "“$port” is not owned by “$user”.\n";
+        }
+        else {
+            delete $hr->{$port};
+        }
+    }
+
+    $transaction->set_data($hr);
+    _write_transaction($transaction);
+    _setup_firewall();
+    return;
+}
+
+sub user {
+    my ( $app, $action, $user, $new_user ) = @_;
+
+    die "invalid action for `user` subcommand\n" if !defined $action || ( $action ne "remove" && $action ne "change" );
+
+    # This function is used in 2 ways, from the command line where multiple actions are
+    # allowed.   And from the Task processor, where it is in reaction to a modify account.
+    # In the latter case, the action will be "change", and the original user will have
+    # already been changed to new_user, and is no longer valid.
+
+    if (   $action eq "change"
+        && defined $user
+        && defined $new_user
+        && Cpanel::Validate::Username::user_exists($new_user)
+        && !Cpanel::Validate::Username::user_exists($user) ) {
+        _validate_user_arg( $app, $new_user );
+    }
+    else {
+        _validate_user_arg( $app, $user );
+    }
+
+    if ( $action eq "change" ) {
+        die "New username is not valid.\n" if !defined $new_user || !Cpanel::Validate::Username::is_strictly_valid($new_user);
+        die "Too many arguments.\n"        if @_ > 4;
+    }
+    else {
+        die "Too many arguments.\n" if @_ > 3;
+    }
+
+    my $transaction = Cpanel::Transaction::File::JSON->new(
+        path        => $port_authority_conf,
+        permissions => 0640,
+    );
+
+    my $data = $transaction->get_data();
+    my $hr   = ref($data) eq 'HASH' ? $data : {};
+
+    my $count = 0;
+    for my $port ( sort keys %{$hr} ) {
+        if ( $hr->{$port}{owner} eq $user ) {
+            $count++;
+            if ( $action eq "change" ) {
+                $hr->{$port}{owner} = $new_user;
+            }
+            else {
+                delete $hr->{$port};
+            }
+        }
+    }
+
+    if ($count) {
+        $transaction->set_data($hr);
+        _write_transaction($transaction);
+        _setup_firewall();
+    }
+    else {
+        eval { $transaction->close_or_die; };
+        warn $@ if $@;
+    }
+
+    print "", ( $action eq "change" ? "Updated" : "Removed" ), ": $count\n";
+    return;
+}
+
+sub list {
+    my ( $app, $user ) = @_;
+
+    my $hr = eval { Cpanel::JSON::LoadFile($port_authority_conf) } || {};
+
+    if ( $user || @_ == 2 ) {
+        _validate_user_arg( $app, $user );
+
+        for my $port ( keys %{$hr} ) {
+            delete $hr->{$port} if $hr->{$port}{owner} ne $user;
+        }
+    }
+
+    print Cpanel::JSON::pretty_canonical_dump($hr);
+
+    return;
+}
+
+sub fw {
+    _setup_firewall();
+    return;
+}
+
+##############################
+#### used by task processor ##
+##############################
+
+sub call_ubic {
+    my ( $user, @args ) = @_;
+
+    my $curhome = Cpanel::PwCache::gethomedir($user);
+    if ( -s "$curhome/.ubic.cfg" ) {
+        require Cpanel::AccessIds;
+        Cpanel::AccessIds::do_as_user_with_exception(
+            $user,
+            sub {
+                local $ENV{HOME} = $curhome;
+
+                # would be cool if Cpanel::FindBin (or whatever) did this for us: CPANEL-22345 and CPANEL-23118
+                my $real_perl  = readlink("/usr/local/cpanel/3rdparty/bin/perl");
+                my $cp_bin_dir = $real_perl;
+                $cp_bin_dir =~ s{/perl$}{};
+                local $ENV{PATH} = "$cp_bin_dir:$ENV{PATH}";    # not only does this allow it to find our ubic-admin, it allows its env-shebang to pick up our perl
+
+                system( "ubic", @args );
+            }
+        );
+    }
+
+    return;
+}
+
+sub update_ubic_conf {
+    my ( $user, $orig_user ) = @_;
+
+    my $newhome = Cpanel::PwCache::gethomedir($user);
+    die "Invalid new username\n" if ( !$newhome || !-d $newhome );
+
+    my $ubic_note     = "IMPORTANT = Do not edit this cPanel User Service Manager generated file!";    # from scripts/cpuser_service_manager, DO NOT prepend a '#'
+    my $ubic_cnf_path = "$newhome/.ubic.cfg";
+
+    if ( -s $ubic_cnf_path ) {
+        require Cpanel::LoadFile;
+        require Cpanel::AccessIds;
+        Cpanel::AccessIds::do_as_user_with_exception(
+            $user,
+            sub {
+                my $had_ubic_note = 0;
+                my $new_ubic      = "";
+                for my $line ( split( /\n/, Cpanel::LoadFile::load($ubic_cnf_path) ) ) {
+                    if ( $line =~ m/^\s*data_dir\s*=/ ) {
+                        $new_ubic .= "data_dir = $newhome/ubic/data\n";
+                    }
+                    elsif ( $line =~ m/^\s*default_user\s*=/ ) {
+                        $new_ubic .= "default_user = $user\n";
+                    }
+                    elsif ( $line =~ m/^\s*service_dir\s*=/ ) {
+                        $new_ubic .= "service_dir = $newhome/ubic/service\n";
+                    }
+                    elsif ( $line eq $ubic_note ) {
+                        $had_ubic_note++;
+                        $new_ubic .= "$ubic_note\n";
+                    }
+                    else {
+                        if ( $line ne "" ) {
+                            warn "Custom line in $ubic_cnf_path may be incorrect:\n\t(Line: '$line')\n";
+
+                            # could modify it but you get into a rats nest:
+                            #   e.g. change homedir then username:
+                            #     what happens when old name is foo and the new name if foo1:
+                            #        /home/foo becomes /home/foo1
+                            #        /home/foo1 becomes  /home/foo11
+                            #   e.g. change username then homedir
+                            #     what happens when old name is bar and the new homedir is /home2/bart
+                            #     /home/bar becomes /home/bart
+                            #     /home/bart becomes /home2/bartt
+                            # they really shouldn't be editing this file anyway ¯\_(ツ)_/¯
+                        }
+
+                        $new_ubic .= "$line\n";
+                    }
+                }
+
+                if ( !$had_ubic_note ) {
+                    $new_ubic = "$ubic_note\n$new_ubic";
+                }
+
+                Cpanel::FileUtils::Write::overwrite( $ubic_cnf_path, $new_ubic );
+
+                my $ubic_update_service   = $newhome . "/ubic/service/ubic/update";
+                my $ubic_watchdog_service = $newhome . "/ubic/service/ubic/watchdog";
+
+                foreach my $file ( $ubic_update_service, $ubic_watchdog_service ) {
+                    if ( -e $file ) {
+                        my $new_ubic      = "";
+                        my $did_something = 0;
+                        for my $line ( split( /\n/, Cpanel::LoadFile::load($file) ) ) {
+                            my $working = $line;
+                            if ( $working =~ m:'--stdout=/.+?/$orig_user/.*': ) {
+                                $working =~ s:(--stdout=/.+?)/$orig_user/:$1/$user/:;
+                            }
+                            if ( $working =~ m:'--stderr=/.+?/$orig_user/.*': ) {
+                                $working =~ s:(--stderr=/.+?)/$orig_user/:$1/$user/:;
+                            }
+                            $new_ubic .= $working;
+                        }
+
+                        Cpanel::FileUtils::Write::overwrite( $file, $new_ubic );
+                    }
+                }
+            }
+        );
+    }
+
+    return;
+}
+
+###############
+#### helpers ##
+###############
+
+sub _setup_firewall {
+
+    require Cpanel::Services::Firewall;
+    if ( Cpanel::Services::Firewall::is_firewalld() ) {
+        warn _get_firewalld_caveat() . "\n";
+    }
+
+    print "Setting up firewall …\n";
+
+    require Capture::Tiny;
+    my ( $out, $rv ) = Capture::Tiny::capture_merged( \&Cpanel::Services::Firewall::setup_firewall );
+
+    if ($rv) {    # setup_firewall() RV is suitable for exit($rv||0)
+        warn "Firewall setup reported a problem. Please run /usr/local/cpanel/scripts/configure_firewall_for_cpanel to ensure the firewall is OK.\n";
+        return;
+    }
+    else {
+        print " … done.\n";
+    }
+
+    return 1;
+}
+
+sub _validate_user_arg {
+    my ( $app, $user ) = @_;
+
+    _bail( $app, "The user argument is missing." ) if !$user;
+
+    if ( $user ne "root" ) {
+        my $user_lookup = Cpanel::Config::LoadUserDomains::loaduserdomains( undef, 0, 1 );
+        _bail( $app, "The given user is not a cPanel user.\n" ) if !$user_lookup->{$user};
+    }
+
+    return 1;
+}
+
+sub _get_next_n_ports {
+    my ($n) = @_;
+
+    my ( $bottom_min, $bottom_max, $top_min, $top_max ) = _get_port_ranges();
+    my $port;    # buffer
+
+    my @ports;
+    for $port ( $bottom_min .. $bottom_max ) {
+        push @ports, $port if !_is_port_assigned($port);
+        last if @ports == $n;
+    }
+
+    return @ports if @ports == $n;
+
+    if ( defined $top_min ) {
+        for $port ( $top_min .. $top_max ) {
+            push @ports, $port if !_is_port_assigned($port);
+            last if @ports == $n;
+        }
+    }
+
+    die "Not enough free ports (wanted $n)\n" if @ports != $n;
+    return @ports;
+}
+
+my $lookup_cache;
+
+sub _add_conf {
+    my ( $app, $user, $ports, @flags ) = @_;
+
+    # There is an old unused system (to be deprecated/removed via CPANEL-22447) that uses
+    #    /var/cpanel/portassignments.db (YAML) && /etc/portassignments (key: value version of the .db file …)
+    # We could import those here if they exist but probably YAGNI.
+
+    my $service;
+    for my $flag (@flags) {
+        if ( defined $flag && $flag =~ m/^\-\-service/ ) {
+            $service = $flag;
+            $service =~ s/^\-\-service//;
+            $service =~ s/^=//;                              # do this sperately in case they just pass `--service` or `--service=`
+            if ( $service !~ m/^[\w-]+(?:\.[\w-]+)*$/ ) {    # regexp is $service_name_re from Ubic.pm v1.60
+                _bail( $app, "Invalid service name" );
+            }
+        }
+    }
+
+    my $transaction = Cpanel::Transaction::File::JSON->new(
+        path        => $port_authority_conf,
+        permissions => 0640,
+    );
+
+    my $data = $transaction->get_data();
+    my $hr   = ref($data) eq 'HASH' ? $data : {};
+
+    for my $port ( @{$ports} ) {
+        die "port “$port” already assigned (is someone else logged in as root and running this script?)\n" if exists $hr->{$port};
+        $hr->{$port} = { owner => $user };
+        $hr->{$port}{service} = $service if $service;
+    }
+
+    $transaction->set_data($hr);
+    _write_transaction($transaction);
+
+    return;
+}
+
+sub _write_transaction {
+    my ($transaction) = @_;
+
+    eval {
+        $transaction->save_pretty_canonical_or_die();
+        $transaction->close_or_die();
+    };
+    warn $@ if $@;
+
+    $lookup_cache = undef;
+
+    return;
+}
+
+sub _get_cmd {
+    return $cmds;
+}
+
+sub _bail {
+    my ( $app, $msg ) = @_;
+    chomp($msg);
+
+    # !$app for task processor
+    die "$msg\n" if $ENV{ __PACKAGE__ . "::bail_die" } || !$app;    # for API calls, otherwise:
+
+    warn "$msg\n";
+    $app->help();
+
+    # there is no return()ing from this lol
+    exit(1);                                                        ## no critic qw(Cpanel::NoExitsFromSubroutines) the refactor here is risky
+}
+
+sub _is_port_assigned {
+    my ($port) = @_;
+
+    if ( !$lookup_cache ) {
+        $lookup_cache = eval { Cpanel::JSON::LoadFile($port_authority_conf) } || {};
+    }
+
+    return exists $lookup_cache->{$port};
+}
+
+my ( $bottom_min, $bottom_max, $top_min, $top_max );
+
+sub _get_port_ranges {
+    if ( !defined $bottom_min ) {
+
+        # even if FTP is disabled ATM, it could be re-enabled (¿TODO/YAGNI? only factor these in if FTP is currently enabled
+        my ( $passive_ftp_start, $passive_ftp_end ) = ( 49_152, 65_534 );
+
+        no warnings "redefine";
+        local *Cpanel::Debug::log_warn = sub { };    # facepalm …
+        require Cpanel::FtpUtils::Config;
+        my $ftp_conf          = Cpanel::FtpUtils::Config->new->get_config;
+        my $ftp_passive_range = $ftp_conf->{PassivePortRange} || $ftp_conf->{PassivePorts};
+        if ($ftp_passive_range) {
+            ( $passive_ftp_start, $passive_ftp_end ) = split( /\s+/, $ftp_passive_range );
+        }
+
+        my ( $ephemeral_start, $ephemeral_end ) = ( 49_152, 65_535 );    # IANA defaults
+
+        require File::stat;
+        if ( File::stat::stat("/proc/sys/net/ipv4/ip_local_port_range") ) {
+            require Path::Tiny;
+            my $ip_local_port_range_raw = Path::Tiny::path("/proc/sys/net/ipv4/ip_local_port_range")->slurp;
+            chomp($ip_local_port_range_raw);
+            ( $ephemeral_start, $ephemeral_end ) = split( /\s+/, $ip_local_port_range_raw );
+
+            if ( $ephemeral_start > $passive_ftp_start ) {
+                $ephemeral_start = $passive_ftp_start;
+            }
+
+            if ( $ephemeral_end < $passive_ftp_end ) {
+                $ephemeral_end = $passive_ftp_end;
+            }
+        }
+
+        $ephemeral_start = 10_001               if $ephemeral_start < 10_001;
+        $ephemeral_end   = $ephemeral_start + 1 if $ephemeral_end < $ephemeral_start;
+
+        ( $bottom_min, $bottom_max, $top_min, $top_max ) = ( 10_000 => ( $ephemeral_start - 1 ), ( $ephemeral_end + 1 ) => 65535 );
+
+        if ( $ephemeral_end >= 65535 ) {
+            ( $top_min, $top_max ) = ( undef, undef );
+        }
+    }
+
+    return ( $bottom_min, $bottom_max, $top_min, $top_max );
+}
+
+sub _silent_sys {
+    my (@sys) = @_;
+    require Capture::Tiny;
+    my ( $out, $exit ) = Capture::Tiny::capture_merged( sub { system(@sys) } );
+    die "`@sys` exited unclean ($exit)\n" if $exit;    #TODO/YAGNI: output $out if --verbose
+    return;
+}
+
+sub _get_firewalld_caveat {
+
+    my $message = <<"END_FIREWALLD";
+ℹ️  [Caveat] Currently, firewalld does not respect port ownership assignments.
+
+To enforce port ownership, you must use iptables tables instead.
+
+We will update this system when the functionality is available.
+END_FIREWALLD
+
+    require Cpanel::Output::Formatted::Terminal;
+    return Cpanel::Output::Formatted::Terminal->new->format_message( "bold black on_blue" => $message );
+}
+
+1;

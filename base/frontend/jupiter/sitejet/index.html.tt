@@ -1,0 +1,102 @@
+[%
+#                                      Copyright 2024 WebPros International, LLC
+#                                                            All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited.
+%]
+
+[%
+USE JSON;
+USE CPBranding;
+USE Master;
+
+SET CPANEL.CPVAR.dprefix = "../";
+
+SET TEMPLATE_PATH = 'sitejet/';
+SET APP_KEY       = 'cpanel-sitejet-plugin';
+SET ROUTER_PATH = cp_security_token _ breadcrumb_url;
+SET style_sheets  = [];
+SET scripts       = []; # Do not change this name unless it is also changed in the partials below.
+SET domain_info = execute_or_die('DomainInfo', 'list_domains', {}).data;
+SET page_title = locale.maketext("Sitejet Builder");
+SET domains_app = CPBranding.get_application_from_available_applications(varcache.available_applications, "domains");
+SET sitejet_app = CPBranding.get_application_from_available_applications(varcache.available_applications, "cpanel-sitejet-plugin");
+SET locale_is_rtl = 0;
+SET dynamically_loaded_stylesheets = [];
+SET locale_query_string = "?locale=" _ locale.get_language_tag _ "&locale_optional=1&locale_revision=" _ calculate_magic_lex_mtime(locale.get_language_tag());
+    
+# The following content is inserted by underscore-template-loader's require macro.
+#
+#----------------------------------------------------
+# ∨∨∨ THIS IS GENERATED CODE, DO NOT MODIFY IT ∨∨∨
+#----------------------------------------------------
+#
+# Build webpack css bundle list
+style_sheets.push(TEMPLATE_PATH _ 'styles.40f9dc8b1a33a0bb.css');
+dynamically_loaded_stylesheets.push(TEMPLATE_PATH _ 'jupiter-styles-main.68ae2510740fb843.css');
+dynamically_loaded_stylesheets.push(TEMPLATE_PATH _ 'jupiter-styles-main-rtl.7862efc34a8366cd.css');
+
+# Build webpack javascript bundle list
+scripts.push(TEMPLATE_PATH _ 'runtime.d27c0ba731149486.js' _ locale_query_string);
+scripts.push(TEMPLATE_PATH _ 'vendor-c0d76f48.2e182a425b340275.js' _ locale_query_string);
+scripts.push(TEMPLATE_PATH _ 'vendor-89d5c698.f5434aa969ce8956.js' _ locale_query_string);
+scripts.push(TEMPLATE_PATH _ 'polyfills.fe2a85d529afbbf9.js' _ locale_query_string);
+scripts.push(TEMPLATE_PATH _ 'main.a24f5ae83b1f27ae.js' _ locale_query_string);
+
+#
+#----------------------------------------------------
+# ^^^ THIS IS GENERATED CODE, DO NOT MODIFY IT ^^^
+#----------------------------------------------------
+
+# Add RTL stylesheet if necessary.
+IF locale.get_html_dir_attr() == 'rtl';
+	SET locale_is_rtl = 1;
+END;
+
+FOREACH stylesheet IN dynamically_loaded_stylesheets;
+    IF stylesheet.search(".rtl") && locale_is_rtl;
+        style_sheets.push(stylesheet);
+    END;
+    IF !stylesheet.search(".rtl") && !locale_is_rtl;
+        style_sheets.push(stylesheet);
+    END;
+END;
+
+WRAPPER '_assets/master.html.tt'
+    app_key = APP_KEY,
+    base = RESOURCE_PATH,
+    include_legacy_stylesheets = 0,
+    include_legacy_scripts = 0,
+    include_cjt = 0,
+    use_master_bootstrap = 0,
+    page_stylesheets = style_sheets,
+    page_scripts = scripts,
+    page_title = page_title,
+    # TODO: DUCK-10203
+    # is_jupiter_style needs to be 0 since we will include styles manually during build
+    # for the RTL styles to work in all versions starting from 110
+    is_jupiter_style = 0,
+    is_ng = 1;
+%]
+ [% IF !sitejet_app %]
+    <div class="body-content">
+        <div class="alert alert-danger">
+            <span class="glyphicon glyphicon-remove-sign" aria-hidden="true"></span>
+            <div class="alert-message">
+                [% locale.maketext('[output,strong,Error:] This feature, “[_1]”, is not enabled on your account. Please contact your hosting provider for access.', 'sitejet') %]
+            </div>
+        </div>
+    </div>
+[% ELSE %]
+    <sitejet-root></sitejet-root>
+[% END %]
+<script>
+    window.PAGE = {
+        sitejetApiToken: [%  CPANEL.CPDATA.SITEJET_API_TOKEN.json() || '""' %],
+        domainInfo: [% domain_info.json() %],
+        homeDir: [% CPANEL.homedir.json() || '""' %],
+        deprefix: [% CPANEL.CPVAR.dprefix.json() || '""' %],
+        domainsApp: [% domains_app.json() %],
+    }
+</script>
+[% END %]

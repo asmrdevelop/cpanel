@@ -1,0 +1,37 @@
+[%#
+Variables passed in:
+
+db_details - a reference to an array of arrayrefs - where each arrayref is: database names => database username.
+
+For more information about how to customize notification templates, read our documentation at https://go.cpanel.net/notificationtemplates
+
+-%]
+
+[%
+
+    PROCESS 'include/colors.tmpl';
+    PROCESS 'include/styles.tmpl';
+    WRAPPER 'wrapper/main.html.tmpl'
+        NOTICE.email_reason = CPANEL.locale.maketext('Deprecated [asis,MySQL] [numerate,_1,database,databases]', NOTICE.db_details.size);
+
+-%]
+<p>
+    [% CPANEL.locale.maketext('The following [asis,MySQL] [numerate,_1,database has,databases have] been deprecated and [numerate,_1,is,are] no longer used by [asis,cPanel amp() WHM].', NOTICE.db_details.size); %]
+</p>
+    [%
+        PROCESS 'include/zebra_table.tmpl';
+        zebra_table(
+            items   = NOTICE.db_details,
+            titles  = [
+                CPANEL.locale.maketext('Database Name'),
+                CPANEL.locale.maketext('Database Username'),
+            ],
+        );
+    %]
+
+<p>
+    [% CPANEL.locale.maketext("You can delete [numerate,_1,this database,these databases] and related database users at your leisure.", NOTICE.db_details.size) -%]
+    [% CPANEL.locale.maketext("To remove the [asis,MySQL] [numerate,_1,database,databases], see our [output,url,_2,documentation,target,_3].", NOTICE.db_details.size, "https://go.cpanel.net/removemysqldatabase", "_blank") -%]
+</p>
+
+[% END %]

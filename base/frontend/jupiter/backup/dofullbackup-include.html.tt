@@ -1,0 +1,71 @@
+[%
+SWITCH FORM.dest;
+    CASE 'homedir';
+        SET response = execute('Backup', 'fullbackup_to_homedir', {
+            email => RAW_FORM.email,
+        });
+    CASE 'ftp';
+        SET response = execute('Backup', 'fullbackup_to_ftp', {
+            variant  => 'active',
+            email     => RAW_FORM.email,
+            host      => RAW_FORM.server,
+            port      => RAW_FORM.port,
+            username  => RAW_FORM.user,
+            password  => RAW_FORM.pass,
+            directory => RAW_FORM.rdir,
+        });
+    CASE 'passiveftp';
+        SET response = execute('Backup', 'fullbackup_to_ftp', {
+            variant => 'passive',
+            email     => RAW_FORM.email,
+            host      => RAW_FORM.server,
+            port      => RAW_FORM.port,
+            username  => RAW_FORM.user,
+            password  => RAW_FORM.pass,
+            directory => RAW_FORM.rdir,
+        });
+    CASE 'scp';
+        SET response = execute('Backup', 'fullbackup_to_scp_with_password', {
+            email     => RAW_FORM.email,
+            host      => RAW_FORM.server,
+            port      => RAW_FORM.port,
+            username  => RAW_FORM.user,
+            password  => RAW_FORM.pass,
+            directory => RAW_FORM.rdir,
+        });
+END;
+IF response.status %]
+    <div id="backupSuccess" class="alert alert-info">
+        <span id="backupSuccessImg" class="glyphicon glyphicon-info-sign"></span>
+        <div id="backupSuccessMsg" class="alert-message">
+            [% locale.maketext("Full Backup in Progress …") %]
+            <div>
+                [% IF FORM.email %]
+                    [% locale.maketext("Once the full backup of your account has been completed, you will receive an email at the address you specified, “[_1]”.",FORM.email) %]
+                [% ELSE %]
+                    [% locale.maketext("Per your request, no notification will be sent upon backup completion.") %]
+                [% END %]
+            </div>
+        </div>
+    </div>
+[% ELSE %]
+    <div id="backupFailure" class="alert alert-danger">
+        <span id="backupFailureImg" class="glyphicon glyphicon-remove-sign"></span>
+        <div id="backupFailureMsg" class="alert-message">
+            <strong>[% locale.maketext('Error:') %]</strong>
+            [% IF FORM.dest == 'homedir' %]
+            [% locale.maketext("The system failed to create the requested backup.") %]
+            [% ELSE %]
+            [% locale.maketext("The system failed to create or deliver the requested backup.") %]
+            [% END %]
+            [% IF response.errors.size() > 0 %]
+            <ul>
+                [% FOREACH error IN response.errors %]
+                <li>[% error.html() %]</li>
+                [% END %]
+            </ul>
+            [% END %]
+
+        </div>
+    </div>
+[% END %]

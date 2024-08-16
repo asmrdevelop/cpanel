@@ -1,0 +1,73 @@
+[% WRAPPER 'master_templates/master.tmpl' theme="yui"
+    app_key = 'database_map_tool'
+    breadcrumburl = '/scripts/dbmaptool'
+-%]
+
+[% IF data.description_text -%]
+<div class="topdescriptionbox">
+<p class='description'>[% data.description_text %]</p>
+</div>
+[% END -%]
+
+<div>
+<form action="[% cp_security_token %]/scripts/dodbmaptool" method="post">
+  <input type="hidden" name="user" value="[% data.user FILTER html %]" />
+
+  <table width="60%" border="0">
+    <tr>
+      <td align="right">
+        <b>[% locale.maketext('[asis,cPanel] User:') %]</b>
+      </td>
+      <td>
+        [% data.user FILTER html %]
+      </td>
+    </tr>
+    <tr>
+      <td align="right">
+        <b>[% locale.maketext('Database type:') %]</b>
+      </td>
+      <td style="width:200px;">
+      [% IF data.pg_status %]
+        <label><input type="radio" name="db" value="mysql" checked="checked"  style="margin-left:0" />MySQL/MariaDB</label>
+        &nbsp;
+        <label><input type="radio" name="db" value="pg" /> PostgreSQL</label>
+      [% ELSE %]
+        MySQL/MariaDB <input type="hidden" name="db" value="mysql">
+      [% END %]
+      </td>
+    </tr>
+    <tr>
+      <td align="right">
+        <label for="dbusers"><b>[% locale.maketext('Database users:') %]</b> </label>
+      </td>
+      <td>
+        <input id="dbusers" type="input" name="dbusers" />
+      </td>
+      <td>
+        <em>[% locale.maketext('Comma-separated list of database users, e.g. “user1, user2, user3”') %]</em>
+      </td>
+    </tr>
+    <tr>
+      <td align="right">
+        <label for="dbnames"><b>[% locale.maketext('Database names:') %]</b> </label>
+      </td>
+      <td>
+        <input id="dbnames" type="input" name="dbnames" />
+      </td>
+      <td>
+        <em>[% locale.maketext('Comma-separated list of database names, e.g. “db1, db2, db3”') %]</em>
+      </td>
+    </tr>
+    <tr>
+      <td>&nbsp;</td>
+      <td>
+        <input type="submit" id="submit" name="submit" class="btn-primary" />
+      </td>
+    </tr>
+  </table>
+</form>
+</div>
+
+
+
+[% END %]

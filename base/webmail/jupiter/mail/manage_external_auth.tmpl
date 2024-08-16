@@ -1,0 +1,61 @@
+
+<div class="callout callout-info">
+    <p>[% locale.maketext("You can link your account to credentials at an external authentication provider. This reduces the number of passwords that you need to remember.") %]</p>
+</div>
+<div class="description" ng-controller="ExternalAuthController as ExternalAuth">
+    <div class="list-container">
+        <table class="table table-striped test">
+            <thead>
+                <tr>
+                    <th class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                        [% locale.maketext('Service') %]
+                    </th>
+                    <th class="col-xs-12 col-sm-6 col-md-6 col-lg-6"></th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr id="ext_auth_loading_spinnner" ng-hide="loaded">
+                    <td colspan=2 style="text-align: center">
+                        <span class="fas fa-spinner fa-pulse fa-3x"></span>
+                    </td>
+                </tr>
+                <tr ng-repeat-start="module in ExternalAuth.PAGE.external_auth_modules" ng-cloak>
+                    <td data-title="[% locale.maketext('Service') %]">
+                        <i
+                            class="external-auth-icon"
+                            ng-style="{
+                                'background-color':'#'+module.color,
+                                'background-image': 'url(data:{{module.icon_type}};base64,{{module.icon}})'
+                            }"
+                        >
+                        </i>
+                        <span ng-bind="module.display_name"></span>
+                    </td>
+                    <td data-title="">
+                        <a id="{{module.display_name}}_link_account" class="external-auth-link" href="{{module.link}}?action=link&goto_app=Password_Change">
+                        <button type="button" class="btn btn-primary">
+                            <span class='glyphicon glyphicon-plus'></span>
+                            [% locale.maketext('Link Account') %]
+                        </button>
+                        </a>
+                    </td>
+                </tr>
+                <tr class="fade-out" ng-repeat-end ng-repeat="provider in ( ExternalAuth.PAGE.configured_providers | filter: { 'provider_id' : module.provider_id } )" ng-cloak>
+                    <td data-title="{{ locale.maketext('Account') }}" ng-bind="provider.preferred_username" class="provider-username"></td>
+                    <td data-title="">
+                        <button type="button"
+                            button-class="btn-danger"
+                            cp-action="ExternalAuth.remove_link(provider, module.display_name)"
+                            id="remove_{{provider.subject_unique_identifier}}">
+                            <span class='glyphicon glyphicon-trash'></span>
+                            [% locale.maketext('Unlink Account') %]
+                        </button>
+                    </td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+</div>
+
+[% # END USER EXTERNAL AUTH CONTROL %]
+

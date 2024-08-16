@@ -1,0 +1,60 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/synctransfers                   Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+use warnings;
+use Cpanel::Update            ();
+use Cpanel::Config::Sources   ();
+use Cpanel::SafeDir::MK       ();
+use Cpanel::SafeRun::Simple   ();
+use Cpanel::Logger            ();
+use Cpanel::Waitpid           ();
+use Cpanel::Sys::Setsid::Fast ();
+
+my $prefix   = 'transfers_';
+my $sync_dir = 'transfers';
+my $base     = '/usr/local/cpanel/Whostmgr/Pkgacct/';
+my %CPSRC    = Cpanel::Config::Sources::loadcpsources();
+
+if ( !-e $base ) {
+    Cpanel::SafeDir::MK::safemkdir($base) or die "Unable to create directory: $!";
+}
+
+my $cpanelsync_target = Cpanel::Update::get_transfers_sync_tier();
+
+if ( -x '/usr/local/cpanel/scripts/cpanelsync' ) {
+    print "Sync transfer scripts...\n";
+    if ( my $pid = fork() ) {
+        Cpanel::Waitpid::sigsafe_blocking_waitpid($pid);
+    }
+    else {
+        eval {
+            Cpanel::Sys::Setsid::Fast::fast_setsid();
+            my $logger = Cpanel::Logger->new();
+            local $SIG{TERM} = sub {
+                exit;
+            };
+            local $SIG{ALRM} = sub {
+                $logger->warn('Cpanelsync taking too long. Giving up!');
+
+                # Make cpanelsync exit.
+                kill 'TERM', -$$;
+                exit;
+            };
+            alarm 300;
+            system( '/usr/local/cpanel/scripts/cpanelsync', '--signed=1', $CPSRC{'HTTPUPDATE'}, "/cpanelsync/$prefix$cpanelsync_target/pkgacct", $base );
+            alarm 0;
+        };
+        exit;
+    }
+}
+
+if ( -d '/usr/local/cpanel/Whostmgr/pkgacct' ) {
+    Cpanel::SafeRun::Simple::saferun( 'rm', '-rf', '/usr/local/cpanel/Whostmgr/pkgacct' );
+}
+
+print "Done.\n";

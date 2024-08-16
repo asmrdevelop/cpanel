@@ -1,0 +1,32 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/update_exim_rejects             Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+use warnings;
+
+use Cpanel::Config::LoadCpConf ();
+
+my $cpconf_ref = Cpanel::Config::LoadCpConf::loadcpconf_not_copy();
+
+umask(0022);
+
+my $pop_before_smtp_disabled = $cpconf_ref->{'popbeforesmtp'} ? 0 : 1;
+
+if ( open( my $exim_rejects_fh, '>', '/etc/eximrejects' ) ) {
+    if ($pop_before_smtp_disabled) {
+        print {$exim_rejects_fh} <<"REJECTMSG";
+host_accept_relay: Please turn on SMTP Authentication in your mail client.  \$sender_fullhost is not permitted to relay through this server without authentication.
+REJECTMSG
+
+    }
+    else {
+        print {$exim_rejects_fh} <<"REJECTMSG";
+host_accept_relay: Please turn on SMTP Authentication in your mail client, or login to the IMAP/POP3 server before sending your message.  \$sender_fullhost is not permitted to relay through this server without authentication.
+REJECTMSG
+    }
+    close($exim_rejects_fh);
+}

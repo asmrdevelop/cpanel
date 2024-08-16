@@ -1,0 +1,39 @@
+[%
+    USE Whostmgr;
+    USE JSON;
+    USE String;
+
+    SET stylesheets = [
+        Whostmgr.find_file_url('/templates/mysqlhost/index.css')
+    ];
+
+    SET PAGE_BASE = '/scripts5/mysqlhostconfig/';
+
+    WRAPPER 'master_templates/master.tmpl'
+        app_key = 'manage_mysql_profiles'
+        header = locale.maketext('Manage Database Profiles'),
+        breadcrumburl = PAGE_BASE,
+        base =  PAGE_BASE,
+        stylesheets = stylesheets,
+        theme='bootstrap';
+%]
+<div id="content"
+     class="ng-cloak mysql-profiles-content"
+     ng-cloak>
+    <p>[% locale.maketext("This feature allows you to create and manage database profiles. A database profile defines the connection information for a local or remote database server. A remote database server can be useful for high-traffic hosts or servers with large databases because it allows you to offload database-related work.") %]</p>
+    <div class="callout callout-warning" id="mysql-manual-warning">
+        [% locale.maketext("After you configure the remote server, you must manually transfer your existing data and configure your accounts’ applications to use the remote database server.") %]
+    </div>
+    <div ng-view></div>
+    <div growl></div>
+</div>
+
+<script type="text/javascript">
+    var PAGE = {
+        "security_token": [% cp_security_token.json() %],
+        key_list: [% data.key_list.json() %]
+    };
+</script>
+
+[% PROCESS 'master_templates/cjt2_header_include.tt' %]
+[% END %]

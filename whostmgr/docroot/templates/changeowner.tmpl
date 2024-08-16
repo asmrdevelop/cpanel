@@ -1,0 +1,32 @@
+[% USE Whostmgr -%]
+[% USE CPList -%]
+[% WRAPPER 'master_templates/master.tmpl' theme="yui"
+    breadcrumburl = '/scripts/ownerlist'
+-%]
+<h3>Changing ownership for [% data.domain %] ([% data.account %])</h3>
+
+   <table class="tablecomplex2">
+   <tr>
+   <td colspan="4" background="[% Whostmgr.getbggif() %]"  class="cellheader"><div>
+   <b>Change Ownership</b></font></div></td>
+   </tr>
+   <tr><td>
+   <form action="[% cp_security_token %]/scripts/dochangeowner">
+   <input type="hidden" name="user" value="[% data.account %]" />
+   <select name="owner">
+[%# sorted_resellers = ['root'].merge(data.resellerdomains.keys.ungrep('\Aroot\z').sort) %]
+[% sorted_resellers = ['root']; sorted_resellers = sorted_resellers.merge(data.resellerdomains.keys.ungrep('^root$').sort) %]
+[% FOR reseller=sorted_resellers %]
+[% IF reseller == data.current_owner %]
+<option value='[% reseller %]' 'selected="selected"'>[% reseller %] ([% data.resellerdomains.$reseller %]) [current owner]</option>
+[% ELSE %]
+<option value='[% reseller %]'>[% reseller %] ([% data.resellerdomains.$reseller %])</option>
+[% END %]
+[% END %]
+
+</select><input type="submit" class="btn-primary" value="ok">
+</td>
+</tr>
+</form>
+</table>
+[% END -%]

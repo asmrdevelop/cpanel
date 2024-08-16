@@ -1,0 +1,208 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/custom_backup_destination.pl.sample
+#                                                  Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+use warnings;
+use Cwd qw(getcwd abs_path);
+use File::Spec;
+use File::Copy;
+use File::Path qw(make_path remove_tree);
+use autodie    qw(:all copy);
+
+# These are the commands that a custom destination script must process
+my %commands = (
+    put    => \&my_put,
+    get    => \&my_get,
+    ls     => \&my_ls,
+    mkdir  => \&my_mkdir,
+    chdir  => \&my_chdir,
+    rmdir  => \&my_rmdir,
+    delete => \&my_delete,
+);
+
+# There must be at least the command and the local directory
+usage() if ( @ARGV < 2 );
+
+#
+# The command line arguments passed to the script will be in the following order:
+# command, local_directory, command arguments, and optionally, host and user
+# The local directory is passed in so we know from which directory to run the command
+# we need to pass this in each time since we start the script fresh for each command
+#
+my ( $cmd, $local_dir, @args ) = @ARGV;
+
+# complain if the command does not exist
+usage() unless exists $commands{$cmd};
+
+# For this example transport, we are going to simply copy everything under this directory
+my $dest_root_dir = '/custom_transport_demo';
+mkdir $dest_root_dir unless -d $dest_root_dir;
+
+# Step into the local directory
+# This will be under the directory that we have as the file destination
+$local_dir = File::Spec->catdir( $dest_root_dir, $local_dir );
+make_path($local_dir) unless -d $local_dir;
+chdir $local_dir;
+
+# Run our command
+$commands{$cmd}->(@args);
+
+#
+# This script should only really be executed by the custom backup destination type
+# If someone executes it directly out of curiosity, give them usage info
+#
+sub usage {
+    my @cmds = sort keys %commands;
+    print STDERR "This script is for implementing a custom backup destination\n";
+    print STDERR "It requires the following arguments:  cmd, local_dir, cmd_args\n";
+    print STDERR "These are the valid commands:  @cmds\n";
+    exit 1;
+}
+
+#
+# Convert a path to be under our destination directory
+# Absolute paths will be directly under it,
+# relative paths will be relative to the local directory
+#
+sub convert_path {
+    my ($path) = @_;
+
+    if ( $path =~ m|^/| ) {
+        $path = File::Spec->catdir( $dest_root_dir, $path );
+    }
+    else {
+        $path = File::Spec->catdir( $local_dir, $path );
+    }
+
+    return $path;
+}
+
+#
+# Convert a full path to the path under the the directory
+# where we copy all the files
+#
+sub get_sub_directory {
+    my ($path) = @_;
+
+    # The first part will be the destination root directory,
+    # Remove that part of the path and we will have the subdirectory
+    $path =~ s|^$dest_root_dir||;
+
+    return $path;
+}
+
+#
+# This portion contains the implementations for the various commands
+# that the script needs to support in order to implement a custom destination
+#
+
+#
+# Copy a local file to a remote destination
+#
+sub my_put {
+    my ( $local, $remote ) = @_;
+
+    $remote = convert_path($remote);
+
+    # Make sure the full destination directory exists
+    my ( undef, $dir, undef ) = File::Spec->splitpath($remote);
+    make_path($dir) unless ( $dir and -d $dir );
+    copy( $local, $remote );
+    return;
+}
+
+#
+# Copy a remote file to a local destination
+#
+sub my_get {
+    my ( $remote, $local ) = @_;
+
+    $remote = convert_path($remote);
+
+    copy( $remote, $local );
+    return;
+}
+
+#
+# Print out the results of doing an ls operation
+# The calling program will expect the data to be
+# in the format supplied by 'ls -l' and have it
+# printed to STDOUT
+#
+sub my_ls {
+    my ($path) = @_;
+
+    $path = convert_path($path);
+
+    # Cheesy, but this is a demo
+    my $ls = `ls -al $path`;
+
+    # Remove the annoying 'total' line
+    $ls =~ s|^total[^\n]*\n||;
+
+    print $ls;
+    return;
+}
+
+#
+# Create a directory on the remote destination
+#
+sub my_mkdir {
+    my ($path) = @_;
+
+    $path = convert_path($path);
+
+    make_path($path);
+
+    die "Failed to create $path" unless -d $path;
+    return;
+}
+
+#
+# Change into a directory on the remote destination
+# This does not have the same meaning as it normally would since the script
+# is run anew for each command call.
+# This needs to do the operation to ensure it doesn't fail
+# then print the new resulting directory that the calling program
+# will pass in as the local directory for subsequent calls
+#
+sub my_chdir {
+    my ($path) = @_;
+
+    $path = convert_path($path);
+    chdir $path;
+
+    print get_sub_directory( getcwd() ) . "\n";
+    return;
+}
+
+#
+# Recursively delete a directory on the remote destination
+#
+sub my_rmdir {
+    my ($path) = @_;
+
+    $path = convert_path($path);
+
+    remove_tree($path);
+
+    die "$path still exists" if -d $path;
+    return;
+}
+
+#
+# Delete an individual file on the remote destination
+#
+sub my_delete {
+    my ($path) = @_;
+
+    $path = convert_path($path);
+
+    unlink $path;
+    return;
+}

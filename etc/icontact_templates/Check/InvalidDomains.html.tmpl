@@ -1,0 +1,59 @@
+[%#
+Variables passed in:
+
+origin                  - the system component from which the notification was requested.
+invalid_domains         - nested hash of resellers, users, and their invalid domains
+
+For more information about how to customize notification templates, read our documentation at https://go.cpanel.net/notificationtemplates
+
+-%]
+
+[%
+    PROCESS "include/colors.tmpl";
+    PROCESS "include/styles.tmpl";
+
+    SET code_block_width = content_width - 20;
+
+    WRAPPER 'wrapper/main.html.tmpl';
+          NOTICE.email_reason = CPANEL.locale.maketext('The system has detected invalid domains.');
+%]
+
+<p>[% CPANEL.locale.maketext('Below is a list of invalid domains, organized by owner and then by individual user.') %]</p>
+
+<table style="border: 2px solid [% medium_gray %]; margin: 5px 10px; padding:0;" width="[% code_block_width %]px" cellpadding="0" cellspacing="0">
+    <tr>
+        <th style="border-bottom: 2px solid [% medium_gray %]; padding: 5px; background-color: [% light_gray %]" align="left">
+            [%- CPANEL.locale.maketext('Owner:') -%]
+        </th>
+        <th style="border-bottom: 2px solid [% medium_gray %]; padding: 5px; background-color: [% light_gray %]" align="left">
+            [%- CPANEL.locale.maketext('User:') -%]
+        </th>
+        <th style="border-bottom: 2px solid [% medium_gray %]; padding: 5px; background-color: [% light_gray %]" align="left">
+            [%- CPANEL.locale.maketext('Invalid Domain(s):') -%]
+        </th>
+    </tr>
+    [% FOREACH owner IN NOTICE.invalid_domains.keys.sort; %]
+        [% FOREACH user IN NOTICE.invalid_domains.$owner.keys.sort %]
+        <tr style="vertical-align:top;">
+            [% IF loop.first %]
+            <td style="border: 1px solid [% medium_gray %];padding: 5px; word-wrap: break-word; word-break: break-all;font-weight:bold;" rowspan="[% NOTICE.invalid_domains.$owner.keys.size %]">
+                [%- owner -%]
+            </td>
+            [% END %]
+            <td style="border: 1px solid [% medium_gray %];padding: 5px; word-wrap: break-word; word-break: break-all;">[% user %]</td>
+            <td style="border: 1px solid [% medium_gray %];padding: 5px; word-wrap: break-word; word-break: break-all;">
+                [% FOREACH domain IN NOTICE.invalid_domains.$owner.$user %]
+                    [% domain %]<br />
+                [% END %]
+            </td>
+        </tr>
+        [% END %]
+    [% END %]
+
+</table>
+
+<p>[% CPANEL.locale.maketext('Invalid domains may adversely affect the [output,abbr,HTTP,Hypertext Transfer Protocol], [output,abbr,DNS,Domain Name System], and mail services.') %]</p>
+<p>[% CPANEL.locale.maketext('You can remove these domains with the [asis,cPanel] or [asis,WHM] interfaces.') %]</p>
+
+
+[% END %]

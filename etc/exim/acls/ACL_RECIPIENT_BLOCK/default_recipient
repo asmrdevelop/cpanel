@@ -1,0 +1,35 @@
+  accept
+      hosts = :
+      endpass
+      verify = recipient
+
+  # Accept from any of the domain’s cached remote MX hosts.
+  # As an optimization, we only check this for local domains because
+  # only local domains will be in the remote MX cache.
+  accept
+      domains   = +local_domains
+      condition = ${if exists {/etc/domain_remote_mx_ips.cdb}{1}{0}}
+      hosts     = ${lookup{$domain}cdb{/etc/domain_remote_mx_ips.cdb}}
+      endpass
+      verify = recipient
+
+  accept
+     condition = ${extract{size}{${stat:/etc/skipsmtpcheckhosts}}}
+     hosts     = +skipsmtpcheck_hosts
+     endpass
+     verify = recipient
+
+  # implemented for "suspend incoming email" feature
+  deny
+       domains     = !$primary_hostname : +local_domains
+       condition   = ${if exists {${extract{5}{:}{${lookup passwd{${lookup{$domain}lsearch{/etc/userdomains}}}}}{$value}}/etc/.${sg{$local_part}{\N[/+].*\N}{}}@${domain}.suspended_incoming}}
+       message     = 525 5.7.13 Disabled recipient address
+       log_message = Mail to ${local_part}@${domain} has been suspended
+
+  # implemented for "suspend outgoing email" feature for domains and individual webmail/pop accounts
+  deny
+    domains     = ! +local_domains
+    condition   = ${perl{check_outgoing_mail_suspended}}
+    message     = ${perl{get_outgoing_mail_suspended_message}}
+    log_message = ${perl{get_outgoing_mail_suspended_message}}
+

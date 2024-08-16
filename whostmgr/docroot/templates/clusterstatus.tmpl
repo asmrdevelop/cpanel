@@ -1,0 +1,495 @@
+[% USE JSON -%]
+[% WRAPPER 'master_templates/master.tmpl' theme="yui" app_key="dns_cluster" -%]
+[% PROCESS '_ajaxapp_styles.tmpl' -%]
+[% PROCESS '_ajaxapp_header.tmpl' -%]
+<script src="[% MagicRevision('/js/sorttable.js') %]"></script>
+
+<style type="text/css">
+    #dns_tree {
+        font-size: 18px;
+    }
+    #dns_tree dd {
+        margin-left: 0;
+    }
+    #breadcrumbs p {
+        margin:0 !important;
+    }
+    #dns_tree ul {
+        list-style-type: none;
+        padding-left: 40px;
+    }
+
+    #main_content {
+        font-family: helvetica, Arial, sans-serif;
+        font-size: 12px;
+        line-height: 20px;
+        color: #666;
+        padding: 0 30px 30px 30px;
+        max-width:900px;
+    }
+    .sub-head {
+        font-weight: bold;
+        font-size:14px;
+    }
+    p {
+        font-family: Helvetica, Arial, sans-serif;
+        font-size:12px;
+        line-height: 20px;
+        color:#666;
+        margin-top:5px !important;
+        margin-bottom:5px !important;
+    }
+    .note-head {
+        font-size:13px !important;
+    }
+    #main_content a {
+        text-decoration: underline;
+    }
+    #main_content h2 {
+        font-family: Helvetica, Arial, sans-serif;
+        font-weight: bold;
+        font-size: 15px;
+        color: #4C5355;
+        padding-bottom:0px;
+        margin-bottom:0px;
+    }
+    .option_sub_box {
+        margin-left: 25px;
+    }
+    .clusteringstatus {
+          font-weight: bold;
+    }
+    .option_box {
+        width: 100%;
+        background-color: #dddddd;
+        border: 1px solid #ffffff;
+        outline: 1px solid #C1D0D3;
+        margin-top:25px;
+        margin-bottom:25px;
+    }
+    .button-position {
+        display:block !important;
+        margin-top:10px;
+    }
+    h4 {
+        font-family: Helvetica, Arial, sans-serif;
+        font-size: 14px;
+        font-weight: bold;
+        color: #4C5355;
+        padding: 5px;
+        border-bottom: 1px solid #C1D0D3;
+        text-shadow: 0 1px 0 #ffffff;
+        margin:0 !important;
+    }
+    .option_contents {
+        border-top: 1px solid #ffffff;
+        padding: 10px;
+    }
+    .option_contents INPUT[type="text"] {
+        border-radius: 5px;
+        text-align: center;
+        color: #666;
+        margin-bottom: 4px;
+        padding: 0;
+    }
+    .option_contents INPUT[type="checkbox"] {
+        margin-bottom: 10px;
+    }
+    .option_contents SELECT {
+        width: 150px;
+    }
+    .bullets {
+        font-family:Georgia;
+        font-style: italic;
+        font-size:13px;
+        list-style: none !important;
+    }
+    #sltbl {
+        background-color: #E0E9EA;
+        border: 1px solid #C1D0D3;
+        border-bottom: none;
+        outline: 1px solid #ffffff;
+        border-collapse: separate;
+        table-layout: auto;
+    }
+    #sltbl th {
+        border-right: 1px solid #C1D0D3;
+        border-bottom: 1px solid #C1D0D3;
+        border-left: 1px solid #ffffff;
+        background-color: #E0E9EA;
+        padding: 5px;
+        color: #4C5355;
+        word-wrap: break-word;
+    }
+    #sltbl img {
+        vertical-align: top;
+    }
+    .nopad {
+        padding-left:0px !important;
+    }
+    .the-button {
+        margin-top:10px;
+    }
+    #sltbl .pointer {
+        cursor: pointer;
+    }
+    #sltbl td {
+        background-color: white;
+        border-right: 1px solid lightgrey;
+        border-bottom: 1px solid lightgrey !important;
+        padding: 5px;
+        word-wrap: break-word;
+        vertical-align:text-top;
+    }
+    .first {
+        border-left: none !important;
+    }
+    .last {
+        border-right: none !important;
+        text-align: center;
+    }
+    .notes {
+        margin-bottom: 5px;
+    }
+    select {
+        font-family: helvetica, arial, sans-serif;
+        font-size: 13px;
+    }
+    .button-grouped {
+        margin-top:10px;
+    }
+    #dnssec_alert {
+        display: table;
+        width: 80%;
+        padding-top: 10px;
+        padding-bottom: 10px;
+        border: 1px solid #f6c342;
+        border-collapse: collapse;
+    }
+    #dnssec_alert_row {
+        display: table-row;
+    }
+    #dnssec_alert_cell_icon {
+        display: table-cell;
+        background-color: #F2C544;
+        padding: 10px;
+        text-align: center;
+        vertical-align: middle;
+        width: 36px;
+    }
+    #dnssec_alert_cell_message {
+        display: table-cell;
+        color: #333333;
+        background-color: #fcf8e1;
+        vertical-align: middle;
+        padding: 10px;
+    }
+    #dnssec_alert_cell_message p {
+        color: #333333;
+        font-size: 14px;
+    }
+    .scrollable-list {
+        overflow-y: auto;
+        max-height: 200px;
+    }
+</style>
+
+[% PROCESS '_ajaxapp_footer.tmpl' -%]
+
+<div id="main_content">
+
+    <!-- This wraps the rest of the page, intent is to only show the interface if you are root, or root has enabled dnsclustering -->
+    <p class="helptext">
+        [% locale.maketext("[asis,WHM]’s [asis,DNS] clustering allows you to synchronize [asis,DNS] records among multiple [asis,cPanel amp() WHM] or [output,url,_1,cPanel DNSONLY,_2] machines.",'https://go.cpanel.net/dnsonly',{'target' => '_blank'}) %]<br />
+        [% locale.maketext("In order to synchronize your [asis,DNS] records, all machines in the cluster must be running [asis,cPanel amp() WHM] or [output,url,_1,cPanel DNSONLY,_2,_3] version 8.9 or higher.", "https://go.cpanel.net/dnsonly",'target','_blank') %]<br />
+    </p>
+
+    [% IF data.hasroot %]
+        [% INCLUDE _cluster_masquerade.tmpl %]
+    [% END %]
+
+    [% IF data.cluster_user == "root" %]
+        [%
+            enabled = data.dnsclustering
+            action  = "adjustclusterdns.cgi"
+            options_header = locale.maketext('Global [asis,DNS] Cluster Options')
+        -%]
+        [% IF enabled %]
+            [% text   = locale.maketext("Disable [asis,DNS] Clustering") -%]
+            [% flavor = locale.maketext('[asis,DNS] clustering is enabled.') -%]
+        [% ELSE %]
+            [% text   = locale.maketext("Enable [asis,DNS] Clustering") -%]
+            [% flavor = locale.maketext('[asis,DNS] clustering is disabled.') -%]
+        [% END %]
+    [% ELSE %]
+        [%
+            enabled = data.uniquedns
+            action  = "adjustuniquedns.cgi"
+            options_header = locale.maketext('Unique [asis,DNS] Clustering')
+        -%]
+        [% IF enabled %]
+            [% text    = locale.maketext('Disable Unique [asis,DNS] Clustering For Accounts Owned By “[_1]”', data.cluster_user.html()) -%]
+            [% flavor  = locale.maketext('Unique [asis,DNS] clustering is enabled.') _ " " _ locale.maketext('Accounts owned by “[_1]” will use the unique settings defined below.',  data.cluster_user.html()) -%]
+        [% ELSE %]
+            [% text   = locale.maketext('Enable Unique [asis,DNS] Clustering For Accounts Owned By “[_1]”', data.cluster_user.html()) -%]
+            [% flavor = locale.maketext('Unique [asis,DNS] clustering is disabled.') _ " " _ locale.maketext('Accounts owned by “[_1]” will use the settings defined by the server administrator.',  data.cluster_user.html()) -%]
+        [% END %]
+    [% END %]
+
+    <div class="option_box">
+        <h4>[% options_header %]</h4>
+        <div class="option_contents">
+            <form id="toggle_clustering_form" action="[% cp_security_token %]/cgi/[% action %]">
+                <input id="toggle_clustering_user" type="hidden" name="cluster_user" value="[% data.cluster_user FILTER html %]" />
+                <div class="clusteringstatus">[% flavor %]</div>
+                <div class="the-button">
+                    <button id="toggle_clustering_submit" name="clusterdns" [% IF data.cluster_user !="root" && !data.dnsclustering %]disabled[% END %] value="[% !enabled %]" class="btn btn-primary button-position">
+                        [% text %]
+                    </button>
+               </div>
+            </form>
+        </div>
+
+        [% IF data.cluster_user == "root" && data.dnsclustering %]
+            <div class="option_contents">
+                <form id="cluster_opts_form" action="[% cp_security_token %]/cgi/adjustclusteroptions.cgi">
+                    <input type="hidden" name="cluster_user" value="[% data.cluster_user FILTER html %]" />
+                    <p style="margin-top:0px !important;">
+                        <strong>
+                            [% locale.maketext('Failure threshold for cluster members:') %]
+                        </strong>
+                        [% locale.maketext("Enter the number of [output,url,_1,DNSadmin,_2,_3] commands that may fail before WHM disables an unresponsive cluster member.",'https://go.cpanel.net/dnsadminGloss','target','_blank') %]
+                    </p>
+                    <div class="button-grouped">
+                        [% SET checked =
+                            data.globaloptions.autodisablethreshold == 10 ? 'default'
+                            : data.globaloptions.autodisablethreshold     ? 'custom'
+                            : 'disabled'
+                        -%]
+
+                        <label>
+                            <input id="cluster_opts_adt_default" type="radio" name="autodisablethreshold_control" [% IF checked == 'default' %]checked[% END %] value="default" />
+                            [% locale.maketext('[numf,_1] (Default)', 10) %]
+                        </label>
+                        <br />
+                        <input id="cluster_opts_adt_custom" type="radio" name="autodisablethreshold_control" [% IF checked == 'custom' %]checked[% END %] value="custom" />
+                        <input type=text size=2 maxlength="2" id="threshold" name=autodisablethreshold [% IF checked != 'custom' %]disabled[% END -%] value="[% data.globaloptions.autodisablethreshold || 10 FILTER html %]" />
+                        <br />
+                        <label>
+                            <input id="cluster_opts_adt_maxgo" type="radio" name="autodisablethreshold_control" [% IF checked == 'disabled' %]checked[% END %] value="disabled" /> [% locale.maketext('Keep all cluster members online at all times.') %]
+                        </label>
+                        <br />
+                    </div>
+
+                    <script>
+                    var autodisable_radios = DOM.get("cluster_opts_form").autodisablethreshold_control;
+                    var autodisable_group = new CPANEL.ajax.Grouped_Input_Set( [
+                    { radio: autodisable_radios[0] },
+                    { radio: autodisable_radios[1], inputs: [ DOM.get("cluster_opts_form").autodisablethreshold ] },
+                    { radio: autodisable_radios[2] },
+                    ] );
+                    </script>
+
+                    <br />
+                    <label>
+                        <input type=checkbox name="cluster_failure_notifications" id="notify" value="1" [% IF data.cluster_failure_notifications %]checked [% END %]/>&nbsp;[% locale.maketext('Receive a notification when [asis,WHM] disables an unresponsive cluster member.') %]
+                    </label>
+                    <br />
+                    <div class="the-button">
+                        <input id="cluster_opts_submit" type="submit" class="btn-primary button-position" value="[% locale.maketext('Change') %]" />
+                    </div>
+                </form>
+            </div>
+        [% END %]
+    </div>
+
+    [% IF data.dnsclustering %]
+
+    <h2>[% locale.maketext('Servers In Your [asis,DNS] Cluster') %]</h2>
+    <div id="serverlist" >
+        <p>
+            [% locale.maketext('Making direct links between servers can decrease CPU load, improving the performance of your servers. The more steps that exist between a web server and a nameserver, the slower the servers will perform.') %]
+            [% locale.maketext('When you add a server and set it to synchronize, the [asis,DNS] path diagram below will update. Try to minimize the width of the diagram as much as possible.') %]
+        </p>
+        <p>
+            <i>[% locale.maketext('Read more at our [output,url,_1,DNS Clustering Quick-Start Guide,_2,_3].','https://go.cpanel.net/DNSClusterConfig/','target','_blank') %]</i>
+        </p>
+
+        [% IF data.uniquedns || data.cluster_user == "root" %]
+        <div class="option_box">
+            <h4>
+                [% locale.maketext("Add a new server to the cluster") %]
+            </h4>
+            <div class="option_contents">
+                <form action="[% cp_security_token %]/cgi/configure_remote_nameserver.cgi" id="mainform" name="mainform">
+                    <label for="module">[% locale.maketext('Backend Type:') %]</label>
+                    <input id="newmember_user" type="hidden" name="cluster_user" value="[% data.cluster_user FILTER html %]" />
+                    <select name="module" id="module">
+                    [% FOR remotemod IN data.remotemodules %]
+                        <option value="[% remotemod.value FILTER html %]">[% remotemod.name FILTER html %]</option>
+                    [% END %]
+                    </select>
+                    (<a href='?cluster_user=[% data.cluster_user FILTER uri %]&skip_companyid_check=1'>[% locale.maketext('Show All') %]</a>)
+                    <div class="the-button">
+                        <input id="newmember_submit" type="submit" class="btn-primary button-position" value="[% locale.maketext('Configure') %]" />
+                    </div>
+                </form>
+            </div>
+        </div>
+        [% END %]
+
+        [% IF ! data.dnsservers.size %]
+        <h2><font color="#550000">[% locale.maketext('There are currently no servers in your [asis,DNS] cluster.') %]</font></h2>
+        [% ELSE %]
+        <table id="sltbl" class="sortable2" cellspacing="0">
+            <thead>
+                <tr>
+                    <th class="first pointer">[% locale.maketext("Hostname") %]</th>
+                    <th class="pointer">[% locale.maketext("IP Address") %]</th>
+                    <th class="pointer">[% locale.maketext("Username") %]</th>
+                    <th class="pointer">[% locale.maketext("Type") %]</th>
+                    <th class="pointer">[% locale.maketext("Status") %]</th>
+                    <th class="pointer">[% locale.maketext("Remote Server Type") %]</th>
+                    <th nonsortable=true>[% locale.maketext("[asis,DNS] Role") %]</th>
+                    <th nonsortable=true width="90px" class="last">[% locale.maketext("Actions") %]</th>
+                </tr>
+            </thead>
+            <tbody>
+            [% FOR server IN data.dnsservers %]
+                [% SET version_prefix = server.mmversion.substr(0, 2) %]
+                [% SET version_suffix = server.mmversion.substr(3) %]
+            [% NEXT IF data.cluster_user != 'root' && data.cluster_user != server.user && data.uniquedns %]
+                <tr id="[% server.host %]_row">
+                    <td class="hostname">[% server.hostname FILTER html %]</td>
+                    <td class="host">[% server.host FILTER html %]</td>
+                    <td class="user">[% server.user FILTER html %]</td>
+                    <td class="module">[% data.module_name_map.${server.module} FILTER html %]</td>
+                    <td class="serverstatus">
+                    [% IF server.disabled == 1 %]
+                        [% locale.maketext("Disabled due to connection failures.") %]
+                        [<a href="[% cp_security_token %]/cgi/enableclusterserver.cgi?cluster_user=[% data.cluster_user FILTER uri %]&server=[% server.host FILTER uri %]">[% locale.maketext("Enable") %]</a>]
+                        <img src="/red-status.gif" alt="[% locale.maketext("Server Disabled") %]" title="[% locale.maketext("Server Disabled") %]" />
+                    [% ELSIF server.module == 'cPanel' %]
+                        [% IF server.error %]
+                            [% server.error FILTER html %]
+                            <img src="[% MagicRevision('/red-status.gif') %]" alt="[% locale.maketext("Server Error") %]" title="[% locale.maketext("Server Error") %]" />
+                        [% ELSIF ((version_prefix < 11) || (version_prefix == 11 && version_suffix < 83)) && data.coordinator.dnssec %]
+                            [% locale.maketext("Requires [asis,cPanel] update to support [asis,DNSSEC].") %]
+                            <img src="[% MagicRevision('/yellow-status.gif') %]" alt="[% locale.maketext("Server Warning") %]" title="[% locale.maketext("Server Warning") %]" />
+                        [% ELSIF !server.has_good_privs %]
+                            [% locale.maketext("[asis,API] key used has insufficient [asis,ACLs]. The [asis,clustering] [asis,ACL] is required.") %]
+                            <img src="[% MagicRevision('/red-status.gif') %]" alt="[% locale.maketext("Server Error") %]" title="[% locale.maketext("Server Error") %]" />
+                        [% ELSIF !server.dns_server_running && !server.dns_server_disabled %]
+                            [% IF server.dns_server_monitored %]
+                                [% locale.maketext("[asis,DNS] server may be down.") %]
+                                [% IF server.mmversion >= 11.87 %]
+                                    [<a href="[% cp_security_token %]/scripts7/restartclustermember?cluster_user=[% data.cluster_user FILTER uri %]&server=[% server.host FILTER uri %]">[% locale.maketext("Restart") %]</a>]
+                                [% END %]
+                            [% ELSE %]
+                                [% locale.maketext("The [asis,DNS] server’s status is unknown because the service isn’t monitored.") %]
+                                [% IF server.mmversion >= 11.87 %]
+                                    [<a href="[% cp_security_token %]/scripts7/monitorclustermember?cluster_user=[% data.cluster_user FILTER uri %]&server=[% server.host FILTER uri %]">[% locale.maketext("Monitor") %]</a>]
+                                [% END %]
+                            [% END %]
+                            <img src="[% MagicRevision('/yellow-status.gif') %]" alt="[% locale.maketext("Server Warning") %]" title="[% locale.maketext("Server Warning") %]" />
+                        [% ELSIF !server.dnssec && !server.dns_server_disabled && data.coordinator.dnssec %]
+                            [% IF server.mmversion >= 11.83 %]
+                                [% locale.maketext("Requires [asis,PowerDNS] to support [asis,DNSSEC].") %]
+                                [<a href="[% cp_security_token %]/scripts7/upgradeclustermember?cluster_user=[% data.cluster_user FILTER uri %]&server=[% server.host FILTER uri %]">[% locale.maketext("Upgrade") %]</a>]
+                                <img src="[% MagicRevision('/yellow-status.gif') %]" alt="[% locale.maketext("Server Warning") %]" title="[% locale.maketext("Server Warning") %]" />
+                            [% END %]
+                        [% ELSIF server.has_reverse_trust == 0 && ( server.dnsrole == 'sync' || server.dnsrole == 'standalone' ) %]
+                            [% locale.maketext("Server needs reverse trust set up to auto-propagate [asis,DNS] updates.") %]
+                            [<a href="[% cp_security_token %]/cgi/configure_remote_nameserver.cgi?cluster_user=[% data.cluster_user FILTER uri %]&server=[% server.host FILTER uri %]">[% locale.maketext("Enable") %]</a>]
+                            <img src="[% MagicRevision('/yellow-status.gif') %]" alt="[% locale.maketext("Server Warning") %]" title="[% locale.maketext("Server Warning") %]" />
+                        [% ELSIF server.status == 1 %]
+                            [% server.version FILTER html %]
+                            <img src="[% MagicRevision('/green-status.gif') %]" alt="[% locale.maketext("Server Active") %]" title="[% locale.maketext("Server Active") %]" />
+                        [% END %]
+                    [% ELSE %]
+                        [% IF server.error %]
+                            [% server.error FILTER html %]
+                            <img src="[% MagicRevision('/red-status.gif') %]" alt="[% locale.maketext("Server Error") %]" title="[% locale.maketext("Server Error") %]" />
+                        [% ELSE %]
+                            [% server.version FILTER html %]
+                            <img src="[% MagicRevision('/green-status.gif') %]" alt="[% locale.maketext("Server Active") %]" title="[% locale.maketext("Server Active") %]" />
+                        [% END %]
+                    [% END %]
+                    </td>
+                    <td class="dnsserver">
+                    [% IF !server.dns_server_disabled %]
+                        [% server.dns_server ? server.dns_server : 'unknown' %]
+                    [% ELSE %]
+                        disabled
+                    [% END %]
+                    </td>
+                    <td class="role">
+                        <form action="[% cp_security_token %]/cgi/changeclusterdns.cgi" style="text-align:center" method=POST>
+                            <input type="hidden" name="cluster_user" value="[% data.cluster_user FILTER html %]" />
+                            <input type=hidden name=server value="[% server.host FILTER html %]" />
+                            [% IF server.cluster_config_user == data.cluster_user %]
+                                <select name=dnsrole>
+                                [% SET dnsrole = server.dnsrole %]
+                                [% PROCESS _dnsroles.tmpl %]
+                                </select>
+                                &nbsp;
+                                <input type=image onclick="this.form.submit()" class="submit-me" title="[% locale.maketext('Save') %]" style="vertical-align:top" src="[% MagicRevision('/images/save-me.png') %]" />
+                            [% ELSE %]
+                                [% server.dnsrole %]
+                            [% END %]
+                        </form>
+                    </td>
+                    <td class="last action" >
+                        [% IF server.cluster_config_user == data.cluster_user %]
+                            <a style="text-decoration:none" href="[% cp_security_token %]/cgi/configure_remote_nameserver.cgi?cluster_user=[% data.cluster_user FILTER uri %]&server=[% server.host FILTER uri %]">
+                                <img src="/images/edit-me.png" alt="[% locale.maketext("Edit") %]" title="[% locale.maketext("Edit") %]" border=0 />
+                            </a>
+                            <a style="text-decoration:none" href="[% cp_security_token %]/cgi/remclusterserver.cgi?cluster_user=[% data.cluster_user FILTER uri %]&server=[% server.host FILTER uri %]">
+                                <img src="[% MagicRevision('/images/redx.gif') %]" alt="[% locale.maketext("Delete") %]" title="[% locale.maketext("Delete") %]" border=0 />
+                            </a>
+                        [% ELSE %]
+                            [% locale.maketext("This server is inherited.") %]
+                        [% END %]
+                    </td>
+                </tr>
+            [% END %]
+            </tbody>
+        </table>
+
+        [% IF data.dnsservers.size -%]
+            [% PROCESS _dnsroles_explained.tmpl %]
+        [% END -%]
+        [% END %]
+    </div>
+
+    <h2>[% locale.maketext("[asis,DNS] Path Diagram") %]</h2>
+
+    [%
+    SET depth = 0;
+    VIEW dns_view;
+    BLOCK hash;
+      '<dl><dt>';
+      '&#x21b3;' IF depth > 0;  #alternates: 21b3, 2937;
+      '&nbsp;';
+      item.name FILTER html;
+      '</dt><dd><ul>';
+      depth = depth + 1;
+      FOR node = item.children;
+          '<li>';
+          dns_view.print(node);
+          '</li>';
+      END;
+      depth = depth - 1;
+      '</ul></dd></dl>';
+    END;
+    END;
+    -%]
+    <blockquote style="margin:10px 0 0 !important; padding: 0 !important;">
+        <div id="dns_tree">
+            [% dns_view.print( data.dns_peer_tree ) %]
+        </div>
+    </blockquote>
+</div>
+[% END %]
+
+[% END %]

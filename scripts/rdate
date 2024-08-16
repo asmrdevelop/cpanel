@@ -1,0 +1,175 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/rdate                           Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package rdate;
+
+use cPstrict;
+
+use Cpanel::Unix::PID::Tiny ();
+use Cpanel::SafeRun::Simple ();
+use Getopt::Long            ();
+use Cpanel::OS              ();
+use Cpanel::OSSys::Env      ();
+use Cpanel::Binaries        ();
+
+use Socket;
+
+my $timeout = 10;
+
+exit( _run_alarmed( $timeout, @ARGV ) // 0 ) unless caller;
+
+sub run (@args) {
+
+    my $print_time;    # used to map usage to rdate's -p option
+    my $help;
+
+    Getopt::Long::GetOptionsFromArray(
+        \@args,
+        '-p|print' => \$print_time,
+        '-h|help'  => \$help,
+    ) or return usage(1);
+
+    return usage(0) if $help;
+
+    my $envtype = Cpanel::OSSys::Env::get_envtype();
+
+    # Case 48348 -- Virtual environments cannot set the system time so do nothing.
+    if ( $envtype =~ qr{^(?:virtuozzo|cpanel-vserver|vzcontainer)$} ) {
+        say "Container environment detected - rdate skipped";
+        return;
+    }
+
+    my $pid = 0;
+
+    my $check_ntpd_pid_method = Cpanel::OS::check_ntpd_pid_method();
+
+    if ( $check_ntpd_pid_method eq 'systemd_ntpd' ) {
+        $pid = _detect_systemd_managed_ntpd();
+    }
+    elsif ( $check_ntpd_pid_method eq 'pid_check_var_run_ntpd' ) {
+        my $upid = Cpanel::Unix::PID::Tiny->new();
+        $pid = $upid->is_pidfile_running('/var/run/ntpd.pid');
+    }
+    else {
+        die qq[Unknown check_ntpd_pid_method method: $check_ntpd_pid_method];
+    }
+
+    if ($pid) {
+        say "The 'ntpd' daemon is running on PID '$pid'. Exiting.";
+    }
+    else {
+        my %rdate_opts = ( 'set_time' => 1 );
+        $rdate_opts{'print_time'} = 1 if $print_time;
+        $rdate_opts{'server'}     = 'rdate.cpanel.net';
+        exec_rdate(%rdate_opts);
+    }
+
+    return;
+}
+
+sub exec_rdate (%opts) {
+
+    my $server     = $opts{'server'} || 'rdate.cpanel.net';
+    my $port       = $opts{'port'} // 37;
+    my $rdate_mode = $opts{'mode'} // 1;    # act like the binary unless otherwise requested
+
+    my $socket = _create_socket( $server, $port );
+
+    my $time_data;
+    recv( $socket, $time_data, 4, 0 );
+    close($socket);
+
+    # Make sure we actually got some data back
+    if ( !$time_data ) {
+        print "Server returned empty data, please try a different server.\n";
+        return;
+    }
+
+    # Take the binary data we get from the time server, convert to hex, sprintf to decimal then
+    # subtract the number of seconds from Jan 1st 1900 to 1970 ( 2208988800 ) to get our epoch, es defined in RFC868
+
+    my $epoch = unpack( "N*", $time_data ) - 2208988800;
+
+    if ( $opts{'print_time'} || ( !$opts{'set_time'} ) ) {
+        print "rdate: [$server]\t" . scalar localtime($epoch) . "\n" if $rdate_mode == 1;
+    }
+
+    if ( $opts{'set_time'} ) {
+        set_system_time( $epoch, $rdate_mode );
+    }
+    return $epoch;
+}
+
+# split out for mocking purposes
+sub _create_socket ( $server, $port ) {
+    my $socket;
+    socket( $socket, PF_INET, SOCK_STREAM, ( getprotobyname('tcp') )[2] ) or die "Can't open socket $!\n";
+    binmode($socket);
+    connect( $socket, pack_sockaddr_in( $port, inet_aton($server) ) ) or die "Can't connect to $server:$port $! \n";
+
+    return $socket;
+}
+
+sub set_system_time {
+    my ( $epoch, $rdate_mode ) = @_;
+
+    # We only want to allow for a 10 digit number, anything else is nonsensical here
+    if ( $epoch !~ m/^\d{10}$/ ) {
+        die "Invalid epoch given to set_system_time.\n";
+    }
+
+    # Find date binary on CentOS 6 and 7+
+    my $date_bin_path = Cpanel::Binaries::path('date');
+    my $output        = Cpanel::SafeRun::Simple::saferunnoerror( $date_bin_path, '-s', "\@$epoch" );
+    chomp $output;
+
+    # mimic binary rdate behavior
+    print "Set system time to “$output”\n" if !$rdate_mode;
+    return;
+}
+
+sub _detect_systemd_managed_ntpd() {
+
+    my $output = Cpanel::SafeRun::Simple::saferunallerrors( '/usr/bin/systemctl', 'status', 'ntpd' );
+    if ( $output =~ m/Active:\sactive\s+\(running\)/a && $output =~ m/Main\s+PID:\s+(\d+)\s+\(/a ) {
+        return $1;
+    }
+
+    return;
+}
+
+sub _run_alarmed {
+
+    my ( $timeout, @args ) = @_;
+    {
+        require Cpanel::Alarm;
+        my $alrm = Cpanel::Alarm->new( $timeout, sub { die "Failed to run due to the $timeout second timeout being exceeded.\n" } );
+        run(@args);
+    }
+    return;
+}
+
+sub usage ($status) {
+    $status //= 0;
+
+    print <<EOS;
+scripts/rdate
+
+On servers without ntp daemon, use 'rdate' to adjust the system clock.
+
+Options:
+    --help  [-h] display this help
+    --print [-p] Print the time returned by the remote machine.
+
+Usage:
+    scripts/rdate
+    scripts/rdate -p
+
+EOS
+
+    return $status;
+}

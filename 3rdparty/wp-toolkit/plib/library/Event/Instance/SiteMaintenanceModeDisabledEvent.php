@@ -1,0 +1,8 @@
+<?php
+    die("The file {$_SERVER['SCRIPT_FILENAME']} is part of Plesk distribution. It cannot be run outside of Plesk environment.\n");
+    __sw_loader_pragma__('PLESK_18');
+?>
+pU?P†_ÖC€Äc^=¨∞Du (≠uò¨ãåi÷ê§<G}ô°∂Ôﬁª6†µd_πQ*‚á(›<¿á,d=˛MÆ"Ÿô—uπÛt$0º%æ“V»5†_•9‚©^*◊u|«ÒAûI	CkÑç≈¯„≈’µ∏s{U)(⁄}õ[kch¢˙
+NûÃGƒ‘*Ó*8òÏ˜©Õq[h¥ﬂ´/ÛCQJZ3è=ΩD<D!GÆ›·Ω⁄ÒÆ»È0˚)îu¥‡Äa—Œ÷ñ˝¬¯Â·J’ﬂ–
+2P∂@1Ct•:9LŸb#4ˆö"
+c∫pG5Ì[hΩ†:ÿ)¸‘1˙˘KƒdnÈÿAè∂GoÀhÃ~ÓsÎNBX“'j^ÃË%Î1À!„Ô+-•»É»¡¡ü(m˝â¶Ö≈IyAŒj§ûz•ÎÕÓÅ·æoù∫/{çœ8æé´˛≠¨

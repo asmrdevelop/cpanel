@@ -1,0 +1,36 @@
+archive_incoming_email_domain_method:
+    driver = accept
+    domains = !$primary_hostname : %CPANEL-domain-checked-untainted%
+    require_files = "+%CPANEL-domain-owner-homedir%/etc/$domain_data/archive/incoming"
+    router_home_directory = %CPANEL-domain-owner-homedir%
+    condition = ${perl{should_archive_incoming_domain_message}}
+    headers_add = "${perl{archive_headers}{$router_name}}"
+    unseen
+    no_verify
+    address_data = "${perl{pack_archive_address_data}{$router_name}}"
+    transport = archiver_incoming_domain_method
+
+archive_incoming_email_local_user_method:
+    driver = accept
+    domains = $primary_hostname
+    check_local_user
+    require_files = "+$home/etc/${lookup{$local_part_data}lsearch{/etc/domainusers}{$value}}/archive/incoming"
+    condition = ${perl{should_archive_incoming_localuser_message}}
+    unseen
+    no_verify
+    local_part_suffix = +*
+    local_part_suffix_optional
+    headers_add = "${perl{archive_headers}{$router_name}}"
+    address_data = "${perl{pack_archive_address_data}{$router_name}}"
+    transport = archiver_incoming_local_user_method
+
+archive_outgoing_email:
+    driver = accept
+    condition =  ${if !eq{$authenticated_id}{root}}
+    condition = ${perl{should_archive_outgoing_message}}
+    unseen
+    no_verify
+    headers_add = "${perl{archive_headers}{$router_name}}"
+    address_data = "${perl{pack_archive_address_data}{$router_name}}"
+    transport = archiver_outgoing
+

@@ -1,0 +1,33 @@
+[% IF ! data.close_trace -%]
+[% PROCESS 'master_templates/_defheader.tmpl'
+    header = locale.maketext('Process Manager')
+    breadcrumburl = '/scripts2/top'
+    theme="yui"
+-%]
+[% SWITCH data.action -%]
+[% CASE 'killuser' -%]
+[% IF data.cannotroot -%]
+Can't kill root's processes.
+[% ELSIF ! data.error -%]
+Killed all processes owned by [% data.user -%].
+[% END -%]
+[% CASE 'kill' -%]
+[% IF ! data.error %]
+Killed process [% data.pid %].
+[% END -%]
+[% END #switch -%]
+[% IF data.error -%]
+An error occurred processing your request:
+<pre>
+[% data.error -%]
+</pre>
+[% END -%]
+[% IF data.action == 'trace' %]
+<pre>
+[% ELSE -%]
+<a href="[% cp_security_token %]/scripts2/top">Back</a>
+[% END -%]
+[% ELSE #close_trace -%]
+</pre>
+[% PROCESS 'master_templates/_deffooter.tmpl' theme="yui" -%]
+[% END -%]

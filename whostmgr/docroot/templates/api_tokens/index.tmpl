@@ -1,0 +1,53 @@
+[%
+    USE Whostmgr;
+    USE JSON;
+
+    SET stylesheet_includes = [
+        Whostmgr.find_file_url('/templates/api_tokens/index.css')
+    ];
+
+    IF locale.get_html_dir_attr() == 'rtl';
+        stylesheet_includes.unshift(Whostmgr.find_file_url('/styles/bootstrap_rtl_offsets.min.css'));
+    END;
+
+    SET PAGE_BASE = '/scripts7/apitokens/';
+
+    WRAPPER 'master_templates/master.tmpl'
+        app_key = 'api_tokens'
+        header = locale.maketext('Manage [asis,API] Tokens'),
+        breadcrumburl = PAGE_BASE
+        base = PAGE_BASE
+        stylesheets = stylesheet_includes
+        CJT2_EXCLUSIVE = 0
+        theme = 'bootstrap';
+%]
+<div id="content"
+    class="ng-cloak"
+    ng-cloak>
+    <p class="description">[% locale.maketext("[asis,API] tokens allow you to log in to your server without the need for a password. You can use an [asis,API] token to authenticate with [asis,WHM]’s remote [asis,API]. If you use a remote billing solution, you will need to set up an [asis,API] token on all of your [asis,cPanel amp() WHM] servers. For more information, read our [output,url,_1,documentation,target,_2].", "//go.cpanel.net/ManageAPITokens", "_blank") %]</p>
+    <div ng-view></div>
+    <div growl></div>
+</div>
+
+<script type="text/ng-template" id="api_tokens/views/home.ptt">
+[% PROCESS 'api_tokens/views/home.ptt' %]
+</script>
+
+<script type="text/ng-template" id="api_tokens/views/edit.ptt">
+[% PROCESS 'api_tokens/views/edit.ptt' %]
+</script>
+
+<script type="text/ng-template" id="confirm_token_revocation.html">
+[% PROCESS 'api_tokens/views/confirm_revoke.ptt' %]
+</script>
+
+[% PROCESS 'master_templates/cjt2_header_include.tt' %]
+<script type="text/javascript">
+    PAGE.is_dns_only = [% JSON.stringify(data.is_dns_only) %];
+    PAGE.acl_metadata = [% JSON.stringify(data.acl_metadata) || "{}" %];
+    PAGE.ordered_categories = [% JSON.stringify(data.ordered_categories) || "[]" %];
+    PAGE.categories_metadata = [% JSON.stringify(data.categories_metadata) || "{}" %];
+    PAGE.subcategories_metadata = [% JSON.stringify(data.subcategories_metadata) || "{}" %];
+    PAGE.childAccountsExist = !![% data.child_accounts_exist || 0 %];
+</script>
+[% END %]

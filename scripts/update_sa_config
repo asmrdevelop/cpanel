@@ -1,0 +1,60 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/update_sa_config                Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+# This code is designed to be run in the post step of the SpamAssassin RPM install only.
+
+use strict;
+use warnings;
+
+use Cpanel::SafeFile ();
+use Cpanel::Binaries ();
+
+if ( $ENV{CPANEL_BASE_INSTALL} ) {
+    print STDERR "“$0” refuses to run during a cPanel installation.\n";
+    exit(0);
+}
+
+# Put previously unmanaged RPM config files back in place
+my $config_dir = '/etc/mail/spamassassin/';
+foreach my $config (qw/local.cf init.pre v310.pre v312.pre v320.pre v330.pre/) {
+    my $config_orig = $config_dir . $config . '.rpmorig';
+    next unless ( -e $config_orig );
+
+    my $config = $config_dir . $config;
+    print "Restoring $config from its pre-RPM state\n";
+    unlink $config;
+    chmod 0644, $config_orig;
+    rename( $config_orig, $config );
+}
+
+# Import GPG keys for sa-update
+my $saupdate_binary = Cpanel::Binaries::path('sa-update');
+my $update_gpg_key  = '/etc/mail/spamassassin/sa-update-keys/sa-update-pubkey.txt';
+print `$saupdate_binary --import $update_gpg_key 2>&1` if ( -e $update_gpg_key );
+
+# Make sure resource limits are 268435456 if not set.
+my $block = Cpanel::SafeFile::safeopen( \*SB, '+<', '/etc/mail/spamassassin/local.cf' );
+
+if ( !$block ) {
+    die("Could not edit /etc/mail/spamassassin/local.cf");
+}
+
+my @local_cf = <SB>;
+if ( !grep( /ResourceLimits/, @local_cf ) ) {
+    print "Enabled SpamAssassin Resource Limits Plugin\n";
+    print SB "\nloadplugin Mail::SpamAssassin::Plugin::ResourceLimits\n";
+    print SB "resource_limit_mem 268435456\n\n";
+}
+
+#268435456 is required for 3.3.1 or later
+elsif ( grep( /resource_limit_mem 134217728/, @local_cf ) ) {
+    @local_cf = map { s/resource_limit_mem 134217728/resource_limit_mem 268435456/; $_ } @local_cf;
+    seek( SB, 0, 0 );
+    print SB join( '', @local_cf );
+    truncate( SB, tell(SB) );
+}
+Cpanel::SafeFile::safeclose( \*SB, $block );

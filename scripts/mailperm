@@ -1,0 +1,427 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/mailperm                        Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+package scripts::mailperm;
+
+use strict;
+use warnings;
+
+use Digest::MD5  ();
+use Getopt::Long ();
+use IO::Handle   ();
+use Try::Tiny;
+
+use Cpanel::PwCache::Helpers             ();
+use Cpanel::PwCache::Build               ();
+use Cpanel::Exim                         ();
+use Cpanel::Signal                       ();
+use Cpanel::SafeFind                     ();
+use Cpanel::Logger                       ();
+use Cpanel::FileUtils::TouchFile         ();
+use Cpanel::Rlimit                       ();
+use Cpanel::AccessIds::ReducedPrivileges ();
+use Cpanel::PwCache                      ();
+use Cpanel::Config::LoadUserDomains      ();
+use Cpanel::ConfigFiles                  ();
+use Cpanel::Email::MX                    ();
+use Cpanel::Email::Perms                 ();
+use Cpanel::Email::Perms::System         ();
+use Cpanel::Email::Perms::User           ();
+use Cpanel::MailTools::DBS               ();
+use Cpanel::LoginDefs                    ();
+use Cpanel::Config::LoadConfig           ();
+
+my $logger = Cpanel::Logger->new();
+
+my @MAILDIR_FILES_TO_SKIP = qw(
+  dovecot-keywords
+  dovecot-uidlist
+  dovecot-uidvalidity.*
+  dovecot\\.index
+  dovecot\\.index.cache
+  dovecot\\.index.log
+  dovecot\\.index.log.2
+  maildirsize
+  subscriptions
+);
+my $maildir_files_to_skip_re = join '|', @MAILDIR_FILES_TO_SKIP;
+
+exit main(@ARGV) unless caller;
+
+sub main {
+    my (@args) = @_;
+    local $@;
+
+    my $verbose           = 0;
+    my $skiplocal         = 0;
+    my $skipmxcheck       = 0;
+    my $skipperm          = 0;
+    my $dirsonly          = 0;
+    my $no_restart_cpsrvd = 0;
+    my $help              = 0;
+
+    # Argument processing
+    my %arg_ops = (
+        'help'              => \$help,
+        'verbose'           => \$verbose,
+        'skiplocaldomains'  => \$skiplocal,
+        'skipmxcheck'       => \$skipmxcheck,
+        'skipserverperm'    => \$skipperm,
+        'dirsonly'          => \$dirsonly,
+        'no-restart-cpsrvd' => \$no_restart_cpsrvd,
+    );
+
+    Getopt::Long::GetOptionsFromArray(
+        \@args,
+        %arg_ops,
+    ) or return _usage(1);
+    return _usage(0) if $help;
+
+    my %opts = map { $_ => ${ $arg_ops{$_} } } keys %arg_ops;
+
+    if (@args) {
+        $opts{'checkuser'} = $args[-1];
+    }
+
+    my ( $status, $message ) = eval { __PACKAGE__->script(%opts) };
+
+    if ($@) {
+        print "$@\n";
+        return 1;
+    }
+
+    return 0 if $status;
+
+    if ($message) {
+        print STDERR $message . "\n";
+    }
+
+    return 1;
+}
+
+sub script {
+    my ( $class, %OPTS ) = @_;
+
+    my ( $checkuser, $skiplocal, $skipmxcheck, $skipperm, $dirsonly, $verbose ) = @OPTS{qw( checkuser skiplocaldomains skipmxcheck skipserverperm dirsonly verbose)};
+
+    return 1 if ( $ENV{'DONT_RUN_MAILPERM'} );
+
+    Cpanel::Rlimit::set_rlimit();
+
+    my $pidfile = '/var/run/mailperms.pid';
+
+    my $is_global             = 0;
+    my $previous_command_name = $0;
+    if ($checkuser) {
+        if ( !( Cpanel::PwCache::getpwnam($checkuser) )[0] ) {
+            warn "!! Specified user is not a valid system account !!\n\n";
+            _usage();
+            return ( 0, "The specified user '$checkuser' is not a valid system account" );
+        }
+        $0 = 'mailperm - single user';
+    }
+    else {
+        $is_global = 1;
+        $0         = 'mailperm - global';
+
+        require Cpanel::Unix::PID::Tiny;
+        my $upid = Cpanel::Unix::PID::Tiny->new();
+
+        if ( !$upid->pid_file($pidfile) ) {
+            my $pid = $upid->get_pid_from_pidfile($pidfile);
+            $logger->warn("mailperm - previous instance: [$pid]");
+            $0 = $previous_command_name;
+            return ( 0, 'Another mailperm instance is running' );
+        }
+    }
+
+    my ( $exim_bin, $exim_version, $exim_caps ) = Cpanel::Exim::fetch_caps();
+    my $needs_mail_gid_shadow = ( $exim_caps->{'dovecot'} ) ? 0 : 1;
+    $Cpanel::Email::Perms::VERBOSE = $verbose;
+    my $changed_external_auth = 0;
+
+    # Signal cpsrvd to reload its config.
+    # do not restart cpsrvd on a fresh install ( cpsrvd is running but is restarted later )
+    #   this avoids to solve continuously "perl dependencies issues" in the exim rpm
+    Cpanel::Signal::send_hup_cpsrvd() if $changed_external_auth && !$OPTS{'no-restart-cpsrvd'};
+
+    Cpanel::Email::Perms::System::ensure_system_perms();
+
+    if ( !$skipperm ) {
+        require '/usr/local/cpanel/scripts/checkexim.pl';    ## no critic qw(RequireBarewordIncludes)
+        scripts::checkexim::checkeximperms();
+    }
+
+    chmod( 0666, '/dev/null' );
+
+    _update_local_domains( 'checkuser' => $checkuser, 'skipmxcheck' => $skipmxcheck, 'verbose' => $verbose ) if !$skiplocal;
+
+    _set_perms( 'checkuser' => $checkuser, 'dirsonly' => $dirsonly, 'verbose' => $verbose, 'is_global' => $is_global ) if !$skipperm;
+
+    chmod( 0666, '/dev/null' );
+
+    $0 = $previous_command_name;
+
+    return 1;
+}
+
+sub _update_local_domains {
+    my (%OPTS) = @_;
+
+    my ( $checkuser, $skipmxcheck, $verbose ) = @OPTS{qw( checkuser skipmxcheck verbose )};
+
+    Cpanel::FileUtils::TouchFile::touchfile($Cpanel::ConfigFiles::REMOTEDOMAINS_FILE);
+    Cpanel::FileUtils::TouchFile::touchfile($Cpanel::ConfigFiles::LOCALDOMAINS_FILE);
+
+    my $localdomains_ref  = Cpanel::Config::LoadConfig::loadConfig( $Cpanel::ConfigFiles::LOCALDOMAINS_FILE,  undef, '' );
+    my $remotedomains_ref = Cpanel::Config::LoadConfig::loadConfig( $Cpanel::ConfigFiles::REMOTEDOMAINS_FILE, undef, '' );
+    my $secondarymx_ref   = Cpanel::Config::LoadConfig::loadConfig( $Cpanel::ConfigFiles::SECONDARYMX_FILE,   undef, '' );
+
+    my $userdomains_ref = Cpanel::Config::LoadUserDomains::loaduserdomains( undef, 1 );
+    my %missing_domains;
+
+    require Cpanel::Hostname;
+    my $hostname = Cpanel::Hostname::gethostname();
+    $userdomains_ref->{$hostname} = 1;
+
+    foreach my $domain ( keys %{$userdomains_ref} ) {
+        if ( !exists $localdomains_ref->{$domain} && !exists $remotedomains_ref->{$domain} ) {
+            $missing_domains{$domain} = 1;
+        }
+    }
+
+    if ( !$skipmxcheck ) {
+        require Whostmgr::DNS::MX;
+        foreach my $domain ( sort keys %{$userdomains_ref} ) {
+            next if ( $domain =~ m/^\*/ );
+
+            my $user = $userdomains_ref->{$domain};
+            next if ( !$user || $user eq 'root' || ( $checkuser && $checkuser ne $user ) );
+
+            print "Checking mx configuration for $domain ($user)..." if $verbose;
+            my $alwaysaccept = Cpanel::Email::MX::get_mxcheck_configuration( $domain, $user );
+            print "[$alwaysaccept]..." if $verbose;
+
+            #
+            # We need to update proxysubdomains here because nothing else
+            # will be doing it for us
+            #
+            if ( $alwaysaccept eq 'local'
+                && ( !exists $localdomains_ref->{$domain} || exists $remotedomains_ref->{$domain} || exists $secondarymx_ref->{$domain} ) ) {
+                Cpanel::MailTools::DBS::setup( $domain, 'localdomains' => 1, 'remotedomains' => 0, 'secondarymx' => 0, 'update_proxy_subdomains' => 1 );
+            }
+            elsif (( $alwaysaccept eq 'secondary' || $alwaysaccept eq 'backup' )
+                && ( exists $localdomains_ref->{$domain} || !exists $remotedomains_ref->{$domain} || !exists $secondarymx_ref->{$domain} ) ) {
+                Cpanel::MailTools::DBS::setup( $domain, 'localdomains' => 0, 'remotedomains' => 1, 'secondarymx' => 1, 'update_proxy_subdomains' => 1 );
+            }
+            elsif ( $alwaysaccept eq 'remote'
+                && ( exists $localdomains_ref->{$domain} || !exists $remotedomains_ref->{$domain} || exists $secondarymx_ref->{$domain} ) ) {
+                Cpanel::MailTools::DBS::setup( $domain, 'localdomains' => 0, 'remotedomains' => 1, 'secondarymx' => 0, 'update_proxy_subdomains' => 1 );
+            }
+            elsif ( $missing_domains{$domain} ) {
+                {
+                    no warnings 'once';
+                    my $checkmx = Whostmgr::DNS::MX::checkmx( $domain, undef, $alwaysaccept, $Whostmgr::DNS::MX::NO_UPDATEUSERDOMAINS, $Whostmgr::DNS::MX::DO_UPDATE_PROXY_SUBDOMAINS );
+                }
+            }
+            print "Done\n" if $verbose;
+        }
+    }
+    else {
+        foreach my $domain ( keys %missing_domains ) {
+            Cpanel::MailTools::DBS::setup( $domain, 'localdomains' => 1, 'remotedomains' => 0, 'secondarymx' => 0, 'update_proxy_subdomains' => 1 );
+        }
+    }
+
+    return;
+}
+
+sub _set_perms {    ## no critic (Subroutines::ProhibitExcessComplexity)
+    my (%OPTS) = @_;
+
+    my $checkuser = $OPTS{'checkuser'};
+    my $dirsonly  = $OPTS{'dirsonly'} ? 1 : 0;
+    my $verbose   = $OPTS{'verbose'}  ? 1 : 0;
+    my $is_global = $OPTS{'is_global'} || 0;
+
+    my $mailgid = ( Cpanel::PwCache::getpwnam('mail') )[3];
+
+    my $pwcache_ref;
+    if ($checkuser) {
+        my @pw_data = Cpanel::PwCache::getpwnam($checkuser);
+        $pwcache_ref = [ \@pw_data ];
+    }
+    else {
+        Cpanel::PwCache::Build::init_passwdless_pwcache();
+        Cpanel::PwCache::Helpers::no_uid_cache();    #uid cache only needed if we are going to make lots of getpwuid calls
+        $pwcache_ref = Cpanel::PwCache::Build::fetch_pwcache();
+    }
+
+    Cpanel::SafeFind::find( sub { }, '/dev/null' );    #init File::Find
+
+    my $userdomains_ref = Cpanel::Config::LoadUserDomains::loaduserdomains( undef, 0, 1 );
+
+    my $uid_min = Cpanel::LoginDefs::get_uid_min();
+    my ( $cpuser, $useruid, $usergid, $homedir );
+    foreach my $pwref ( sort { $a->[0] cmp $b->[0] } grep { exists $userdomains_ref->{ $_->[0] } && $_->[2] >= $uid_min } @$pwcache_ref ) {
+        ( $cpuser, $useruid, $usergid, $homedir ) = ( (@$pwref)[ 0, 2, 3, 7 ] );
+        next if ( $checkuser && $cpuser ne $checkuser );
+
+        if ( !$useruid || !$usergid || !$homedir ) {
+            warn "Skipping invalid user $cpuser";
+            next;
+        }
+
+        if ( exists $userdomains_ref->{$cpuser} ) {
+            foreach my $domain ( @{ $userdomains_ref->{$cpuser} } ) {
+                Cpanel::Email::Perms::System::ensure_domain_system_perms( $useruid, $domain );
+            }
+        }
+        if ( -e "$homedir/mail" || -e "$homedir/etc" ) {
+
+            Cpanel::AccessIds::ReducedPrivileges::call_as_user(
+                sub {
+                    local $0 = 'mailperm - ' . ( $is_global ? 'global ' : '' ) . 'processing ' . $cpuser;
+
+                    my ( $mode, $fuid, $fgid, $safefile );
+                    Cpanel::SafeFind::find(
+                        {
+                            'wanted' => sub {
+                                return if ( !$File::Find::name || -l $File::Find::name );
+
+                                ( $mode, $fuid, $fgid ) = ( stat(_) )[ 2, 4, 5 ];
+                                ($safefile) = $File::Find::name =~ /(.*)/;
+                                if ( $fuid != $useruid || ( $fgid != $usergid && $fgid != $mailgid ) ) {
+                                    my $changed = chown( $useruid, $usergid, $safefile );
+                                    if ($verbose) {
+                                        if ($changed) {
+                                            print "Fixed ownership on $File::Find::name: was ($fuid:$fgid), now ($useruid:$usergid)\n";
+                                        }
+                                        else {
+                                            print "Unable to fix ownership on $File::Find::name: currently ($fuid:$fgid), should be ($useruid:$usergid)\n";
+                                        }
+                                    }
+                                }
+                                return
+                                  if ( $File::Find::name =~ m/\/(?:$maildir_files_to_skip_re)$/
+                                    || $File::Find::name =~ m/\.cppop\.cache(?:\.msgs)?$/ );
+
+                                ( $mode, my $want ) = map { sprintf '%04o', $_ & 07777 } $mode, $Cpanel::Email::Perms::MAILDIR_PERMS;
+                                if ( -d _ ) {
+
+                                    # All dirs must now be 0751 with dovecot 2.2.
+                                    # in order to avoid:
+                                    #   "Renaming not supported across conflicting directory permissions."
+                                    if ( $mode ne $want ) {    #all of these are ok
+                                        my $changed = chmod( $Cpanel::Email::Perms::MAILDIR_PERMS, $safefile );
+                                        if ($verbose) {
+                                            if ($changed) {
+                                                print "Fixed permissions on $File::Find::name : was ($mode), now ($want)\n";
+                                            }
+                                            else {
+                                                print "Unable to fix permissions on $File::Find::name : currently ($mode), should be ($want)\n";
+                                            }
+                                        }
+                                    }
+
+                                    if ( $dirsonly && $safefile =~ m{\/\.[^\/]+\/[^\/]+$} ) {
+                                        no warnings 'once';
+                                        return ( $File::Find::prune = 1 );
+                                    }
+                                    return;
+                                }
+
+                                #NOTE: Until 11.54 this was 0660. Cobra
+                                #couldn’t think of any reason why anyone
+                                #but the user should be modifying the home
+                                #directory, though, so we changed it to 0640.
+                                #
+                                elsif ( !$dirsonly && $mode ne '0640' ) {
+                                    my $changed = chmod( 0640, $safefile );
+                                    if ($verbose) {
+                                        if ($changed) {
+                                            print "Fixed permissions on $File::Find::name: was ($mode), now (0640)\n";
+                                        }
+                                        else {
+                                            print "Unable to fix permissions on $File::Find::name: currently ($mode), should be (0640)\n";
+                                        }
+                                    }
+                                }
+                            },
+                            'follow'   => 0,
+                            'no_chdir' => 1
+                        },
+                        $homedir . '/mail'
+                    );
+
+                    return 1;
+                },
+
+                $useruid,
+                $usergid,
+                $mailgid
+              )
+              || do {
+                warn "Could not setuid to $cpuser ($useruid,$usergid + $mailgid)";
+              };
+
+            try {
+                Cpanel::Email::Perms::User::ensure_all_perms($homedir);
+            }
+            catch {
+                warn $_;
+            };
+        }
+        else {
+            print "Skipping $homedir (etc and mail missing)\n";
+        }
+    }
+    return;
+}
+
+sub _usage {
+    my ($retval) = @_;
+    my $fh = $retval ? \*STDERR : \*STDOUT;
+    $fh->print(<<'EOM');
+Usage: mailperm <modifier> <user>
+
+Arguments:
+    <user> - Optional argument to specify the scope of
+        the permissions checks. The specified user must
+        be a valid system account.
+
+Modifier Flags:
+    --skiplocaldomains - This optional argument bypasses
+        addition of missing domains to the /etc/localdomains
+        file when specified. The localdomains file specifies
+        to Exim that it should always accept delivery for
+        the listed domains. Remote domains are removed from
+        /etc/localdomains regardless of this flag.
+
+    --skipmxcheck - This optional argument bypasses synchronizing
+        the mail exchanger setting from the cpanel users file to the
+        system.
+
+    --dirsonly - This optional flag limits setting permissions
+        to only modifying directories.
+        NOTE: The “maildirsize” files are always fixed if needed.
+
+    --skipserverperm - This optional flag prevents modification
+        of the mail system files used by Exim and limits the
+        scope of permission modifications to the mail account
+        files.
+
+    --verbose - This optional flag signals the utility to
+        report detected permissions problems per user prior
+        to modifying any permissions.
+
+    --help - display this message and exit.
+
+EOM
+    return $retval;
+}
+
+1;

@@ -1,0 +1,18 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+$ENV{'LANG'} = 'C';
+
+foreach my $path ( grep( !/cpan_sandbox/, split( /:/, $ENV{'PATH'} ) ) ) {
+    next if $path =~ m{^/usr/local/cpanel/};
+    if ( -x $path . '/' . 'perl' ) {
+        if ( grep( /^Makefile\.PL$/, @ARGV ) ) {
+            print STDERR "perl-64bit-hack: enabled\n";
+            exec( $path . '/' . 'perl', '-I/usr/local/cpanel/scripts/cpan_sandbox', '-MExtUtils::MakeMaker::64BitHack', @ARGV );
+        }
+        else {
+            exec( $path . '/' . 'perl', @ARGV );
+        }
+    }
+}
+
+die "Failed to exec perl: $!";

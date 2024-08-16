@@ -1,0 +1,988 @@
+[%-
+# Column headers and searchtype "friendly names"
+SET column_headers = {
+    'suspended' => locale.maketext('Suspended'),
+    'domain' => locale.maketext('Domain'),
+    'ip' => locale.maketext('IP Address'),
+    'user' => locale.maketext('Username'),
+    'email' => locale.maketext('Contact Email'),
+    'startdate' => locale.maketext('Setup Date'),
+    'partition' => locale.maketext('Partition'),
+    'limit' => locale.maketext('Quota'),
+    'used' => locale.maketext('Disk Used'),
+    'plan' => locale.maketext('Package'),
+    'package' => locale.maketext('Package'),
+    'theme' => locale.maketext('Theme'),
+    'owner' => locale.maketext('Reseller/Owner'),
+    'domain_and_user' => locale.maketext('Username or Domain'),
+    'upgrade_opportunities' => locale.maketext('Upgrade Opportunities'),
+};
+SET column_order = ['ip','user','email','startdate','partition','limit','used','plan','theme','owner','suspended'];
+
+IF data.display_upgrade_opportunities;
+    column_order.push('upgrade_opportunities');
+END;
+
+SET filter_friendly_name = {
+    'suspended' => locale.maketext('Suspended'),
+    'upgrade_opportunity' => locale.maketext("Upgrade[output,nbsp]Opportunity"),
+};
+SET upgrade_opportunity_filter_title = {
+    'bw_limit' => locale.maketext('Filter by bandwidth limit opportunity met.'),
+    'disk_usage' => locale.maketext('Filter by disk usage opportunity met.'),
+};
+SET upgrade_opportunity_icon = {
+    'bw_limit' => 'fas fa-tachometer-alt',
+    'disk_usage' => 'fas fa-chart-pie',
+    'default' => 'fas fa-chart-line',
+};
+SET bandwidth_exceeded_text = locale.maketext("Bandwidth Limit Exceeded");
+-%]
+
+[%# This configures how many accounts should be displayed before the bottom search box is shown %]
+[% BOTTOM_SEARCH_THRESHOLD = 10 %]
+[% NUMBER_OF_COLUMNS = column_order.size + 3; # control + domain + cpanel %]
+[% MAX_LEADING_PAGES = 5 %]
+[% MAX_TRAILING_PAGES = 5 %]
+
+[%
+SET headerText = locale.maketext("List Accounts");
+SET hasFilter = data.filtertype && data.filtertype != 'none';
+
+IF data.search.length();
+    headerText = locale.maketext("List accounts where “[_1]” matches “[_2]”.",column_headers.item(data.searchtype),"${data.search}");
+    IF hasFilter;
+        headerText = locale.maketext("List accounts where “[_1]” matches “[_2]” and filtered by “[_3]”.",column_headers.item(data.searchtype),"${data.search}",filter_friendly_name.item(data.filtertype));
+    END;
+ELSE;
+    IF hasFilter;
+        headerText = locale.maketext("List accounts filtered by “[_1]”.", filter_friendly_name.item(data.filtertype));
+    END;
+END;
+-%]
+
+[% MACRO search(data, locale, postfix) BLOCK %]
+<div class="[% postfix %]-group group">
+    <a name="search[% postfix %]"></a>
+    <div id="search-[% postfix %]">
+        <form class="form-horizontal" action="../scripts4/listaccts" autocomplete="off">
+            <div class="form-group">
+                <label for="searchtxt[% postfix %]" class="col-xs-2 control-label">[% locale.maketext("Search For:") %]</label>
+                <div class="col-xs-10">
+                    <input id="searchtxt[% postfix %]" type="text" name="search" value="[% data.search.defined ? data.search : '\.net$' %]" />
+                    <input type="submit" class="btn btn-primary" value="[% locale.maketext("Find") %]" />
+                </div>
+            </div>
+            <div class="form-group">
+                <label for="searchtype" class="col-xs-2 control-label">[% locale.maketext("Search By:") %]</label>
+                <div class="col-xs-10">
+                    <label class="radio-inline" title="[% locale.maketext("Defaults to searching domain and user name.") %]"><input type="radio" name="searchtype" [% (! data.searchtype || data.searchtype == 'domain_and_user') ? 'checked="checked"' : '' %] value="domain_and_user" /><span>[% locale.maketext("Username/Domain") %]</span></label>
+                    <label class="radio-inline" title="[% locale.maketext("Search by domain name.") %]"><input type="radio" name="searchtype" [% data.searchtype == 'domain' ? 'checked="checked"' : '' %] value="domain" /><span>[% column_headers.domain %]</span></label>
+                    <label class="radio-inline" title="[% locale.maketext("Search by user name.") %]"><input type="radio" name="searchtype" [% data.searchtype == 'user' ? 'checked="checked"' : '' %] value="user" /><span>[% column_headers.user %]</span></label>
+                    <label class="radio-inline" title="[% locale.maketext("Search by owner name.") %]"><input type="radio" name="searchtype" [% data.searchtype == 'owner' ? 'checked="checked"' : '' %] value="owner" /><span>[% column_headers.owner %]</span></label>
+                    <label class="radio-inline" title="[% locale.maketext("Search by assigned package.") %]"><input type="radio" name="searchtype" [% data.searchtype == 'package' ? 'checked="checked"' : '' %] value="package" /><span>[% column_headers.plan %]</span></label>
+                    <label class="radio-inline" title="[% locale.maketext("Search by assigned IP address.") %]"><input type="radio" name="searchtype" [% data.searchtype == 'ip' ? 'checked="checked"' : '' %] value="ip" /><span>[% locale.maketext("IP[output,nbsp]Address") %]</span></label>
+                </div>
+            </div>
+            <div class="form-group">
+                <label for="filtertype" class="col-xs-2 control-label">[% locale.maketext("Filter By:") %]</label>
+                <div class="col-xs-10">
+                    <label class="radio-inline" title="[% locale.maketext("No filter.") %]"><input type="radio" name="filtertype" [% (! data.filtertype || data.filtertype == 'none') ? 'checked="checked"' : '' %] value="none" onchange="optionsChange(this)" /><span>[% locale.maketext("None") %]</span></label>
+                    <label class="radio-inline" title="[% locale.maketext("Filter by suspended status.") %]"><input type="radio" name="filtertype" [% data.filtertype == 'suspended' ? 'checked="checked"' : '' %] value="suspended" onchange="optionsChange(this)" /><span>[% filter_friendly_name.suspended %]</span></label>
+                    [% IF data.display_upgrade_opportunities %]
+                    <label class="radio-inline" title="[% locale.maketext("Filter by upgrade opportunity.") %]"><input type="radio" name="filtertype" [% data.filtertype == 'upgrade_opportunity' ? 'checked="checked"' : '' %] value="upgrade_opportunity" onchange="optionsChange(this)" id="upgrade_opportunity_input_[% postfix %]" /><span>[% filter_friendly_name.upgrade_opportunity %]</span></label>
+                    [% END %]
+                </div>
+            </div>
+            [% IF data.display_upgrade_opportunities %]
+            <div class="form-group[% data.filtertype == 'upgrade_opportunity' ? '' : ' hidden' %]" id="upgrade_opportunity_input_[% postfix %]_options">
+                <div class="col-xs-10 col-xs-offset-2">
+                    [%- FOREACH opportunity IN settings.upgrade_opportunities_name.opportunity.keys.sort %]
+                    <label class="checkbox-inline" title="[% upgrade_opportunity_filter_title.$opportunity %]">
+                        <input type="checkbox" name="filteropt" [% ( !data.filteropt.size || data.filteropt.$opportunity ) ? 'checked="checked"' : '' %] value="[% opportunity %]" />
+                        <i class="[% upgrade_opportunity_icon.$opportunity || upgrade_opportunity_icon.default %]" aria-hidden="true"></i>
+                        <span>[% settings.upgrade_opportunities_name.opportunity.$opportunity.html %]</span>
+                    </label>
+                    [% END %]
+                </div>
+            </div>
+            [% END %]
+            <div class="form-group">
+                <div class="col-xs-10 col-xs-offset-2">
+                    <button type="submit" class="btn btn-primary">[% locale.maketext("Apply Filter") %]</button>
+                </div>
+            </div>
+            [% IF settings.has_search_filter_sort %]
+            <div class="form-group">
+                <div class="col-xs-10 col-xs-offset-2">
+                    <input type="button" onclick="window.location.href='listaccts';" value="[% locale.maketext("Reset") %]" class="btn btn-default">
+                </div>
+            </div>
+            [% END %]
+            <input type="hidden" name="acctp" value="[% data.acctsperpage %]" />
+        </form>
+    </div>
+</div>
+[% END %]
+
+[% USE CPDate -%]
+[% USE Encoder -%]
+[% USE Whostmgr -%]
+[% USE VarCache -%]
+[% WRAPPER 'master_templates/master.tmpl'
+    app_key = 'list_accounts'
+    theme = 'bootstrap'
+    include_legacy_stylesheets = 1
+    header = headerText
+    stylesheets = [
+        '/yui/datatable/assets/skins/sam/datatable.css',
+        '/templates/accounts/listaccts.min.css'
+    ]
+-%]
+
+[%-
+SET display_license_excess_warning = !varcache.dnsonly && Whostmgr.server_exceeds_max_users();
+SET child_workload_accts = {};
+
+FOREACH acct IN data.child_workload_accts;
+    child_workload_accts.$acct => 1;
+END;
+varcache.set('change_image', MagicRevision('/change.gif'));
+varcache.set('close_image', MagicRevision('/cjt/images/close-btn.png'));
+varcache.set('error_image', MagicRevision('/cjt/images/icons/error.png'));
+varcache.set('warning_image', MagicRevision('/cjt/images/icons/warning.png'));
+-%]
+
+[% IF display_license_excess_warning -%]
+    [% PROCESS 'menu/_license_excess.tmpl' -%]
+[% END -%]
+
+[% PROCESS '_ajaxapp_header.tmpl' -%]
+
+[% pagecontrols = BLOCK %]
+    <div class="pgitem">[% locale.maketext("Page:") %] </div>
+    [%-
+        varcache.set(
+            'query_addition',
+            "&search=" _ data.search.cpanel_uri_encode_str() _
+            "&searchtype=" _ data.searchtype.cpanel_uri_encode_str() _
+            "&filtertype=" _ data.filtertype.cpanel_uri_encode_str() _
+            "&acctp=" _ data.acctsperpage _
+            "&sortrev=" _ data.sortrev.cpanel_uri_encode_str() _
+            "&sortorder=" _ data.sortorder.cpanel_uri_encode_str()
+        );
+        FOREACH opt IN data.filteropt.keys.sort;
+            varcache.set(
+                'query_addition',
+                varcache.query_addition _
+                "&filteropt=" _ opt.cpanel_uri_encode_str()
+            );
+        END;
+
+    -%]
+
+    [% first_leading_page = (((data.page - 1 - MAX_LEADING_PAGES) >= 0) ? (data.page - 1 - MAX_LEADING_PAGES) : 0) %]
+    [% last_trailing_page = (((data.page - 1 + MAX_TRAILING_PAGES) < data.pagecount - 1) ? (data.page - 1 + MAX_TRAILING_PAGES) : data.pagecount - 1) %]
+
+    [% IF data.page == 1 || data.page == 'all' %]
+    <div class="pgsel-disabled pgaction">
+        <span>[% locale.maketext("First") %]</span>
+    </div>
+    [% ELSE %]
+    <div class="pgsel pgaction">
+        <a href="listaccts?skip=1[% varcache.query_addition %]">[% locale.maketext("First") %]</a>
+    </div>
+    [% END %]
+
+    [% FOR pg IN data.pagelist %]
+    [% IF (loop.index >= first_leading_page) && (loop.index <= last_trailing_page) || (loop.index == 0) || (loop.index == (data.pagecount - 1)) %]
+        [% IF data.page == 'all'%]
+        <div class="pgsel-disabled pgaction">
+            <span>[% pg.pagenum %]</span>
+        </div>
+        [% ELSE %]
+        <div class="[% IF pg.selected %]pgselected[% END %] pgsel">
+            <a href="listaccts?skip=[% pg.pagenum %][% varcache.query_addition %]">[% pg.pagenum %]</a>
+        </div>
+        [% END%]
+    [% ELSIF (loop.index == first_leading_page - 1) || (loop.index == last_trailing_page + 1) %]
+    <div class="pgelipse">
+        <span>&hellip;</span>
+    </div>
+    [% ELSE %]
+        [% NEXT %]
+    [% END %]
+    [% END %]
+
+    [% IF data.page == data.pagecount || data.page == 'all'%]
+    <div class="pgsel-disabled pgaction">
+        <span>[% locale.maketext("Last") %]</span>
+    </div>
+    [% ELSE %]
+    <div class="pgsel pgaction">
+        <a href="listaccts?skip=[% data.pagecount %][% varcache.query_addition %]" title="[% locale.maketext("Navigate to page [numf,_1].", "${data.pagecount}") %]">[% locale.maketext("Last") %]</a>
+    </div>
+    [% END %]
+
+
+    [% IF data.page == 'all' %]
+    <div class="pgsel pgaction">
+        <a href="listaccts?skip=1[% varcache.query_addition %]" title="[% locale.maketext("View the accounts in sets of [numf,_1].", "${data.acctsperpage}") %]">[% locale.maketext("Paged") %]</a>
+    </div>
+    [% END %]
+    <div class="[% IF data.allselected %]pgselected[% END %] pgsel pgaction" >
+        <a href="listaccts?viewall=1[% varcache.query_addition %]" title="[% locale.maketext("View all the accounts matching the current filter.") %]">[% locale.maketext("All") %]</a>
+    </div>
+    [% IF settings.has_search_filter_sort %]
+     <div class="pgsel pgaction">
+        <a href="listaccts?viewall=1&acctp=[%data.acctsperpage%]" title="[% locale.maketext("View all the accounts after removing the current filter.") %]">[% locale.maketext("All (Forget Search [output,amp] Sort)") %]</a>
+     </div>
+    [% END %]
+    <div id="page-size-selector">
+        <form action="../scripts4/listaccts">
+            <input type="hidden" name="skip" value="1" />
+            <input type="hidden" name="search" value="[% data.search %]" />
+            <input type="hidden" name="searchtype" value="[% data.searchtype %]" />
+            <input type="hidden" name="filtertype" value="[% data.filtertype %]" />
+            <input type="hidden" name="sortrev" value="[% data.sortrev %]" />
+            <input type="hidden" name="sortorder" value="[% data.sortorder %]" />
+            <label class="de-emphasized-label" title="[% locale.maketext("Accounts displayed per page.") %]" [% IF data.page == 'all' %]class="disabled"[% END %]>[% locale.maketext("Per[output,nbsp]Page:") %]</label>
+            <input size="4" maxsize="4" type="text" name="acctp" value="[% data.acctsperpage %]" [% IF data.page == 'all' %]disabled="disabled"[% END %] />
+        </form>
+    </div>
+    <div class="pgitem"></div>
+[% END %]
+
+<div class="yui-skin-sam">
+
+    [%# Build the transfer message %]
+    [%
+        SET transferMessage = "";
+        SET transferPath = "${cp_security_token}/scripts2/tweaksettings?find=account_login_access";
+     %]
+    [% IF ! settings.transferheader -%]
+       [% IF Whostmgr.hasroot() -%]
+            [% transferMessage = locale.maketext("Root access to users’ cPanel accounts has been disabled in [output,url,_1,Tweak Settings].", transferPath) %]
+       [%- ELSE -%]
+            [% transferMessage = locale.maketext("Reseller access to users’ cPanel accounts has been disabled in Tweak Settings.") %]
+       [%- END %]
+    [% ELSIF settings.transferheader == 2 && Whostmgr.hasroot() -%]
+       [% transferMessage = locale.maketext('A grey [asis,cPanel] icon indicates that the server administrator disabled access to users’ [asis,cPanel] accounts in [output,url,_1,_2].', transferPath, locale.maketext('Tweak Settings')) %]
+    [% ELSIF settings.transferheader == 2 -%]
+       [% transferMessage = locale.maketext('A grey [asis,cPanel] icon indicates that the server administrator disabled access to users’ [asis,cPanel] accounts.') %]
+    [%- END %]
+
+    [% IF transferMessage %]
+    <i>[% transferMessage %]</i>
+    [% END %]
+    [% SET show_createacct = (acl.all || acl.item("create-acct")) && (!Whostmgr.get_max_users() || Whostmgr.get_users_count() < Whostmgr.get_max_users()) %]
+    [% IF show_createacct %]
+    <!-- Quick link to account creation page -->
+    <p><a href="[% cp_security_token %]/scripts5/wwwacctform" class="btn btn-primary" id="create_account_link_top">[% locale.maketext("Create a New Account") %]</a></p>
+    [% END %]
+    [% search(data, locale, 'top') %]
+    <div class="pager-section pager-section-top group">
+        [% pagecontrols %]
+        [% IF data.totaltime %][% totaltime = data.totaltime %][% ELSE %][%totaltime = 1%][% END %]
+        <div class="stats">
+            [% IF settings.has_search_filter_sort %]
+            [% IF data.domaincount == 0 %]
+            [% locale.maketext("No matching records.") %]
+            [% ELSIF data.showcount == data.domaincount %]
+            [% locale.maketext("Showing all matching records.") %]
+            [% ELSE %]
+            [% locale.maketext("Showing [numf,_1] of [numf,_2] matching records.","${data.showcount}","${data.domaincount}") %]
+            [% END %]
+            [% ELSE %]
+            [% IF data.domaincount == 0 %]
+            [% locale.maketext("No records available.") %]
+            [% ELSIF data.showcount == data.domaincount %]
+            [% locale.maketext("Showing all [numf,_1] records.", "${data.domaincount}") %]
+            [% ELSE %]
+            [% locale.maketext("Showing [numf,_1] of [numf,_2] records.","${data.showcount}","${data.domaincount}") %]
+            [% END %]
+            [% END %]
+            <span style="background-color: #f4c6cb;">[% locale.maketext("Suspended accounts are highlighted in red.") %]</span>
+        </div>
+    </div>
+    <div id="acctlistblk">
+        <table id="listaccts" class="sortable">
+            <tr class="tblheader0">
+                <th nonsortable="true">&nbsp;</th>
+                <th class="yui-dt-sortable [% IF data.sortorder == 'domain'; data.sortrev ? 'yui-dt-desc' : 'yui-dt-asc'; END %]" nonsortable="true"><div class="yui-dt-liner"><a href="[% data.sorturls.domain %]">[% column_headers.domain.replace('\s', '&nbsp;') %]</a></div></th>
+                [% IF settings.transferheader %]
+                <th nonsortable="true"><div class="yui-dt-liner">[% locale.maketext("cPanel") %]</div></th>
+                [% END %]
+                [% FOREACH column IN column_order %]
+                <th nowrap class="yui-dt-sortable [% IF column == data.sortorder; data.sortrev ? 'yui-dt-desc' : 'yui-dt-asc'; END %]" nonsortable="true">
+                    <div class="yui-dt-liner">
+                        <a href="[% data.sorturls.$column %]">
+                        [% column_headers.$column.replace(' ', '&nbsp;') %]
+                        [% IF ( column == 'limit' || column == 'used' ) %]
+                            <img
+                                class="quota_sensitive"
+                                src='[% varcache.warning_image %]'
+                                alt='[% varcache.warning_string %]'
+                                title='[% locale.maketext("Warning: Quotas are currently disabled.") %]'
+                                style="display:none;"
+                            />
+                        [% END %]
+                        </a>
+                    </div>
+                </th>
+                [% END %]
+            </tr>
+
+[%-
+    varcache.set( 'cpanel_disable_image', MagicRevision('/images/cpanel-disabled.png') );
+    varcache.set( 'cpanel_image', MagicRevision('/images/cpanel.png') );
+    varcache.set( 'plus_image', MagicRevision('/plus.gif') );
+    varcache.set('account_impersonation_disabled_string', locale.maketext("[asis,cPanel] account impersonation is disabled."));
+    varcache.set('missing_string', locale.maketext("Missing"));
+    varcache.set('warning_string', locale.maketext("Warning!"));
+    varcache.set('unknown_string', locale.maketext("Unknown"));
+    varcache.set('unlimited_string', locale.maketext("unlimited"));
+    varcache.set('quota_disabled_string', locale.maketext("Disabled"));
+    varcache.set('NA_string', locale.maketext("N/A"));
+-%]
+
+            [% IF data.showcount == 0 %]
+            <tr>
+                <td colspan="[% NUMBER_OF_COLUMNS %]" class="final">
+                    <p>
+                    [% IF settings.has_search_filter_sort %]
+                        [% locale.maketext("There are no matching accounts on your system.") %]
+                    [% ELSE %]
+                        [% locale.maketext("There are no accounts on your system.") %]
+                    [% END %]
+                    [% IF show_createacct %]
+                        <!-- Quick link to account creation page -->
+                        <a href="[% cp_security_token %]/scripts5/wwwacctform" id="create_account_link_in_table">[% locale.maketext("Create a New Account") %]</a>
+                    [% END %]
+                    </p>
+                </td>
+            </tr>
+            [% END %]
+
+            [% FOR acct IN data.accts; varcache.set('acct',acct); %]
+                [% SET username = acct.user %]
+
+                [% IF child_workload_accts.exists($username) %]
+                    <tr class="child-account-row">
+                        [%# Control Column -%]
+                        <td class="control-col"></td>
+
+                        [%# Domain Column -%]
+                        <td>[% varcache.acct.domain.html()
+                        %]&nbsp;</td>
+
+                        <td class="child-account-msg" colspan="[% NUMBER_OF_COLUMNS - 2 %]">
+                            [% locale.maketext('User Editing Locked:') %] [% locale.maketext('You must edit this account on the parent node.') %]
+                        </td>
+                    </tr>
+                [% ELSE %]
+                    <tr onclick="clickrow(this)" email="[% varcache.acct.email.html() %]" user="[% varcache.acct.user.html() %]" domain="[% varcache.acct.domain.html() %]" suspended="[% varcache.acct.is_suspended %]" suspension_locked="[% varcache.acct.suspension_locked.html() %]" suspension_date="[% varcache.acct.suspension_date == 1 ? bandwidth_exceeded_text : CPDate.iso_format(varcache.acct.suspension_date).replace('\s','&nbsp;') %]" suspension_reason="[% varcache.acct.suspension_reason.html() %]" class="[% (loop.index % 2) ? 'tdshade1' : 'tdshade2' %][% IF varcache.acct.is_suspended %] suspended[% END -%][% IF child_workload_accts.$acct.user %]disabled[% END -%]">
+
+                        [%# Control Column -%]
+                        <td class="control-col" onclick="toggleRowEditor(this, false, 'password[% varcache.acct.user.html() %]'); Bubble_Click = true;" title="[% locale.maketext("Open the actions panel for this account.") %]"><img border="0" src="[% varcache.plus_image %]"></td>
+
+                        [%# Domain Column -%]
+                        <td><a href="http://[% varcache.acct.domain.html() %]" class="domain-link" target="_blank" title="[% locale.maketext("Browse to the site hosted at: [_1]", varcache.acct.domain.html()) %]">[% varcache.acct.domain.html() %]&nbsp;</a></td>
+
+                        [%# cPanel Account Impersonation Column -%]
+                        [% IF settings.transferheader %]
+                        [%- IF varcache.acct.can_login -%]
+                        <td>
+                        <form method='POST' ACTION='/xfercpanel' target="_blank">
+                            <input type='hidden' name='token' value="[% cp_security_token %]">
+                            <input type='hidden' name='user' value="[% varcache.acct.user.uri() %]">
+                            <input type="image" src="[% varcache.cpanel_image %]" border="0">
+                        </form>
+                        </td>
+                        [%- ELSE -%]
+                        <td><img src="[% varcache.cpanel_disable_image %]" border="0" title="[% varcache.account_impersonation_disabled_string %]"></td>
+
+                        [%- END -%]
+                        [% END %]
+
+                        [%# IP Address Column -%]
+                        <td class="nowrap">
+                        [% IF varcache.acct.ip %]
+                            <a href="http://[% varcache.acct.ip.uri() %]/~[% varcache.acct.user.uri() %]/" target="_blank" title="[% locale.maketext("View the files hosted at this domain.") %]">[% varcache.acct.ip.html() %]</a>
+                        [% ELSE %]
+                            <img src='[% varcache.error_image %]' alt='[% varcache.warning_string %]' title='[% locale.maketext("Warning: No IP address set for this account.") %]'> <span>[% varcache.missing_string %]</span>
+                        [% END %]
+                        </td>
+
+                        [%# Username Column -%]
+                        <td>
+                            [% varcache.acct.user.html() %]
+                        </td>
+
+                        [%# Email Address Column -%]
+                        <td>
+                            [% IF varcache.acct.email %]
+                            <a href="mailto:[% varcache.acct.email.uri() %]" title="[% locale.maketext("Send an email to “[_1]”.", varcache.acct.email.html()) %]">[% varcache.acct.email.html() %]</a>
+                            [% END %]
+                        </td>
+
+                        [%# Account Start Date Column -%]
+                        <td class="nowrap">
+                            [% IF varcache.acct.startdate %]
+                            [% CPDate.iso_format(varcache.acct.startdate) %]
+                            [% ELSE %]
+                            <span>[% varcache.unknown_string %]</span>
+                            [% END %]
+                        </td>
+
+                        [%# Partition Column -%]
+                        <td class="[% IF acl.item('rearrange-accts') %]editor[% END %]">
+                            [% varcache.acct.partition.html() %]
+                        </td>
+
+                        [%# Number Column -%]
+                        <td class="number">
+                            <span class="quota_sensitive" style="display:none;">[% varcache.quota_disabled_string %]</span>
+                            <span class="quota_insensitive">
+                            [% IF varcache.acct.disklimit %]
+                                [% varcache.acct.disklimit div 1024 %]&nbsp;MB
+                            [% ELSE %]
+                                [% varcache.unlimited_string %]
+                            [% END %]
+                            </span>
+                        </td>
+
+                        [%# Diskspace Used Column - this is returned in MB. -%]
+                        <td class="number">
+                                <span class="quota_sensitive" style="display:none;">[% varcache.NA_string %]</span>
+                                <span class="quota_insensitive">[% varcache.acct.diskused_mb %]&nbsp;MB</span>
+                        </td>
+
+                        [%# Plan Column -%]
+                        <td>
+                            [% IF varcache.acct.plan %]
+                                [% IF Whostmgr.checkacl('edit-pkg') %]
+                                    <a href="../scripts/editpkg2?pkg=[% varcache.acct.plan.html %]" target="_blank" title="[% locale.maketext('View the “[_1]” package settings.', varcache.acct.plan.html) %]">[% varcache.acct.plan.html %]</a>
+                                [% ELSE %]
+                                    [% varcache.acct.plan.html %]
+                                [% END %]
+                            [% ELSE %]
+                            <img src='[% varcache.error_image %]' alt='[% varcache.warning_string %]' title='[% locale.maketext("Warning: No plan set for this account.") %]'><span>[% varcache.unknown_string %]</span>
+                            [% END %]
+                        </td>
+
+                        [%# Theme Column -%]
+                        <td>
+                            [% IF varcache.acct.theme %]
+                            [% varcache.acct.theme.html %]
+                            [% ELSE %]
+                            <img src='[% varcache.error_image %]' alt='[% varcache.warning_string %]' title='[% locale.maketext("Warning: No theme set for this account.") %]'><span>[% varcache.unknown_string %]</span>
+                            [% END %]</td>
+
+                        [%# Reseller Column -%]
+                        <td>
+                            [% varcache.acct.owner.html() %]
+                        </td>
+
+                        [%# Suspended state Column %]
+                        <td>
+                            [% IF varcache.acct.startdate -%]
+                                [%- IF varcache.acct.suspension_date == 1 # TODO: There should be a better way to know when a user is bandwidth-suspended in order to display something sensible here. -%]
+                                    [%- bandwidth_exceeded_text -%]
+                                [%- ELSE -%]
+                                    [%- CPDate.iso_format(varcache.acct.suspension_date).replace('\s','&nbsp;') -%]
+                                [%- END -%]
+                            [%- ELSE -%]
+                                <span>[% varcache.unknown_string -%]</span>
+                            [%- END %]
+                        </td>
+
+                        [% IF data.display_upgrade_opportunities %]
+                        [%-# Upgrade Opportunities Column -%]
+                        <td class="upgrade-opportunities">
+                            <ul class="upgrade-opportunity">
+                            [%
+                            # varcache does not implement TT hash virtual methods
+                            FOREACH opportunity IN acct.upgrade_opportunities.keys.sort;
+                                FOREACH message IN acct.upgrade_opportunities.$opportunity;
+                            -%]
+                                <li><i class="[% upgrade_opportunity_icon.$opportunity || upgrade_opportunity_icon.default %]" aria-hidden="true"></i> [% message.html %]</li>
+                            [%-
+                                END;
+                            END;
+                            %]
+                            </ul>
+                        </td>
+                        [% END %]
+                [% END %]
+                    </tr>
+            [% END %]
+            </table>
+        </div>
+    </div>
+
+    <div class="pager-section pager-section-bottom group">
+        [% pagecontrols %]
+        <div class="controls controls-bottom" style="float:right;"><a href="../scripts/fetchcsv" target="_blank">[% locale.maketext("Download all records to a [output,acronym,CSV,Comma Separated Values] file.") %]</a></div>
+    </div>
+
+[% IF data.showcount > BOTTOM_SEARCH_THRESHOLD %]
+    [% search(data, locale, 'bottom') %]
+[% END %]
+
+[% IF show_createacct %]
+<!-- Quick link to account creation page -->
+<p><a href="[% cp_security_token %]/scripts5/wwwacctform" class="btn btn-primary" id="create_account_link_bottom">[% locale.maketext("Create a New Account") %]</a></p>
+[% END %]
+[% END %]
+
+[% PROCESS '_loadjs.tmpl' src='/js/sorttable.js' %]
+<script type="text/javascript">
+var hasoutevent = {};
+var DOM = YAHOO.util.Dom;
+function initializeCellSubmit() {
+
+    // This function initializes the handers to makes the entire
+    // surface of the sortable header cells for the table clickable
+    // to initiate the sorting.
+
+    var Event = YAHOO.util.Event;
+
+    var tr = DOM.getElementsByClassName("tblheader0");
+    if(tr) {
+        var sortableColumns = DOM.getElementsByClassName("yui-dt-sortable", "th", tr[0]);
+
+        if(sortableColumns) {
+            var cellClick = function(evt) {
+                var as = DOM.getElementsBy(function() {return true;}, "a", evt.target);
+                if(as.length) {
+                    window.location = as[0].href;
+                }
+            }
+
+            for(var i = 0, l = sortableColumns.length; i < l; i++) {
+                Event.addListener(sortableColumns[i], "click", cellClick);
+            }
+        }
+    }
+}
+
+function toggleRowEditor(el, noCollapse, focusEl, inForm) {
+
+    // This function toggles the row editor from open to closed
+    var Dom = YAHOO.util.Dom;
+
+    // Get the parent row and then the first column
+    var exptd = null;
+    if(!inForm) {
+        exptd = DOM.getAncestorByTagName(el, 'tr').cells[0];
+    }
+    else {
+        var row = DOM.getAncestorByTagName(el, 'tr');
+        if(row)
+            exptd = DOM.getPreviousSibling(row).cells[0];
+    }
+
+    // Find the image tag in that cell
+    var img;
+    for ( var i = 0, l = exptd.childNodes.length; i < l; i++ ) {
+        if (exptd.childNodes[i].tagName == "IMG") {
+            img = exptd.childNodes[i];
+            break;
+        }
+    }
+
+    // Toggle the output
+    if (img.src.indexOf("plus.gif") > 0) {
+        img.src='[% MagicRevision('/minus.gif') %]';
+        expandRow(exptd.parentNode);
+    }
+    else {
+        if (!noCollapse) {
+            img.src='[% MagicRevision('/plus.gif') %]';
+            collapseRow(exptd.parentNode);
+        }
+    }
+
+    if(focusEl) {
+        setElementFocus(focusEl);
+    }
+}
+
+function collapseRow(ownerRow) {
+    var tBodyEl = ownerRow.parentNode;
+    var nextSib = ownerRow.nextSibling;
+    var div = nextSib.childNodes[0];
+    if (nextSib.getAttribute('dynarow') == 1) {
+        CPANEL.animate.slide_up(nextSib, function() { tBodyEl.removeChild(nextSib); } );
+    }
+}
+
+var USER_TRANSFERRED_MESSAGE_RE = new RegExp('^[% data.user_transferred_message %]$');
+
+
+function expandRow(ownerRow) {
+    var Dom = YAHOO.util.Dom;
+
+    var domainLinkEl = ownerRow.querySelector('a.domain-link');
+    var domainIsOverflowing = domainLinkEl.scrollWidth > domainLinkEl.offsetWidth;
+
+    var user = ownerRow.getAttribute('user');
+    var email = ownerRow.getAttribute('email');
+    var domain = ownerRow.getAttribute('domain');
+    var is_suspended = ownerRow.getAttribute('suspended');
+    var suspension_locked = ownerRow.getAttribute('suspension_locked');
+    var suspended_reason = ownerRow.getAttribute('suspension_reason');
+    var suspended_date = ownerRow.getAttribute('suspension_date');
+
+    var tBodyEl = ownerRow.parentNode;
+    var nextSib = ownerRow.nextSibling;
+    var newtr = document.createElement('tr');
+    var newtd = document.createElement('td');
+    newtr.setAttribute('dynarow', 1);
+    newtr.className = ownerRow.className.replace(/\bclicked\b/,"").replace(/\s+/,' ').trim();
+    newtd.setAttribute('colspan', ownerRow.cells.length);
+    newtd.className = "editor-cell";
+    if (newtd.colSpan) {
+        newtd.colSpan = ownerRow.cells.length;
+    }
+
+    var command_template  =
+        "<a class='editor-closer' id='close" + user + "' title='[% locale.maketext("Close the editor panel.") %]' onclick='toggleRowEditor(this,null,null,true); return false;'><img src='[% varcache.close_image %]' alt='[% locale.maketext("Close") %]'></a>" +
+        (domainIsOverflowing ? "<div class='wordbreak full-domain'><label>[% locale.maketext('Full Domain:') %]</label> " + domain + "</div>" : "") +
+        "<div class='editor-container group'>";
+        [% IF acl.passwd -%]
+        command_template += "<div class='sub-form password-form'>" +
+        "  <form method='POST' ACTION='../scripts/passwd'>" +
+        "    <input type='text' style='display:none'>" +
+        "    <input type='password' autocomplete='off' style='display:none'>" +
+        "    <label for='password" + user + "'>[% locale.maketext("Change Password:") %]</label>" +
+        "    <input id='password" + user + "' type='password' autocomplete='off' name='password'>" +
+        "    <input type='hidden' name='user' value='" + user + "'>" +
+        "    <input type='hidden' name=passwordtoken value='[% data.passwordtoken %]'>" +
+        "    <input class='btn btn-primary' type='submit' value='[% locale.maketext("Change") %]'>" +
+        "    <div class='enablemysql-loader-container' id='enablemysql_loader-" + user + "' style='clear:both'> " +
+                "<div>" +
+                    "<img src='[% MagicRevision( '/images/report-spinner.gif') %]' class='enablemysql-loading' id='enablemysql-loading-" + user + "'/>" +
+                    "[% locale.maketext("Determining database password status …") %]" +
+                "</div>" +
+        "    </div> " +
+        "    <div class='enabledigestauth-loader-container' id='enabledigestauth_loader-" + user + "' style='clear:both'> " +
+                "<div>" +
+                    "<img src='[% MagicRevision( '/images/report-spinner.gif') %]' class='enabledigest-loading' id='enabledigest-loading-" + user + "'/>" +
+                    "[% locale.maketext("Determining Digest Authentication status …") %]" +
+                "</div>" +
+        "    </div> " +
+        "    <div class='enablemysql-container' id='enablemysql_container-" + user + "' style='clear:both;display:none;'> " +
+                "<div class='checkbox'>" +
+                    "<label for='enablemysql-" + user + "'>[% locale.maketext("Synchronize database password") %]" +
+                    "<input class='enablemysql' type='checkbox' id='enablemysql-" + user + "' name='enablemysql' value='1' checked='checked'>" +
+                    "</label>" +
+                    "<span class='fas fa-question-circle fa-large' id='enablemysql-info' onclick=" + '"' + "CPANEL.ajax.toggleToolTip(this,'[% locale.maketext('Synchronize database password') %]');" + '"' + " title='[% locale.maketext('This option will set your database password to be the same as your new password.') %] [% locale.maketext('If a “[_1]” file exists in the user’s home directory and they still want to use the password in their “[_1]” file, uncheck this option.','.my.cnf') %]'></span>" +
+                "</div>" +
+        "    </div> " +
+        "    <div class='enabledigest-container' id='enabledigest_container-" + user + "' style='clear:both;display:none;'> " +
+                "<div class='checkbox'>" +
+                    "<label for='enabledigest-" + user + "'>[% locale.maketext("Enable Digest Authentication") %]" +
+                    "<input class='enabledigest' type='checkbox' id='enabledigest-" + user + "' name='enabledigest' value='1' checked='checked'>" +
+                    "</label>" +
+                    "<span class='fas fa-question-circle fa-large' id='enabledigest-info' onclick=" + '"' + "CPANEL.ajax.toggleToolTip(this,'[% locale.maketext('Digest Authentication') %]');" + '"' + " title='[% locale.maketext('[list_and,_*] require Digest Authentication support to be enabled in order to access your Web Disk over a clear text/unencrypted connection.', 'Windows Vista®', 'Windows® 7', 'Windows® 8') %] [% locale.maketext('If the server has an SSL certificate signed by a recognized certificate authority and you are able to make an SSL connection over port 2078, you do not need to enable this.') %]'></span>"+
+                "</div>" +
+        "    </div> " +
+        "  </form>" +
+        "</div>";
+        [% END -%]
+        command_template += "<div class='sub-form email-form'>" +
+        "  <form method='POST' ACTION='../scripts2/dochangeemail'>" +
+        "    <label for='user" + user + "'>[% locale.maketext("Change Contact Email:") %]</label>" +
+        "    <input type='hidden' name='user' value='" + user.html_encode() + "'>" +
+        "    <input type='hidden' name='oldemail' value='" + email.html_encode() + "'>" +
+        "    <input id='user" + user + "' type='text' name='email' value='" + email.html_encode() + "'>" +
+        "    <input class='btn btn-primary' type='submit' value='[% locale.maketext("Change") %]'>" +
+        "  </form>" +
+        "</div>";
+        [% IF acl.item('suspend-acct') %]
+        command_template += "<div class='sub-form suspend-form'>";
+    if( is_suspended == 1){
+        command_template += "<div>" +
+        "    <div><strong>[% locale.maketext("Account Suspended") %]</strong></div>" +
+        "    <div><strong>[% locale.maketext("Reason") %]</strong> " + suspended_reason.html_encode() + "</div>" +
+        "    <div><strong>[% locale.maketext("Suspended") %]</strong> " + suspended_date + "</div>";
+        [% IF acl.all %]
+        command_template += "    <div><strong>[% locale.maketext("Suspension Locked") %]</strong> ";
+        command_template += (suspension_locked == 1 ) ? "Yes" : "No";
+        command_template += "</div>";
+        [% END %]
+        command_template += "</div>";
+        [%- IF ! acl.all %]
+        if( suspension_locked == 1){
+            command_template +=
+            "    <span class='dlink'>" +
+            "        <button class='btn btn-primary' disabled=1 title='[%locale.maketext("Suspension Locked")%]'>" +
+            "            <span>[% locale.maketext("Suspension Locked") %]</span>" +
+            "        </button>" +
+            "    </span>";
+        }
+        else{
+        [%- END %]
+            command_template +=
+            "    <span class='dlink'>" +
+            "        <button class='btn btn-primary' onclick='unsuspendAccount(\"" + user + "\", \"" + domain + "\")' title='[%locale.maketext("Unsuspend")%]'>" +
+            "            <span>[% locale.maketext("Unsuspend") %]</span>" +
+            "        </button>";
+            if( USER_TRANSFERRED_MESSAGE_RE.exec(suspended_reason) ){
+                command_template +=
+                '        <div class="checkbox"> \
+                            <label> \
+                                <input id="retain-proxying" type="checkbox" name="retain-proxying" value="1" /> \
+                                [% locale.maketext('Retain [output,url,_1,Service Proxying,target,serviceProxyingDocs]','https://go.cpanel.net/ServiceProxying') %] \
+                            </label> \
+                            <span \
+                                id=\'retain-proxying-info\' \
+                                class=\'fas fa-question-circle fa-large\' \
+                                onclick=\'CPANEL.ajax.toggleToolTip(this,"[% locale.maketext('Retain Service Proxying') %]");\' \
+                                title=\'[% locale.maketext('Select this checkbox to keep the account’s current service proxying settings. If you do not select this checkbox, the system will disable service proxying by default.') %]\'> \
+                                &nbsp; \
+                            </span> \
+                        </div>';
+            }
+            command_template += "    </span>";
+        [%- IF ! acl.all %]
+        }
+        [%- END %]
+    }
+    else{
+        command_template +=
+            "<form method='POST' action='../scripts2/suspendacct'>" +
+            "    <label for='user-" + user + "'>[% locale.maketext("Suspend Account") %]</label>" +
+            "    <input type='hidden' name='user' value='" + user + "'>" +
+            "    <input type='hidden' name='domain' value='" + domain + "'>" +
+            "    <input type='hidden' name='suspend-domain' value='Suspend'>" +
+            "    <input type='text' name='reason' id='suspend-" + user + "-reason'>" +
+            "    <input class='btn btn-primary' type='submit' value='[%locale.maketext("Suspend")%]' />" +
+            [%- IF acl.all -%]
+            "    <div class='localsuspension-container' id='locksuspension_container-" + user + "' style='clear:both'> " +
+            "        <div class='checkbox'>" +
+            "            <label for='reason-" + user + "'>[% locale.maketext("Prevent unsuspending") %]" +
+            "                <input class='enabledigest' type='checkbox' name='disallowun' id='reason-" + user + "' value='1'>" +
+            "            </label>" +
+            "            <span class='fas fa-question-circle fa-large' id='prevent-unsuspend-info' onclick='CPANEL.ajax.toggleToolTip(this,\"[% locale.maketext('Prevent unsuspending') %]\");' title='[% locale.maketext('Only resellers with the All privilege are allowed to unsuspend.') %]'>&nbsp;</span>" +
+            "        </div>" +
+            "    </div>" +
+            [%- END -%]
+            "</form>";
+    }
+            [%# End Suspend Account Block %]
+    command_template += "</div></div>";
+            [% END -%]
+
+        [% IF acl.all || acl.item('rearrange-accts') || acl.quota || acl.item('upgrade-account') || acl.item('edit-account') || acl.item('suspend-acct') || acl.item('kill-acct') %]
+            command_template += "<div class='actions-container group'>" +
+            "    <label class='title'>[% locale.maketext("Actions:") %]</label>" +
+            "    <div class='button-container'>";
+            [% IF acl.all %]
+            command_template +="    <span class='dlink'>" +
+            "        <button class='btn btn-primary' onclick='window.location=\"../scripts2/changeip?domain=" + domain + "&user=" + user + "\"' title='[% locale.maketext("Change the account’s IP address.") %]'>" +
+            "            <span>[% locale.maketext("Change IP Address") %]</span>" +
+            "        </button>" +
+            "    </span>";
+            [% END %]
+            [% IF acl.item('rearrange-accts') %]
+            command_template += "    <span class='dlink'>" +
+            "        <button class='btn btn-primary' onclick='window.location=\"../scripts/rearrangeacct?domain=" + user + "&user=" + user + "\"' title='[%locale.maketext("Change the accounts disk partition.")%]'>" +
+            "            <span>[% locale.maketext("Change Disk Partition") %]</span>" +
+            "        </button>" +
+            "    </span>";
+            [% END %]
+            [% IF acl.quota %]
+            command_template += "    <span class='dlink'>" +
+            "        <button class='btn btn-primary' onclick='window.location=\"../scripts/quotalist?domain=" + domain + "&user=" + user +"\"' title='[%locale.maketext("Change the accounts disk quota.")%]'>" +
+            "            <span>[% locale.maketext("Change Quota") %]</span>" +
+            "        </button>" +
+            "    </span>";
+            [% END %]
+            [% IF acl.item('upgrade-account') %]
+                command_template += "    <span class='dlink'>" +
+            "        <button  class='btn btn-primary' onclick='window.location=\"../scripts/selectupgrade?domain=" + domain + "&user=" + user + "\"' title='[%locale.maketext("Change the account plan.")%]'>" +
+            "            <span>[% locale.maketext("Change Plan") %]</span>" +
+            "        </button>" +
+            "    </span>";
+            [% END %]
+            [% IF acl.item('edit-account') %]
+            command_template += "    <span class='dlink'>" +
+            "        <button class='btn btn-primary' onclick='window.location=\"../scripts/edituser?domain=" + domain + "&user=" + user + "\"' title='[%locale.maketext("Change the account using the Modify Accounts.")%]'>" +
+            "            <span>[% locale.maketext("Modify Account") %]</span>" +
+            "        </button>" +
+            "    </span>";
+            [% END %]
+            [% IF acl.item('kill-acct') %]
+            command_template += "    <span class='dlink'>" +
+            "        <button class='btn btn-primary' onclick='window.location=\"../scripts4/multikillacct/" + user + "\"' title='[%locale.maketext("Terminate Account")%]'>" +
+            "            <span>[% locale.maketext("Terminate Account") %]</span>" +
+            "        </button>" +
+            "    </span>";
+            [% END %]
+
+
+    command_template += "</div>";
+        [%# End first acl check -%]
+        [% END -%]
+    command_template += "</div>";
+
+    newtd.innerHTML = command_template;
+    newtr.appendChild(newtd);
+    var div = newtr.childNodes[0];
+    YAHOO.util.Dom.removeClass(newtr, 'activerow');
+    tBodyEl.insertBefore(newtr, nextSib);
+
+    var mycnf_api_call = {
+            func: "has_mycnf_for_cpuser",
+            version: "1",
+            data: {
+                user: user
+            }
+        };
+
+    mycnf_api_call.callback = {
+        success: function(o) {
+            CPANEL.animate.slide_up('enablemysql_loader-' + user);
+
+            var response = YAHOO.lang.JSON.parse( o.responseText );
+            if ( response && response.metadata && response.metadata.result === 1 ) {
+               var userMysqlCheck = DOM.get('enablemysql-' + user);
+               if (userMysqlCheck) {
+                    if (  parseInt(response.data.has_mycnf_for_cpuser) ) {
+                        userMysqlCheck.checked = false;
+                        CPANEL.animate.slide_down('enablemysql_container-' + user);
+                    } else {
+                        userMysqlCheck.checked = true;
+                    }
+               }
+            }
+        },
+        failure: function(o) {
+            CPANEL.animate.slide_up('enablemysql_loader-' + user);
+            var userMysqlCheck = DOM.get('enablemysql-' + user);
+            if (userMysqlCheck) {
+                userMysqlCheck.checked = true;
+            }
+        }
+    };
+
+    CPANEL.api(mycnf_api_call);
+
+    var digest_auth_api_call = {
+            func: "has_digest_auth",
+            version: "1",
+            data: {
+                user: user
+            }
+        };
+
+    digest_auth_api_call.callback = {
+        success: function(o) {
+            CPANEL.animate.slide_up('enabledigestauth_loader-' + user);
+
+            var response = YAHOO.lang.JSON.parse( o.responseText );
+            if ( response && response.metadata && response.metadata.result === 1 ) {
+                var userDigestCheck = DOM.get('enabledigest-' + user);
+
+                if (userDigestCheck) {
+                    userDigestCheck.checked = parseInt(response.data.digestauth, 10) ? true : false;
+                    CPANEL.animate.slide_down('enabledigest_container-' + user);
+                }
+            }
+        },
+        failure: function(o) {
+            CPANEL.animate.slide_up('enabledigestauth_loader-' + user);
+        }
+    };
+
+
+    CPANEL.api(digest_auth_api_call);
+
+}
+
+function setDefaultFocus() {
+    var searchTextEl = document.getElementById('searchtxttop');
+    if (searchTextEl) {
+        var len = searchTextEl.value ? searchTextEl.value.length : 0;
+        searchTextEl.focus();
+        setCaretPosition(searchTextEl, len);
+    }
+}
+
+function unsuspendAccount(user, domain) {
+    var retainProxyingEl = document.getElementById('retain-proxying');
+    var retainProxying = retainProxyingEl && retainProxyingEl.checked ? "1" : "0";
+    window.location = "../scripts2/suspendacct?user=" + user + "&domain=" + domain + "&unsuspend-domain=Unsuspend&reason=&retain-proxying=" + retainProxying;
+}
+
+function setElementFocus(el) {
+    if(isString(el))
+        el = document.getElementById(el);
+    if(el) {
+        setTimeout(function() {
+            var that = el;
+            that.focus();
+            }, 0);
+    }
+}
+
+function isString(obj) {
+    return obj !== undefined && obj != null && obj.toLowerCase !== undefined;
+}
+
+
+function setCaretPosition(el, pos) {
+    if(el.setSelectionRange) {
+        el.focus();
+        el.setSelectionRange(pos, pos);
+    }
+    else if(el.createTextRange) {
+        var range = el.createTextRange();
+        range.collapse(true);
+        range.moveEnd('character', pos);
+        range.moveStart('character', pos);
+        range.select();
+    }
+}
+
+Bubble_Click = false;
+function clickrow(row_el) {
+    if (Bubble_Click) {
+        Bubble_Click = false;
+        return;
+    }
+    CPANEL.dom.toggle_class(row_el, 'clicked');
+}
+
+// Show or hide additional form input options based on input selection
+function optionsChange(selected_el) {
+    var selected_name = selected_el.getAttribute("name");
+    var enclosing_form = selected_el.form;
+
+    // For all input elements of the same name in the enclosing form...
+    enclosing_form
+        .querySelectorAll('input[name="' + selected_name + '"]')
+        .forEach(function(input_el) {
+            var input_id = input_el.getAttribute("id");
+
+            // If an element ID exists that matches the input ID w/ _options
+            // suffix, then hide or unhide that element depending on input state
+            var options_el = enclosing_form.querySelector("#" + input_id + "_options");
+            if (options_el) {
+                if (input_el.checked) {
+                    options_el.classList.remove("hidden");
+                } else {
+                    options_el.classList.add("hidden");
+                }
+            }
+        });
+}
+
+YAHOO.util.Event.addListener(window,'load',setDefaultFocus);
+YAHOO.util.Event.addListener(window,'load',initializeCellSubmit);
+</script>
+
+[% PROCESS '_ajaxapp_footer.tmpl' -%]

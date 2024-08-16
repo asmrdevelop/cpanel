@@ -1,0 +1,28 @@
+[%-
+    PROCESS "include/icons.tmpl";
+    IF NOTICE.custom_subject;
+        get_icon(icon='warning') _ " " _ NOTICE.custom_subject;
+    ELSE;
+        IF NOTICE.days_left.defined && NOTICE.hrs_left.defined;
+            IF NOTICE.replacement;
+                get_icon(icon='warning') _ " " _ CPANEL.locale.maketext('The system will automatically switch the [_1] service to [_2] in [quant,_3,day,days] and [quant,_4,hour,hours] in order to continue receiving updates.', NOTICE.service_name, NOTICE.replacement, NOTICE.days_left, NOTICE.hrs_left);
+            ELSE;
+                get_icon(icon='warning') _ " " _ CPANEL.locale.maketext('The system will automatically remove the [_1] service in [quant,_2,day,days] and [quant,_3,hour,hours] in order to continue receiving updates.', NOTICE.service_name, NOTICE.days_left, NOTICE.hrs_left);
+            END;
+        ELSE;
+            IF NOTICE.failed_to_convert;
+                IF NOTICE.replacement;
+                    get_icon(icon='failed') _ " " _ CPANEL.locale.maketext('Failed to replace [_1] with [_2].', NOTICE.service_name, NOTICE.replacement);
+                ELSE;
+                    get_icon(icon='failed') _ " " _ CPANEL.locale.maketext('Failed to automatically remove [_1] from the server.', NOTICE.service_name);
+                END;
+            ELSE;
+                IF NOTICE.replacement;
+                    get_icon(icon='success') _ " " _ CPANEL.locale.maketext('The system replaced the service [_1] with [_2].', NOTICE.service_name, NOTICE.replacement);
+                ELSE;
+                    get_icon(icon='success') _ " " _ CPANEL.locale.maketext('The system removed the service: [_1].', NOTICE.service_name);
+                END;
+            END;
+        END;
+    END;
+-%]

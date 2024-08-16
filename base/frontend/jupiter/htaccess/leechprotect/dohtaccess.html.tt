@@ -1,0 +1,183 @@
+[%
+USE JSON;
+
+SET CPANEL.CPVAR.dprefix = "../../";
+
+Api1.pre_exec("LeechProtect", "status");
+SET protection_status = Api1.exec("LeechProtect", "status", [ RAW_FORM.dir ]);
+Api1.post_exec("LeechProtect", "status");
+
+SET protection_disabled = protection_status == 'disabled';
+
+IF !protection_disabled;
+    Api1.pre_exec("LeechProtect", "setup");
+    SET email = Api1.exec("LeechProtect", "setup", [ RAW_FORM.dir,"email", "raw" ]);
+    SET email_checkbox_state = email != 'Invalid' ? 1 : 0;
+    SET num_hits = Api1.exec("LeechProtect", "setup", [ RAW_FORM.dir, "numhits", "raw" ]);
+    SET url = Api1.exec("LeechProtect", "setup", [ RAW_FORM.dir, "url", "raw" ]);
+    SET disabled_compromised_accounts = Api1.exec("LeechProtect", "setup", [ RAW_FORM.dir, "kill", "raw" ]);
+    Api1.post_exec("LeechProtect", "setup");
+END;
+
+Api1.pre_exec("LeechProtect", "showpasswdfile");
+SET show_passwd_file = Api1.exec("LeechProtect", "showpasswdfile", [ RAW_FORM.dir ]);
+Api1.post_exec("LeechProtect", "showpasswdfile");
+
+# Clean up all consecutive // issues
+SET directory = RAW_FORM.dir.replace('/+', '/').replace('/$', '');
+SET from_parent_node = FORM.is_parent;
+SET quoted_home_directory = CPANEL.homedir.quotemeta();
+IF directory.match("^${quoted_home_directory}/.+");
+    # If we are not in the root folder remove
+    # one folder from the end to find the parent
+    SET return_dirs = directory.split('/+');
+    CALL return_dirs.pop();
+    SET up_one_directory = return_dirs.join('/');
+END;
+
+# If this page is loaded from the parent Edit link, we don't
+# want to trim off the child.
+SET return_url = 'leechprotect.html?dir=' _ (!from_parent_node ? up_one_directory.uri() : directory.uri() || '/') _ '&is_parent=' _ from_parent_node * 1;
+%]
+
+[% WRAPPER '_assets/master.html.tt'
+    app_key = 'leech_protection',
+    page_scripts = [
+        "htaccess/leechprotect/dohtaccess.js"
+    ]
+-%]
+<div class="body-content">
+    <p id="descLeechProtect" class="description">
+        [% locale.maketext("Leech Protect allows you to prevent your users from giving out or publicly posting their passwords to a restricted area of your site. This feature will redirect accounts which have been compromised to a URL of your choice (and suspend them, if you choose).") %]
+    </p>
+
+    [% IF (CPANEL.feature('cpanelpro_leechprotect')) %]
+    <p id="leechProtectDisabled">
+        <strong>
+	[% IF (protection_disabled) %]     
+            [% locale.maketext("Leech protection is currently disabled on “[_1]”.", directory.html()) %]
+	[% ELSE %]
+            [% locale.maketext("Leech protection is currently enabled on “[_1]”.", directory.html()) %]
+	[% END %]
+        </strong>
+    </p>
+
+    <div class="section">
+        <h2 id="hdrSetupLeech">
+            [% locale.maketext("Set up Leech Protection") %]
+        </h2>
+        <form action="doleech.html" name="leechform" method="post">
+            <input type="hidden" name="dir" value="[% directory.html() %]">
+            <input type="hidden" name="is_parent" id="is_parent" value="[% FORM.is_parent %]">
+
+            <div class="form-group">
+                <label id="lblNumHits" for="numhits">
+                    [% locale.maketext("Number of Logins Per Username Allowed in a 2-Hour Period") %]
+                </label>
+                <div class="row">
+                    <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                        <input id="numhits" type="text" class="form-control" name="numhits" value="[% num_hits != 'Invalid' ? num_hits.html() : '' %]" size="2">
+                        <span id="lblNumHitsHelper" class="help-block">
+                            [% locale.maketext("Four is recommended, as setting the number lower than four can cause suspension of legitimate users who have disconnected from, then reconnected to, their ISPs. If users are reconnecting from the same network subnet, their accounts will not be disabled.") %]
+                        </span>
+                    </div>
+                    <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6"> </div>
+                </div>
+            </div>
+            <div class="form-group">
+                <label id="lblUrlToRedirect" for="rurl">
+                    [% locale.maketext("URL to Redirect Leech Users to") %]
+                </label>
+                <div class="row">
+                    <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                        <input id="rurl" type="text" class="form-control" name="rurl" size="40" value="[% url != 'Invalid' ? url.html() : '' %]">
+                        <span id="lblRurlHelp" class="help-block">
+                            [% locale.maketext("You must choose a URL outside of the leech-protected area, or the leech users will get an internal server error message.") %]
+                        </span>
+                    </div>
+                    <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6"> </div>
+                </div>
+            </div>
+            <div class="form-group">
+                <div class="row">
+                    <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                        <div class="checkbox">
+                            <label id="lblChkEmail">
+                                 <input id="emailcheck" type="checkbox"  name="emailcheck" value="1" [% email_checkbox_state == 1 ? ' checked' : '' %] >
+                                 [% locale.maketext("Send Email Alert To") %]
+                            </label>
+                        </div>
+                    </div>
+                    <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6"> </div>
+                </div>
+                <div class="row">
+                    <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                        <input id="email" type="text" class="form-control"  name="email" size="30" value="[% email != 'Invalid' ? email.html() : '' %]">
+                        <span id="lblEmailHelp" class="help-block">
+                            [% locale.maketext("The system will send an email to this address when leech protection redirects users from the site.") %] <em id="lblEmailHelpNote">[% locale.maketext("[output,em,NOTE]: If you do not disable leech accounts, you may receive a large number of these emails.") %]</em>
+                        </span>
+                    </div>
+                    <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6"> </div>
+                </div>
+            </div>
+            <div class="form-group">
+                <div class="row">
+                    <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                        <div class="checkbox">
+                            <label>
+                                <input id="chkDisableCompAccount" type="checkbox" name="disableacct" value="1" [% disabled_compromised_accounts == 1 ? ' checked' : '' %]>
+                                [% locale.maketext("Disable Compromised Accounts") %]
+                            </label>
+                            <span id="lblDisableLeech" class="help-block">
+                                [% locale.maketext("[asis,cPanel] will disable the passwords of users who trigger leech protection, suspending them. To reactivate their accounts, reset their passwords.") %]
+                            </span>
+                        </div>
+                    </div>
+                    <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6"> </div>
+                </div>
+            </div>
+            <div class="form-group">
+                <input id="btnEnable" type="submit" class="btn btn-primary" value="[% locale.maketext("Enable") %]">
+            </div>
+        </form>
+    </div>
+    <div class="section">
+        <h2 id="hdrDisableProtection">
+            [% locale.maketext("Disable Protection") %]
+        </h2>
+        <form action="delleech.html">
+            <div class="form-group">
+                <input id="hidDirectory" type="hidden" name="dir" value="[% directory.html() %]">
+                <input type="hidden" name="is_parent" id="is_parent_disable" value="[% FORM.is_parent %]">
+                <input id="btnDisable" type=submit class="btn btn-primary" value="[% locale.maketext("Disable") %]">
+            </div>
+        </form>
+    </div>
+    <div class="section">
+        <h2 id="hdrManageUsers">
+            [% locale.maketext("Manage Users") %]
+        </h2>
+        <p id="descThirdParty">
+            [% locale.maketext("If you are using third-party software to add or remove users, you should have it use the password file:") %]
+            <b>[% show_passwd_file %]</b>
+        </p>
+        <form action="../dohtaccess.html">
+            <div class="form-group">
+                <input type="hidden" name="is_parent" id="is_parent_disable" value="[% FORM.is_parent %]">
+                <input id="hidDirectoryManageUser" type="hidden" name="dir" value="[% directory.html() %]">
+                <input id="btnManageUser" type=submit class="btn btn-primary" value="[% locale.maketext("Manage Users") %]">
+            </div>
+        </form>
+    </div>
+    [% END %]
+
+    [% INCLUDE _assets/return_link.html.tt return_location=return_url return_link_text=locale.maketext('Go Back') %]
+</div>
+<script>
+var PAGE = {
+    email: [% JSON.stringify(email) %]
+};
+</script>
+
+[% END #wrapper %]
+

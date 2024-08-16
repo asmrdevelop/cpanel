@@ -1,0 +1,277 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+# cpanel - scripts/remote_log_transfer             Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::remote_log_transfer;
+
+=head1 NAME
+
+This script is used to copy all the main system logs from a server to a backup destination
+configured in WHM.
+For verbose help and examples, call this script with the --morehelp argument.
+
+=cut
+
+use strict;
+use warnings;
+
+use Cpanel::Logger        ();
+use Cpanel::Config::Users ();
+
+use parent qw( Cpanel::HelpfulScript );
+
+################################################################################
+
+use constant _OPTIONS => qw( action=s destid=s local_dir=s remote_dir=s keep debug morehelp );
+
+__PACKAGE__->new(@ARGV)->run() unless caller();
+
+################################################################################
+# Much of this is a modification of scripts/cpbackup_transport_file
+################################################################################
+
+sub run {
+    my ($self) = @_;
+
+    if ( $self->getopt('morehelp') ) {
+        show_usage();
+        return;
+    }
+
+    $self->ensure_root();
+
+    my @transport_ids = split( /,/, $self->getopt('destid') ) if defined( $self->getopt('destid') );
+    my $command       = $self->getopt('action');
+    my $keep_local    = $self->getopt('keep')       || 0;
+    my $local_dir     = $self->getopt('local_dir')  || '/backup/';
+    my $remote_dir    = $self->getopt('remote_dir') || 'log_backups';
+
+    if ( !defined $command || !$command ) {
+        show_usage();
+        return;
+    }
+    if ( $command eq 'list' ) {
+        my $all_files_and_directories_ar = get_all_log_paths();
+        foreach my $path ( @{$all_files_and_directories_ar} ) {
+            print "$path\n";
+        }
+    }
+    elsif ( $command eq 'transfer' ) {
+
+        $Cpanel::Debug::level = 9999 if ( $self->getopt('debug') );
+
+        if ( !@transport_ids ) {
+            print STDERR "\n!!!!! Missing argument “--destid=\$destination_id”\n\n";
+            show_usage();
+            return;
+        }
+
+        # Validate the transport_id(s)
+        require Cpanel::Backup::Transport;
+        require Cpanel::Backup::Utility;
+
+        my $transports             = Cpanel::Backup::Transport->new();
+        my $transport_configs      = $transports->get_enabled_destinations();
+        my $transport_config_cnt   = @transport_ids;
+        my $one_transport_was_good = 0;
+        foreach my $transport_id (@transport_ids) {
+            my $matching_cfg = $transport_configs->{$transport_id};
+            if ( !$matching_cfg ) {
+                print "\nNo backup transports exist or are enabled that match the supplied transport “$transport_id” , skipping..\n";
+            }
+            else {
+                $one_transport_was_good++;
+            }
+        }
+        if ( !$one_transport_was_good ) {
+            show_usage();
+            return;
+        }
+
+        my $log_tarball_path = $self->get_log_backup_path($local_dir);
+
+        print "Creating log backup file $log_tarball_path\n";
+
+        require Cpanel::Backup::Config;
+        my %conf    = %{ Cpanel::Backup::Config::load() };
+        my $utility = Cpanel::Backup::Utility->new( \%conf );
+
+        my $all_log_paths_ar = get_all_log_paths();
+
+        # Create this file without world-readable permissions
+        my $orig_umask = umask(0077);
+
+        # We create a bzip2'd tarball to maximize space savings of mostly text log files
+        if ( $utility->cpusystem( 'tar', 'cfpj', $log_tarball_path, @{$all_log_paths_ar} ) == 0 ) {
+            chmod( 0600, $log_tarball_path );
+        }
+        else {
+            print STDERR "Failed to create $log_tarball_path : $!\n";
+            return;
+        }
+        umask($orig_umask);
+
+        # keep_local has to be overridden here until the last transport, otherwise it will delete the log backup file after the first transport
+        # is done.
+        my $transport_cnt     = @transport_ids;
+        my $current_transport = 0;
+        my $final_keeplocal   = $keep_local;
+
+        foreach my $transport_id (@transport_ids) {
+            $current_transport++;
+            print "Attempting transport of '$log_tarball_path' using transport ID '$transport_id''.\n";
+
+            # Note, the 'Cpanel::Backup::Queue::transport_backup' package/namespace is also defined by this package, so thus it is imported.
+            require Cpanel::Backup::Queue;    # PPI USE OK -- Cpanel::Backup::Queue::transport_backup is defined there
+            require File::Basename;
+
+            # Even if keep local is false, but we have more transports, toggle it to true
+            if ( $current_transport < $transport_cnt ) {
+                $keep_local = 1;
+            }
+            else {
+                $keep_local = $final_keeplocal;
+            }
+
+            my $args = {
+                local_path  => $log_tarball_path,
+                remote_path => $remote_dir . '/' . File::Basename::basename($log_tarball_path),
+                local_files => $log_tarball_path,
+                keep_local  => $keep_local,                                                       # This has no affect here, but we pass it nonetheless and action the logic a little further down
+                session_id  => 'LOG_TRANSFER',
+                type        => 'compressed',
+                cmd         => 'log_transfer',
+                transport   => $transport_id,
+            };
+
+            my $logger = Cpanel::Logger->new( { 'use_no_files' => 1 } );
+            Cpanel::Backup::Queue::transport_backup->new()->process_task( $args, $logger );    # PPI NO PARSE -- See comment below
+                                                                                               # The import of Cpanel::Backup::Queue above via require causes the
+                                                                                               # namespace in question here to exist, as it is the kind of package
+                                                                                               # which defines multiple packages in one file, as perl allows you to
+                                                                                               # do. As this is the "common" design of TaskProcessor modules,
+                                                                                               # this is not only expected but appropriate.
+        }
+        unlink $log_tarball_path if !$keep_local;
+
+    }
+    else {
+        show_usage();
+        return;
+    }
+
+    return;
+}
+
+################################################################################
+# how thing do ?
+sub show_usage {
+    my $log_file_paths_ar = get_all_log_paths();
+
+    print <<EOU;
+    Usage:
+        $0 --action=<cmd> <args>
+        
+        Commands:
+          list              - Lists all log paths that will be transferred
+          transfer          - Transfer logs to remote server
+                              Arguments:
+                                 --destid=<DestinationID>
+                                        The <DestinationID> can be found in WHM on the Backup Configuration -> Additional Destinations page.
+                                        The argument here can support multiple destinations, comma delimited, i.e. --destid=OQosRCmRnTNcLcCojd7C0vhC,TAMdl6LZCxQELuUAVO20SjQm
+                                        will upload the log backup to both OQosRCmRnTNcLcCojd7C0vhC and TAMdl6LZCxQELuUAVO20SjQm destinations
+                                 --local_dir=/backup
+                                        The local directory where the compress log files tarball will be stored before transfering to the remote destinations.
+                                        Note that this assumes the local directory given is already mounted.
+                                        Defaults to “/backup/”
+                                 --remote_dir=remote_path/
+                                        The path used to store the log file backup on the remote server, relative or absolute based on transfer destination requirements
+                                        Defaults to “log_backups”
+                                 --debug
+                                        Show verbose debug output
+                                 --keep
+                                        Keep the local log file backup after transfer to the remote destination(s).
+          
+    Example usages:
+    
+        # List all log file locations. Additional custom paths can be added to /var/cpanel/config/extra_remote_transfer_paths.txt
+        $0 --action=list
+        
+        # Transfer all logs to the remote backup destination whose ID is TAMdl6LZCxQELuUAVO20SjQm
+        $0 --action=transfer --destid=TAMdl6LZCxQELuUAVO20SjQm
+        
+        # Same as above, but store the logs in the remote directory “backups/logs/Atlanta/” rather than “log_backups/” , while also keeping the local backup in /mnt/backup2/
+        $0 --action=transfer --destid=TAMdl6LZCxQELuUAVO20SjQm --remote_dir=backups/logs/Atlanta/ --local_dir=/mnt/backups2/ --keep
+        
+        
+    Log files:
+        Custom file paths can be configured by adding them to /var/cpanel/config/extra_remote_transfer_paths.txt , one line for each path.
+        Be careful if adding paths here as no validation is done.
+        
+EOU
+    print "\t\tCurrently configured paths:\n\n";
+    foreach my $path ( @{$log_file_paths_ar} ) {
+        print "\t\t-\t$path\n";
+    }
+    print "\n";
+    return;
+}
+
+################################################################################
+# We might want to add this to Cpanel/Backup/SystemResources.pm at some point, but this script also should be as independant as possible
+
+sub get_all_log_paths {
+    my @paths = (
+        "/var/log/",
+        "/usr/local/cpanel/logs/",
+        "/var/cpanel/logs/",
+        "/var/cpanel/updatelogs/",
+    );
+
+    require Cpanel::PwCache;
+    foreach my $user ( Cpanel::Config::Users::getcpusers() ) {
+        my $homedir = Cpanel::PwCache::gethomedir($user);
+        push @paths, "$homedir/logs/";
+    }
+
+    if ( open( my $custom_extra_fh, '<', '/var/cpanel/config/extra_remote_transfer_paths.txt' ) ) {
+        while (<$custom_extra_fh>) {
+            chomp;
+            my $c_path = $_;
+            if ( $c_path !~ m/^\// ) {
+                print STDERR "Custom path “$c_path” must be absolute ( start with / ), ignoring\n";
+            }
+            else {
+                if ( -f $c_path || -d _ ) {
+                    push( @paths, $c_path );
+                }
+                else {
+                    print STDERR "Custom path “$c_path” is not a file or directory, ignoring.\n";
+                }
+            }
+        }
+        close($custom_extra_fh);
+    }
+    return \@paths;
+}
+
+################################################################################
+# broken out for easier testing
+sub get_log_backup_path {
+    my ( $self, $local_dir ) = @_;
+
+    # Create log file backup from all paths in get_all_log_paths() with a base directory
+    require Cpanel::Hostname;
+    my $hostname = Cpanel::Hostname::gethostname();
+
+    my ( $sec, $min, $hour, $mday, $mon, $year, undef, undef, undef ) = localtime();
+    my $formatted_date = sprintf( "%04d-%02d-%02d_%02d-%02d-%02d", $year + 1900, $mon, $mday, $hour, $min, $sec );
+
+    my $log_tarball_path = $local_dir . '/log_backup_' . $hostname . '_' . $formatted_date . '.tar.bz2';
+    return $local_dir . '/log_backup_' . $hostname . '_' . $formatted_date . '.tar.bz2';
+}
+################################################################################
+
+1;

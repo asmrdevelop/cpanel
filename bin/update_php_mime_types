@@ -1,0 +1,463 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - bin/update_php_mime_types               Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+#
+
+use strict;
+use Getopt::Long;
+use Pod::Usage;
+use File::Find;
+use Cpanel::Config::Httpd::EA4           ();
+use Cpanel::PwCache::Helpers             ();
+use Cpanel::PwCache::Build               ();
+use Cpanel::Config::LoadUserDomains      ();
+use Cpanel::ConfigFiles::Apache          ();
+use Cpanel::AccessIds::ReducedPrivileges ();
+use Cpanel::Config::LoadUserDomains      ();
+use Cpanel::ProgLang                     ();
+
+my $help;
+my $man;
+my $recurse_default = 2;
+my $recurse_depth   = $recurse_default;
+my $strip;
+my $only_user;
+my $verbose = 0;
+my $force_version;
+my $target_directory;
+my @php_versions = qw{4 5};
+my $apacheconf   = Cpanel::ConfigFiles::Apache->new();
+
+if ( Cpanel::Config::Httpd::EA4::is_ea4() ) {
+    @php_versions = @{ Cpanel::ProgLang->new( type => "php" )->get_installed_packages() };
+}
+
+# collect and check arguments
+GetOptions(
+    'recurse=i'   => \$recurse_depth,
+    'strip'       => \$strip,
+    'verbose'     => \$verbose,
+    'help'        => \$help,
+    'man'         => \$man,
+    'user=s'      => \$only_user,
+    'directory=s' => \$target_directory,
+    'force=s'     => \$force_version,
+);
+
+if ( $force_version && !$only_user ) {
+    die "Error: The --user flag must be used when --force is specified\n";
+}
+
+if ( $target_directory && ( !$force_version || !$only_user ) ) {
+    die "Error: The --user and --force flags must be used when --directory is specified\n";
+}
+
+unless ( $recurse_depth >= 0 && $recurse_depth <= 100 ) {
+    die "Invalid recurse depth ${recurse_depth}";
+}
+
+pod2usage(1)                                 if $help;
+pod2usage( -exitstatus => 0, -verbose => 2 ) if $man;
+
+# Setup MIME type map
+
+my $php_mime_types = {};
+my $found_all      = 1;
+print "Determining which MIME types to use\n" if $verbose;
+if ( !$strip ) {
+    foreach my $php_version (@php_versions) {
+        $php_version = "php$php_version" if $php_version =~ /\A\d+\Z/;
+        my $example_file = $apacheconf->dir_conf() . '/' . $php_version . '.htaccess';
+        if ( !-e $example_file ) {
+            $found_all = 0;
+            next;
+        }
+        local $/ = undef;
+        open my $htaccess_fh, '<', $example_file or die "Could not open ${example_file}: $!";
+        my $htaccess_text = <$htaccess_fh>;
+        close $htaccess_fh;
+        if ( $htaccess_text =~ /^Add(Handler|Type)\s+(\S+)\s+/m ) {
+            $php_mime_types->{$php_version}{'action'} = $1;
+            $php_mime_types->{$php_version}{'type'}   = $2;
+            print $php_version . ': ' . $php_mime_types->{$php_version}{'type'} . '(' . $php_mime_types->{$php_version}{'action'} . ")\n" if $verbose;
+        }
+        else {
+            $found_all = 0;
+            print "$php_version: unknown\n" if $verbose;
+        }
+    }
+}
+
+if ( $strip || !$found_all ) {
+    print "Resetting PHP MIME type mappings\n" if $verbose;
+    foreach my $php_version (@php_versions) {
+        $php_mime_types->{$php_version} = undef;
+    }
+}
+
+Cpanel::PwCache::Helpers::no_uid_cache();    #uid cache only needed if we are going to make lots of getpwuid calls
+Cpanel::PwCache::Build::init_passwdless_pwcache();
+my $pwcache_ref = Cpanel::PwCache::Build::fetch_pwcache();
+
+# setup user list
+my %users;
+if ($only_user) {
+    %users = ( $only_user => 1 );
+}
+else {
+    Cpanel::Config::LoadUserDomains::loadtrueuserdomains( \%users, 1 );
+}
+
+print "Beginning iteration over cPanel users list\n" if $verbose;
+
+my $start_depth;
+my $user;
+my $user_uid;
+my $user_gid;
+my $homedir;
+my $depth_limit;
+
+chdir '/';
+
+foreach my $pw (@$pwcache_ref) {
+    next unless exists $users{ $pw->[0] };
+    ( $user, $user_uid, $user_gid, $homedir ) = @{$pw}[ 0, 2, 3, 7 ];
+    $homedir =~ s/\/+$//;
+    print "---\n"               if $verbose;
+    print "User: $user\n"       if $verbose;
+    print "Homedir: $homedir\n" if $verbose;
+    if ( !$homedir || $homedir eq '/root' ) {
+        print "Invalid homedir.  Bad username?  Skipping...\n" if $verbose;
+        next unless $only_user;
+        die "Invalid user: ${only_user}\n";
+    }
+
+    eval {
+        my $code = sub {
+            if ($force_version) {
+                my $target_file = $homedir . '/.htaccess';
+                if ($target_directory) {
+                    if ( -l $target_directory ) {
+                        print "Skipping symlinked ${target_directory}\n" if $verbose;
+                        next;
+                    }
+                    if ( !-d _ ) {
+                        die "$target_directory does not exist";
+                    }
+                    if ( ( stat(_) )[4] != $user_uid ) {
+                        die "$target_directory not owned by $user";
+                    }
+                    $target_file = $target_directory . '/.htaccess';
+                }
+                print "Updating ${target_file}\n" if $verbose;
+                if ( -l $target_file ) {
+                    print "Skipping symlinked ${target_file}\n" if $verbose;
+                    next;
+                }
+                if ( !-e _ ) {
+                    $target_file =~ /(.*)/;
+                    $target_file = $1;
+                    open my $new_fh, '>', $target_file;
+                    close $new_fh;
+                }
+                elsif ( ( stat(_) )[4] != $user_uid ) {
+                    die "${target_file} not owned by $user";
+                }
+                update_htaccess_file( $target_file, $php_mime_types, 0, $force_version );
+                next;
+            }
+            $start_depth = $homedir =~ tr{/}{};
+            $depth_limit = $start_depth + $recurse_depth;
+            File::Find::find(
+                {
+                    'preprocess' => \&find_preprocess,
+                    'wanted'     => \&find_wanted,
+                    'no_chdir'   => 1,
+                },
+                $homedir
+            );
+            return;
+        };
+        if ( $> == $user_uid ) {
+            $code->();
+        }
+        else {
+            Cpanel::AccessIds::ReducedPrivileges::call_as_user( $code, $user_uid, $user_gid );
+        }
+    };
+    warn $@ if $@;
+}
+
+print "Finished processing\n" if $verbose;
+
+sub find_preprocess {
+
+    # Check depth
+    my $depth = $File::Find::dir =~ tr{/}{};
+    return grep { $_ eq '.htaccess' || !/^(?:mail|tmp|\..*)$/ } @_ if ( $File::Find::dir eq $homedir );
+    return @_                                                      if ( $depth < $depth_limit );
+    return grep { $_ eq '.htaccess' } @_                           if ( $depth == $depth_limit );
+    return;
+}
+
+sub find_wanted {
+    return unless ( $File::Find::name =~ /\/\.htaccess$/ && !-l $File::Find::name && -f _ );
+    my ($file_uid) = ( stat(_) )[4];
+    return unless ( $file_uid == $user_uid );
+    print 'Checking ' . $File::Find::name . "\n" if $verbose;
+    update_htaccess_file( $File::Find::name, $php_mime_types, $strip );
+}
+
+sub update_htaccess_file {
+    my $htaccess_file  = shift || die "No input specified";
+    my $mime_map       = shift || die "No mime map specified";
+    my $strip          = shift;
+    my $forced_version = shift;
+
+    $htaccess_file =~ /(.*)/;
+    $htaccess_file = $1;
+    open my $htaccess_fh, '+<', $htaccess_file
+      || die "Could not open ${htaccess_file}: $!";
+    my @htaccess = <$htaccess_fh>;
+
+    # quick check if anything will be changed
+    unless ( $forced_version
+        || grep( /^\s*#?\s*Add(Handler|Type)\s+\S+\s+.*\.php\b/i, @htaccess )
+        || grep( /^\s*#\s*Use PHP\d as default\s*$/i,             @htaccess ) ) {
+        print "No PHP MIME mapping found\n" if $verbose;
+        close $htaccess_fh;
+        return;
+    }
+
+    seek( $htaccess_fh, 0, 0 );
+    my $configured_php_version;
+    my $written;
+    foreach my $line (@htaccess) {
+        print "Line is $line" if $verbose;
+        if ( $line =~ /\s*#\s*Use (PHP\d+[-_0-9A-Za-z]*) as default\s*$/i ) {
+
+            # Found the marker comment
+            $configured_php_version = lc $1;
+            print "Found marker comment for $configured_php_version\n" if $verbose;
+            if ($strip) {
+                undef $configured_php_version;
+                next;
+            }
+            if ($forced_version) {
+                $configured_php_version = $forced_version;
+                print $htaccess_fh "# Use ${forced_version} as default\n";
+                next;
+            }
+            if ( exists $mime_map->{$configured_php_version} ) {
+                print $htaccess_fh $line;
+                next;
+            }
+            undef $configured_php_version;
+        }
+        if ( $line =~ /^\s*#?\s*Add(Handler|Type)\s+(\S+)\s+(.*\.php\b.*)$/i ) {
+
+            # Found a PHP AddHandler mapping
+            my $action     = $1;
+            my $mime_type  = $2;
+            my $extensions = $3;
+            chomp $extensions;
+            if ($strip) {
+                print "Removing Add$action line\n" if $verbose;
+            }
+            elsif ( $configured_php_version && defined $mime_map->{$configured_php_version} ) {
+                print "Updating Add$action line for ${configured_php_version}\n" if $verbose;
+                print $htaccess_fh 'Add';
+                print $htaccess_fh $mime_map->{$configured_php_version}{'action'};
+                print $htaccess_fh ' ' . $mime_map->{$configured_php_version}{'type'} . ' ' . $extensions . "\n";
+            }
+            elsif ( $line =~ /^\s*#/ ) {
+                print "Leaving disabled Add$action comment\n" if $verbose;
+                print $htaccess_fh $line;
+            }
+            else {
+                if ( $mime_type =~ /x-httpd-(php\d+[-_0-9A-Za-z]*)/ ) {
+                    $configured_php_version = $1;
+                }
+                if ($forced_version) {
+                    $configured_php_version = $forced_version;
+                }
+                if ( $configured_php_version && defined $mime_map->{$configured_php_version} ) {
+                    print "Updating Add$action line for ${configured_php_version}\n" if $verbose;
+                    print $htaccess_fh 'Add';
+                    print $htaccess_fh $mime_map->{$configured_php_version}{'action'};
+                    print $htaccess_fh ' ' . $mime_map->{$configured_php_version}{'type'} . ' ' . $extensions . "\n";
+                }
+                else {
+                    print "Disabling Add$action line\n" if $verbose;
+                    print $htaccess_fh '# ' . $line;
+                }
+            }
+            $written = 1 if $configured_php_version;
+            undef $configured_php_version;
+            next;
+        }
+        if ($configured_php_version) {
+
+            # last line was a marker comment but no AddHandler line was after it
+            if ( defined $mime_map->{$configured_php_version} ) {
+                print $htaccess_fh create_htaccess_line( $configured_php_version, $mime_map->{$configured_php_version} );
+            }
+            $written = 1;
+            undef $configured_php_version;
+        }
+        print $htaccess_fh $line;
+    }
+
+    # Reached end of file
+    if ( $configured_php_version && defined $mime_map->{$configured_php_version} ) {
+
+        # last line was the marker comment
+        if ( $htaccess[-1] !~ /\n$/s ) {
+            print $htaccess_fh "\n";
+        }
+        print $htaccess_fh create_htaccess_line( $configured_php_version, $mime_map->{$configured_php_version} );
+        $written = 1;
+    }
+    if ( $forced_version && !$written ) {
+
+        # Add a new marker comment and handler
+        if ( scalar @htaccess && $htaccess[-1] !~ /\n$/s ) {
+            print $htaccess_fh "\n";
+        }
+        print $htaccess_fh create_htaccess_line( $forced_version, $mime_map->{$forced_version} );
+    }
+
+    #cleanup
+    truncate( $htaccess_fh, tell($htaccess_fh) );
+    close $htaccess_fh;
+}
+
+sub create_htaccess_line {
+    my ( $ver, $map, $signal ) = @_;
+
+    print 'Creating new Add' . $map->{'action'} . " line\n" if $verbose;
+    my $string = '';
+    $string .= "# Use $ver as default\n" unless $signal;
+    $string .= 'Add' . $map->{'action'} . ' ' . $map->{'type'} . " .php\n";
+    return $string;
+}
+
+__END__
+
+=head1 NAME
+
+update_php_mime_types - Update user level PHP-MIME mappings
+
+=head1 SYNOPSIS
+
+update_php_mime_types [options]
+
+  Options:
+    -help            Brief help message
+    -man             Full documentation
+    -recurse=#       Recurse depth for finding .htaccess files
+    -strip           Remove all PHP AddHandler directives
+    -user=<user>     Only check the specified user
+    -force=<4|5>     Force the PHP version to the one specified
+    -directory=<dir> Force the PHP version in this directory
+    -verbose         Display actions as they are performed
+
+=head1 EXAMPLES
+
+=over 8
+
+=item update_php_mime_types --verbose
+
+Update all user .htaccess files that already contain PHP mime mappings.
+
+=item update_php_mime_types --user=fred --force=4 --verbose
+
+Set Fred's main .htaccess file to use PHP 4 by default.
+
+=item update_php_mime_types --user=fred --strip --verbose
+
+Remove all PHP AddHandler lines and marker comments from Fred's .htaccess files.
+
+=back
+
+=head1 OPTIONS
+
+=over 8
+
+=item B<-help>
+
+Display a brief help message and exit.
+
+=item B<-man>
+
+Display the manual page and exit.
+
+=item B<-recurse>
+
+Depth to recurse inside home directories.  The default recurse depth is 2,
+meaning that subdirectories within public_html will be checked.
+
+Valid range is 0 to 100.
+
+=item B<-strip>
+
+Remove any PHP AddHandler directives that are found rather than updating them.
+
+=item B<-user>
+
+Only check the .htaccess files of the specified user.
+
+=item B<-force>
+
+Set the main .htaccess file for the user to the specified PHP version.  No changes
+will be made to .htaccess files in subdirectories.  The --user flag must be specified in
+conjunction with this one.
+
+To reverse this operation without changing any of the PHP MIME mapping in subdirectories, use --user=<user> --strip --recurse=0
+
+=item B<-directory>
+
+Used in conjunction with --force and --user.
+
+Set the PHP MIME type in the specified directory instead of globally for the user.
+See CAVEATS for information on maintenance problems this may create.
+
+=item B<-verbose>
+
+Display information about each action performed during the execution of this script.
+
+=back
+
+=head1 DESCRIPTION
+
+This program will read the contents of /usr/local/apache/conf/php4.htaccess and
+/usr/local/apache/conf/php5.htaccess to determine the current MIME type mappings for
+PHP 4 and 5.  It will then go through each account's home directory updating their
+specified preferences to the correct current MIME types.
+
+This program will NOT update any .htaccess files that are symlinks.  It will also
+comment out any PHP AddHandler lines that are not immediately proceeded by the marker
+comment:
+
+# Use PHP# as default
+
+The mime type used is based on this comment.
+
+This program may also use this program to set the global PHP mime mapping for an account by
+specifying the --user and --force flags together.  This will not change any PHP MIME types
+in subdirectories, only the .htaccess file in the user's home directory.
+
+=head1 CAVEATS
+
+If you need to setup a single deeply nested directory to parse .php files with a particular version
+of PHP, the preferred method is to symlink $apacheconf->dir_conf()/php#.htaccess to .htaccess in that
+directory.  This will ensure that the MIME type will always be correct one when it is possible to select
+between PHP4 and PHP5.  If using a symlink for the .htaccess file is not possible, use the marker comment
+specified above and run this program with a suitable -recurse argument each time you change the PHP
+configuration in the WebHostManager or via rebuild_phpconf.
+
+=cut

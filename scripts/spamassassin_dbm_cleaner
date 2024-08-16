@@ -1,0 +1,168 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/spamassassin_dbm_cleaner        Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use Cpanel::Rlimit             ();
+use Cpanel::PwCache::Helpers   ();
+use Cpanel::PwCache::Build     ();
+use Cpanel::AccessIds::SetUids ();
+use Cpanel::PwCache            ();
+use Cpanel::LoginDefs          ();
+use DB_File                    ();
+use strict;
+
+my $VERSION            = '1.0';
+my $MAX_MEMORY_ALLOWED = 134217728;               #128M Allowed for dbsize + this perlcode,  We allow 256M for spamd+dbs+email
+my $MAX_DB_SIZE        = ( 1024 * 1024 * 96 );    #96M is the max size before spamd falls apart
+
+print "$0: version $VERSION\n";
+
+Cpanel::Rlimit::set_rlimit_to_infinity();
+
+my $canary = '--cpanel_sa_test_key';
+my $pwcache_ref;
+
+if ( !$ARGV[0] ) {
+    Cpanel::PwCache::Helpers::no_uid_cache();    #uid cache only needed if we are going to make lots of getpwuid calls
+    Cpanel::PwCache::Build::init_passwdless_pwcache();
+    $pwcache_ref = Cpanel::PwCache::Build::fetch_pwcache();
+}
+else {
+    my $user    = $ARGV[0];
+    my @pw_data = Cpanel::PwCache::getpwnam($user);
+    if ( !$pw_data[0] ) {
+        die "Usage: $0 [user]";
+    }
+    $pwcache_ref = [ \@pw_data ];
+}
+print "Checking SpamAssassin dbm databases....";
+
+my ( $ok_count, $broken_count, $user_count );
+my $now     = time();
+my $uid_min = Cpanel::LoginDefs::get_uid_min();
+my ( $user, $uid, $gid, $homedir );
+foreach my $pwref ( grep { $_->[2] >= $uid_min } @$pwcache_ref ) {
+    ( $user, $uid, $gid, $homedir ) = ( (@$pwref)[ 0, 2, 3, 7 ] );
+    if ( $homedir ne '/' && -e $homedir . '/.spamassassin' ) {
+        my ( $ok_files, $broken_files ) = _test_sa_dbm_files( $user, $uid, $gid, $homedir );
+        $user_count++;
+        $ok_count     += scalar @$ok_files     if $ok_files;
+        $broken_count += scalar @$broken_files if $broken_files;
+        if ( $broken_files && @$broken_files ) {
+            if ( my $pid = fork() ) {
+                waitpid( $pid, 0 );
+            }
+            else {
+                Cpanel::AccessIds::SetUids::setuids( $uid, $gid )
+                  || die "Failed to setuid to $user";
+                foreach my $file_data_ref (@$broken_files) {
+                    print "\n\t$user: $file_data_ref->{'file'} has problem: $file_data_ref->{'error'}.  Moving to $file_data_ref->{'file'}.broken.$now";
+                    rename(
+                        $file_data_ref->{'file'},
+                        "$file_data_ref->{'file'}.broken.$now"
+                    );
+                }
+                exit(0);
+            }
+        }
+    }
+
+}
+
+print "\n" if $broken_count;
+print "Done\n";
+print "Checked " . ( $ok_count + $broken_count ) . " files for $user_count user(s), $ok_count ok, $broken_count broken\n";
+
+sub _test_sa_dbm_files {
+    my ( $user, $uid, $gid, $homedir ) = @_;
+
+    my $test_files = _get_matching_files(
+        "$homedir/.spamassassin",
+        '(?:bayes_|auto-)[^\.]+$'
+    );
+    my ( $test_canary, $file, $data, $error );
+    my ( @ok_files, @broken_files );
+
+    @$test_files = grep( !/_journal/, @$test_files );    #special journal file
+
+    return if !@$test_files;
+    my $loop_count = 0;
+    while ( @$test_files && ++$loop_count <= 5 ) {
+        my $readpid = open( my $child_rdr, '-|' );
+        if ($readpid) {
+            while (<$child_rdr>) {
+                chomp($_);
+                next if !$_;
+                ( $test_canary, $file, $data, $error ) = split( /:/, $_, 4 );
+                if ( $test_canary eq $canary ) {
+                    if ($file) {
+                        @$test_files = grep { $_ ne $file } @$test_files;
+                        if ( $data eq 'ok' ) {
+                            push @ok_files, { 'file' => $file, 'status' => 1 };
+                        }
+                        else {
+                            push @broken_files,
+                              {
+                                'file'   => $file,
+                                'status' => 0,
+                                'error'  => "$data:$error"
+                              };
+                        }
+                    }
+                }
+                else {
+                    print STDERR "Error from child process for $user: $_\n";
+                }
+
+                #print "DEBUG: $_\n";;
+            }
+            close($child_rdr);
+        }
+        else {
+            alarm(60);
+            Cpanel::Rlimit::set_rlimit($MAX_MEMORY_ALLOWED);
+            Cpanel::AccessIds::SetUids::setuids( $uid, $gid )
+              || die "Failed to setuid to $user";
+            while ( my $test_file = pop(@$test_files) ) {
+                print "\n";
+                my %test_hash;
+                print "${canary}:$test_file:";
+                if ( ( stat($test_file) )[7] > $MAX_DB_SIZE ) {
+                    print "toobig:database too large:\n";
+                }
+                elsif ( my $result = tie %test_hash, 'DB_File', $test_file, &DB_File::O_RDONLY ) {
+                    print "ok\n";
+                    untie %test_hash;
+                }
+                else {
+                    print "failed:$!:$result\n";
+                }
+                print "\n";
+            }
+            exit(0);
+        }
+    }
+    return ( \@ok_files, \@broken_files );
+}
+
+# From pkgacct
+sub _get_matching_files {
+    my $dir   = shift;
+    my $regex = shift;
+    my $compiled_regex;
+    eval { $compiled_regex = qr/$regex/; };
+    if ( !$compiled_regex ) {
+        print "Failed to compile regex $regex\n";
+        return;
+    }
+    my $dot_files_regex = qr/^\.\.?$/;
+    opendir( my $dir_h, $dir );
+    my @files =
+      map { "$dir/$_" }
+      grep { $_ !~ $dot_files_regex && $_ =~ $compiled_regex } readdir($dir_h);
+    closedir($dir_h);
+    return \@files;
+}

@@ -1,0 +1,100 @@
+<div>
+    <div class="record_element first_inner_record">
+        <div class="record_subelement subelement_label">
+            <label for="caa_flag_0_{{zone_rec._id}}">[% locale.maketext('Issuer Critical Flag') %]</label>
+            <span class="fas fa-info-circle"
+                uib-tooltip="[% locale.maketext('If “[_1]”, the certificate issuer must understand the tag in order to correctly process the [asis,CAA] record.', '1') %]">
+            </span>
+        </div>
+        <div class="record_subelement subelement_input">
+            <div class="form-inline non-inset-radio-group">
+                <label class="radio-inline">
+                    <input type="radio"
+                        name="caa_flag"
+                        id="caa_flag_0_{{zone_rec._id}}"
+                        value="0"
+                        ng-model="zone_rec.flag"> 0
+                </label>
+                [%#
+                    CPANEL-33976: The value for this flag is 128 because this implementation originally conflated the idea
+                    of the Flags field with the specific Issuer Critical Flag defined as a part of that field. Worse, the
+                    RFC-defined bit is the most significant bit, so having Issuer Critical Flag set to 1 (and all else set
+                    to 0) corresponds to a Flags of 128 (where this implementation originally set that to 1). Since dis-
+                    entangling the field from the individual flags will require UI changes, these are deferred to a future
+                    time where the CAA record defines additional bits inside the Flags field.
+                %]
+                <label class="radio-inline">
+                    <input type="radio"
+                        name="caa_flag"
+                        id="caa_flag_1_{{zone_rec._id}}"
+                        value="128"
+                        ng-model="zone_rec.flag"> 1
+                </label>
+            </div>
+        </div>
+    </div>
+    <div class="record_element">
+        <div class="record_subelement subelement_label">
+            <label for="caa_tag_0_{{zone_rec._id}}" class="inset-radio-label">[% locale.maketext('Tag') %]</label>
+            <span class="fas fa-info-circle"
+                uib-tooltip="[% locale.maketext('The type of [asis,CAA] record that this [asis,DNS] entry represents. The [asis,issue] and [asis,issuewild] values represent the certificate authority’s domain name. The [asis,iodef] value is the location to which the authority reports exceptions.') %]">
+            </span>
+        </div>
+        <div class="record_subelement subelement_input">
+            <div class="form-inline non-inset-radio-group">
+                <label class="radio-inline">
+                    <input type="radio"
+                        name="caa_tag"
+                        id="caa_tag_0_{{zone_rec._id}}"
+                        value="issue"
+                        ng-model="zone_rec.tag"> [% locale.maketext("[asis,issue]") %]
+                </label>
+                <label class="radio-inline">
+                    <input type="radio"
+                        name="caa_tag"
+                        id="caa_tag_1_{{zone_rec._id}}"
+                        value="issuewild"
+                        ng-model="zone_rec.tag"> [% locale.maketext("[asis,issuewild]") %]
+                </label>
+                <label class="radio-inline">
+                    <input type="radio"
+                        name="caa_tag"
+                        id="caa_tag_2_{{zone_rec._id}}"
+                        value="iodef"
+                        ng-model="zone_rec.tag"> [% locale.maketext("[asis,iodef]") %]
+                </label>
+            </div>
+        </div>
+    </div>
+    <div class="record_element" ng-class="{ 'has-error': manage.field_has_error(manage.add_zr_form_{{zone_rec._id}}, 'record_caa_value_{{zone_rec._id}}') }">
+        <div class="record_subelement subelement_label">
+            <label for="record_caa_value_{{zone_rec._id}}" class="control-label">[% locale.maketext('Value') %]</label>
+            <span
+                class="fas fa-info-circle"
+                uib-tooltip="{{manage.valueTooltip(zone_rec._id)}}">
+            </span>
+        </div>
+        <div class="record_subelement subelement_input">
+            <input type="text"
+                class="form-control"
+                id="record_caa_value_{{zone_rec._id}}"
+                name="record_caa_value_{{zone_rec._id}}"
+                required
+                caa-value="{{zone_rec.tag}}"
+                ng-model="zone_rec.value"
+                placeholder="{{manage.valuePlaceholder(zone_rec._id)}}">
+        </div>
+    </div>
+    <div class="record_element">
+        <div class="record_subelement subelement_label">
+        </div>
+        <div class="record_subelement subelement_input">
+            <ul validation-container field-name="record_caa_value_{{zone_rec._id}}">
+                <li validation-item
+                    field-name="record_caa_value_{{zone_rec._id}}"
+                    validation-name="required">[% locale.maketext("This field is required.") %]
+                </li>
+            </ul>
+        </div>
+    </div>
+</div>

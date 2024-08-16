@@ -1,0 +1,47 @@
+[% IF ! end -%]
+[%
+SET in_popup = 0;
+IF data.in_popup.defined;
+    SET in_popup = data.in_popup;
+END;
+PROCESS 'master_templates/_defheader.tmpl'
+    breadcrumburl = '/scripts2/changehostname'
+    status = 'Changing hostname'
+    theme = "yui"
+    inside_frame_or_tab_or_popup = in_popup;
+-%]
+[% ELSE #end -%]
+[% PROCESS '_setstatusdone.tmpl' -%]
+[% IF data.status -%]
+<div class="okmsg">
+[% ELSE -%]
+<div class="errormsg">
+[% END -%]
+
+[% data.statusmsg.html() %]
+</div>
+
+<div id="msgs">
+[% FOR msg IN data.messages -%]
+<div class="statusmsg">[% msg %]</div>
+[% END -%]
+</div>
+
+<div id="warns">
+[% FOR msg IN data.warnings -%]
+<div class="warningmsg">[% msg %]</div>
+[% END -%]
+</div>
+
+[% IF data.status -%]
+<br /> <br />
+<div>
+<form action="[% cp_security_token %]/scripts2/addaforhost">
+You should probably <input type="submit" class="btn-primary" value="Add an A entry for your hostname" />
+if you don't already have one.
+</form>
+</div>
+
+[% END -%]
+[% PROCESS 'master_templates/_deffooter.tmpl' theme="yui" -%]
+[% END -%]

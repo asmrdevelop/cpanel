@@ -1,0 +1,32 @@
+[%#
+Variables passed in:
+
+origin                  - the system component from which the notification was requested.
+
+For more information about how to customize notification templates, read our documentation at https://go.cpanel.net/notificationtemplates
+
+-%]
+
+[%
+    PROCESS "include/colors.tmpl";
+    PROCESS "include/styles.tmpl";
+    PROCESS 'include/system_info_views.html.tmpl';
+    PROCESS "include/system_info_table.tmpl";
+
+    WRAPPER 'wrapper/main.html.tmpl';
+          NOTICE.email_reason = CPANEL.locale.maketext('The backup process was delayed for over [quant,_1,hour,hours] waiting on statistics processing', 8);
+%]
+
+<p>[% CPANEL.locale.maketext('The backups on “[_1]” have been waiting for statistics processing to complete for over [quant,_2,hour,hours], which indicates that the server is too overloaded to complete processing in a timely manner.' , NOTICE.host_server, 8); %]</p>
+
+<p>
+[% CPANEL.locale.maketext('To determine which processes use the most memory and processor time, use [asis,WHM]’s [_1] interface at: [output,url,_2,_2,target,_3]', CPANEL.locale.maketext('Process Manager'), CPANEL.assemble_whm_url("scripts2/top"),'_blank') %]
+</p>
+
+<p>
+    [% CPANEL.locale.maketext('The server’s current health statistics are:') %]
+</p>
+<p>
+[% system_info_table() %]
+
+[% END %]

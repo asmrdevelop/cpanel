@@ -1,0 +1,66 @@
+[%
+    USE Whostmgr;
+    USE JSON;
+
+    SET styleSheets = [
+            Whostmgr.find_file_url('/templates/multiphp_manager/index.min.css')
+        ];
+
+    SET locale_is_rtl = 0;
+
+    WRAPPER 'master_templates/master.tmpl'
+        app_key = 'multiphp_manager'
+        header = locale.maketext('[asis,MultiPHP] Manager'),
+        breadcrumburl = '/scripts2/multiphp_manager',
+        base = '/scripts2/multiphp_manager/',
+        stylesheets = styleSheets,
+        theme='bootstrap';
+%]
+
+<div id="content"
+     ng-cloak
+     style="display:none">
+     <cp-alert-list></cp-alert-list>
+     <div class="row callout callout-info">
+        <div class="col-xs-12">
+            <p>[% locale.maketext("A new version of this interface is available! To try out the new version, click “[output,url,_1,MultiPHP Manager (new)]”.", cp_security_token _ "/scripts7/multiphp-manager-new/system") %]</p>
+        </div>
+     </div>
+     <ul class="nav nav-tabs">
+         <li ng-class="{active: currentRoute === '/config'}">
+            <a ng-if="!editPoolOptionsMode" href="config">[% locale.maketext('[asis,PHP] Versions') %]</a>
+            <a ng-if="editPoolOptionsMode" href="#">[% locale.maketext('Domain [asis,PHP-FPM] Configuration') %]</a>
+        </li>
+         <li ng-class="{active: currentRoute === '/handlers'}">
+            <a ng-if="!editPoolOptionsMode" href="handlers">[% locale.maketext('[asis,PHP] Handlers') %]</a>
+            <a ng-if="editPoolOptionsMode" class="disabled" href="#">[% locale.maketext('[asis,PHP] Handlers') %]</a>
+        </li>
+         <li ng-class="{active: currentRoute === '/poolOptions'}">
+            <a href="poolOptions" ng-if="!litespeed_installed && !editPoolOptionsMode && php.versions.length !== 0 && !litespeedRunning" ng-click="setPoolOptionsDisplayMode('default')">
+                [% locale.maketext('System [asis,PHP-FPM] Configuration') %]
+            </a>
+            <a href="#" ng-if="litespeed_installed || editPoolOptionsMode || php.versions.length === 0 || litespeedRunning" class="disabled">
+                [% locale.maketext('System [asis,PHP-FPM] Configuration') %]
+            </a>
+        </li>
+     </ul>
+     <div class="tab-content" ng-view></div>
+</div>
+<div growl></div>
+
+<script type="text/ng-template" id="directives/cloudLinuxBanner.ptt">
+[% PROCESS 'multiphp_manager/directives/cloudLinuxBanner.ptt' %]
+</script>
+
+<script type="text/javascript">
+    var PAGE = PAGE || {};
+    PAGE.litespeed_running = [% data.litespeed_running %];
+    PAGE.cp_security_token = [% cp_security_token.json() %];
+    PAGE.php_versions = [% data.php_versions.json() %];
+    PAGE.cl_data = [% data.cl_data.json() %];
+    PAGE.fpm_conversion_in_progress = [% data.fpm_conversion_in_progress.json() %];
+</script>
+
+[% PROCESS 'master_templates/cjt2_header_include.tt' %]
+
+[% END %]

@@ -1,0 +1,51 @@
+[%
+    USE Whostmgr;
+    USE JSON;
+
+    SET PAGE_BASE = '/scripts2/featuremanager/';
+    SET PAGE_NAME = Whostmgr.get_page_name_by_url(PAGE_BASE);
+
+    WRAPPER 'master_templates/master.tmpl'
+        app_key = 'feature_manager'
+        header = locale.makevar(PAGE_NAME),
+        breadcrumburl = PAGE_BASE,
+        base =  PAGE_BASE,
+        stylesheets = [
+            Whostmgr.find_file_url('/templates/feature/manager.min.css')
+        ],
+        theme='bootstrap',
+        CJT2_EXCLUSIVE = 1;
+%]
+
+<div ng-controller="applicationController">
+    <div ng-controller="commonController" class="ng-cloak" ng-cloak>
+        <div class="row">
+            <div class="col-xs-12">
+                <cp-alert-list></cp-alert-list>
+            </div>
+        </div>
+    </div>
+
+    <div id="content"
+         class="ng-cloak"
+         ng-view
+         ng-cloak></div>
+</div>
+
+<script type="text/javascript">
+    var PAGE = PAGE || {};
+
+    PAGE.NAME = "featuremanager";
+
+    PAGE.MAIN_TITLE = [% PAGE_NAME.json() %]; // common parent of all views (untranslated)
+    PAGE.featureLists = [% data.feature_lists.json() %];
+    PAGE.featureDescriptions = [% data.feature_descriptions.json() %];
+    PAGE.legacySupport = [% data.legacy_support %];
+    PAGE.fantasticoSupport = [% data.fantastico_support %];
+    PAGE.remoteUser = [% data.remote_user.json() %];
+    PAGE.hasRoot = [% data.has_root %];
+</script>
+
+[% PROCESS 'master_templates/cjt2_header_include.tt' %]
+
+[% END %]

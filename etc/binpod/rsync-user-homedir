@@ -1,0 +1,57 @@
+=encoding utf-8
+
+=head1 DESCRIPTION
+
+This script exemplifies the client-side functionality of
+end classes of L<Cpanel::Server::CpXfer::Base::acctxferrsync>.
+
+=head1 USAGE (INTERNAL TO L<rsync(1)>)
+
+B<IMPORTANT:> You aren’t meant to call this script directly; L<rsync(1)>
+calls it via its C<--rsh> parameter.
+
+For the sake of completeness, though, this script’s arguments are:
+
+For cPanel:
+
+    rsync-user-homedir.pl --cpanel [--insecure] <--apitoken-fd=# | --apitoken=...> <hostname> <username> <rsyncargs..>
+
+For WHM:
+
+    rsync-user-homedir.pl --whm [--insecure] <--apitoken-fd=# | --apitoken=...> --homedir-user=<username> <hostname> <token_username> <rsyncargs..>
+
+Note that the API token, for security purposes, B<MUST> be passed via
+file descriptor in production code.
+
+Also note that, in both cases, all positional parameters other than
+C<E<lt>hostnameE<gt>> will come from rsync.
+
+=head1 REAL-USAGE EXAMPLES
+
+Below are examples of how you’ll actually give this script to L<rsync(1)>.
+
+The following …
+
+    rsync --archive --rsh '/usr/local/cpanel/scripts/rsync-user-homedir.pl --cpanel --apitoken=OF24KGWQS9Q8SWI6Y5PNJJHLMBY3UX6Z localhost' theusername: /where/to
+
+… will back up C<theusername>’s home directory contents to F</where/to>.
+It will authenticate to C<localhost> via the given cPanel API token.
+
+Here is an example of WHM usage:
+
+    rsync --archive --rsh '/usr/local/cpanel/scripts/rsync-user-homedir.pl --whm --homedir-user=theuser --apitoken-fd=5 example.com' superman: /where/to
+
+Note the additional C<--homedir-user>; this is the user whose home directory
+will be backed up. C<superman>’s given WHM API token is how we will
+authenticate to WHM on the remote server C<example.com>.
+
+The C<--insecure> flag tolerates TLS handshake errors (e.g., from
+self-signed or invalid certificates). As in L<curl(1)>, you may alias
+this flag as C<-k>.
+
+=head1 SEE ALSO
+
+F<t/support/rsync_cpsrvd_client.pl> exemplifies how to do this via the
+WHM endpoint exclusively and assumes that there is a root WHM access hash.
+(WHM access hashes were a forerunner to API tokens.)
+

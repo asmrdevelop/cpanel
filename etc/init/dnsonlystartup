@@ -1,0 +1,75 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+# cpanel - dnsonlystartup                            Copyright 2022 cPanel L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+use warnings;
+
+use Cpanel::LogCheck        ();
+use Cpanel::Chkservd::Tiny  ();
+use Cpanel::SafeRun::Object ();
+use Cpanel::TimeHiRes       ();
+
+Cpanel::LogCheck::logcheck_writable();
+
+my $skip_queueprocd = ( grep { index( $_, '-skip-queueprocd' ) > -1 } @ARGV ) ? 1 : 0;
+
+if ( !$ENV{'CPANEL_BASE_INSTALL'} ) {
+
+    # Under systemd this can start queueprocd
+    # from the Wants=
+    _fast_system( '/usr/local/cpanel/etc/init/startcpsrvd', '--no-verbose' );
+}
+
+# cphulkd, per case 49301
+_fast_system( '/usr/local/cpanel/etc/init/startcphulkd', '--no-verbose' );
+Cpanel::Chkservd::Tiny::resume_service('cphulkd');
+
+unless ( $skip_queueprocd || $ENV{'CPANEL_BASE_INSTALL'} ) {
+    _fast_system( '/usr/local/cpanel/etc/init/startqueueprocd', '--no-verbose' );
+    Cpanel::Chkservd::Tiny::resume_service('queueprocd');
+}
+
+if ( !$ENV{'CPANEL_BASE_INSTALL'} ) {
+    _fast_system( '/usr/local/cpanel/etc/init/starttailwatchd', '--no-verbose' );
+}
+
+# dnsadmin as service
+if ( !$ENV{'CPANEL_BASE_INSTALL'} ) {
+
+    # We do want dnsadmin running on fresh installs, we just do not want
+    # it to restart during the first upcp
+    _fast_system( '/usr/local/cpanel/scripts/restartsrv_dnsadmin', '--no-verbose' );
+    Cpanel::Chkservd::Tiny::resume_service('dnsadmin');
+}
+
+exit;
+
+sub suspend_service {
+    my $service      = shift;
+    my $suspend_time = 600;
+    return if $service =~ /^start/ && $service =~ /-ssl$/;
+    return if grep { $_ eq $service } qw(cpaneld webmaild whostmgrd);
+    Cpanel::Chkservd::Tiny::suspend_service( $service, $suspend_time );
+    return;
+}
+
+sub _fast_system {
+    my ( $prog, @args ) = @_;
+
+    my $start_time = Cpanel::TimeHiRes::time();
+    my $ret        = Cpanel::SafeRun::Object->new(
+        'program' => $prog,
+        'args'    => \@args,
+        'stdout'  => \*STDOUT,
+        'stderr'  => \*STDERR,
+    );
+    my $end_time  = Cpanel::TimeHiRes::time();
+    my $exec_time = sprintf( "%.3f", ( $end_time - $start_time ) );
+    print "Completed Task: “$prog @args” in $exec_time second(s).\n";
+    return $ret;
+
+}
+

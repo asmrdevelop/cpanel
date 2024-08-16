@@ -1,0 +1,26 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/forcelocaldomain                Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use Whostmgr::DNS::MX ();
+
+my @DOMAINS = @ARGV;
+
+if ( !@DOMAINS ) {
+    die "Usage: $0 [domains...]";
+}
+
+foreach my $domain (@DOMAINS) {
+    my %entries = Whostmgr::DNS::MX::fetchmx($domain);
+    print "Setting $domain to local ....";
+
+    #
+    # Since we are forcing a change we need to make sure we
+    # update the service subdomains as well
+    #
+    Whostmgr::DNS::MX::checkmx( $domain, $entries{'entries'}, 1, $Whostmgr::DNS::MX::DO_UPDATEUSERDOMAINS, $Whostmgr::DNS::MX::DO_UPDATE_PROXY_SUBDOMAINS );
+    print "Done\n";
+}

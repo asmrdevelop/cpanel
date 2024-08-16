@@ -1,0 +1,73 @@
+[%
+    SET CPANEL.CPVAR.dprefix = "../";
+
+    SET is_demo_mode = CPANEL.CPDATA.item('DEMO');
+
+    IF (ExpVar.expand('$appname') == "webmail");
+        IF !FORM.item('account');
+            SET FORM.item('account') = CPANEL.authuser;
+        END;
+    END;
+
+    IF !FORM.item('account');
+        SET fetch_cfg = {
+            status => 0,
+            errors => (locale.maketext("The “[_1]” parameter is required, and you must pass a valid string value.", 'account'))
+        };
+    ELSE;
+        SET fetch_cfg = execute('BoxTrapper', 'get_blocklist', { 'email' => RAW_FORM.item('account') });
+    END;
+%]
+
+[% js_code = PROCESS js_block %]
+[% WRAPPER '_assets/master.html.tt'
+    app_key = 'boxtrapper'
+    page_js = js_code
+    page_stylesheets = ['mail/boxtrapper.css']
+%]
+
+<div class="body-content">
+    [% IF (ExpVar.expand('$appname') == "webmail" && !( FORM.account == CPANEL.authuser )) || is_demo_mode %]
+    <div id="blacklistErrorMsg" class="alert alert-danger">
+        <span class="glyphicon glyphicon-remove-sign"></span>
+        <div class="alert-message">
+        [% locale.maketext("You are not allowed to change settings for the user “[_1]”.", FORM.account) %]
+        </div>
+    </div>
+    [% END %]
+
+    [% IF (!( ExpVar.expand('$appname') == "webmail") || FORM.account == CPANEL.authuser) %]
+    <div class="section">
+        <h2 id="hdrBlacklist">[% locale.maketext("[asis,BoxTrapper] Blacklist for “[output,class,_1,status]”", FORM.account) %]</h2>
+
+        <div id="descBlacklist">
+            <p>[% locale.maketext("The blacklist is a list of content you do not wish to receive in email. The sender of blacklisted content will also receive a warning message of your choice.") %]</p>
+            <p>[% locale.maketext("The list should contain one entry per line. Each entry should be formatted as a Perl regular expression.") %]</p>
+            <p>[% locale.maketext("For example: [asis,john@example.com] would be john[output,chr,92][asis,@example][output,chr,92][asis,.com] and all addresses at [asis,example.com] would be [asis,.+][output,chr,92][asis,@example][output,chr,92][asis,.com]") %]</p>
+        </div>
+
+        [%
+            INCLUDE boxtrapper_edit_list_form_include.html.tt
+            status=fetch_cfg.status
+            list_items=fetch_cfg.data
+            errors=fetch_cfg.errors
+            account=FORM.account
+            list_type='blocklist'
+        %]
+    </div>
+    [% END %]
+
+    [% INCLUDE _assets/return_link.html.tt return_location='editlists.html' post='1' formdata=FORM return_link_text=locale.maketext('Go Back') %]
+</div>
+[% END %]
+
+[% BLOCK js_block %]
+<script type="text/javascript">
+    document.addEventListener("DOMContentLoaded", function() {
+        var form_control = document.getElementById("list_ta");
+        if (form_control) {
+          form_control.focus();
+        }
+    });
+</script>
+[% END %]

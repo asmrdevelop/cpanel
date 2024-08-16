@@ -1,0 +1,49 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/grpck                           Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+exit if ( !-x '/usr/sbin/grpck' );
+
+require Expect;
+
+my $lines  = 0;
+my $glines = 0;
+
+open( GROUP, "<", '/etc/group' );
+while (<GROUP>) {
+    $glines++;
+}
+close(GROUP);
+$glines = ( $glines * 3 );
+
+open( GRPCK, "-|" ) || exec( '/usr/sbin/grpck', '-r' );
+while (<GRPCK>) {
+    if (/\? /) {
+        $lines++;
+        if ( $lines > $glines ) {
+            last();
+        }
+    }
+}
+close(GRPCK);
+
+if ( $lines > $glines ) {
+    print "broken grpck: https://bugzilla.redhat.com/bugzilla/show_bug.cgi?id=143308\n";
+    print "grpck will be skipped.\n";
+    exit();
+}
+
+my $exp = Expect->spawn("/usr/sbin/grpck")
+  or die "Cannot spawn pwck $!\n";
+
+while (1) {
+    $exp->expect( 30, [ '\?', sub { $exp->send("yes\r"); } ], [ 'eof', sub { exit(); } ], [ 'timeout', sub { exit(); } ], 'default' );
+}
+
+my $pid = $exp->pid();
+
+$exp->soft_close();
+waitpid( $pid, 0 );

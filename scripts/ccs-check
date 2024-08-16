@@ -1,0 +1,141 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/ccs-check                       Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+use warnings;
+
+# Make sure we get exactly the args we want, with a little flexibility for calling --help, -h, -HELP, etc.
+exit script() unless caller;
+
+sub script {
+    my $args_ok    = 0;
+    my $update_ssl = 0;
+    my $no_restart = 0;
+    my $force_run  = 0;
+    foreach my $arg (@ARGV) {
+        if ( $arg =~ m/^-{1,2}h/i ) {
+            show_usage();
+            return 0;
+        }
+        elsif ( $arg eq '--run' ) {
+            $args_ok = 1;
+        }
+        elsif ( $arg eq '--ssl' ) {
+            $update_ssl = 1;
+        }
+        elsif ( $arg eq '--force' ) {
+            $force_run = 1;
+        }
+        elsif ( $arg eq '--norestart' ) {
+            $no_restart = 1;
+        }
+        else {
+            print "Unknown arguments passed.\n";
+            show_usage(1);
+            return 1;
+        }
+    }
+    if ( $args_ok != 1 ) {
+        show_usage();
+        return 1;
+    }
+
+    # If it's not installed, just abort
+    if ( !$force_run && !-f '/opt/cpanel-ccs/bin/run' ) {
+        return 0;
+    }
+
+    # Handle updating of SSL pem for CCS
+    if ( $update_ssl == 1 ) {
+        require Cpanel::SSLService;
+        my %ssl_info = Cpanel::SSLService::getsslargs();
+
+        require Cpanel::SafetyBits::Chown;
+        require Cpanel::MD5;
+
+        my $target_pem = '/opt/cpanel-ccs/conf/cpanel.pem';
+
+        my $orig_md5;
+        if ( -f $target_pem ) {
+            $orig_md5 = Cpanel::MD5::getmd5sum($target_pem);
+        }
+
+        if ( defined( $ssl_info{'SSL_cert_file'} ) ) {
+            require Cpanel::FileUtils::Copy;
+            if ( !-d '/opt/cpanel-ccs/conf' ) {
+                require Cpanel::SafeDir::MK;
+
+                Cpanel::SafeDir::MK::safemkdir('/opt/cpanel-ccs/conf');
+                if ( $< == 0 ) {
+                    Cpanel::SafetyBits::Chown::safe_chown( 'cpanel-ccs', 'cpanel-ccs', '/opt/cpanel-ccs/conf' );
+                }
+            }
+
+            # If we have a combined pem, use that, otherwise we need to build a PEM from what we have.
+            if ( $ssl_info{'SSL_cert_file'} eq $ssl_info{'SSL_key_file'} ) {
+                Cpanel::FileUtils::Copy::safecopy( $ssl_info{'SSL_cert_file'}, $target_pem );
+                if ( $< == 0 ) {
+                    Cpanel::SafetyBits::Chown::safe_chown( 'cpanel-ccs', 'cpanel-ccs', $target_pem );
+                }
+            }
+            else {
+                my $pem_contents;
+
+                # pem order is key > cert > ca
+                foreach my $file ( $ssl_info{'SSL_key_file'}, $ssl_info{'SSL_cert_file'}, $ssl_info{'SSL_ca_file'} ) {
+                    if ( open my $read_fh, '<', $file ) {
+                        while ( my $line = <$read_fh> ) {
+                            $pem_contents .= $line;
+                        }
+                    }
+                }
+                require Cpanel::FileUtils::Write;
+                Cpanel::FileUtils::Write::write( $target_pem, $pem_contents );
+                if ( $< == 0 ) {
+                    Cpanel::SafetyBits::Chown::safe_chown( 'cpanel-ccs', 'cpanel-ccs', $target_pem );
+                }
+            }
+        }
+        else {
+            # If the system for some reason doesn't report cert info, fall back to the self signed pem that comes with CCS
+            Cpanel::FileUtils::Copy::safecopy( '/opt/cpanel-ccs/twistedcaldav/test/data/server.pem', $target_pem );
+        }
+        if ( -f $target_pem ) {
+            if ( $no_restart == 0 ) {
+                my $current_md5 = Cpanel::MD5::getmd5sum($target_pem);
+                if ( !defined($orig_md5) || ( defined($orig_md5) && ( $orig_md5 ne $current_md5 ) ) ) {
+                    print "SSL information changed, restarting CCS..\n";
+                    require Cpanel::SafeRun::Simple;
+                    Cpanel::SafeRun::Simple::saferun(qw{systemctl restart cpanel-ccs});
+                }
+            }
+        }
+        print "SSL information updated.\n";
+    }
+
+    return 0;
+}
+###[ Functions ]########################################################################################################
+
+sub show_usage {
+    my ($use_stderr) = @_;
+    my $out_fh = ( $use_stderr ? \*STDERR : \*STDOUT );
+    print $out_fh <<EOF;
+This script handles some maintenance for the Calendar and Contacts Server plugin, if installed.
+
+Usage:
+    scripts/ccs-check <--help|--run|--ssl>
+
+    --help      : Show this output
+    --run       : Actually run this script
+    --ssl       : Copy the SSL certificate information in to place
+    --force     : Copy the SSL certificate information in to place regardless if CCS is installed or not
+    --norestart : Don't restart CCS even if SSL information is updated
+
+EOF
+    return;
+}

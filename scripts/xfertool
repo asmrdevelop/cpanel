@@ -1,0 +1,535 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/xfertool                        Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::xfertool;
+
+use cPstrict;
+
+=encoding utf-8
+
+=head1 USAGE
+
+    xfertool ( --help | <COMMAND> <USERNAME> [ARGS..] )
+
+=head1 DESCRIPTION
+
+This script is part of an automated process that WHM uses for account
+transfers.
+
+We B<do> B<not> recommend calling this script manually.
+
+Possible COMMAND values are:
+
+=over
+
+=item * C<allowlogins> and C<disallowlogins>
+
+Control the user’s ability to log in.
+
+=item * C<blockdynamiccontent> and C<unblockdynamiccontent>
+
+Control httpd’s handling of files with certain well-known extensions
+that correlate with dynamic web content. For example, after
+C<blockdynamiccontent>, C<.php> files will no longer function normally.
+
+=item * C<setupmaildest>
+
+Sets the user’s mail routing. Takes an additional argument that
+can be C<primary>, C<secondary>, or C<remote>.
+
+Example:
+
+    xfertool setupmaildest howard primary
+
+=item * C<swapip>
+
+Replaces one IP address for another in the user’s DNS zones. Takes
+the source & target IP addresses as additional arguments.
+
+Example:
+
+    xfertool swapip howard  1.2.3.4  2.3.4.5
+
+=item * C<changenameservers>
+
+Sets the user’s nameservers, given as additional arguments.
+
+Example:
+
+    xfertool changenameservers howard  ns1.myhost.com ns2.myhost.com
+
+(As many nameservers can be given as needed.)
+
+=back
+
+=cut
+
+#----------------------------------------------------------------------
+
+use parent 'Cpanel::HelpfulScript';
+
+use Cpanel::DnsUtils::Fetch                 ();
+use Cpanel::Hostname                        ();
+use Cpanel::Encoder::URI                    ();
+use Cpanel::DnsUtils::Stream                ();
+use Cpanel::DnsUtils::AskDnsAdmin           ();
+use Cpanel::ZoneFile                        ();
+use Cpanel::OS                              ();
+use Cpanel::PwCache                         ();
+use Cpanel::Config                          ();
+use Cpanel::Config::CpUserGuard             ();
+use Cpanel::ConfigFiles                     ();
+use Cpanel::AccessIds::ReducedPrivileges    ();
+use Cpanel::Config::WebVhosts               ();
+use Cpanel::Config::userdata::Load          ();
+use Cpanel::AcctUtils::Domain               ();
+use Cpanel::AcctUtils::Owner                ();
+use Cpanel::AcctUtils::DomainOwner::Tiny    ();
+use Cpanel::MailTools::DBS                  ();
+use Cpanel::Config::HasCpUserFile           ();
+use Cpanel::Team::Config                    ();
+use Cpanel::Team::Constants                 ();
+use Whostmgr::Transfers::Session::Constants ();
+
+use constant {
+    _ENOENT => 2,
+
+    _ACCEPT_UNNAMED => 1,
+};
+
+use constant _OPTIONS => ();
+
+#----------------------------------------------------------------------
+
+__PACKAGE__->new(@ARGV)->script() if !caller;
+
+sub script ($self) {
+
+    my @args = $self->getopt_unnamed();
+
+    my $opt  = shift(@args) or die $self->help('Need a COMMAND.');
+    my $user = shift(@args) or die $self->help('Need a USERNAME.');
+
+    my @DOMAINS;
+    if ( !Cpanel::PwCache::getpwnam($user) ) {
+
+        # check if user looks like a valid domain
+        if ( $user !~ /.\../ ) {
+            print "Supplied user '$user' is not found.\n";
+            exit 1;
+        }
+
+        @DOMAINS = ($user);
+
+        # can return 'root' if no other owner found
+        $user = Cpanel::AcctUtils::DomainOwner::Tiny::getdomainowner( $DOMAINS[0] );
+        if ( $user eq 'root' ) {
+            print "Domain '$DOMAINS[0]' cannot be transferred.\n";
+            exit;
+        }
+    }
+    elsif ( Cpanel::Config::HasCpUserFile::has_cpuser_file($user) ) {
+        my $cpu_ref = Cpanel::Config::loadcpuserfile($user);
+        @DOMAINS = ( $cpu_ref->{'DOMAIN'} );
+        if ( ref $cpu_ref->{'DOMAINS'} ) {
+            push @DOMAINS, @{ $cpu_ref->{'DOMAINS'} };
+        }
+    }
+    else {
+        print "Supplied user '$user' is not found.\n";
+        exit 1;
+    }
+
+    if ( $user eq 'root' ) {
+        print "Cannot use 'root' user.\n";
+        exit(1);
+    }
+
+    if ( $opt =~ /(dis)?allowlogins/i ) {
+        my $dis = $1;
+        if ( !$user ) {
+            print "Usage: $0 --(dis)?allowlogins user\n";
+            exit(1);
+        }
+        if ($dis) {
+            _disallow_logins($user);
+        }
+        else {
+            _allow_logins($user);
+        }
+    }
+    elsif ( $opt =~ /(un)?blockdynamiccontent/i ) {
+        my $un = $1;
+        shift @args;    # $dest
+        if ( !scalar @DOMAINS ) {
+            print "Usage: $0 --(un)?blockdynamiccontent domain/user\n";
+            exit(1);
+        }
+        _block_dynamic_content( $user, \@DOMAINS, ( $un ? 1 : 0 ) );
+    }
+    elsif ( $opt =~ /setupmaildest/i ) {
+        my $dest = shift(@args);
+        if ( !scalar @DOMAINS ) {
+            print "Usage: $0 --setupmaildest domain/user primary/secondary/remote\n";
+            exit(1);
+        }
+        _setmaildest( \@DOMAINS, $dest );
+    }
+    elsif ( $opt =~ /swapip/i ) {
+        my $sourceip = shift(@args);
+        my $targetip = shift(@args);
+        if ( !scalar @DOMAINS || !$sourceip || !$targetip ) {
+            print "Usage: $0 --swapip domain/user sourceip destip\n";
+            exit(1);
+        }
+        _changezones( 'SWAPIP', \@DOMAINS, $sourceip, $targetip );
+    }
+    elsif ( $opt =~ /changenameservers/i ) {
+        if ( !scalar @DOMAINS ) {
+            print "Usage: $0 --changenameservers domain/user NS1 NS2 NS3 ...\n";
+            exit(1);
+        }
+        my @NSLIST = @args;
+        _changezones( 'NAMESERVERS', \@DOMAINS, \@NSLIST );
+    }
+    else {
+        die $self->help("Unrecognized COMMAND ($opt) given.");
+    }
+
+    return;
+}
+
+sub _changezones {
+    my $op        = shift;
+    my $domainref = shift;
+
+    my %ZONES = %{ Cpanel::DnsUtils::Fetch::fetch_zones( 'zones' => $domainref ) };
+
+    if ( $op eq 'SWAPIP' ) {
+        my $sourceip = shift;
+        my $destip   = shift;
+        foreach my $zone ( keys %ZONES ) {
+            my $zf = Cpanel::ZoneFile->new( text => $ZONES{$zone}, domain => $zone );
+            if ( $zf->{'status'} ) {
+
+            }
+            if ( !$sourceip || $sourceip == -1 ) {
+                my @main_a_records = $zf->find_records( 'type' => 'A', 'name' => $zone . '.' );
+                $sourceip = $main_a_records[0]->{'address'};
+            }
+
+            my @arecords = $zf->find_records( 'type' => 'A' );
+            if ( !$sourceip ) {
+                $sourceip = $arecords[0]->{'address'};
+            }
+
+            for ( my $i = 0; $i <= $#arecords; $i++ ) {
+                if ( $arecords[$i]->{'address'} eq $sourceip ) {
+                    $arecords[$i]->{'address'} = $destip;
+                }
+            }
+
+            $zf->replace_records( \@arecords );
+
+            my $zref = $zf->serialize();
+            $ZONES{$zone} = $zref;
+        }
+    }
+    elsif ( $op eq 'NAMESERVERS' ) {
+        my $nsref = shift;
+
+        foreach my $zone ( keys %ZONES ) {
+            my $zf = Cpanel::ZoneFile->new( text => $ZONES{$zone}, domain => $zone );
+            if ( $zf->{'status'} ) {
+
+            }
+            my @soarecords = $zf->find_records( 'name' => $zone . '.', 'type' => 'SOA' );
+
+            $soarecords[0]->{'mname'} = $nsref->[0];
+            $zf->replace_records( \@soarecords );
+
+            my @nsrecords    = $zf->find_records( 'name' => $zone . '.', 'type' => 'NS' );
+            my $first_record = $zf->get_first_record( \@nsrecords );
+
+            my $first_record_line = $first_record->{'Line'};
+            my $first_record_ttl  = $first_record->{'ttl'};
+
+            $zf->remove_records( \@nsrecords );
+            foreach my $nameserver ( @{$nsref} ) {
+                $zf->insert_record_after_line(
+                    {
+                        'ttl'     => $first_record_ttl,
+                        'name'    => $zone . '.',
+                        'class'   => 'IN',
+                        'type'    => 'NS',
+                        'nsdname' => $nameserver
+                    },
+                    $first_record_line - 1
+                );
+            }
+
+            my $zref = $zf->serialize();
+            $ZONES{$zone} = $zref;
+        }
+    }
+
+    my $zdata;
+    my @RELOADLIST;
+    foreach my $zone ( keys %ZONES ) {
+        if ( !$ZONES{$zone} ) {
+            next();
+        }
+        my $zonedata = join( "\n", @{ $ZONES{$zone} } );
+        $zonedata =~ s/\n{4}/\n/g;
+        if ( $zonedata eq '' ) { next(); }
+
+        #we should just edit the soa?
+        $zonedata = Cpanel::DnsUtils::Stream::upsrnumstream($zonedata);    #increase serial number
+
+        push @RELOADLIST, $zone;
+        $zdata .= 'cpdnszone-' . Cpanel::Encoder::URI::uri_encode_str($zone) . '=' . Cpanel::Encoder::URI::uri_encode_str($zonedata) . '&';
+    }
+
+    Cpanel::DnsUtils::AskDnsAdmin::askdnsadmin( 'SYNCZONES', 0, '', '', '', $zdata );
+    Cpanel::DnsUtils::AskDnsAdmin::askdnsadmin( 'RELOADZONES', 0, join( ',', @RELOADLIST ) );
+    return;
+}
+
+sub _setmaildest {
+    my $domainref = shift;
+    my $dest      = shift;
+    if ( !$dest || ( $dest ne 'primary' && $dest ne 'secondary' ) ) {
+        $dest = 'remote';
+    }
+
+    my @setup;
+
+    foreach my $domain ( @{$domainref} ) {
+        print "Setting mail handling for $domain to : $dest\n";
+
+        # NB: This duplicates logic in
+        # Whostmgr::Transfers::Systems::MailRouting; it would be nice to
+        # normalize it.
+        #
+        if ( $dest eq 'primary' ) {
+            push @setup, [ $domain, 'localdomains' => 1, 'remotedomains' => 0, 'secondarymx' => 0, 'update_proxy_subdomains' => 1 ];
+        }
+        elsif ( $dest eq 'secondary' ) {
+            push @setup, [ $domain, 'localdomains' => 0, 'remotedomains' => 1, 'secondarymx' => 1, 'update_proxy_subdomains' => 1 ];
+        }
+        else {
+            push @setup, [ $domain, 'localdomains' => 0, 'remotedomains' => 1, 'secondarymx' => 0, 'update_proxy_subdomains' => 1 ];
+        }
+    }
+
+    Cpanel::MailTools::DBS::setup_mail_routing_for_domains( \@setup );
+
+    return;
+}
+
+sub _block_dynamic_content {
+    my $user      = shift;
+    my $domainref = shift;
+    my $unblock   = shift;
+
+    my @DYNAMIC_EXTS = qw(dynamiccontent pl plx perl cgi php php4 php5 php6 php3 shtml);
+    my $host;
+    my $owner = Cpanel::AcctUtils::Owner::getowner($user);
+    $owner =~ s/\n//g;
+    if ( $owner eq '' || $owner eq 'root' || $user eq $owner ) {
+        $host = Cpanel::Hostname::gethostname();
+    }
+    else {
+        $host = Cpanel::AcctUtils::Domain::getdomain($owner);
+    }
+    if ( !$host ) { $host = Cpanel::Hostname::gethostname(); }
+
+    my $dynamic_regex = '\.(' . join( '|', @DYNAMIC_EXTS ) . ')$';
+
+    my $privs = Cpanel::AccessIds::ReducedPrivileges->new($user);
+
+    my $wvh = Cpanel::Config::WebVhosts->load($user);
+
+    my %seen_vhost;
+
+    for my $domain (@$domainref) {
+        my $vhost_name = $wvh->get_vhost_name_for_domain($domain) or do {
+            warn "“$user” has no web vhost for domain “$domain”!\n";
+            next;
+        };
+
+        next if $seen_vhost{$vhost_name};
+
+        my $vh_conf = Cpanel::Config::userdata::Load::load_userdata_domain( $user, $vhost_name );
+        if ( !$vh_conf || !%$vh_conf ) {
+            warn "“$user”’s web vhost “$vhost_name” has no configuration!\n";
+            next;
+        }
+
+        my $docroot = $vh_conf->{'documentroot'} or do {
+            warn "Configuration for “$user”’s web vhost “$vhost_name” has no document root!\n";
+            next;
+        };
+
+        my $htaccess = "$docroot/.htaccess";
+
+        if ($unblock) {
+            next if !-e $htaccess;
+
+            if ( open my $htaccess_fh, '+<', $htaccess ) {
+                my @HT = <$htaccess_fh>;
+                @HT = grep( !/^\s*redirectmatch\s+[\.\\\(]*dynamiccontent/i, @HT );
+
+                # Clear final empty line. Previously there was
+                # a bug in this logic that would leave an extra line in the
+                # file after every block/unblock cycle.
+                pop @HT if @HT && ( $HT[-1] eq "\n" );
+
+                seek( $htaccess_fh, 0, 0 );
+                print {$htaccess_fh} join( '', @HT );
+                truncate( $htaccess_fh, tell($htaccess_fh) );
+                close $htaccess_fh;
+            }
+            elsif ( $! != _ENOENT() ) {
+                warn "Failed to update htaccess @ $docroot file: $!";
+            }
+
+        }
+        else {
+            if ( open my $htaccess_fh, '>>', $htaccess ) {
+                print {$htaccess_fh} "\nRedirectMatch $dynamic_regex http://$host/cgi-sys/movingpage.cgi\n";
+                close $htaccess_fh;
+            }
+            else {
+                warn "Failed to update htaccess @ $docroot file: $!";
+            }
+        }
+
+        $seen_vhost{$vhost_name} = 1;
+    }
+
+    return;
+}
+
+sub _allow_logins {
+    my $user = shift;
+
+    $user =~ s/\\//g;
+    unlink("/var/cpanel/suspended/${user}");
+
+    _generate_account_suspension_include();
+
+    if ( -e '/usr/sbin/pw' ) {
+        system( '/usr/sbin/pw', 'unlock', $user );
+    }
+    else {
+        system( 'passwd', '-u', $user );
+    }
+
+    # restore user's cron if previously suspended
+    my $user_crontab_dir = Cpanel::OS::user_crontab_dir();
+    my $suspended_cron   = "${user_crontab_dir}.suspended/$user";
+    if ( -e $suspended_cron ) {
+        link( $suspended_cron, "$user_crontab_dir/${user}" ) && unlink $suspended_cron;
+    }
+
+    my $cpuser_guard = Cpanel::Config::CpUserGuard->new($user);
+    delete $cpuser_guard->{'data'}->{'SUSPENDED'};
+    $cpuser_guard->save();
+    return;
+}
+
+sub _disallow_logins {
+    my $user = shift;
+
+    $user =~ s/\///g;
+
+    # very similar to the code in scripts/suspendacct,
+    #   but cannot be used as webserver & co still need to be available
+    if ( !-d '/var/cpanel/suspended' ) {
+        my $original_umask = umask(022);
+        my $mail_gid       = ( getgrnam('mail') )[2] // 13;
+        mkdir( '/var/cpanel/suspended', 0710 );
+        umask($original_umask);
+        chown( 0, $mail_gid, '/var/cpanel/suspended' );
+    }
+
+    require Cpanel::FileUtils::Write;
+    Cpanel::FileUtils::Write::overwrite( "/var/cpanel/suspended/${user}", $Whostmgr::Transfers::Session::Constants::USER_TRANSFERRED_MESSAGE, 0640 );
+
+    _generate_account_suspension_include();
+
+    if ( -e '/usr/sbin/pw' ) {
+        system( '/usr/sbin/pw', 'lock', $user );
+    }
+    else {
+        system( 'passwd', '-l', $user );
+    }
+
+    # temporarily suspend crontab
+    _suspend_cron_for($user);
+
+    _suspend_ftp_for($user);
+
+    # suspend the team user on source server once transferred.
+    _suspend_team_for($user);
+
+    my $cpuser_guard = Cpanel::Config::CpUserGuard->new($user);
+    $cpuser_guard->{'data'}->{'SUSPENDTIME'} = time();
+    $cpuser_guard->{'data'}->{'SUSPENDED'}   = 1;
+    $cpuser_guard->save();
+    return;
+}
+
+sub _generate_account_suspension_include {
+    require "/usr/local/cpanel/scripts/generate_account_suspension_include";    ## no critic qw(Modules::RequireBarewordIncludes) -- refactoring this is too large
+    generate_account_suspension_include::update_include_and_restart_httpd();
+    return 1;
+}
+
+sub _suspend_cron_for {
+    my ($user) = @_;
+
+    return unless $user;
+    my $user_crontab_dir = Cpanel::OS::user_crontab_dir();
+    my $cron             = "$user_crontab_dir/$user";
+    return unless -e $cron;
+
+    # create cron.suspended dir if missing
+    my $suspended_dir = "${user_crontab_dir}.suspended";
+    mkdir( $suspended_dir, 0700 ) unless -e $suspended_dir;
+
+    # set the cron as suspended
+    link( $cron, "${suspended_dir}/${user}" ) && unlink($cron);
+    return;
+}
+
+sub _suspend_ftp_for {
+    my $user   = shift || return;
+    my $ftpdir = $Cpanel::ConfigFiles::FTP_PASSWD_DIR;    # this same directory is used for both proftpd and pure-ftpd
+    return if !-d $ftpdir;
+    my $ftpfile = $ftpdir . '/' . $user;
+    rename $ftpfile, $ftpfile . '.' . 'suspended';
+    system '/usr/local/cpanel/bin/ftpupdate', $user;
+    return;
+}
+
+sub _suspend_team_for {
+    my $user = shift || return;
+    return if !-e "$Cpanel::Team::Constants::TEAM_CONFIG_DIR/$user";
+    require Cpanel::Exception;
+    eval {
+        my $team_obj = Cpanel::Team::Config->new($user);
+        $team_obj->suspend_team();
+    };
+
+    if ($@) {
+        my $error_as_string = Cpanel::Exception::get_string($@);
+        print "Unable to suspend team user due to an exception: $error_as_string\n";
+    }
+    return;
+}

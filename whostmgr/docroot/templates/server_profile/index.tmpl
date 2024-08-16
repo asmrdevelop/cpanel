@@ -1,0 +1,118 @@
+[%
+    USE Whostmgr;
+
+    SET PAGE_BASE = '/scripts7/server_profile/';
+    SET PAGE_NAME = Whostmgr.get_page_name_by_url(PAGE_BASE);
+
+    WRAPPER 'master_templates/master.tmpl'
+        header         = locale.makevar(PAGE_NAME),
+        stylesheets = [
+            Whostmgr.find_file_url('/templates/server_profile/index.min.css')
+        ],
+        breadcrumburl  = PAGE_BASE,
+        base           = PAGE_BASE,
+        theme          = 'bootstrap',
+        CJT2_EXCLUSIVE = 1,
+        app_key='server_profile';
+
+    SET locale_attributes = execute( "Locale", "get_attributes", {} ).data;
+
+    # This variable might ideally be named “allow_profile_change”, but
+    # “has_accounts_created” appers in several places in the JS, and since
+    # this is just a workaround to simplify testing, this is left in place.
+    SET has_accounts_created = !data.allow_profile_change_with_users && Whostmgr.minimum_accounts_needed(1);
+
+    SET templates = [
+        "server_profile/views/activatingProfileView.ptt",
+        "server_profile/views/confirmProfileView.ptt",
+        "server_profile/views/selectOptionsView.ptt",
+        "server_profile/views/selectProfileView.ptt"
+    ];
+
+    # Necessary for Angular filter strings elsewhere
+    SET LANG = {
+        disables = locale.maketext("Disables [list_and,_1]"),
+        enables  = locale.maketext("Enables [list_and,_1]"),
+        optional = locale.maketext("[list_and,_1] [numerate,_2,is,are] optional.")
+    };
+
+%]
+
+[%# PAGE content %]
+
+    <div id="pageContent" ng-controller="baseController">
+
+        <cp-alert-list></cp-alert-list>
+
+        <p class="description">
+            [% locale.maketext("You can use this interface to select a server‘s profile, based on the services that you want to the server to provide.") %]<br/>
+            [% locale.maketext("This allows you to enable or disable specific services to reduce the resource load of a server.") %]
+        </p>
+
+        [% IF data.child_accounts %]
+            <div class="alert alert-warning">
+                    <span class="glyphicon glyphicon-exclamation-sign"></span>
+                    <div class="alert-message">
+                        <strong>[% locale.maketext('Warning:') %]</strong> [% locale.maketext('This node has one or more distributed accounts.') %]
+                        <p>
+                        [% locale.maketext('Selecting a new server profile can cause these accounts to lose functionality.') %]
+                        [% locale.maketext('For example, the [output,em,Standard] and [output,em,Mail] profiles provide mail-related services.') %]
+                        [% locale.maketext('If you select the [output,em,_1] or [output,em,Database] profile, the distributed account would be unable to access their webmail.','DNS') %]
+                        </p>
+                    </div>
+                </div>
+        [% END %]
+
+        [% IF data.available_profiles.size() == 1 && data.current_profile.optional_roles.size() == 0 %]
+            <div class="alert alert-info" role="alert">
+                <p>
+                [% locale.maketext("You do not need to configure the server’s optional roles. This server’s license is for the “[_1]” profile, which does not have any optional roles.", data.current_profile.name) %]
+                </p>
+                [%
+                    SET custom_url = Whostmgr.get_custom_url();
+                    SET cpanel_url = cp_security_token _ '/scripts12/license_purchase_status/checkout?upgrade=1';
+
+                    IF custom_url;
+                        SET upgrade_link = custom_url;
+                    ELSE;
+                        SET upgrade_link = cpanel_url;
+                    END;
+                %]
+                <p>
+                    [% locale.maketext('To select a different profile, you must upgrade your server’s license.') %]
+                    <a href="[% upgrade_link %]" title="[% locale.maketext('Upgrade the server’s license and login again.') %]" rel='noopener'>
+                        [% locale.maketext('Upgrade the server’s license and login again.') %]
+                        <i class="fas fa-external-link-alt" aria-hidden="true"></i>
+                    </a>
+                </p>
+            </div>
+        [% ELSE %]
+
+            <div class="alert alert-info loadingProfiles" ng-if="!loaded">
+                <span class="fas fa-spinner fa-spin"></span>
+                [% locale.maketext("Loading available server profiles …") %]
+            </div>
+
+            <div ng-if="loaded" ng-cloak>
+                <div ng-view></div>
+            </div>
+
+            [% FOREACH ptt IN templates %]
+            <script id="[% ptt %]" type="text/ng-template">
+                [%- PROCESS $ptt -%]
+            </script>
+            [% END %]
+
+            <script type="text/javascript">
+                var PAGE = PAGE || {};
+                PAGE.currentProfile     = [% data.current_profile.json() %];
+                PAGE.availableProfiles  = [% data.available_profiles.json() %];
+            </script>
+
+            [% PROCESS 'master_templates/cjt2_header_include.tt' %]
+
+        [% END  %]
+
+    </div>
+
+[% END %]

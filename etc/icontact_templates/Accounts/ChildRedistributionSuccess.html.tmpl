@@ -1,0 +1,33 @@
+[%#
+Variables passed in:
+
+user                    - The user being distributed
+worker_type             - The worker function being distributed
+worker_alias            - The alias (friendly name) the worker function is being distributed to.
+old_alias               - The alias (friendly name) the worker function was previously distributed to.
+origin                  - The system component from which the request originated
+
+For more information about how to customize notification templates, read our documentation at https://go.cpanel.net/notificationtemplates
+
+-%]
+
+[%
+    PROCESS "include/colors.tmpl";
+    PROCESS "include/styles.tmpl";
+
+    WRAPPER 'wrapper/main.html.tmpl';
+
+    NOTICE.email_reason = CPANEL.locale.maketext('Success: The Server Successfully Transferred “[_1]” for the User “[_2]”.', NOTICE.worker_type, NOTICE.user);
+
+%]
+
+<p style="margin-bottom:25px;">
+[% SWITCH NOTICE.worker_type %]
+[% CASE 'Mail' %]
+    [% CPANEL.locale.maketext('The server successfully transferred all mail storage and functionality for the user “[_1]” from the child node “[_2]” to the child node “[_3]”.', NOTICE.user, NOTICE.old_alias, NOTICE.worker_alias) %]
+[% CASE DEFAULT %]
+    [% CPANEL.locale.maketext("“[_1]” functions for user “[_2]” will now be handled by “[_3]”.", NOTICE.worker_type, NOTICE.user, NOTICE.worker_alias) %]
+[% END %]
+</p>
+
+[% END %]

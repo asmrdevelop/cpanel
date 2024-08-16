@@ -1,0 +1,34 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/unslavenamedconf                Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+my $ndc = find_namedconf();
+
+sub find_namedconf {
+    if ( -e "/etc/namedb/named.conf" ) { return ("/etc/namedb/named.conf"); }
+    return ("/etc/named.conf");
+}
+
+my $im = 0;
+my @CFILE;
+
+open( NDC, "+<", "$ndc" );
+while (<NDC>) {
+    if (/type slave/) {
+        s/slave/master/g;
+    }
+    if (/masters/) {
+        $im = 1;
+    }
+    if ( !$im ) { push( @CFILE, $_ ); }
+    if (/}/) {
+        $im = 0;
+    }
+}
+seek( NDC, 0, 0 );
+print NDC join( "", @CFILE );
+truncate( NDC, tell(NDC) );
+close(NDC);

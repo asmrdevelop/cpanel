@@ -1,0 +1,88 @@
+[%#
+Variables passed in:
+
+certificate     - instance of Cpanel::SSL::Objects::Certificate
+
+vhost_name      - the name of the virtual host onto which the SSL cert is installed
+
+vhost_domains   - the (sorted) list of domains that point to the virtual host
+
+ssl_tls_manager_url  - URL to the SSL/TLS manager
+
+ssl_tls_wizard_url  - URL to the SSL/TLS wizard
+
+enabled_providers_count - The number of enabled providers in the SSL/TLS wizard
+
+remaining_time      - The duration of time until the certificate expires in seconds.
+
+remaining_time_localized      - The duration of time until the certificate expires.
+
+For more information about how to customize notification templates, read our documentation at https://go.cpanel.net/notificationtemplates
+
+-%]
+
+[%
+    PROCESS "include/colors.tmpl";
+    PROCESS "include/styles.tmpl";
+    PROCESS 'include/zebra_table.tmpl';
+    PROCESS 'include/code_block.tmpl';
+    PROCESS "include/certificate_info_extended.tmpl";
+    PROCESS "SSL/includes/market_upgrade_options.tmpl";
+
+    SET expire_message = CPANEL.locale.maketext('[_1]: The [asis,SSL] certificate expires on [datetime,_2,date_format_medium] at [datetime,_2,time_format_medium] [asis,UTC].', NOTICE.vhost_name, 1 + NOTICE.certificate.not_after() );
+
+    IF NOTICE.remaining_time > 0;
+      SET remain_message = CPANEL.locale.maketext('At the time of this notice, the certificate will expire in “[_1]”.', NOTICE.remaining_time_localized);
+    ELSE;
+      SET remain_message = '<span style="color: ' _ dark_red _ '">' _ CPANEL.locale.maketext('At the time of this notice, the certificate expired “[_1]” ago.', NOTICE.remaining_time_localized.remove('^-') ) _ '</span>';
+    END;
+
+    SET NOTICE.email_reason = expire_message _ " " _ remain_message;
+
+    SET covered_domains = [];
+    FOREACH vhost_domain IN NOTICE.vhost_domains;
+        IF vhost_domain.covered;
+            covered_domains.push(vhost_domain);
+        END;
+    END;
+
+    WRAPPER 'wrapper/main.html.tmpl';
+%]
+
+<p>
+    [% CPANEL.locale.maketext('The [asis,SSL] certificate for “[_1]” has not been renewed.', NOTICE.vhost_name) %]
+    [% CPANEL.locale.maketext('[output,strong,You must take action to secure this site.]') %]
+</p>
+
+
+[%
+    market_upgrade_options(
+        enabled_providers_count=NOTICE.enabled_providers_count,
+        ssl_tls_wizard_url=NOTICE.ssl_tls_wizard_url,
+        certificate=NOTICE.certificate
+    );
+%]
+
+<p>
+    [% IF NOTICE.remaining_time > 0 %]
+      [% CPANEL.locale.maketext('The following domain [numerate,_1,name,names] will lose [asis,SSL] coverage when the certificate expires:', covered_domains.size) %]
+    [% ELSE %]
+      <span style="color: [% dark_red %]">[% CPANEL.locale.maketext('The following domain [numerate,_1,name,names] lost [asis,SSL] coverage when the certificate expired:', covered_domains.size) %]</span>
+    [% END %]
+</p>
+
+<ul>
+    [% FOR d IN covered_domains -%]
+        <li>
+            <a href="https://[% d.name.html() %]">[% d.name.html() %]</a>
+        </li>
+    [% END -%]
+</ul>
+
+[% CPANEL.locale.maketext('The certificate that is installed on this website contains the following properties:');
+
+certificate_info_extended( certificate=NOTICE.certificate );
+
+-%]
+
+[% END #wrapper %]

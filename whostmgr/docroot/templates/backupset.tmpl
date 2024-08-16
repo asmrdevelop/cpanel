@@ -1,0 +1,290 @@
+[% WRAPPER 'master_templates/master.tmpl'
+    app_key = 'legacy_backup_configuration'
+    theme="yui"
+    extrastyle = '
+td {
+   padding: 10px;
+}
+td.left_col {
+   text-align: left;
+   width: 430px;
+   vertical-align:top;
+}
+td.right_col {
+   text-align: left;
+   width: 430px;
+}
+label {
+   cursor: pointer;
+}
+'
+-%]
+<script type="text/javascript">
+//<![CDATA[
+function loadusers() {
+
+    window.open('[% cp_security_token %]/scripts/backup_user_selection', 'select_users');
+//   window.open("[% cp_security_token %]/scripts2/backupusers",null,"height=300,width=500,scrollbars=yes,status=no,toolbar=no,menubar=no,location=no");
+}
+
+function presubmit() {
+   document.backupform.BACKUPRETDAILY.disabled = false;
+   document.backupform.BACKUPRETWEEKLY.disabled = false;
+   document.backupform.BACKUPRETMONTHLY.disabled = false;
+   document.backupform.sbutton.disabled = true;
+   return true;
+}
+
+function setupret() {
+   CPANEL.util.zebra("options_table");
+
+   if (document.backupform.BACKUPINT[0].checked == true) {
+      document.backupform.BACKUPRETDAILY.disabled = true;
+      document.backupform.BACKUPRETDAILY.checked = true;
+
+      document.backupform.BACKUPRETWEEKLY.disabled = false;
+      document.backupform.BACKUPRETMONTHLY.disabled = false;
+   }
+   if (document.backupform.BACKUPINT[1].checked == true) {
+      document.backupform.BACKUPRETDAILY.disabled = true;
+      document.backupform.BACKUPRETDAILY.checked = false;
+
+      document.backupform.BACKUPRETWEEKLY.disabled = true;
+      document.backupform.BACKUPRETWEEKLY.checked = true;
+
+      document.backupform.BACKUPRETMONTHLY.disabled = false;
+   }
+   if (document.backupform.BACKUPINT[2].checked == true) {
+      document.backupform.BACKUPRETDAILY.disabled = true;
+      document.backupform.BACKUPRETDAILY.checked = false;
+
+      document.backupform.BACKUPRETWEEKLY.disabled = true;
+      document.backupform.BACKUPRETWEEKLY.checked = false;
+
+      document.backupform.BACKUPRETMONTHLY.disabled = true;
+      document.backupform.BACKUPRETMONTHLY.checked = true;
+   }
+}
+YAHOO.util.Event.onDOMReady(setupret);
+//]]>
+</script>
+
+<style type="text/css">
+.alert-info {
+  background-color: #d7edf9;
+  border: 1px solid #2980b9;
+  color: #31708f;
+  padding: 15px;
+  margin-bottom: 20px;
+  border-radius: 2px;
+  margin: 0 0 10px;
+}
+</style>
+
+<div class="alert-info">
+  [% locale.maketext("[asis,cPanel amp() WHM] will deprecate the Legacy Backup system in the near future. We [output,strong,strongly] recommend that you upgrade to the new Backup system.") %]
+</div>
+<div id="config-backup-header">
+ <h2>[% locale.maketext('Select Your Backup Configuration Options Below') %]</h2>
+</div>
+<div id="config-backup-wrapper">
+<form action="[% cp_security_token %]/scripts/savebackup" name="backupform" onsubmit="return presubmit();" method="post">
+<!-- prevent password autofill -->
+<input type="text" style="display:none">
+<input type="password" autocomplete='off' style="display:none">
+
+<table class="tblheader tableborder1" id="options_table">
+<tr class="zebra">
+   <td class="left_col">Backup Status</td>
+   <td class="right_col">
+      <label><input type="radio" name="BACKUPENABLE" value="yes" [% data.enabled == 'yes' ? 'checked="checked"' : '' %] />[% locale.maketext("Enabled") %]</label><br />
+      <label><input type="radio" name="BACKUPENABLE" value="no" [% data.enabled == 'no' ? 'checked="checked"' : '' %] />[% locale.maketext("Disabled") %]</label><br />
+      <label><input type="radio" name="BACKUPENABLE" value="restoreonly" [% data.enabled == 'restoreonly' ? 'checked="checked"' : '' %] />[% locale.maketext("Restore Only") %]</label>
+   </td>
+</tr>
+<tr class="zebra">
+   <td class="left_col">[% locale.maketext("Backup Interval") %]<br />
+   <span class="backup-note"><i>[% locale.maketext('([output,strong,Note]: By selecting the [output,strong,Daily] backup option, you will receive [output,strong,Monthly] and [output,strong,Weekly] as well, unless you choose not to retain them below. By selecting the [output,strong,Weekly] backup option, you will receive [output,strong,Monthly] as well, unless you choose not to retain them below.)') %]</i></span></td>
+   <td class="right_col">
+      <label><input type="radio" name="BACKUPINT" value="daily" [% data.interval == 'daily' ? 'checked="checked"' : '' %] onclick="setupret();" />Daily</label>
+          <label><input type="radio" name="BACKUPINT" value="weekly" [% data.interval == 'weekly' ? 'checked="checked"' : '' %] onclick="setupret();" />Weekly</label>
+      <label><input type="radio" name="BACKUPINT" value="monthly" [% data.interval == 'monthly' ? 'checked="checked"' : '' %] onclick="setupret();" />Monthly</label>
+   </td>
+</tr>
+<tr class="zebra">
+   <td class="left_col">[% locale.maketext("Backup Retention") %]</td>
+    <td class="right_col">
+      <label><input type="checkbox" name="BACKUPRETDAILY" value="1" [% data.retention.daily ? 'checked="checked"' : '' %] />[% locale.maketext("Daily") %]</label>
+      <label><input type="checkbox" name="BACKUPRETWEEKLY" value="1" [% data.retention.weekly ? 'checked="checked"' : '' %] />[% locale.maketext("Weekly") %]</label>
+      <label><input type="checkbox" name="BACKUPRETMONTHLY" value="1" [% data.retention.monthly ? 'checked="checked"' : '' %] />[% locale.maketext("Monthly") %]</label>
+   </td>
+</tr>
+<tr class="zebra">
+   <td class="left_col">[% locale.maketext("Days to Run Backup") %]</td>
+   <td class="right_col">
+      <label><input type="checkbox" value="on" name="BACKUPDAYS-0" [% data.run_days.sunday ? 'checked="checked"' : '' %] />[% locale.maketext("Sunday") %]</label><br />
+      <label><input type="checkbox" value="on" name="BACKUPDAYS-1" [% data.run_days.monday ? 'checked="checked"' : '' %] />[% locale.maketext("Monday") %]</label><br />
+      <label><input type="checkbox" value="on" name="BACKUPDAYS-2" [% data.run_days.tuesday ? 'checked="checked"' : '' %] />[% locale.maketext("Tuesday") %]</label><br />
+      <label><input type="checkbox" value="on" name="BACKUPDAYS-3" [% data.run_days.wednesday ? 'checked="checked"' : '' %] />[% locale.maketext("Wednesday") %]</label><br />
+      <label><input type="checkbox" value="on" name="BACKUPDAYS-4" [% data.run_days.thursday ? 'checked="checked"' : '' %] />[% locale.maketext("Thursday") %]</label><br />
+      <label><input type="checkbox" value="on" name="BACKUPDAYS-5" [% data.run_days.friday ? 'checked="checked"' : '' %] />[% locale.maketext("Friday") %]</label><br />
+      <label><input type="checkbox" value="on" name="BACKUPDAYS-6" [% data.run_days.saturday ? 'checked="checked"' : '' %] />[% locale.maketext("Saturday") %]</label>
+   </td>
+</tr>
+<tr class="zebra">
+   <td class="left_col">[% locale.maketext("Remount/Unmount Backup Drive") %]<br />
+   <span class="backup-note">[%locale.maketext("(This setting requires a separate drive or other mount point.)") %]</span></td>
+   <td class="right_col">
+      <label><input type="radio" name="BACKUPMOUNT" value="yes" [% data.drive.mount ? 'checked="checked"' : '' %] />[% locale.maketext("Enabled") %]</label>
+       <label><input type="radio" name="BACKUPMOUNT" value="no" [% !data.drive.mount ? 'checked="checked"' : '' %] />[% locale.maketext("Disabled") %]</label>
+   </td>
+</tr>
+<tr class="zebra">
+   <td class="left_col">[% locale.maketext("Bail Out if Backup Drive Mount Fails") %]<br />
+   <span class="backup-note">[% locale.maketext("(This setting is recommended if you set Remount/Mount.)") %]</span></td>
+   <td class="right_col">
+      <label><input type="radio" name="DIEIFNOTMOUNTED" value="yes" [% data.drive.die_on_mount_fail ? 'checked="checked"' : '' %] />[% locale.maketext("Enabled") %]</label>
+       <label><input type="radio" name="DIEIFNOTMOUNTED" value="no" [% !data.drive.die_on_mount_fail ? 'checked="checked"' : '' %] />[% locale.maketext("Disabled") %]</label>
+   </td>
+</tr>
+<tr class="zebra">
+   <td class="left_col">[% locale.maketext("Incremental Backup") %]<br />
+   <span class="backup-note">[% locale.maketext("(This setting will only back up items that have changed.) (**No Compression**, not compatible with FTP backups.)") %]</span></td>
+   <td class="right_col">
+      <label><input type="radio" name="BACKUPINC" value="yes" [% data.incremental ? 'checked="checked"' : '' %] />[% locale.maketext("Enabled") %]</label>
+      <label><input type="radio" name="BACKUPINC" value="no" [% !data.incremental ? 'checked="checked"' : '' %] />[% locale.maketext("Disabled") %]</label>
+   </td>
+</tr>
+<tr class="zebra">
+   <td class="left_col">[% locale.maketext("Backup Accounts") %]</td>
+   <td class="right_col">
+      <label><input type="radio" name="BACKUPACCTS" value="yes" [% data.accounts ? 'checked="checked"' : '' %] />[% locale.maketext("Enabled") %]</label>
+        <label><input type="radio" name="BACKUPACCTS" value="no" [% !data.accounts ? 'checked="checked"' : '' %] />[% locale.maketext("Disabled") %]</label>
+   </td>
+</tr>
+<tr class="zebra">
+   <td class="left_col">[% locale.maketext("Compress Account Backups") %]</td>
+   <td class="right_col">
+      <label><input type="radio" name="COMPRESSACCTS" value="yes" [% data.compress ? 'checked="checked"' : '' %] />[% locale.maketext("Enabled") %]</label>
+        <label><input type="radio" name="COMPRESSACCTS" value="no" [% !data.compress ? 'checked="checked"' : '' %] />[% locale.maketext("Disabled") %]</label>
+   </td>
+</tr>
+
+<tr class="zebra">
+   <td class="left_col">[% locale.maketext("Backup Configuration Files") %]<br />
+   <span class="backup-note">[% locale.maketext("(This setting is not needed for account restoration.)") %]</span></td>
+   <td class="right_col">
+      <label><input type="radio" name="BACKUPFILES" value="yes" [% data.config_files ? 'checked="checked"' : '' %] />[% locale.maketext("Enabled") %]</label>
+       <label><input type="radio" name="BACKUPFILES" value="no" [% !data.config_files ? 'checked="checked"' : '' %] />[% locale.maketext("Disabled") %]</label>
+   </td>
+</tr>
+<tr class="zebra">
+   <td class="left_col">[% locale.maketext("Backup SQL Databases") %]<br />
+   <span class="backup-note">[% locale.maketext("(You must choose the [output,em,Per Account] option to use the restore feature.)") %]</span></td>
+   <td class="right_col">
+      <label><input type="radio" name="MYSQLBACKUP" [% data.mysql == 'accounts' ? 'checked="checked"' : '' %] value="accounts" />[% locale.maketext("Per Account Only") %]</label><br />
+      <label><input type="radio" name="MYSQLBACKUP" [% data.mysql == 'dir' ? 'checked="checked"' : '' %] value="dir" />[% locale.maketext("Entire Data Directory") %]</label><br />
+       <label><input type="radio" name="MYSQLBACKUP" [% data.mysql == 'both' ? 'checked="checked"' : '' %] value="both" />[% locale.maketext("Per Account and Entire Data Directory") %]</label>
+   </td>
+</tr>
+<tr class="zebra">
+   <td class="left_col">[% locale.maketext("Backup Access Logs") %]</td>
+    <td class="right_col">
+      <label><input type="radio" name="BACKUPLOGS" value="yes" [% data.log_files ? 'checked="checked"' : '' %] />[% locale.maketext("Enabled") %]</label>
+       <label><input type="radio" name="BACKUPLOGS" value="no" [% !data.log_files ? 'checked="checked"' : '' %] />[% locale.maketext("Disabled") %]</label>
+   </td>
+</tr>
+<tr class="zebra">
+        <td class="left_col">[% locale.maketext("Backup Bandwidth Data") %]</td>
+    <td class="right_col">
+                <label><input type="radio" name="BACKUPBWDATA" value="yes" [% data.bwdata ? 'checked="checked"' : '' %] />[% locale.maketext("Enabled") %]</label>
+        <label><input type="radio" name="BACKUPBWDATA" value="no" [% !data.bwdata ? 'checked="checked"' : '' %] />[% locale.maketext("Disabled") %]</label>
+        </td>
+</tr>
+<tr class="zebra">
+   <td class="left_col">[% locale.maketext("Use local DNS zone files rather than retrieving the latest zone updates from the cluster. (Improves performance, but DNS zone changes may be lost if they are made on a different system in the cluster.)") %]</td>
+   <td class="right_col">
+      <label><input type="radio" name="LOCALZONESONLY" value="yes" [% data.localzonesonly ? 'checked="checked"' : '' %] />[% locale.maketext("Enabled") %]</label>
+       <label><input type="radio" name="LOCALZONESONLY" value="no" [% !data.localzonesonly ? 'checked="checked"' : '' %] />[% locale.maketext("Disabled") %]</label>
+   </td>
+</tr>
+<tr class="zebra">
+   <td class="left_col">[% locale.maketext("Backup Type") %]</td>
+   <td class="right_col">
+      <label><input type="radio" name="BACKUPTYPE" value="normal" [% !data.ftp.enabled ? 'checked="checked"' : '' %] />[% locale.maketext("Standard") %]</label><br />
+       <label><input type="radio" name="BACKUPTYPE" value="ftp" [% data.ftp.enabled ? 'checked="checked"' : '' %] />[% locale.maketext("Remote FTP (Accounts Only)") %]</label>
+   </td>
+</tr>
+<tr class="zebra">
+   <td class="left_col">[% locale.maketext('EXPERIMENTAL: Use Hard Links for weekly and monthly backups to reduce disk usage and backup time (incremental backups only).') %]</td>
+    <td class="right_col">
+        <label><input type="radio" name="LINKDEST" value="yes" [% data.linkdest ? 'checked="checked"' : '' %] />[% locale.maketext("Enabled") %]</label>
+        <label><input type="radio" name="LINKDEST" value="no" [% !data.linkdest ? 'checked="checked"' : '' %] />[% locale.maketext("Disabled") %]</label>
+   </td>
+</tr>
+<tr class="zebra">
+   <td class="left_col">[% locale.maketext("Remote FTP Host") %]<br />
+   <span class="backup-note">[% locale.maketext("(Remote FTP Backup Only)") %]</span></td>
+   <td class="right_col"><input type="text" size="32" name="BACKUPFTPHOST" value="[% data.ftp.host FILTER html %]" /></td>
+</tr>
+<tr class="zebra">
+   <td class="left_col">[% locale.maketext("FTP Backup User") %]<br />
+   <span class="backup-note">[% locale.maketext("(Remote FTP Backup Only)") %]</span></td>
+   <td class="right_col"><input type="text" size="32" name="BACKUPFTPUSER" value="[% data.ftp.user FILTER html %]" /></td>
+</tr>
+<tr class="zebra">
+   <td class="left_col">[% locale.maketext("FTP Backup Password") %]<br />
+   <span class="backup-note">[% locale.maketext("(Remote FTP Backup Only)") %]</span></td>
+   <td class="right_col"><input type="password" autocomplete='off' size="32" name="BACKUPFTPPASS" value="[% data.ftp.password FILTER html %]" /></td>
+</tr>
+<tr class="zebra">
+   <td class="left_col">[% locale.maketext("FTP Backup Directory") %]<br />
+   <span class="backup-note">
+          [% locale.maketext('Optionally, a directory called [asis,cpbackup] in the root of the account’s [output,acronym,FTP,File Transfer Protocol] directory will be used if none is specified.') %]
+          <br /><i>[% locale.maketext('For Example: [join,~, ,_*]','/home/fred/cpbackup', '/backup/cpbackup', '/files/cpbackup') %]</i>
+          <br />
+   [% locale.maketext("(Remote FTP Backup Only)") %]</span></td>
+   <td class="right_col"><input type="text" size="32" name="BACKUPFTPDIR" value="[% data.ftp.directory FILTER html %]" /></td>
+</tr>
+
+<tr class="zebra">
+   <td class="left_col">[% locale.maketext("FTP Backup Timeout -- in seconds") %] [% locale.maketext("(Remote FTP Backup Only)") %] </td>
+   <td class="right_col"><input type="text" size="32" name="BACKUPFTPTIMEOUT" value="[% data.ftp.timeout ? data.ftp.timeout : '120' %]" />
+                <br/><i>[% locale.maketext("Default to [quant,_1,second,seconds] if none is specified.", 120) %]</i>
+        </td>
+</tr>
+
+<tr class="zebra">
+   <td class="left_col">[% locale.maketext("FTP Backup Passive Mode") %]<br />
+   <span class="backup-note">[% locale.maketext("(This setting is required if you are behind a firewall or if FTP backups fail.)") %]</span></td>
+   <td class="right_col">
+      <label><input type="radio" name="BACKUPFTPPASSIVE" value="yes" [% data.ftp.passive ? 'checked="checked"' : '' %] />[% locale.maketext("Enabled") %]</label>
+       <label><input type="radio" name="BACKUPFTPPASSIVE" value="no" [% !data.ftp.passive ? 'checked="checked"' : '' %] />[% locale.maketext("Disabled") %]</label>
+   </td>
+</tr>
+<tr class="zebra">
+   <td class="left_col">[% locale.maketext("Backup Destination") %]<br />
+   <span class="backup-note">[% locale.maketext('(This should be a directory, drive, or mount point with at least twice the space of all your [asis,/home*] partitions. Setting this to [asis,/home] is [output,strong,strongly discouraged].)') %]</span></td>
+   <td class="right_col"><input type="text" size="32" name="BACKUPDIR" value="[% data.directory FILTER html %]" /></td>
+</tr>
+<tr class="zebra">
+   <td class="left_col">[% locale.maketext("Select Specific Users") %]</td>
+   <td class="right_col"><input type="button" class="btn-secondary" value="[% locale.maketext("Select") %] &gt;&gt;" onclick="loadusers();" /></td>
+</tr>
+[% IF data.scripts.enabled %]
+<tr class="zebra">
+   <td class="left_col">[% locale.maketext("Execute Pre/Post Backup Script") %]</td>
+   <td class="right_col">
+      <label><input type="checkbox" name="PREBACKUP" value="1" [% data.scripts.pre ? 'checked="checked"' : '' %] />/scripts/precpbackup</label><br />
+      <label><input type="checkbox" name="POSTBACKUP" value="1" [% data.scripts.post ? 'checked="checked"' : '' %] />/scripts/postcpbackup</label><br />
+   </td>
+</tr>
+[% END %]
+</table>
+</div>
+<div id="backup-save">
+<input type="submit" name="sbutton" class="btn-primary" value="[% locale.maketext("Save") %]" />
+</div>
+</form>
+</div>
+[% END #wrapper -%]

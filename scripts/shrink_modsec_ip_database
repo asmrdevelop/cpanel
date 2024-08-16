@@ -1,0 +1,351 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/shrink_modsec_ip_database       Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::shrink_modsec_ip_database;
+
+use strict;
+use warnings;
+use File::Temp                ();
+use Cpanel::PwCache           ();
+use Cpanel::FileUtils::Move   ();
+use Cpanel::SafetyBits        ();
+use Cpanel::SafetyBits::Chown ();
+use Cpanel::AccessIds         ();
+use Cpanel::SafeRun::Object   ();
+use Cpanel::Imports;
+
+our $MODSEC_SDBM_UTIL    = '/usr/sbin/modsec-sdbm-util';
+our $DEFAULT_SECDATADIR  = '/var/cpanel/secdatadir';
+our @DB_FILE_SUFFIXES    = qw( .pag .dir );                # Database file suffixes used by modsec-sdbm-util
+our $NEW_DB_NAME         = 'new_db';                       # This name is hard-coded in modsec-sdbm-util
+our $DB_PERMS            = 0640;                           # S_IRUSR | S_IWUSR | S_IRGRP
+our $OTHER_EXECUTE_PERMS = 01;                             # S_IXOTH
+
+sub new {
+    my ( $pkg, $opts ) = @_;
+    my $self = ref($opts) eq 'HASH' ? { %{$opts} } : {};
+    bless $self, $pkg;
+    return $self;
+}
+
+sub as_script {
+    my $self = shift;
+    logger->die('as_script() is a method call.') unless ref $self eq __PACKAGE__;
+
+    if ( not $ARGV[0] or $ARGV[0] ne '-x' ) {
+        my $msg = 'To execute, use the -x flag.';
+        logger()->die($msg);
+    }
+
+    $self->run();
+
+    return 1;
+}
+
+sub run {
+    my $self = shift;
+    logger->die('run() is a method call.') unless ref $self eq __PACKAGE__;
+
+    return 0 unless $self->_bin_check;    # Bail out early and silently if the util is not installed
+
+    my $databases = $self->_gather_databases();
+
+    while ( my ( $db_path, $uid ) = each %{$databases} ) {
+        if ( ( stat($MODSEC_SDBM_UTIL) )[2] & $OTHER_EXECUTE_PERMS ) {    # Can run util as "other" user?
+            $self->_shrink_db_as_user( $uid, $db_path );
+        }
+        else {
+            # Will have to settle for doing this as root.
+            $self->_shrink_db( $uid, $db_path );
+        }
+    }
+    return;
+}
+
+sub _bin_check {
+    return -x $MODSEC_SDBM_UTIL ? 1 : 0;
+}
+
+sub _gather_databases {
+
+    # All files that belong to the same database and that match @DB_FILE_SUFFIXES will need to have the same file owner or that database will not be in the final output
+    my $self = shift;
+    logger->die('_gather_databases() is a method call.') unless ref $self eq __PACKAGE__;
+
+    return $self->{'databases'} if defined $self->{'databases'};
+
+    my $secdatadir = $self->_secdatadir();
+
+    my %databases;
+
+    if ( opendir( my $dir_fh, $secdatadir ) ) {
+      FILE: while ( my $filename = readdir($dir_fh) ) {
+          SUFFIX: for my $suffix (@DB_FILE_SUFFIXES) {
+                if ( $filename =~ m{ \A (.*) \Q$suffix\E \Z }xms ) {
+                    my $short_name = $1;    # Filename without suffix
+
+                    my $db_path = $secdatadir . '/' . $short_name;    # Database path name suitable for passing to modsec-sdbm-util
+                    next FILE if exists $databases{$db_path};         # Move along if this belongs to a database already in the collection
+
+                    my $owner = $self->_validate_database_files_owner($db_path);    # Check if there is a full set of files for this database path
+
+                    if ( $self->_allowed_owner($owner) ) {
+                        $databases{$db_path} = $owner;                              # Verified, add it to the collection
+                        next FILE;
+                    }
+
+                }
+            }
+        }
+        closedir($dir_fh);
+    }
+    return $self->{'databases'} = \%databases;
+}
+
+sub _shrink_db_as_user {
+    my ( $self, $uid, $db_path ) = @_;
+    logger->die('_shrink_db_as_user() is a method call.')                  unless ref $self eq __PACKAGE__;
+    logger->die('_shrink_db_as_user() called without expected arguments.') unless length $uid && length $db_path;
+    return Cpanel::AccessIds::do_as_user( $uid, sub { $self->_shrink_db( $uid, $db_path ) } );
+}
+
+sub _shrink_db {
+    my ( $self, $uid, $db_path ) = @_;
+    logger->die('_shrink_db() is a method call.')                  unless ref $self eq __PACKAGE__;
+    logger->die('_shrink_db() called without expected arguments.') unless length $uid && length $db_path;
+
+    my $secdatadir = $self->_secdatadir();
+
+    my $workdir = File::Temp->newdir( CLEANUP => 1, TEMPLATE => 'shrink_modsec_db_XXXXXXXX', DIR => $secdatadir );
+    Cpanel::SafetyBits::Chown::safe_chown_guess_gid( $uid, $workdir ) or logger->warn("Failed to chown $workdir to uid $uid");
+
+    my @original_files = $self->_get_db_files($db_path);
+
+    # modsec-sdbm-util will drop $NEW_DB_NAME * @DB_FILE_SUFFIXES files into $tempdir
+    return 0 unless $self->_call_modsec_sdbm_util( $workdir, $db_path );
+
+    # Verify new files exist and adjust perms
+    my $new_db_path = $workdir . '/' . $NEW_DB_NAME;
+    my @new_files   = map { $new_db_path . $_ } @DB_FILE_SUFFIXES;
+    if ( !defined $self->_validate_database_files_owner($new_db_path) ) {    # root owned files = 0
+        logger->warn("Failed to verify the database files generated by modsec-sdbm-util in the working directory");
+        return 0;
+    }
+    $self->_set_default_perms( $uid, \@new_files );
+
+    # Move the existing files to the workdir so we can revert if the new-file move fails
+    my @revert_files = map { $workdir . '/original' . $_ } @DB_FILE_SUFFIXES;
+    my $can_revert   = $self->_move_files( \@original_files, \@revert_files ) or logger->warn("Failed to move original files for $db_path into working dir");
+
+    # Move new files into place
+    if ( !$self->_move_files( \@new_files, \@original_files ) ) {
+        logger->warn("Failed to move new files into place for $db_path");
+        if ($can_revert) {
+            $self->_move_files( \@revert_files, \@original_files ) or logger->warn("Failed to move backup files for $db_path from working dir to original location");
+            $self->_set_default_perms( $uid, \@original_files );
+        }
+        else {
+            logger->warn("Not able to restore original files for db_path");
+        }
+        return 0;
+    }
+
+    # Fix up final database permissions
+    return 0 unless $self->_set_default_perms( $uid, \@original_files );
+
+    return 1;
+}
+
+sub _call_modsec_sdbm_util {
+    my ( $self, $tempdir, $db_path ) = @_;
+    logger->die('_call_modsec_sdbm_util() is a method call.')                  unless ref $self eq __PACKAGE__;
+    logger->die('_call_modsec_sdbm_util() called without expected arguments.') unless length $tempdir && length $db_path;
+
+    my $run = Cpanel::SafeRun::Object->new(
+        program => $MODSEC_SDBM_UTIL,
+        args    => [ '-D', $tempdir, '-v', '-n', $db_path ],
+    );
+
+    # For whatever reason, if the util fails to open the specified db it doesn't exit with an error code, so parse out the error message.
+    # It will fail to open if the file is immutable -- which is a crazy thing to do on purpose -- but it doesn't make that obvious.
+    if ( $run->stdout() =~ m{ ^ Failed \s to \s open \s sdbm: \s (.*) $ }xms ) {
+        logger()->warn("$MODSEC_SDBM_UTIL failed to open database (try checking all file/dir attributes): $1");
+        return 0;
+    }
+
+    if ( $run->CHILD_ERROR() ) {
+        logger()->warn( "$MODSEC_SDBM_UTIL exited with non-zero status: " . join( q{ }, map { $run->$_() // () } qw( autopsy stdout stderr ) ) );
+        return 0;
+    }
+
+    return 1;
+}
+
+sub _validate_database_files_owner {
+
+    # Expects a database path such as "$secdatadir/$db_name" without a suffix
+    # Returns owner (uid) of a full set of database files if they exist, undef otherwise
+    # Remember that root has uid 0!
+    my ( $self, $db_path ) = @_;
+    logger->die('_validate_database_files_owner() is a method call.')                  unless ref $self eq __PACKAGE__;
+    logger->die('_validate_database_files_owner() called without expected arguments.') unless length $db_path;
+
+    my $owner;
+    for my $file ( $self->_get_db_files($db_path) ) {
+        return unless -f $file;           # All generated filenames must exist
+        my $seen = ( stat(_) )[4];
+        $owner //= $seen;                 # Record owner of the first file we see
+        return unless $owner == $seen;    # Validation fails if any file doesn't match recorded owner
+    }
+    return $owner;
+}
+
+sub _move_files {
+
+    # Move a new set of files in place.  The indexes of the source and dest lists of files are expected to correlate directly for the rename.
+    # For example, $source_files->[0] will be renamed to $dest_files->[0].
+    my ( $self, $source_files, $dest_files ) = @_;
+    logger->die('_move_files() is a method call.')                         unless ref $self eq __PACKAGE__;
+    logger->die('_move_files() called without expected arguments.')        unless ref($source_files) eq 'ARRAY' && ref($dest_files) eq 'ARRAY';
+    logger->die('_move_files() called without file lists of equal count.') unless scalar @$source_files == scalar @$dest_files;
+
+    unlink @$dest_files;    # Though they would be overwritten by safemv, there's less chance for a mixture of old and new files if we remove all now and then something goes wrong later
+    my $result = 1;
+    while ( my ( $index, $source_file ) = each @$source_files ) {
+        my $dest_file = $dest_files->[$index];
+        if ( !Cpanel::FileUtils::Move::safemv( '-f', $source_file, $dest_file ) ) {
+            logger->warn("Failed to move $source_file to $dest_file");
+            $result = 0;    # Overall fail if any file doesn't move
+        }
+    }
+
+    return $result;
+}
+
+sub _set_default_perms {
+    my ( $self, $uid, $files ) = @_;
+    logger->die('_set_default_perms() is a method call.')                  unless ref $self eq __PACKAGE__;
+    logger->die('_set_default_perms() called without expected arguments.') unless length $uid && ref($files) eq 'ARRAY' && scalar @$files;
+    for my $file (@$files) {
+        if ( !-f $file ) {
+            logger->warn("Missing expected file $file while trying to update permissions");
+            return 0;    # Must bail out if all of the expected files don't exist.
+        }
+
+        Cpanel::SafetyBits::safe_chmod( $DB_PERMS, $uid, $file )       or logger->warn("Failed to chmod $file");
+        Cpanel::SafetyBits::Chown::safe_chown_guess_gid( $uid, $file ) or logger->warn("Failed to chown $file to uid $uid");
+    }
+    return 1;
+}
+
+sub _get_db_files {
+
+    # Expects a database path (i.e. "$secdatadir/$shortname") without a suffix
+    # Generates list of files with known suffixes appended to database path (does not verify existence)
+    my ( $self, $path ) = @_;
+    logger->die('_get_db_files() is a method call.')                  unless ref $self eq __PACKAGE__;
+    logger->die('_get_db_files() called without expected arguments.') unless length $path;
+
+    return map { $path . $_ } @DB_FILE_SUFFIXES;
+}
+
+sub _allowed_owner {
+
+    # If this is expanded to allow any user, ensure that $owner and its gid exists in Cpanel::PwCache to avoid death by Cpanel::SafetyBits::Chown::safe_chown_guess_gid
+    my ( $self, $owner ) = @_;
+    logger->die('_allowed_owner() is a method call.') unless ref $self eq __PACKAGE__;
+
+    # undef $owner is not an implementation error here, it simply means the owner couldn't be determined or is intentionally being skipped.
+    return unless defined $owner;
+
+    my $nobody_uid = $self->{'nobody_uid'} //= ( Cpanel::PwCache::getpwnam('nobody') )[2];
+    return unless defined $nobody_uid;
+
+    return 1 if $owner == $nobody_uid;
+
+    return 0;
+}
+
+sub _secdatadir {
+    my $self = shift;
+    logger->die('_secdatadir() is a method call.') unless ref $self eq __PACKAGE__;
+    $self->{'secdatadir'} //= $DEFAULT_SECDATADIR;
+    logger->die('Unable to determine secdatadir.') unless length $self->{'secdatadir'};
+    return $self->{'secdatadir'};
+}
+
+if ( not caller() ) {
+    my $shrink = scripts::shrink_modsec_ip_database->new();
+    $shrink->as_script;
+    exit 0;
+}
+
+1;
+
+__END__
+
+=head1 NAME
+
+/scripts/shrink_modsec_ip_database
+
+=head1 USAGE AS A SCRIPT
+
+  /scripts/shrink_modsec_ip_database -x
+
+=head2 AS A LIBRARY
+
+This script is internally written as a modulino, which means it can be C<require>'d:
+
+  use strict;
+  require q{/scripts/shrink_modsec_ip_database};
+  my $shrink = scripts::shrink_modsec_ip_database->new();
+  $shrink->run();
+
+=head1 REQUIRED ARGUMENTS
+
+None
+
+=head1 OPTIONS
+
+=over 4
+
+=item -x
+
+Use this option to actually run the script, otherwise it will warn and return
+without doing anything.
+
+=back
+
+=head1 DESCRIPTION
+
+This script is called by C<scripts/maintenance>, and its purpose is to shrink
+ModSecurity database files by removing expired entries.
+
+=head1 DIAGNOSTICS
+
+None
+
+=head1 EXIT STATUS
+
+Exit status is 0 (success) unless an unexpected error occurs.
+
+=head1 DEPENDENCIES
+
+This script relies on C</usr/sbin/modsec-sdbm-util> to be installed, and in order to be useful,
+C<ModSecurity> must be installed and be enabled.
+
+=head1 INCOMPATIBILITIES
+
+None
+
+=head1 BUGS AND LIMITATIONS
+
+None
+
+=head1 LICENSE AND COPYRIGHT
+
+   Copyright 2022 cPanel, L.L.C.

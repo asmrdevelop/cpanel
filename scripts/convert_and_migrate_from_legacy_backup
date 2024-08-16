@@ -1,0 +1,71 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/convert_and_migrate_from_legacy_backup
+#                                                  Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+use warnings;
+
+use Cpanel::Backup::Utility ();
+use Getopt::Long            ();
+
+my $force_conversion;
+my $no_convert;
+my $help;
+
+Getopt::Long::GetOptions(
+    'f|force'    => \$force_conversion,
+    'h|help'     => \$help,
+    'no_convert' => \$no_convert,
+);
+
+if ($help) {
+    print "Usage:\n\n\t$0 -h -f -no_convert\n";
+    print "  -h - help (this page)\n";
+    print "  -f - force conversion even if existing backup configuration exists\n";
+    print "  -no_convert - Do not convert, only backup legacy configuration\n";
+    exit;
+}
+
+if ($force_conversion) {
+    print "Forcing backup configuration conversion.\n";
+}
+
+if ($no_convert) {
+    print "Only backing up Legacy configuration, no conversion will take place\n";
+}
+
+if ( !$no_convert && !$force_conversion && -e '/var/cpanel/backups/config' ) {
+    print "There is already a configuration file for backups in place, are you sure you want to overwrite it ? [y/n] ";
+    my $answer = <STDIN>;
+    if ( $answer =~ m/^n/i ) {
+        print "Aborting configuration conversion.\n";
+        exit;
+    }
+    elsif ( $answer =~ m/^y/i ) {
+
+    }
+    else {
+        print "Unknown answer, expected yes or no. Aborting conversion.\n";
+        exit;
+    }
+}
+
+print "Converting legacy backup config to new\n" if !$no_convert;
+
+my %opts;
+
+$opts{'no_convert'} = 1 if $no_convert;
+$opts{'force'}      = 1 if $force_conversion;
+
+my ( $ret, $msg ) = Cpanel::Backup::Utility::convert_and_migrate_from_legacy_config(%opts);
+if ( !$ret ) {
+    print "Error during config conversion: $msg\n";
+}
+else {
+    print "Success: $msg\n";
+}
+exit $ret;

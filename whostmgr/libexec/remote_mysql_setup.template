@@ -1,0 +1,30 @@
+#!/bin/bash
+
+if [ "$REMOTE_HOST" == "" ]; then
+    export REMOTE_HOST=[% data.mainip %]
+fi
+
+MYSQL=/usr/bin/mysql
+if [ ! -e "$MYSQL" -a -e "/usr/local/bin/mysql" ]; then
+    MYSQL=/usr/local/bin/mysql
+fi
+
+if [ -e "$MYSQL" ]; then
+
+MYSQLPASS='[% data.saferemoterootmysqlpass %]'
+$MYSQL <<EOSQL
+CREATE USER 'root'@'[% data.hostname %]' IDENTIFIED BY '$MYSQLPASS';
+CREATE USER 'root'@'$REMOTE_HOST' IDENTIFIED BY '$MYSQLPASS';
+GRANT ALL PRIVILEGES ON *.* TO 'root'@'[% data.hostname %]' WITH GRANT OPTION;
+GRANT ALL PRIVILEGES ON *.* TO 'root'@'$REMOTE_HOST' WITH GRANT OPTION;
+
+FLUSH PRIVILEGES;
+EOSQL
+
+fi
+
+if [[ $(grep -cP '\s+[% data.hostname %]\b' /etc/hosts) -eq 0 ]]; then
+  echo "$REMOTE_HOST [% data.hostname %]" >> /etc/hosts
+fi
+
+exit

@@ -1,0 +1,39 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - bin/change_eximstats_user               Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+use DBI                          ();
+use Cpanel::EximStats::ConnectDB ();
+
+my $olduser = shift @ARGV;
+my $newuser = shift @ARGV;
+
+if ( !$olduser || !$newuser ) {
+    die "Usage $0 [olduser] [newuser]";
+}
+
+my $dbh = Cpanel::EximStats::ConnectDB::dbconnect();
+
+if ($dbh) {
+    my %FIELDMAP = ( 'defers' => 'deliveryuser', 'failures' => 'deliveryuser', 'smtp' => 'deliveryuser', 'sends' => 'user' );
+    foreach my $table ( keys %FIELDMAP ) {
+
+        my $field      = $FIELDMAP{$table};
+        my $user_query = $dbh->prepare("update $table set $field=? where $field=?;");
+        $user_query->execute( $newuser, $olduser );
+        if ($DBI::errstr) {
+            print $DBI::errstr . "\n";
+        }
+        elsif ( $user_query->rows() ) {
+            print $user_query->rows() . " rows updated in eximstats $table database.\n";
+        }
+        else {
+            print "0 rows updated in eximstats $table database.\n";
+        }
+        $user_query->finish() if $user_query;
+    }
+}

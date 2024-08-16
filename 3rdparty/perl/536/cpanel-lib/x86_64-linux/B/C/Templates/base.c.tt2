@@ -1,0 +1,1606 @@
+/* [% creator %] */
+
+[% IF debug.benchmark -%]
+#define DEBUG_BENCHMARK 1
+[% END -%]
+
+[% IF debug.memory -%]
+#define DEBUG_BC_MEMORY 1
+[% END -%]
+
+#define PERL_CORE /* Needed for some extensions perl core refeses to export (win32 only)*/
+#include "EXTERN.h" /* Embedded interface */
+#include "perl.h"   /* API interface */
+#include "XSUB.h"   /* XS interface */
+
+#ifdef DEBUG_BENCHMARK
+#include <sys/time.h>
+
+struct timespec start, end;
+uint64_t delta_us;
+PerlIO * PIO_stdout;
+
+#define benchmark_time(msg) clock_gettime(CLOCK_MONOTONIC_RAW, &end); delta_us = (end.tv_sec - start.tv_sec) * 1000000000 + (end.tv_nsec - start.tv_nsec); PerlIO_printf(PIO_stdout, "--USECONDS %lu == %s\n", delta_us, msg )
+#else
+#define benchmark_time(msg)
+#endif /* end of DEBUG_BENCHMARK */
+
+#ifdef BROKEN_STATIC_REDECL
+#define Static extern
+#else
+#define Static static
+#endif /* BROKEN_STATIC_REDECL */
+
+/* TODO: Why was this removed from perl core? */
+/* No longer available when C<PERL_CORE> is defined. */
+#ifndef Nullsv
+#  define Null(type) ((type)NULL)
+#  define Nullsv Null(SV*)
+#  define Nullhv Null(HV*)
+#  define Nullgv Null(GV*)
+#  define Nullop Null(OP*)
+#endif
+#ifndef GV_NOTQUAL
+#  define GV_NOTQUAL 0
+#endif
+
+/* stolen from hv.c */
+ /* Algorithm "xor" from p. 4 of Marsaglia, "Xorshift RNGs"
+  * See also https://en.wikipedia.org/wiki/Xorshift
+  */
+#if IVSIZE == 8
+/* 64 bit version */
+#define XORSHIFT_RAND_BITS(x)   \
+ STMT_START {                    \
+     (x) ^= (x) << 13;           \
+     (x) ^= (x) >> 17;           \
+     (x) ^= (x) << 5;            \
+ } STMT_END
+#else
+ /* 32 bit version */
+#define XORSHIFT_RAND_BITS(x)   \
+ STMT_START {                    \
+     (x) ^= (x) << 13;           \
+     (x) ^= (x) >> 7;            \
+     (x) ^= (x) << 17;           \
+ } STMT_END
+#endif
+
+ #define UPDATE_HASH_RAND_BITS_KEY(key,klen)                             \
+ STMT_START {                                                            \
+     XORSHIFT_RAND_BITS(PL_hash_rand_bits);                              \
+ } STMT_END
+
+#define MAYBE_UPDATE_HASH_RAND_BITS_KEY(key,klen)                       \
+ STMT_START {                                                            \
+     if (PL_HASH_RAND_BITS_ENABLED)                                      \
+         UPDATE_HASH_RAND_BITS_KEY(key,klen);                            \
+ } STMT_END
+
+#define UPDATE_HASH_RAND_BITS()                                         \
+     UPDATE_HASH_RAND_BITS_KEY(NULL,0)
+
+#define MAYBE_UPDATE_HASH_RAND_BITS()                                   \
+     MAYBE_UPDATE_HASH_RAND_BITS_KEY(NULL,0)
+
+/* ^ ------- hv.c -------- */
+
+typedef struct shared_he SHARED_HE;
+
+/* these bc_*bodyless* macros are just using an extra parens around sv, should patch perl */
+#define BODYLESS_IV_PTR(sv) \
+    ((char*)sv)+STRUCT_OFFSET(struct STRUCT_SV, sv_u) - STRUCT_OFFSET(XPVIV, xiv_iv)
+
+#define BODYLESS_UV_PTR(sv) \
+    ((char*)sv)+STRUCT_OFFSET(struct STRUCT_SV, sv_u) - STRUCT_OFFSET(XPVUV, xuv_uv)
+
+
+#define IMMORTAL_PL_strtab 0x7ffffff
+
+static int fast_perl_destruct( PerlInterpreter *my_perl );
+static void my_curse( pTHX_ SV* const sv );
+
+/* perl.c prototypes we do locally here now. */
+static int bc_perl_parse(pTHXx_ int argc, char **argv, char **env);
+static void bc_parse_body(char **env);
+static void bc_init_postdump_symbols(pTHX_ int argc, char **argv, char **env);
+static void bc_init_predump_symbols(pTHX);
+
+/* BC memory optimization around Newxz: currently no command line args to disable it */
+#define USE_BC_NEWXZ 1
+
+typedef struct bc_memory { void *start; void *end; void *ptr; } bc_memory_t;
+bc_memory_t BC_Memory;
+
+void *bc_alloc( MEM_SIZE size ) {
+    void *ptr = BC_Memory.ptr;
+    /* move our pointer */
+    BC_Memory.ptr = (void*) ( (char*) BC_Memory.ptr + size );
+
+    /* could also use the assert, but only works with debug perl */
+#ifdef DEBUG_BC_MEMORY
+    if ( BC_Memory.ptr > BC_Memory.end ) Perl_croak_nocontext("Not enough memory");
+#else
+    /* maybe not really needed */
+    assert( BC_Memory.ptr <= BC_Memory.end );
+#endif
+
+    return ptr;
+}
+
+/* bc replacement of Newxz */
+#define bc_Newxz(v,n,t) ( v = bc_alloc( n * sizeof(t)) )
+
+#if USE_BC_NEWXZ
+#define do_Newxz bc_Newxz
+#define do_Newx bc_Newxz
+#else
+#define do_Newxz Newxz
+#define do_Newx  Newx
+#endif
+
+/* TODO: Not provided in perl core? */
+#ifndef dVAR
+# ifdef PERL_GLOBAL_STRUCT
+#  define dVAR		pVAR    = (struct perl_vars*)PERL_GET_VARS()
+# else
+#  define dVAR		dNOOP
+# endif
+#endif
+
+[%# Add static modules like " Win32CORE". This data comes from $Config{static_ext} %]
+[% FOREACH xsub IN stashxsubs %]
+EXTERN_C void boot_[% xsub %] (pTHX_ CV* cv);
+[% END %]
+
+/*
+*   This is our `customOP` to setup one OP.op_ppaddr on demand
+*      it's only called once per OP, as we replace the op_ppaddr
+*/
+static PP(pp_bc_goto_op) {
+    /* this protection is moved to OP.pm in fake_ppaddr */
+    /* if ( PL_op->op_type < OP_max ) */
+    /* setup the OP addr for next call */
+    PL_op->op_ppaddr = PL_ppaddr[PL_op->op_type];
+
+    /* call the real OP */
+    return (* ( PL_op->op_ppaddr ) )(aTHX);
+}
+
+
+/************************************************************************************************************
+*
+*       Static shared HE
+*
+*************************************************************************************************************/
+
+/* get a HEK* from a shared_he */
+//      (HEK*) ( (void*) &sHe + 3 * sizeof(void*) )
+// or maybe
+//      (HEK*) &(( (SHARED_HE*) &sHe)->shared_he_hek);"
+
+#define get_sHe_HEK(sHe) (HEK*) ( (void*) &sHe + 3 * sizeof(void*) )
+
+/* macro to ceate the struct (can be protected in C to define it once) */
+#define DEFINE_STATIC_SHARED_HE_STRUCT(len) \
+    struct _sHeS_##len { HE *hent_next; HEK *hent_hek; union { SV *hent_val;  Size_t hent_refcount; } he_valu;  U32 hek_hash;  I32 hek_len;  char hek_key[ len + 1]; char flags; };
+
+/* macro to create our sHe */
+#define ALLOC_sHe(index, klen, key_string, flags_byte) \
+    static struct _sHeS_##klen sHe##index = { NULL, NULL, { .hent_refcount = IMMORTAL_PL_strtab }, 0, klen, key_string, flags_byte  };
+
+/* declare all our shared_HE struct [ once per size ] */
+[% section.sharedhestructs.output( "%s\n" ) %]
+
+/* sharedhe definitions using the ALLOC_sHe macro */
+[% section.sharedhe.output( "%s\n" ) %]
+
+Static SHARED_HE* sharedhe_list[[% section.sharedhe.index + 1 %]] =  {
+[%- FOREACH num IN [ 0 .. section.sharedhe.index ] %]
+    (SHARED_HE*) &sHe[% num %], /* sharedhe_list[[%num%]] */
+[%- END %]
+};
+
+/* list of invlist arrays */
+[%- IF section.invlistarray.index > 0 %]
+Static UV invlist_array[[% section.invlistarray.index + 1 %]] =  {
+
+[%- section.invlistarray.output( "\t%s,\n" ) %]
+};
+[% END -%]
+
+/************************************************************************************************************
+*
+*    Lazy Regxp
+*
+*************************************************************************************************************/
+
+typedef struct lazy_regexp_s {
+    REGEXP *   regex; /* pointer to a RegExp object, NULL at startup */
+    char *     qre;
+    STRLEN     qrelen;
+    U32        flags;
+    U32        pmflags;
+    U32        reflags;
+    U32        refcnt;
+} LazyRegExp;
+
+typedef struct pmopaux_s { U32 ix; } PMOPAUX;
+
+Static LazyRegExp rx_list[[% section.lazyregex.index + 1 %]] =  {
+[% section.lazyregex.output("    { %s }, /* %s_list[%d] %s %s */\n") %]
+};
+
+/* struct for Class::XSAccessor CV data */
+typedef struct {
+    U32 hash;
+    char* key;
+    I32 len;
+    /* NOTE, a void* to next was removed from the end of this struct since we can't determine any need for it in a B::C program. */
+} XSACCESSOR;
+
+/************************************************************************************************************
+*
+*       output_all()
+*
+*************************************************************************************************************/
+
+[% section.sym.output( "#define %s\n" ) %]
+
+/*  output_declarations() called by output_all() */
+
+#define UNUSED 0
+#define sym_0 0
+
+PERL_STATIC_INLINE HEK *
+my_share_hek( pTHX_ const char *str, I32 len, register U32 hash );
+#undef share_hek
+#define share_hek(str, len, hash) my_share_hek( aTHX_ str, len, hash );
+
+struct my_padname_with_str {
+    char *     xpadn_pv;
+    HV *       xpadn_ourstash;
+    union {
+       HV *    xpadn_typestash;
+       CV *    xpadn_protocv;
+    } xpadn_type_u;
+    U32        xpadn_low;
+    U32        xpadn_high;
+    U32        xpadn_refcnt;
+    int        xpadn_gen;
+    U8         xpadn_len;
+    U8         xpadn_flags;
+    char       xpadn_str[ [% MAX_PADNAME_LENGTH %] ];
+};
+
+/* Missing type defs in perl so we'll make our own. */
+typedef struct my_padname_with_str MyPADNAME;
+
+/* Lexical warnings storage */
+struct lexwarn { STRLEN len; char warnings[[% longest_warnings_string %] + 2]; };
+typedef struct lexwarn LEXWARN;
+
+#define HVrhek_undef    0x00 /* Value is undef. */
+#define HVrhek_delete   0x10 /* Value is placeholder - signifies delete. */
+#define HVrhek_IV       0x20 /* Value is IV. */
+#define HVrhek_UV       0x30 /* Value is UV. */
+#define HVrhek_PV       0x40 /* Value is a (byte) string. */
+#define HVrhek_PV_UTF8  0x50 /* Value is a (utf8) string. */
+
+/* Lexical warnings storage */
+struct bc_refcounted_he {
+    struct refcounted_he *refcounted_he_next;   /* next entry in chain */
+    HEK                  *refcounted_he_hek;    /* hint key */
+    union {
+        IV                refcounted_he_u_iv;
+        UV                refcounted_he_u_uv;
+        STRLEN            refcounted_he_u_len;
+        void             *refcounted_he_u_ptr;  /* Might be useful in future */
+    } refcounted_he_val;
+    U32                   refcounted_he_refcnt; /* reference count */
+    char flags; /* Unlike perl, we'll just put flags here in its own slot. */
+    /* No flags are stored below for our version. */
+    char                  refcounted_he_data[[% longest_refcounted_he_value %]];
+};
+typedef struct bc_refcounted_he REFCOUNTED_HE;
+
+/* extra typedef */
+[% section.typedef.output( "%s\n" ) %]
+
+/*
+    Tricky hack for -fcog since 5.10 on !c99 compilers required. We need a char* as
+    *first* sv_u element to be able to statically initialize it. A int does not allow it.
+    gcc error: initializer element is not computable at load time
+    We introduce a SVPV as SV.
+    In core since 5.12
+*/
+
+typedef struct p5rx RE;
+Static IV PL_sv_objcount = 1; /* deprecated with 5.21.1 but still needed and used */
+SV* sv;
+[% IF gv_index %]
+Static GV *dynamic_gv_list[[% gv_index %]];
+[% END %]
+
+/* back in output_all() */
+
+/* define all Static sections */
+[% FOREACH sect IN section_list -%]
+[% lines = section.$sect.index + 1 -%]
+[% NEXT IF lines == 0 -%]
+Static [% section.$sect.typename() %] [% section.$sect.name() %]_list[[% lines %]];
+[% END -%]
+
+/* hack for when Perl accesses PVX of GVs */
+Static const char emptystring[] = "\0";
+
+/* newXS for core XS needs a filename */
+Static const char xsfile[] = "universal.c";
+
+#define ptr_undef NULL
+#undef CopFILE_set
+#define CopFILE_set(c,pv)  CopFILEGV_set((c), gv_fetchfile(pv))
+
+[% IF remap_xs_symbols.size %]
+XS(XS_DynaLoader_dl_load_file);
+XS(XS_DynaLoader_dl_find_symbol);
+[% END %]
+
+[% IF SETUP_ALL_OPS -%]
+/*
+*   This is an 'on demand' (de)optimization where we would preset every OPs
+*       to their address at startup. Useful for daemons forking kids for example.
+*/
+
+#define SetupOPList(oplist,s) for (i=0; i<s; ++i) { \
+    if ( oplist[i].op_ppaddr == &Perl_pp_bc_goto_op ) { \
+        oplist[i].op_ppaddr = PL_ppaddr[ oplist[i].op_type ]; \
+    } }
+
+static void setup_all_ops() {
+    /* helper to setup all OPs.op_ppaddr */
+    register int i;
+
+[% FOREACH name IN op_section_list -%]
+[% NEXT IF "$name" == "pmopaux" -%]
+[% size = section.$name.index + 1 -%]
+[% NEXT IF size == 0 -%]
+[% SET oplist = "${name}_list" -%]
+    SetupOPList( [% oplist %], [% size %] );
+[% END -%]
+
+}
+[% END -%]
+
+
+/************************************************************************************************************
+*
+*       start COWPVs
+*
+*************************************************************************************************************/
+
+[% section.cowpv.output( "%s\n" ) %]
+/* end COWPVs */
+
+/* <const.output> */
+[% section.const.output( "%s\n" ) %]
+/* </const.output> */
+
+static void declare_static_sections() { /* declare our static section 'blocks' to perl */
+/* TODO: move sv_list first and other (gv_list) most common structs as order matters ! */
+/* CV, magic, and then anything else */
+
+[% FOREACH sect IN section_list -%]
+[% lines = section.$sect.index + 1 -%]
+[% SET sname = section.$sect.name() -%]
+[% SET lname = "${sname}_list" -%]
+[% NEXT IF lines == 0 -%]
+    declare_static_memory( &[% lname %][0], &[% lname %][[% section.$sect.index + 1 %]], sizeof([% lname %][0]) );
+[% END -%]
+
+[% IF section.cowpv.index >= 0 -%]
+    declare_static_memory( allCOWPVs, ( (char*) allCOWPVs + sizeof(allCOWPVs) ), 0 /* we do not know - breaks re-alloc */ );
+[% END -%]
+
+}
+
+/* <decl.output> */
+[% section.decl.output( "%s\n" ) %]
+/* </decl.output> */
+
+/* const_sv_sub stolen from op.c */
+/* Efficient sub that returns a constant scalar value. */
+static void bc_const_sv_xsub(pTHX_ CV* cv) {
+     dXSARGS; /* Initializes variables needed by XSRETURN */
+     PERL_UNUSED_ARG(items); /* Suppresses GCC warning about unused arg items */
+
+     SV *const sv = MUTABLE_SV(XSANY.any_ptr);
+     if (!sv) XSRETURN(0);
+     EXTEND(sp, 1);
+     ST(0) = sv;
+     XSRETURN(1);
+}
+/* only add them if needed */
+/*
+static void bc_const_av_xsub(pTHX_ CV* cv) {
+     dXSARGS;
+     AV * const av = MUTABLE_AV(XSANY.any_ptr);
+     SP -= items;
+     assert(av);
+
+     if (GIMME_V != G_ARRAY) {
+         EXTEND(SP, 1);
+         ST(0) = sv_2mortal(newSViv((IV)AvFILLp(av)+1));
+         XSRETURN(1);
+     }
+     EXTEND(SP, AvFILLp(av)+1);
+     Copy(AvARRAY(av), &ST(0), AvFILLp(av)+1, SV *);
+     XSRETURN(AvFILLp(av)+1);
+}
+*/
+
+/* HV_STASH can do better randomization there */
+static U32 bc_S_ptr_hash(PTRV u) {
+     u = (~u) + (u << 18);
+     u = u ^ (u >> 31);
+     u = u * 21;
+     u = u ^ (u >> 11);
+     u = u + (u << 6);
+     u = u ^ (u >> 22);
+
+     return (U32) u;
+}
+
+static void HvSETUP(HV* hv, U32 size, bool has_ook, SV* backref) {
+    char *array;
+    MEM_SIZE alloc_size = PERL_HV_ARRAY_ALLOC_BYTES(size);
+
+    /* malloc the hash array + the xpvhv_aux which is part of it */
+    if ( has_ook ) alloc_size += sizeof(struct xpvhv_aux);
+    do_Newxz(array, alloc_size, char);
+
+    /* setting the hash array to the HV (in sv_list) in sv_any */
+    HvARRAY(hv) = (HE **) array;
+
+    /* set the backrefrence for HV which is stored in AUX (in magic for regular SVs) */
+    /* do not check if backref is defined or not */
+    if ( has_ook ) {
+        /* view S_hv_auxinit for init */
+        struct xpvhv_aux *iter = HvAUX(hv);
+        iter->xhv_backreferences = (AV*) backref;
+        iter->xhv_riter = -1;
+
+        /* change the PL_hash_rand_bits */
+        /* standard perturbation */
+        MAYBE_UPDATE_HASH_RAND_BITS();
+        /* BC custom perturbation */
+        PL_hash_rand_bits += bc_S_ptr_hash((PTRV)array);
+        PL_hash_rand_bits = ROTL_UV(PL_hash_rand_bits, 1);
+
+        /* randomize our hash */
+        iter->xhv_last_rand = iter->xhv_rand = PL_hash_rand_bits;
+    }
+
+    return;
+}
+
+static void HvAddEntry(HV* hv, SV* value, SHARED_HE* hek, I32 max) {
+    HE **oentry;
+    HE *entry;
+
+    /* entry            = (HE*) safemalloc(sizeof(HE)); */
+    do_Newxz( entry, sizeof(HE), char );
+    HeKEY_hek(entry) = &(hek->shared_he_hek);
+    HeVAL (entry)    = value;
+    oentry           = &(HvARRAY (hv))[HEK_HASH(&(hek->shared_he_hek)) & max];
+    HeNEXT(entry)    = *oentry;
+    *oentry          = entry;
+
+    return;
+}
+
+[% IF devel_peek_needed -%]
+static void
+S_do_dump(pTHX_ SV *const sv, I32 lim)
+{
+    dVAR;
+    SV *pv_lim_sv = get_sv("Devel::Peek::pv_limit", 0);
+    const STRLEN pv_lim = pv_lim_sv ? SvIV(pv_lim_sv) : 0;
+    SV *dumpop = get_sv("Devel::Peek::dump_ops", 0);
+    const U16 save_dumpindent = PL_dumpindent;
+    PL_dumpindent = 2;
+    do_sv_dump(0, Perl_debug_log, sv, 0, lim,
+	       (bool)(dumpop && SvTRUE(dumpop)), pv_lim);
+    PL_dumpindent = save_dumpindent;
+}
+static OP *
+S_pp_dump(pTHX)
+{
+    dSP;
+    const I32 lim = PL_op->op_private == 2 ? (I32)POPi : 4;
+    dPOPss;
+    S_do_dump(aTHX_ sv, lim);
+    RETPUSHUNDEF;
+}
+[% END -%]
+
+[% # Start PMOP Lazy RegExp -%]
+[% IF section.pmop.index >= 0 -%]
+/*
+*   This is our `customOP` to initialize a RegExp inside a PMOP
+*      it's only called once per PMOP,
+*      we can reuse the same RegExp for multiple PMOPs [compiled once]
+*/
+
+/* use a constant for sizeof(PMOP) with a sanity check at compile time */
+#define SIZEOF_PMOP 96
+typedef char p__LINE__[ (sizeof(PMOP) == SIZEOF_PMOP) ? 1 : -1];
+
+static PP(pp_bc_init_pmop) {
+  /* The op_pmflags is the position of the uncompiled regex in the rx_list */
+  /* We will reset op_pmflags to the actual value below 
+    When we stored the fake op_pmflags we shifted it to the left
+    PMf_BASE_SHIFT bits to avoid it being seen as a PMf flag
+  */
+  LazyRegExp rx;
+  int pos, slot;
+
+  pos = ( PTR2IV((PMOP*)PL_op) - PTR2IV(pmop_list) ) / SIZEOF_PMOP;
+  /* sanity check to detect OP which are using a RegExp */
+  if (pos >= [% section.pmopaux.index + 1 %])
+    Perl_croak_nocontext("PMOP: invalid position %d", pos);
+
+  slot = pmopaux_list[pos].ix;
+  /* sanity check to detect OP which are using a RegExp */
+  if (slot >= [% section.lazyregex.index + 1 %])
+    Perl_croak_nocontext("PMOP: invalid slot %d", slot);
+
+  rx = rx_list[slot];
+
+  if ( rx.regex == NULL ) {
+    /* first time that RegExp is triggered initialize it */
+
+    /* compile the RegExp once */
+    rx.regex = CALLREGCOMP(newSVpvn_flags(rx.qre, rx.qrelen, rx.flags), rx.pmflags);
+
+    /* setup the flags */
+    RX_EXTFLAGS(rx.regex) = rx.reflags;
+
+    /* adjust the RefCnt (add extra bonus for every other PMOP)
+    * this should be similar to the for loop:
+    *     for (i=1; i<rx.refcnt; ++i) { ReREFCNT_inc(rx.regex); }
+    */
+    SvREFCNT(rx.regex) += rx.refcnt;
+  }
+
+  /* at this stage we have one RX* we can reuse */
+
+  /* assign the regexp to the current OP */
+  PM_SETRE( (PMOP*) PL_op, rx.regex);
+
+  /* setup the OP addr for next call */
+  PL_op->op_ppaddr = PL_ppaddr[PL_op->op_type];
+
+  /* call the real OP */
+  return (* ( PL_op->op_ppaddr ) )(aTHX);
+}
+
+[% END # PMOP Lazy RegExp -%]
+
+/*
+    cop_list - array of cops in the code. for debugging, line number info. State/Context op. "Every ; is a cop."
+    op_list  - Chain of operations
+    unop_list - Unary operations
+    binop_list - Binary argument operation: first/last aren't useful to runtime but might be introspected by certain modules.
+    listop_list - Op chains run.c
+    svop_list - all scalars
+    xpv_list - Additional DATA for SVs ( PV body )
+    xpvav_list - Additional data for arrays
+    xpvhv_list - Additional data for hashes
+    xpviv_list - Additional data for PVIV
+    xpvnv_list - Additional data for PVNV
+    xpvmg_list - magic
+    xpvio_list - iosect - initial state of all file handles
+*/
+
+[% FOREACH sect IN section_list -%]
+[% lines = section.$sect.index + 1 -%]
+[% NEXT IF lines == 0 -%]
+Static [% section.$sect.typename() %] [% section.$sect.name() %]_list[[% lines %]] = {
+[% section.$sect.output("    { %s }, /* %s_list[%d] %s %s */\n") %]
+};
+[% END -%]
+
+/* handy helpers for B::C */
+
+SV ** INITAv(AV * av, int number_of_items) {
+    SV **svp;
+
+    do_Newx(svp, number_of_items, SV*); /* do not use newxz there - no need to zeroed out */
+    AvALLOC(av) = svp;
+    AvARRAY(av) = svp;
+    return svp;
+}
+
+PADNAME ** INITPADNAME(PADNAMELIST *padname, int number_of_items) {
+    PADNAME **svp;
+    PADNAMELIST *padnl = padname;
+    do_Newxz(svp, number_of_items, PADNAME *);
+    PadnamelistARRAY(padnl) = svp;
+    return svp;
+}
+
+PAD ** INITPADLIST(PADLIST *pad, int number_of_items) {
+    PAD **svp;
+    PADLIST *padl = pad;
+    do_Newxz(svp, number_of_items, PAD *);
+    PadlistARRAY(padl) = svp;
+    return svp;
+}
+
+/* end of handy helpers */
+
+[% IF section.init_xops.has_values -%]
+static void *bc_xop_ppaddr_from_name(const char* name) {
+    HE *he;
+    SV *sv;
+    void *op_ppaddr = 0;
+
+    /* lookup for the custom op with name */
+
+    if ( PL_custom_ops ) {
+        hv_iterinit(PL_custom_ops);
+        while ( (he = hv_iternext(PL_custom_ops)) ) {
+            sv = HeVAL(he);
+            /* { PTR2IV(ppaddr) => PTR2IV(xop) } */
+            //PerlIO_printf(Perl_debug_log, " - got a key value... %x\n", SvIV(sv) );
+            XOP *xop = (XOP*) SvIV(sv);
+
+            if ( strEQ(xop->xop_name, name) ) {
+                //PerlIO_printf(Perl_debug_log, "found xOP %s\n", name);
+                //SV *key = HeSVKEY_force(he);
+                op_ppaddr = (void *) strtol( (char *) HeKEY(he), NULL, 10 );
+                break;
+            }
+
+        }
+    }
+
+    /* sanity check that we found the Custom OP */
+    if (!op_ppaddr)
+        Perl_croak_nocontext("Failed to find Custom OP for '%s'", name);
+
+    return op_ppaddr;
+}
+
+/* end of init_xops section */
+[% END -%]
+
+[% FOREACH name IN init_section_list -%]
+[% NEXT IF name == 'init_xops' && !section.$name.has_values  -%]
+/* setup init section: [%= name %] [% section.$name.name %] */
+[% section.$name.output() %]
+[% END -%]
+
+#define SIG_SIZE [% Config.sig_size %]
+
+void setup_perl_globals() {
+    PL_defstash = [% PL.defstash %];       /*  SVt_PVHV */
+    PL_curstname = [% PL.curstname %];     /* "main" SVt_PV */
+    PL_incgv = [% PL.incgv %];             /* *main::INC SVt_PVGV hv and AV must be set! */
+    PL_hintgv = [% PL.hintgv %];           /* *main::^H SVt_PVGV */
+    PL_defgv = [% PL.defgv %];             /* *main::_ SVt_PVGV must have SV and AV setup?? */
+    PL_errgv = [% PL.errgv %];             /* *main::@ SVt_PVGV  must have SV setup */
+    PL_replgv = [% PL.replgv %];           /* *main::^R SVt_PVGV */
+    PL_debstash = [% PL.debstash %];       /* *main::DB:: SVt_PVHV */
+    PL_globalstash = [% PL.globalstash %]; /* *main::CORE::GLOBAL:: SVt_PVHV */
+
+    /* Custom to B::C */
+    PL_endav    = (AV*) [% PL.endav %]; /* SVt_PVAV */
+    PL_initav   = (AV*) [% PL.initav %]; /* SVt_PVAV */
+    PL_tainting = [% PL.tainting %]; /* boolean */
+    PL_tainting = [% PL.taint_warn %]; /* boolean */
+
+    [% IF PL.warnhook %] PL_warnhook = [% PL.warnhook %];[% END %]
+    [% IF PL.diehook %] PL_diehook = [% PL.diehook %];[% END %]
+
+    /* initialize signals - view Perl_magic_setsig and Perl_whichsig_pvn for usage */
+    Newxz(PL_psig_name, 2 * SIG_SIZE, SV*);
+    Newxz(PL_psig_pend, SIG_SIZE, int);
+    PL_psig_ptr = PL_psig_name + SIG_SIZE;
+
+}
+
+static void init_pl_strtab(pTHX) {
+/* only init PL_strtab if we have content for it */
+[% IF section.sharedhe.index + 1 > 0 %]
+
+    if (PL_hash_seed_set == FALSE) {
+        Perl_get_hash_seed(aTHX_ PL_hash_seed);
+        PL_hash_seed_set= TRUE;
+    }
+
+    PL_strtab = newHV();
+
+    /* manual malloc */
+    //char * array;
+    //Newxz (array, PERL_HV_ARRAY_ALLOC_BYTES ([% PL_strtab_max %]) + sizeof(struct xpvhv_aux), char);
+    //HvARRAY (PL_strtab) = (HE **) array;
+
+    /* automatic malloc */
+    hv_ksplit(PL_strtab, [% PL_strtab_max %]);
+    HvSHAREKEYS_off(PL_strtab);                        /* mandatory */
+    //SvOOK_on(PL_strtab);
+
+    {
+        int i;
+        HE   *entry;
+        HE  **oentry;
+        HEK  *hek_struct;
+        I32 MAX_PL_strtab = HvMAX(PL_strtab); /* get the value set by hv_ksplit */
+
+        HvTOTALKEYS(PL_strtab) = [% section.sharedhe.index + 1 %];
+        SvREFCNT(PL_strtab) = 99999;
+
+        for (i=0; i < [% section.sharedhe.index + 1 %]; i++) {
+            entry = &(sharedhe_list[i]->shared_he_he);
+            hek_struct = &(sharedhe_list[i]->shared_he_hek);
+
+            HeKEY_hek(entry) = hek_struct;
+            PERL_HASH (HEK_HASH(hek_struct), HEK_KEY(hek_struct), HEK_LEN(hek_struct));
+
+            /* Insert the HEs */
+            oentry = &(HvARRAY (PL_strtab))[HEK_HASH(hek_struct) & (I32) MAX_PL_strtab ];
+            HeNEXT(entry) = *oentry;
+            *oentry = entry;
+        }
+    }
+
+[% END %]
+}
+
+/*
+    COMPILE STATS:  [% compile_stats %]
+     NULLOP count:  [% nullop_count %]
+*/
+
+/************************************************************************************************************
+*
+*       output_main_rest()
+*
+*************************************************************************************************************/
+
+/* The first assignment got already refcount bumped */
+PERL_STATIC_INLINE HEK *
+my_share_hek( pTHX_ const char *str, I32 len, register U32 hash ) {
+    if (!hash) {
+      PERL_HASH(hash, str, abs(len));
+    }
+    return share_hek_hek(Perl_share_hek(aTHX_ str, len, hash));
+}
+
+static void
+my_curse( pTHX_ SV* const sv ) {
+    dSP;
+    dVAR;
+    HV* stash;
+    bool reset_stash;
+
+    assert(SvOBJECT(sv));
+    do {
+        reset_stash = FALSE;
+        stash = SvSTASH(sv);
+        assert(SvTYPE(stash) == SVt_PVHV);
+	if (HvNAME(stash)) {
+	    CV* destructor = NULL;
+	    if (!SvOBJECT(stash))
+            destructor = (CV *)SvSTASH(stash);
+	    if ( !destructor || HvMROMETA(stash)->destroy_gen != PL_sub_generation ) {
+            bool autoload = FALSE;
+            GV * gv = gv_fetchmeth_pvn(stash, "DESTROY", 7, -1, 0);
+            if (gv) destructor = GvCV(gv);
+            if ( !destructor ) {
+                gv = gv_autoload_pvn(stash, "DESTROY", 7, GV_AUTOLOAD_ISMETHOD);
+                if (gv) destructor = GvCV(gv);
+                if (destructor) autoload = TRUE;
+            }
+
+            if ( gv ) {
+                if (!SvOBJECT(stash)) {
+                    if ( !autoload ) {
+                        SvSTASH(stash) = destructor ? (HV *)destructor : ((HV *)0)+1;
+                        HvAUX(stash)->xhv_mro_meta->destroy_gen = PL_sub_generation;
+                        reset_stash = TRUE;
+                    }
+                }
+            }
+	    }
+	    assert(!destructor || destructor == ((CV *)0)+1
+		   || SvTYPE(destructor) == SVt_PVCV);
+	    if (destructor && destructor != ((CV *)0)+1
+		/* A constant subroutine can have no side effects, so
+		   don't bother calling it.  */
+		&& !CvCONST(destructor)
+		/* Don't bother calling an empty destructor or one that
+		   returns immediately. */
+		&& (CvISXSUB(destructor)
+		|| (CvSTART(destructor)
+		    && (CvSTART(destructor)->op_next->op_type != OP_LEAVESUB)
+		    && (CvSTART(destructor)->op_next->op_type != OP_PUSHMARK
+			|| CvSTART(destructor)->op_next->op_next->op_type != OP_RETURN
+		       )
+		   ))
+	       )
+	    {
+		SV* const tmpref = newRV(sv);
+		DEBUG_D(PerlIO_printf(Perl_debug_log, "Calling %s::DESTROY\n", HvNAME(stash)));
+		SvREADONLY_on(tmpref); /* DESTROY() could be naughty */
+		ENTER;
+		PUSHSTACKi(PERLSI_DESTROY);
+		EXTEND(SP, 2);
+		PUSHMARK(SP);
+		PUSHs(tmpref);
+		PUTBACK;
+		call_sv((SV*)destructor, G_DISCARD|G_EVAL|G_KEEPERR|G_VOID);
+		POPSTACK;
+		SPAGAIN;
+		LEAVE;
+        /*(void)hv_deletehek(PL_stashcache, HvNAME_HEK(hv), G_DISCARD);*/
+		if(SvREFCNT(tmpref) < 2) {
+		    /* tmpref is not kept alive! */
+		    SvREFCNT(sv)--;
+		    SvRV_set(tmpref, NULL);
+		    SvROK_off(tmpref);
+		}
+		SvREFCNT_dec(tmpref);
+	    }
+
+        if ( reset_stash == true ) {
+            SvSTASH(stash) = (HV*) 0;
+        }
+
+	}
+    } while (SvOBJECT(sv) && SvSTASH(sv) != stash);
+
+    if (SvOBJECT(sv)) {
+	/* Curse before freeing the stash, as freeing the stash could cause
+	   a recursive call into S_curse. */
+	SvOBJECT_off(sv);	/* Curse the object. */
+	SvSTASH_set(sv,0);	/* SvREFCNT_dec may try to read this */
+    }
+}
+
+static int fast_perl_destruct( PerlInterpreter *my_perl ) {
+    dVAR;
+
+    PERL_UNUSED_ARG(my_perl);
+
+    assert(PL_scopestack_ix == 1);
+
+    /* wait for all pseudo-forked children to finish */
+    PERL_WAIT_FOR_CHILDREN;
+
+    /* Run all the END blocks here. */
+    if (PL_exit_flags & PERL_EXIT_DESTRUCT_END) {
+        dJMPENV;
+        int x = 0;
+        JMPENV_PUSH(x);
+        if (PL_endav && !PL_minus_c) {
+            PERL_SET_PHASE(PERL_PHASE_END);
+            call_list(PL_scopestack_ix, PL_endav);
+        }
+        PERL_UNUSED_ARG(x);
+        JMPENV_POP;
+    }
+
+    PL_main_start = NULL;
+    PL_main_cv = NULL;
+    PL_curcop = &PL_compiling;
+
+    PERL_SET_PHASE(PERL_PHASE_DESTRUCT);
+
+    LEAVE;
+    FREETMPS;
+    assert(PL_scopestack_ix == 0);
+
+    /* Need to flush since END blocks can produce output */
+    my_fflush_all();
+
+    PerlIO_destruct(aTHX);
+
+    if (PL_sv_objcount) {
+        int i = 1;
+        PL_in_clean_all = 1;
+        /* at this point the cache might point to some non existing GVs */
+        /* clear the cache, as it's going to be rebuilt if needed */
+        hv_clear(PL_stashcache);
+
+    /* B::C -O3 specific: first curse (i.e. call DESTROY) all our static SVs */
+        DEBUG_D(PerlIO_printf(Perl_debug_log, "\nCursing named global static sv_arena:\n"));
+        PL_in_clean_all = 1;
+        for (; i < SvREFCNT(&sv_list[0]); i++) { /* loop on all our SVs: probably want to use the value from TT section.sv_sect.index + 1 */
+            SV *sv = &sv_list[i];
+            if (SvREFCNT(sv)) {
+                if (SvTYPE(sv) == SVt_IV && SvROK(sv))
+                    sv = SvRV(sv);
+                if (sv && SvOBJECT(sv) && SvTYPE(sv) >= SVt_PVMG && SvSTASH(sv)
+                    && SvTYPE(sv) != SVt_PVCV && SvTYPE(sv) != SVt_PVIO
+                    && PL_defstash /* Still have a symbol table? */
+                    && SvDESTROYABLE(sv))
+                {
+                    SvREFCNT(sv) = 0;
+                    my_curse(aTHX_ sv);
+                }
+            }
+        }
+
+        sv_clean_objs(); /* and now curse the rest */
+        PL_sv_objcount = 0;
+    }
+
+    PL_warnhook = NULL;
+    PL_diehook = NULL;
+    /* call exit list functions */
+    while (PL_exitlistlen-- > 0)
+	    PL_exitlist[PL_exitlistlen].fn(aTHX_ PL_exitlist[PL_exitlistlen].ptr);
+    PL_exitlist = NULL;
+
+#if defined(PERLIO_LAYERS)
+    PerlIO_cleanup(aTHX);
+#endif
+    return 0;
+}
+
+#define XS_DynaLoader_boot_DynaLoader boot_DynaLoader
+EXTERN_C void boot_DynaLoader (pTHX_ CV* cv);
+
+static void xs_init (pTHX);
+static void dl_init (pTHX);
+
+/* yanked from perl.c */
+static void
+xs_init(pTHX)
+{
+    char *file = __FILE__;
+    dTARG;
+    dSP;
+
+    newXS("DynaLoader::boot_DynaLoader", boot_DynaLoader, file);
+
+    SAVETMPS;
+    targ=sv_newmortal();
+
+    PUSHMARK(sp);
+    XPUSHp("DynaLoader", 10);
+    PUTBACK;
+    boot_DynaLoader(aTHX_ get_cv("DynaLoader::bootstrap", GV_ADD));
+    SPAGAIN;
+
+    FREETMPS;
+}
+
+
+[% IF XS.has_xs() -%]
+typedef void (*bootFunc)(pTHX_ CV* cv);
+static void do_bootstrap(pTHX_ const char *name, int len, const char *bootstrap, bootFunc boot) {
+    dTARG;
+    PERL_UNUSED_ARG(targ);
+    dSP;
+
+    PUSHMARK(sp);
+    /* XXX -O1 or -O2 needs XPUSHs with dynamic pv */
+    mXPUSHp(name, len);
+
+    /* XSLoader has the 2nd insanest API in whole Perl, right after make_warnings_object() */
+    PUTBACK;
+    /* CvSTASH(CvGV(cv)) is invalid without (issue 86) */
+    /* TODO: utf8 stashname */
+    { /* GH 333 */
+        CV* cv = (CV*)SvREFCNT_inc_simple_NN(get_cv(bootstrap, GV_ADD));
+        CvISXSUB_on(cv); /* otherwise a perl assertion fails. */
+        cv->sv_any->xcv_padlist_u.xcv_hscxt = &PL_stack_sp; /* xs_handshake */
+        boot(aTHX_ cv);
+    }
+
+    SPAGAIN;
+
+    return;
+}
+[% END %]
+
+/* EXTERN_C void boot_JSON__XS(pTHX_ CV* cv); */
+[% FOREACH module IN XS.modules() -%]
+EXTERN_C void boot_[% module.replace('::', '__') %](pTHX_ CV* cv);
+[% END -%]
+
+static void dl_init(pTHX)
+{
+    [% IF XS.has_xs() %]
+    dTARG;
+    PERL_UNUSED_ARG(targ);
+    ENTER;
+    SAVETMPS;
+
+  [% FOREACH module IN XS.modules() -%]
+  do_bootstrap( "[% module %]", [% module.length %], "[% module %]::bootstrap", &boot_[% module.replace('::', '__') %] );
+  [% END -%]
+
+    FREETMPS;
+    LEAVE;
+    [% END %]
+}
+
+[% IF XS.need_extra_xs_call() %]
+static void bootstrap_call_extra_CVs(pTHX);
+static void bootstrap_call_extra_CVs(pTHX)
+{
+    dSP;
+
+    PUSHMARK(SP);
+
+    [% FOREACH cvname IN XS.get_extra_CVs_boot_list() -%]
+    call_sv(MUTABLE_SV(get_cvs("[% cvname %]", 0)), G_DISCARD|G_NOARGS);
+    SPAGAIN;
+    [% END %]
+}
+[% END %]
+
+[% IF Signals.need_init -%]
+static void bc_init_signals() {
+
+[% FOREACH signum IN Signals.PL_psig_ptr.keys -%]
+    PL_psig_ptr[[% signum -%]] = [% Signals.PL_psig_ptr.$signum -%];
+    (void)rsignal([% signum -%], PL_csighandlerp);
+[% END -%]
+
+[% FOREACH signum IN Signals.ignore -%]
+    /* ignore signal [% signum %] */
+    (void)rsignal([% signum -%], (Sighandler_t) SIG_IGN);
+[% END -%]
+    /* default ?? (void)rsignal(i, (Sighandler_t) SIG_DFL); */
+
+}
+[% END -%]
+
+[% hooks.before_main %]
+
+/************************************************************************************************************
+*
+*       output_main()
+*
+*************************************************************************************************************/
+
+/* if USE_IMPLICIT_SYS, we need a 'real' exit */
+#if defined(exit)
+#undef exit
+#endif
+
+PerlInterpreter BC_unthreaded_interpreter;
+
+#if USE_BC_NEWXZ
+static char bc_Memory_Block[[% Memory.preallocated_sized %]] = { 0 };
+#endif
+
+int
+main(int argc, char **argv, char **env)
+{
+    int exitstatus;
+
+    /* Assure the interpreter struct is zeroed out. */
+    Zero(&BC_unthreaded_interpreter, 1, PerlInterpreter);
+
+    [% hooks.main_after_zero %]
+
+#if USE_BC_NEWXZ
+    /* use one single big malloc for all our stuff */
+    {
+        int preallocated_sized = [% Memory.preallocated_sized %];
+        PL_static_shared_memory_table = malloc_list; /* declare our table */
+
+        BC_Memory.start = (char *) bc_Memory_Block;
+
+        Newxz(PL_static_shared_memory_position, 1, STATIC_MEMORY_AREA);
+
+        BC_Memory.end   = BC_Memory.start + preallocated_sized * sizeof(char); /* only used for safety purpose ~assert */
+        BC_Memory.ptr   = BC_Memory.start;
+
+        /* can probably merge BC_Memory and PL_static_shared_memory_position */
+        PL_static_shared_memory_position->from = BC_Memory.start;
+        PL_static_shared_memory_position->to = BC_Memory.end;
+        /* we stole the size entry to store the PL_static_shared_memory_table array */
+        PL_static_shared_memory_position->size = [% section.malloc.index %]; /* no +1 there, want the C last entry */
+
+        declare_static_memory( BC_Memory.start, BC_Memory.end, 0 );
+    }
+#endif
+
+#ifdef DEBUG_BENCHMARK
+    clock_gettime(CLOCK_MONOTONIC_RAW, &start);
+#endif
+
+    /* This mostly sets things to 0 once you get 5 layers down into #defines. */
+    PERL_SYS_INIT3(&argc,&argv,&env);
+
+    assert(PL_do_undump == 0);
+
+    /* init hash seed before calling perl_construct and initializing strtab */
+    Perl_get_hash_seed(aTHX_ PL_hash_seed);
+    PERL_HASH_SEED_STATE(PERL_HASH_SEED,PL_hash_state);
+    PL_hash_seed_set = TRUE;
+    /* set the PL_internal_random_state value */
+    Perl_drand48_init_r( &PL_internal_random_state, seed() );
+
+    init_pl_strtab(); /* Initialize PL_Strtab on our own before perl gets to it in perl_alloc. This allows us to use immportal constant shared HEKs */
+    setup_perl_globals();
+    perl_init_stash(); /* Setup the stashes */
+    perl_init_vtables(); /* assign runtime vtables to magic structs since they point to C functions */
+    perl_init_static_assignments(); /* Setup the stashes */
+
+    /* setup $0 on execution */
+    CopFILE_set(&PL_compiling, argv[0]);
+
+    /* Sets up all PL_## variables */
+	perl_construct( &BC_unthreaded_interpreter );
+
+	PL_perl_destruct_level = 0;
+
+#ifdef DEBUG_BENCHMARK
+    PIO_stdout =  PerlIO_stdout();
+    benchmark_time("got stdio");
+#endif
+    PL_exit_flags |= PERL_EXIT_DESTRUCT_END;
+
+/* perlmain.c sets PL_use_safe_putenv so we must do this
+   here as well.
+
+   See perl's INSTALL file under
+   Environment access for more information. */
+
+#ifndef PERL_USE_SAFE_PUTENV
+    PL_use_safe_putenv = 0;
+#endif /* PERL_USE_SAFE_PUTENV */
+
+    benchmark_time("prenewx");
+
+    declare_static_sections(); /* declare all our sections to perl */
+
+    benchmark_time("pre bc_perl_parse");
+
+  [% IF TAINT %]
+    /* -T option was passed to B::C so we need to do the same here. bc_perl_parse doesn't parse perl args now. */
+    TAINTING_set(TRUE);
+    TAINT_WARN_set(FALSE);
+  [% END %]
+
+    PL_curstash = PL_defstash;
+
+[% IF Signals.need_init -%]
+    bc_init_signals();
+[% END -%]
+
+    benchmark_time("pre bc_perl_parse");
+    exitstatus = bc_perl_parse(&BC_unthreaded_interpreter, argc, argv, env);
+    benchmark_time("post bc_perl_parse");
+
+    if (exitstatus)
+       	exit( exitstatus );
+
+    /* link the CORE CVs to the bootstrapped ones loaded by perl_parse  -- maybe xs_init ?? */
+    perl_init_COREbootstraplink( aTHX );
+
+    TAINT;
+
+    benchmark_time("pre global setup");
+
+    [% IF global_vars.dollar_caret_H %]
+    PL_hints = [% global_vars.dollar_caret_H %];
+    [% END %]
+
+    [% IF global_vars.dollar_caret_UNICODE %]
+    PL_unicode = [% global_vars.dollar_caret_UNICODE %];
+    [% END %]
+
+    sv_setpv_mg(get_sv("\030", GV_ADD|GV_NOTQUAL), [% global_vars.dollar_caret_X %]); /* $^X - EXECUTABLE_NAME */
+
+    TAINT_NOT;
+
+    CopSTASH_set(&PL_compiling, PL_defstash);
+
+    perl_init_regexp(aTHX);
+
+    benchmark_time("preinit");
+    perl_init(aTHX);
+
+    benchmark_time("init1 pre");
+    perl_init1(aTHX);
+    benchmark_time("init1 done");
+
+    PL_comppad = [% PL.compad %];
+    PL_curpad  = AvARRAY(PL_comppad);
+    PL_stack_sp = PL_stack_base;
+
+    /* load the XS modules */
+    dl_init(aTHX);
+
+    /* link the CVs to the bootstrapped ones */
+    perl_init_bootstraplink( aTHX );
+
+    /* Link Class::XSAccessor methods embedded in the stash to their XS friend */
+    perl_init_xsaccessor( aTHX );
+
+    [% IF XS.need_extra_xs_call() -%]
+    /* some XS modules need to call an additional CV at boot (like Encode::onBOOT) */
+    bootstrap_call_extra_CVs( aTHX );
+    [% END -%]
+
+    [% IF SETUP_ALL_OPS -%]
+    setup_all_ops();
+    [% END -%]
+
+    [% IF section.init_xops.has_values %]
+    /* need to occurs after the XS bootstrap to have PL_custom_ops initialized */
+    perl_init_xops( aTHX );
+    [% END %]
+
+    /* We need to output evals after dl_init, in init2  */
+    [% FOREACH eval_pv IN all_eval_pvs %]
+    [% eval_pv %]
+    [% END %]
+    benchmark_time("evals completed.");
+
+    perl_init2(aTHX);
+    benchmark_time("init2 done.");
+
+    exitstatus = perl_run( &BC_unthreaded_interpreter );
+    benchmark_time("program complete");
+
+    /* init pre_destruct */
+    [% FOREACH str IN section.init.pre_destruct() %]
+    [% str %]
+    [% END %]
+    benchmark_time("pre_destruct() done");
+
+    /* destruct */
+
+    fast_perl_destruct( &BC_unthreaded_interpreter );
+
+    /*  XXX endav is called via call_list and so it is freed right after usage. Setting dirty here is useless */
+
+    PERL_SYS_TERM();
+
+    exit( exitstatus );
+}
+
+/* Through an interative process, perl_parse has been lifted from perl.c and re-factored to only support the
+   things that make sense for a B::C run program. This simplifies and hopefully shortens startup. This code
+   is only supportable via a static HV approach to B::C
+
+   The following functions are now local to this templated B::C program.
+
+       static int bc_perl_parse(pTHXx_ int argc, char **argv, char **env)
+       static void bc_parse_body(char **env);
+       static void bc_init_postdump_symbols(pTHX_ int argc, char **argv, char **env);
+       static void bc_init_predump_symbols(pTHX);
+*/
+
+static int bc_perl_parse(pTHXx_ int argc, char **argv, char **env)
+{
+    dVAR;
+    int ret;
+    dJMPENV;
+
+    PERL_ARGS_ASSERT_PERL_PARSE;
+    PERL_UNUSED_ARG(my_perl);
+
+    PL_origargc = argc;
+    PL_origargv = argv;
+
+    /* START: Determine how long $0 is allowed to be */
+    /* Set PL_origalen be the sum of the contiguous argv[]
+     * elements plus the size of the env in case that it is
+     * contiguous with the argv[].  This is used in mg.c:Perl_magic_set()
+     * as the maximum modifiable length of $0.  In the worst case
+     * the area we are able to modify is limited to the size of
+     * the original argv[0].  (See below for 'contiguous', though.)
+     * --jhi */
+    const char *s = NULL;
+    int i;
+    const UV mask = ~(UV)(PTRSIZE-1);
+
+    /* Do the mask check only if the args seem like aligned. */
+    const UV aligned = (mask < ~(UV)0) && ((PTR2UV(argv[0]) & mask) == PTR2UV(argv[0]));
+
+     /* See if all the arguments are contiguous in memory.  Note
+      * that 'contiguous' is a loose term because some platforms
+      * align the argv[] and the envp[].  If the arguments look
+      * like non-aligned, assume that they are 'strictly' or
+      * 'traditionally' contiguous.  If the arguments look like
+      * aligned, we just check that they are within aligned
+      * PTRSIZE bytes.  As long as no system has something bizarre
+      * like the argv[] interleaved with some other data, we are
+      * fine.  (Did I just evoke Murphy's Law?)  --jhi */
+    if (PL_origargv && PL_origargc >= 1 && (s = PL_origargv[0])) {
+        while (*s) s++;
+
+        for (i = 1; i < PL_origargc; i++) {
+            if ((PL_origargv[i] == s + 1) || (aligned && (PL_origargv[i] >  s && PL_origargv[i] <= INT2PTR(char *, PTR2UV(s + PTRSIZE) & mask))) ) {
+                s = PL_origargv[i];
+                while (*s) s++;
+            }
+            else
+                break;
+        }
+    }
+
+     /* Can we grab env area too to be used as the area for $0? */
+    if (s && PL_origenviron && !PL_use_safe_putenv) {
+        if ((PL_origenviron[0] == s + 1) || (aligned && (PL_origenviron[0] > s && PL_origenviron[0] <= INT2PTR(char *, PTR2UV(s + PTRSIZE) & mask))) ) {
+            s = PL_origenviron[0];
+            while (*s) s++;
+            my_setenv("NoNe  SuCh", NULL);
+            /* Force copy of environment. */
+            for (i = 1; PL_origenviron[i]; i++) {
+                if (PL_origenviron[i] == s + 1 || (aligned && (PL_origenviron[i] >  s && PL_origenviron[i] <= INT2PTR(char *, PTR2UV(s + PTRSIZE) & mask))) ) {
+                    s = PL_origenviron[i];
+                    while (*s) s++;
+                }
+                else
+                    break;
+            }
+        }
+    }
+
+    PL_origalen = s ? s - PL_origargv[0] + 1 : 0;
+
+    /* END: Determine how long $0 is allowed to be */
+
+    PL_main_root = [% PL.main_root %];
+    PL_main_start = [% PL.main_start %];
+    PL_main_cv = NULL;
+
+    /* $^T or $BASETIME */
+    time(&PL_basetime);
+
+    PL_dowarn = [% PL.dowarn %];
+
+    /* BEGIN eval {} */
+    JMPENV_PUSH(ret);
+    if(ret) {
+        PerlIO_printf(Perl_error_log, "panic: jmpenv failed!\n");
+    }
+    else {
+        bc_parse_body(env);
+        ret = 0;
+    }
+    JMPENV_POP;
+    return ret;
+}
+
+void bc_parse_body(char **env)
+{
+    dVAR;
+    int argc = PL_origargc;
+    char **argv = PL_origargv;
+
+    PERL_SET_PHASE(PERL_PHASE_START);
+
+    /* init_main_stash(); PL_defstash setup */
+    PL_curstash = PL_defstash;
+
+    /* init_perllib(); We hard code @INC on our own.*/
+
+    {
+        Sighandler_t sigstate = rsignal_state(SIGCHLD);
+        if (sigstate == (Sighandler_t) SIG_IGN) {
+            Perl_ck_warner(aTHX_ packWARN(WARN_SIGNAL),
+                   "Can't ignore signal CHLD, forcing to default");
+            (void)rsignal(SIGCHLD, (Sighandler_t)SIG_DFL);
+        }
+    }
+
+    PL_main_cv = PL_compcv = ( ( CV*) [% PL.main_cv %] );
+    PL_isarev = newHV();
+
+    /* Setup built in Perl XS symbols */
+    boot_core_PerlIO();
+    boot_core_UNIVERSAL();
+    boot_core_builtin();
+    boot_core_mro();
+
+    /* run our local B::C xs_init */
+    xs_init(aTHX);    /* in case linked C routines want magical variables */
+
+    /* Setup STDERR, STDIO, STDOUT, $, PL_statname*/
+    bc_init_predump_symbols();
+
+    /* Setup %ENV, $0, @ARGV, PL(top|body|form)target */
+    bc_init_postdump_symbols(argc,argv,env);
+
+    /* PL_unicode is turned on by -C, or by $ENV{PERL_UNICODE},
+     * or explicitly in some platforms.
+     * locale.c:Perl_init_i18nl10n() if the environment
+     * look like the user wants to use UTF-8. */
+    if (PL_unicode) {
+     /* Requires init_predump_symbols(). */
+        if (!(PL_unicode & PERL_UNICODE_LOCALE_FLAG) || PL_utf8locale) {
+            IO* io;
+            PerlIO* fp;
+            SV* sv;
+
+            /* Turn on UTF-8-ness on STDIN, STDOUT, STDERR
+             * and the default open disciplines. */
+            if ((PL_unicode & PERL_UNICODE_STDIN_FLAG)  && (io = GvIO([% IO.stdin %])) && (fp = IoIFP(io)))
+                PerlIO_binmode(aTHX_ fp, IoTYPE(io), 0, ":utf8");
+
+            if ((PL_unicode & PERL_UNICODE_STDOUT_FLAG) && (io = GvIO([% IO.stdout %])) && (fp = IoOFP(io)))
+                PerlIO_binmode(aTHX_ fp, IoTYPE(io), 0, ":utf8");
+
+            if ((PL_unicode & PERL_UNICODE_STDERR_FLAG) && (io = GvIO([% IO.stderr %])) && (fp = IoOFP(io)))
+                PerlIO_binmode(aTHX_ fp, IoTYPE(io), 0, ":utf8");
+
+            if ((PL_unicode & PERL_UNICODE_INOUT_FLAG) && (sv = GvSV(gv_fetchpvs("\017PEN", GV_ADD|GV_NOTQUAL, SVt_PV)))) {
+                U32 in  = PL_unicode & PERL_UNICODE_IN_FLAG;
+                U32 out = PL_unicode & PERL_UNICODE_OUT_FLAG;
+                if (in) {
+                    if (out)
+                        sv_setpvs(sv, ":utf8\0:utf8");
+                    else
+                        sv_setpvs(sv, ":utf8\0");
+                }
+                else if (out)
+                    sv_setpvs(sv, "\0:utf8");
+                    SvSETMAGIC(sv);
+            }
+        }
+    }
+
+    PL_subname = newSVpvs("main");
+
+    /* now parse the script */
+
+    SETERRNO(0,SS_NORMAL);
+    CopLINE_set(PL_curcop, 0);
+    PL_defstash = PL_curstash;
+
+    LEAVE;
+    FREETMPS;
+
+    ENTER;
+    PL_restartjmpenv = NULL;
+    PL_restartop = 0;
+}
+
+STATIC void bc_init_postdump_symbols(pTHX_ int argc, char **argv, char **env)
+{
+    /* Set PL_toptarget to a PVIV set to "" */
+    PL_toptarget = newSV_type(SVt_PVIV);
+    sv_setpvs(PL_toptarget, "");
+
+    /* Set PL_bodytarget and PL_formtarget to a PVIV set to "" */
+    PL_bodytarget = newSV_type(SVt_PVIV);
+    sv_setpvs(PL_bodytarget, "");
+    PL_formtarget = PL_bodytarget;
+
+    TAINT;
+
+    /* @ARGV (PL_argvgv) is setup here. */
+    init_argv_symbols(argc,argv);
+
+    PL_origfilename = savepv(argv[0]);
+    sv_setpv(GvSV([% global_vars.dollar_zero %]),PL_origfilename);
+
+    if ((PL_envgv = gv_fetchpvs("ENV", GV_ADD|GV_NOTQUAL, SVt_PVHV))) {
+        HV *hv;
+        bool env_is_not_environ;
+        SvREFCNT_inc_simple_void_NN(PL_envgv);
+        GvMULTI_on(PL_envgv);
+        hv = GvHVn(PL_envgv);
+        hv_magic(hv, NULL, PERL_MAGIC_env);
+
+        /* Note that if the supplied env parameter is actually a copy
+           of the global environ then it may now point to free'd memory
+           if the environment has been modified since. To avoid this
+           problem we treat env==NULL as meaning 'use the default'
+        */
+        if (!env)
+            env = environ;
+        env_is_not_environ = env != environ;
+        if (env_is_not_environ) {
+            environ[0] = NULL;
+        }
+        if (env) {
+            char *s, *old_var;
+            STRLEN nlen;
+            SV *sv;
+            HV *dups = newHV();
+
+            for (; *env; env++) {
+                old_var = *env;
+
+                if (!(s = strchr(old_var,'=')) || s == old_var)
+                    continue;
+                    nlen = s - old_var;
+
+                    if (hv_exists(hv, old_var, nlen)) {
+                        const char *name = savepvn(old_var, nlen);
+
+                        /* make sure we use the same value as getenv(), otherwise code that
+                           uses getenv() (like setlocale()) might see a different value to %ENV
+                         */
+                        sv = newSVpv(PerlEnv_getenv(name), 0);
+
+                        /* keep a count of the dups of this name so we can de-dup environ later */
+                        if (hv_exists(dups, name, nlen))
+                            ++SvIVX(*hv_fetch(dups, name, nlen, 0));
+                        else
+                            (void)hv_store(dups, name, nlen, newSViv(1), 0);
+
+                        Safefree(name);
+                    }
+                    else
+                        sv = newSVpv(s+1, 0);
+                (void)hv_store(hv, old_var, nlen, sv, 0);
+
+                if (env_is_not_environ)
+                    mg_set(sv);
+            }
+
+            if (HvKEYS(dups)) {
+                /* environ has some duplicate definitions, remove them */
+                HE *entry;
+                hv_iterinit(dups);
+                while ((entry = hv_iternext_flags(dups, 0))) {
+                    STRLEN nlen;
+                    const char *name = HePV(entry, nlen);
+                    IV count = SvIV(HeVAL(entry));
+                    IV i;
+                    SV **valp = hv_fetch(hv, name, nlen, 0);
+
+                    assert(valp);
+
+                    /* try to remove any duplicate names, depending on the
+                       * implementation used in my_setenv() the iteration might
+                       * not be necessary, but let's be safe.
+                    */
+                    for (i = 0; i < count; ++i)
+                        my_setenv(name, 0);
+
+                    /* and set it back to the value we set $ENV{name} to */
+                    my_setenv(name, SvPV_nolen(*valp));
+                }
+            }
+
+            SvREFCNT_dec_NN(dups);
+        }
+    }
+    TAINT_NOT;
+}
+
+static void bc_init_predump_symbols(pTHX)
+{
+    IO *io;
+
+    PL_ofsgv = [% global_vars.dollar_comma %];
+
+    /* IO::File::ISA was saved by B::C so no need to re-inject it here like init_predump_symbols() does. */
+
+    PL_stdingv = [% IO.STDIN %];
+    io = GvIOp(PL_stdingv);
+    IoTYPE(io) = IoTYPE_RDONLY;
+    IoIFP(io) = PerlIO_stdin();
+    GvIOp([% IO.stdin %]) = MUTABLE_IO(SvREFCNT_inc_simple(io));
+
+    io = GvIOp([% IO.STDOUT %]);
+    IoTYPE(io) = IoTYPE_WRONLY;
+    IoOFP(io) = IoIFP(io) = PerlIO_stdout();
+    setdefout([% IO.STDOUT %]);
+    GvIOp([% IO.stdout %]) = MUTABLE_IO(SvREFCNT_inc_simple(io));
+
+    PL_stderrgv = [% IO.STDERR %];
+    io = GvIOp(PL_stderrgv);
+    IoTYPE(io) = IoTYPE_WRONLY;
+    IoOFP(io) = IoIFP(io) = PerlIO_stderr();
+    GvIOp([% IO.stderr %]) = MUTABLE_IO(SvREFCNT_inc_simple(io));
+
+    PL_statname = newSVpvs("");        /* last filename we did stat on */
+}

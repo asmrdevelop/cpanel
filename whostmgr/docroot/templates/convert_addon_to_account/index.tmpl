@@ -1,0 +1,60 @@
+[%
+    USE Whostmgr;
+    USE JSON;
+    USE CPUsername;
+
+    SET stylesheet_includes = [
+        Whostmgr.find_file_url('/templates/convert_addon_to_account/index.css')
+    ];
+
+    SET PAGE_BASE = '/scripts7/convert_addon_to_account/';
+
+    SET PAGE_DATA = {
+        'security_token' => cp_security_token,
+        'addon_domains' =>  data.addon_domains || {},
+        'username_restrictions' => {
+            'maxLength' => CPUsername.get_max_username_length(),
+        }
+    };
+
+    WRAPPER 'master_templates/master.tmpl'
+        app_key = 'convert_addon_domain_to_account'
+        header = locale.maketext('Convert Addon Domain to Account'),
+        breadcrumburl = PAGE_BASE,
+        base = PAGE_BASE,
+        stylesheets = stylesheet_includes,
+        CJT2_EXCLUSIVE = 0,
+        theme = 'bootstrap';
+%]
+
+[% IF Whostmgr.get_max_users() && Whostmgr.minimum_accounts_needed( Whostmgr.get_max_users() ) %]
+    [%- PROCESS 'menu/_license_excess_create.tmpl' -%]
+[% ELSE %]
+
+    <div id="content"
+        class="ng-cloak"
+        ng-cloak>
+        <p class="description">[% locale.maketext("Addon domains allow users to host multiple domains under a single [asis,cPanel] account. When you convert an addon domain into a stand-alone [asis,cPanel] account, you gain more control over the domain’s resources, such as databases, [asis,FTP] accounts, [asis,SSH] access, etc.") %]</p>
+        <div class="animate-view" ng-view></div>
+        <div growl></div>
+    </div>
+
+    <script type="text/ng-template" id="directives/move_status.phtml">
+    [% INSERT 'convert_addon_to_account/directives/move_status.phtml' %]
+    </script>
+
+    <script type="text/ng-template" id="directives/job_status.phtml">
+    [% INSERT 'convert_addon_to_account/directives/job_status.phtml' %]
+    </script>
+
+    <script type="text/javascript">
+        var PAGE = [% PAGE_DATA.json() %];
+    </script>
+[% END %]
+
+[% SET lex_path = locale.cpanel_get_lex_path('/usr/local/cpanel/base/cjt/sql.js', '/cjt/sql.js') %]
+[% IF lex_path %]<script src="[% lex_path %]"></script>[% END %]
+<script src="[% CPANEL.get_js_url('/cjt/sql.js') %]"></script>
+
+[% PROCESS 'master_templates/cjt2_header_include.tt' %]
+[% END %]

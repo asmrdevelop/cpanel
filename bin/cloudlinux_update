@@ -1,0 +1,106 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - bin/cloudlinux_update                   Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+use warnings;
+
+use Cpanel::CloudLinux       ();
+use Cpanel::SafeRun::Simple  ();
+use Cpanel::SafeRun::Dynamic ();
+use Cpanel::OS               ();
+use Cpanel::Pkgr             ();
+use Cpanel::Binaries::Rpm    ();
+
+my $from_installer = $ENV{'CPANEL_BASE_INSTALL'} ? 1 : 0;
+
+exit if Cpanel::CloudLinux::nocloudlinux();    # Manually disabled
+
+exit unless ( Cpanel::CloudLinux::supported_envtype() && Cpanel::OS::supports_or_can_become_cloudlinux() );
+
+if ( Cpanel::OS::is_cloudlinux() ) {
+    my $installed = Cpanel::Pkgr::installed_packages();
+    my $rpm       = Cpanel::Binaries::Rpm->new;
+    foreach my $dep_rpm (qw{ cpanel-lvemanager cpanel-lve lve-cpanel-plugin }) {
+        next unless exists $installed->{$dep_rpm};
+        $rpm->cmd( '-e', '--justdb', '--nodeps', $dep_rpm );
+    }
+
+    # Remove CloudLinux RPM provided files
+    my @deprecated_files = qw{
+      /usr/local/cpanel/whostmgr/docroot/cgi/addon_CloudLinux.cgi
+      /usr/local/cpanel/whostmgr/docroot/images/addon_CloudLinux_logo.png
+    };
+
+    foreach my $file (@deprecated_files) {
+        if ( -e $file ) {
+            unlink $file;
+        }
+    }
+
+    # Removed deprecated EasyApache hooks (replaced by native support)
+    Cpanel::SafeRun::Simple::saferun('/usr/local/cpanel/bin/cloudlinux_cleanoldhooks');
+
+    ## case 51423: the 'cloudlinux_registered' touch file indicates a recently acquired cPanel
+    ##   license on a CloudLinux enabled machine; run clnreg_ks to ensure registration
+    if ( Cpanel::CloudLinux::licensed() && !-e '/var/cpanel/cloudlinux_registered' ) {
+        Cpanel::SafeRun::Simple::saferun( '/usr/sbin/clnreg_ks', '--force' );
+        system( 'touch', '/var/cpanel/cloudlinux_registered' );
+    }
+}
+elsif ( Cpanel::CloudLinux::licensed() ) {
+
+    # If this is a new installation, install CloudLinux. This should be followed by EasyApache build
+    # via the cPanel & WHM installer
+    if ($from_installer) {
+        print "Performing initial CloudLinux setup.\n";
+        Cpanel::CloudLinux::install_cloudlinux();    # dies/exits unclean if it fails which is what we want
+        print "Finished initial CloudLinux setup.\n";
+        exit 0;
+    }
+
+    # Only notify that CloudLinux installation is needed
+    else {
+        require Cpanel::Hostname;
+        require Cpanel::IP::Remote;
+        require Cpanel::iContact::Class::CloudLinux::Update;
+
+        my $hostname = Cpanel::Hostname::gethostname();
+
+        my %icontact_args = (
+            'hostname'          => $hostname,
+            'source_ip_address' => Cpanel::IP::Remote::get_current_remote_ip(),
+            'origin'            => 'cloudlinux_update',
+        );
+        require Cpanel::Notify;
+        my $ic_obj = Cpanel::Notify::notification_class(
+            'class'            => 'CloudLinux::Update',
+            'application'      => 'CloudLinux::Update',
+            'constructor_args' => [ %icontact_args, 'skip_send' => 1 ]
+        );
+
+        my $message_body = $ic_obj->render_template_include_as_text( 'template' => 'body', 'type' => 'html' );
+
+        print <<"EOM";
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+$message_body
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+EOM
+
+        require Cpanel::Notify;
+        Cpanel::Notify::notification_class(
+            application      => 'cloudlinux_update',
+            interval         => ( 60 * 60 * 24 * 7 ),
+            status           => 'Manual Installation Needed',
+            class            => 'CloudLinux::Update',
+            constructor_args => [
+                %icontact_args,
+            ],
+        );
+    }
+}
+
+__END__

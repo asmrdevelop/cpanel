@@ -1,0 +1,192 @@
+[% USE Whostmgr -%]
+[% USE CPDate %]
+[% WRAPPER 'master_templates/master.tmpl' theme="yui"
+    app_key='view_reseller_usage_and_manage_account_status'
+    scripts = [
+        '/js/sorttable.js',
+        '/yui-gen/utilities_container/utilities_container.js'
+    ]
+-%]
+[% PROCESS '_pkg_hover.tmpl' -%]
+
+<div class="topboxmargin"></div>
+
+
+<div id="resellerWrapper">
+<h3>Reseller Stats for [% data.reseller %]</h3>
+<table width="100%" class="tableborder1" style="border: 1px solid #000;border-collapse:collapse;">
+  <tr>
+    <td style="border: 1px solid #000;border-collapse:collapse;">
+      <span class="b2">Reseller Domain:</span>[% data.reseller_domain %]<br />
+      <span class="b2">Reseller Username:</span>[% data.reseller %]<br />
+      <span class="b2">Number of Accounts:</span>[% data.total_current_accounts %]
+    </td>
+
+    <td style="border: 1px solid #000;border-collapse:collapse;">
+      <form method="POST" action="[% cp_security_token %]/scripts/suspendreseller">
+        <input type="checkbox" checked name="resalso" value="1">Suspend Reseller's Main Account<br />
+        <input type="submit" class="btn-primary" value="Suspend All [% data.reseller %]'s Accounts">
+        <input type="hidden" name="reseller" value="[% data.reseller %]">
+      </form><br />
+      <form method="POST" action="[% cp_security_token %]/scripts/suspendreseller">
+        <input type="hidden" name="un" value="1">
+        <input type="hidden" name="reseller" value="[% data.reseller %]">
+        <input type="checkbox" checked name="resalso" value="1">UnSuspend Reseller's Main Account<br />
+        <input type="submit" class="btn-primary" value="UnSuspend All [% data.reseller %]'s Accounts"><br /><br />
+      </form><br />
+      <span>
+        <input type="hidden" name="reseller" value="[% data.reseller %]">
+        <input id="terminateResellerMainAccountCheckbox" type="checkbox" checked name="resalso" value="1">Terminate Reseller's Main Account<br />
+        To complete this action you must type the following phrase in the box below<br />
+        "I understand this will irrevocably remove all the accounts owned by the reseller [% data.reseller %]"<br />
+        <input id="verifyTerminateInput" size="60" type="text" name="verify" value="I understand "><br />
+        <input id="terminateResellerButton" type="submit" class="btn-primary" value="Terminate All [% data.reseller %]'s Accounts"><br /><br />
+      </span>
+    </td>
+  </tr>
+</table><br />
+<table width="100%">
+  <tr>
+    <td align="left"><a href="statres?res=[% data.reseller %]&month=[% data.prev_month %]&year=[% data.prev_year %]">Last Month Bandwidth Usage ([% CPDate.get_text_month( data.prev_month ) %] [% data.prev_year %])</a></td>
+    <td>[% CPDate.get_text_month( data.month ) %] [% data.year %]</td>
+    <td align="right"><a href="statres?res=[% data.reseller %]&month=[% data.next_month %]&year=[% data.next_year %]">Next Month Bandwidth Usage ([% CPDate.get_text_month( data.next_month ) %] [% data.next_year %])</a></td>
+  </tr>
+</table>
+<table class="sortable" id="resltbl" width="100%">
+  <tr>
+    <th>User</th>
+    <th>Domain</th>
+    <th>Plan</th>
+    <th>Suspended</th>
+    <th>Disk Space Used in Meg</th>
+    <th>Disk Space Limit</th>
+    <th>Bandwidth In Meg</th>
+    <th>Monthly Bandwidth Limit in Meg</th>
+  </tr>
+[% FOR account IN data.accounts -%]
+    [% SET account.diskused = 0 IF ( 1 > account.diskused.length ) -%]
+    [% SET account.diskquota = 0 IF ( 1 > account.diskquota.length ) -%]
+    [% SET account.bandwidthused = 0 IF ( 1 > account.bandwidthused.length ) -%]
+    [% SET account.bandwidthlimit = 0 IF ( 1 > account.bandwidthlimit.length ) -%]
+    [% NEXT IF account.deleted %]
+  <tr>
+    <td>[% account.user %]</td>
+    <td>[% account.domain %]</td>
+    <td style="cursor:crosshair; cursor:help;" onMouseOver="hover_pkg(this,'[% account.package %]');" onMouseOut="dehover_pkg(this,'[% account.package %]');">[% account.package %]</td>
+    <td>[% IF account.suspended %]x[% END %]</td>
+    <td>[% account.diskused %]</td>
+    <td>[% account.diskquota %]</td>
+    <td>[% account.bandwidthused %]</td>
+    <td>[% account.bandwidthlimit %]</td>
+  </tr>
+[% END -%]
+  <tr>
+    <th>User</th>
+    <th>Domain</th>
+    <th>Plan</th>
+    <th>Suspended</th>
+    <th>Disk Space Used in Meg</th>
+    <th>Disk Space Limit</th>
+    <th>Bandwidth In Meg</th>
+    <th>Monthly Bandwidth Limit in Meg</th>
+  </tr>
+  <tr>
+    <td colspan="4" background="[% MagicRevision( '/themes/x/bg.png' ) %]">Total</td>
+    <td>[% data.total_disk_used %]</td>
+    <td>[% data.total_disk_limit %]</td>
+    <td>[% data.total_bandwidth_used %]</td>
+    <td>[% data.total_bandwidth_limit %]</td>
+  </tr>
+</table>
+
+</div>
+
+<script>
+
+    var replaceWrapper = function(child) {
+
+        var wrapper = document.getElementById("resellerWrapper");
+
+        for( var i=wrapper.childNodes.length - 1; i >= 0; i-- ) {
+            wrapper.removeChild(wrapper.childNodes[i]);
+        }
+
+        wrapper.appendChild(child);
+    }
+
+    var handleTerminateOutput = function(accts) {
+
+        var outputDiv = document.createElement("div");
+
+        for( var i=0; i < accts.length; i++ ) {
+            var pre = document.createElement("pre");
+            pre.textContent = accts[i].output.raw;
+            outputDiv.appendChild(pre);
+        }
+
+        var complete = document.createElement("b");
+        complete.innerHTML = "All account terminations complete";
+        outputDiv.appendChild(complete);
+
+        replaceWrapper(outputDiv);
+    }
+
+    var terminateReseller = function() {
+
+        var required = "I understand this will irrevocably remove all the accounts owned by the reseller [% data.reseller %]";
+
+        var verify = document.getElementById("verifyTerminateInput").value.trim(); // Strip leading and trailing whitespace
+        verify = verify.replace(/(^"|"$)/g, ""); // Strip leading and trailing "'s
+        verify = verify.trim(); // Strip leading and trailing whitespace again just in case
+
+        if( verify !== required ) {
+            alert("Sorry, you must type \"I understand this will irrevocably remove all the accounts owned by the reseller [% data.reseller %]\" in the verification box before you can use this feature.");
+            return;
+        }
+
+        var terminateMain = document.getElementById("terminateResellerMainAccountCheckbox").checked;
+
+        var title = document.getElementsByClassName("pageTitle");
+        if( title.length === 1 ) {
+            var span = title[0].getElementsByTagName("span");
+            if( span.length === 1 ) {
+                span[0].innerHTML = "Terminate Reseller";
+            }
+        }
+
+        var spinner = document.createElement("div");
+        spinner.innerHTML = "<h3><span class=\"fas fa-spinner fa-spin\"></span> Termination of [% data.reseller %]'s accounts is being processed!</h3>";
+        replaceWrapper(spinner);
+
+        window.CPANEL.api({
+            application: "whm",
+            func: "terminatereseller",
+            data: { user: "[% data.reseller %]", terminatereseller: terminateMain ? 1 : 0 },
+            callback: {
+                success: function(o) {
+                    if( o.cpanel_data ) {
+                        handleTerminateOutput(o.cpanel_data);
+                    }
+                    else {
+                        var complete = document.createElement("b");
+                        complete.textContent = "All account terminations complete";
+                        replaceWrapper(complete);
+                    }
+                },
+                failure: function(o) {
+                    var reason = document.createElement("pre");
+                    reason.innerHTML = o.cpanel_error;
+                    replaceWrapper(reason);
+                }
+            }
+        })
+
+    };
+
+    document.addEventListener("DOMContentLoaded", function() {
+        document.getElementById("terminateResellerButton").addEventListener("click", terminateReseller)
+    });
+
+</script>
+
+[% END #wrapper %]

@@ -1,0 +1,145 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - SOURCES/gather_update_log_stats         Copyright 2021 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::gather_update_log_stats;
+
+=head1 NAME
+
+gather_update_log_stats
+
+=head1 SYNOPSIS
+
+gather_update_log_stats [--help|--upload] [--logfile </full/path/to/logfile>]
+
+=head1 DESCRIPTION
+
+This script runs the update gatherer.
+
+A cron job runs this script, which will analyze the latest upcp log file and generate a tarball. The --upload option allows the script to send that tarball to cPanel's servers.
+
+If upcp is running, this script will delay itself and try to run again later.
+
+The parameters are:
+
+=over
+
+=item * C<--help> - This help screen. Optional.
+
+=item * C<--upload> - Whether to send results to cPanel server. Optional.
+
+=item * C<--logfile> - Full path to an upcp logfile to analyze. Optional. If no logfile is given, create a tarball based on the current system state.
+
+=back
+
+=cut
+
+
+use lib '/var/cpanel/perl';
+
+use Cpanel::UpdateGatherer::Std;
+
+use parent 'Cpanel::HelpfulScript';
+
+use constant _OPTIONS => (
+    'upload!',
+    'logfile=s',
+);
+
+use Cpanel::Logger ();
+
+__PACKAGE__->new(@ARGV)->run() if !caller;
+
+sub run ( $self, @ARGV ) {
+
+    # update analysis includes sensitive files which should not be world readable
+    umask(077);
+
+    my $logfile = $self->getopt('logfile');
+    my $upload  = $self->getopt('upload');
+
+    my $logger = Cpanel::Logger->new();
+
+    if ( $logfile && !-r $logfile ) {
+        $logger->warn("A logfile was given but not readable, so wasn't used: $logfile");
+        $logger->warn("Perhaps full path is needed.  Proceeding with system stats gathering.");
+    }
+
+    if ( $self->_is_upcp_running() ) {
+        $logger->info("A cPanel update is currently in progress. The system will run 'gather_update_log_stats' with --try-later.");
+        if ( !$self->_defer_log_gathering() ) {
+            $logger->info("The system failed to run 'gather_update_log_stats' with --try-later. The job scheduling daemon, atd, may be offline.");
+        }
+    }
+    else {
+        my $gatherer;
+        if ( eval { require Cpanel::UpdateGatherer::Gatherer } ) {
+            $gatherer = Cpanel::UpdateGatherer::Gatherer->new( { 'update_log_file' => $logfile, } );
+        }
+
+        $logger->die("Could not load UpdateGatherer! Have you opted into cpanel analytics?") unless $gatherer;
+
+        if ( $gatherer->legacy_cp_for_update_gatherer ) {
+            $logger->warn("Legacy version detected. Instead, use the /usr/local/cpanel/scripts/gather-update-logs script until you update cPanel/WHM to a more recent version. Exiting.");
+            return 1;
+        }
+
+        $gatherer->compile();
+
+        if ($upload) {
+            $self->_send($gatherer);
+        }
+        elsif ( -e $gatherer->_working_dir() . '.tar.gz' ) {
+            $logger->info( "Update tarball created, but not uploaded: " . $gatherer->_working_dir() . '.tar.gz' );
+        }
+        else {
+            $logger->info( 'Failed to generate tarball, ' . $gatherer->_working_dir() . ".tar.gz: $!" );
+        }
+
+        $gatherer->cleanup() || $logger->info('Cleanup incomplete');
+    }
+
+    return 1;
+}
+
+sub _send ( $self, $gatherer ) {
+    my $logger = Cpanel::Logger->new();
+
+    $gatherer->send_tarball() || $logger->info('Failed to send data to cPanel');
+
+    return 1;
+}
+
+sub _is_upcp_running ($self) {
+    my @check_command = ( '/usr/local/cpanel/scripts/upcp-running', '--invert-exit', '--quiet' );
+    return if !-x $check_command[0];
+    return system(@check_command);
+}
+
+sub _defer_log_gathering ($self) {
+    my @action_cmd = ('/usr/local/cpanel/scripts/gather_update_log_stats');
+    return if !-x $action_cmd[0];
+
+    my @check_cmd = (
+        '/usr/local/cpanel/scripts/upcp-running',
+        '--invert-exit',
+        '--quiet',
+    );
+    return if !-x $check_cmd[0];
+
+    my @cmd = (
+        '/usr/local/cpanel/scripts/try-later',
+        '--action',      join( ' ', @action_cmd ),
+        '--check',       join( ' ', @check_cmd ),
+        '--delay',       15,
+        '--max-retries', 24,
+    );
+    return if !-x $cmd[0];
+
+    return !system @cmd;
+}
+
+1;

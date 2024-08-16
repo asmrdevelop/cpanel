@@ -1,0 +1,381 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/setupnameserver                 Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+use warnings;
+
+use Config::Tiny                       ();
+use Cpanel::Config::LoadCpConf         ();
+use Cpanel::Config::CpConfGuard        ();
+use Cpanel::ServerTasks                ();
+use Cpanel::Chkservd::Manage           ();
+use Cpanel::Chkservd::Tiny             ();
+use Cpanel::Pkgr                       ();
+use Cpanel::RPM::Versions::File        ();
+use Cpanel::RPM::Versions::Directory   ();
+use Cpanel::Services::Enabled          ();
+use Cpanel::Services::Restart          ();
+use Cpanel::Init                       ();
+use Cpanel::OS                         ();
+use Cpanel::NameServer::Utils::Enabled ();
+use Cpanel::Usage                      ();
+use Cpanel::PID                        ();
+use Cpanel::Encoder::Tiny              ();
+use Cpanel::RestartSrv::Systemd        ();
+use Cpanel::ServerTasks                ();
+
+my $force   = 0;
+my $current = 0;
+my $html    = 0;
+
+delete $ENV{'cp_security_token'};
+delete $ENV{'HTTP_REFERER'};
+
+# Argument processing
+my %opts = (
+    'force'   => \$force,
+    'current' => \$current,
+    'html'    => \$html,
+);
+
+Cpanel::Usage::wrap_options( \@ARGV, \&usage, \%opts );
+
+local @ARGV = ( grep( !/^--/, @ARGV ) );
+
+my $dnstype = shift;
+usage() unless ( $dnstype || $current );
+
+if ( $> != 0 ) {
+    die "Conversion process must be performed as root";
+}
+
+my $cpconf_ref = Cpanel::Config::LoadCpConf::loadcpconf_not_copy();
+
+$cpconf_ref->{'local_nameserver_type'} ||= 'powerdns';
+my $current_nameserver = Cpanel::Services::Enabled::is_enabled('dns') ? $cpconf_ref->{'local_nameserver_type'} : 'disabled';
+
+if ($current) {
+    print "Current nameserver type: $current_nameserver\n";
+    exit 0;
+}
+
+if ( !$force && $current_nameserver eq $dnstype ) {
+    print "Already configured.\n";
+    exit 0;
+}
+
+my $valid_dnstypes = { map { $_ => 1 } qw(bind powerdns disabled) };
+unless ( $valid_dnstypes->{$dnstype} ) {
+    print "Unknown nameserver type specified.\nTry $0 --help\n";
+    exit 1;
+}
+
+my ( $valid, $reason ) = Cpanel::NameServer::Utils::Enabled::valid_nameserver_type($dnstype);
+unless ($valid) {
+    print "The specified nameserver type is not available for your system:\n";
+    print $reason, "\n";
+    exit 1;
+}
+
+if ( !$force && $current_nameserver eq 'powerdns' && $dnstype ne 'powerdns' && -t STDIN ) {
+    print "WARNING: If you switch your nameserver away from PowerDNS, your DNS server will no longer serve DNSSEC records.\n";
+    print "You must ensure that the domains do not have DS records configured at their domain registrar.\n";
+    print "Failure to do so will cause DNS resolution issues.\n\n";
+    my $msg = qq{Are you sure you want to switch to "$dnstype" [y/n]? };
+    print $msg;
+    my $count = 0;
+    while ( my $read = <STDIN> ) {
+        $count++;
+        exit if ( $count >= 5 );
+        exit if ( $read =~ m/^n/i );
+        last if ( $read =~ m/^y/i );
+        print $msg;
+    }
+}
+
+# Check if the target service is currently unmanaged
+# WARNING: GLOBAL VARIABLE
+
+if ( !$force && $dnstype =~ m/^(powerdns)$/ ) {
+    my $dir          = Cpanel::RPM::Versions::Directory->new( { 'dont_set_legacy' => 1 } );
+    my $target_state = $dir->fetch( { 'section' => 'target_settings', 'key' => $dnstype } );
+    if ( $target_state && $target_state =~ m/^(unmanaged|uninstalled)$/ ) {
+        print "WARNING: You are attempting to switch to $dnstype, but it has explicitly been set to $target_state in /var/cpanel/rpm.versions.d/\n";
+
+        print "This means its packages have been flagged to be left alone by cPanel. "   if ( $target_state eq 'unmanaged' );
+        print "This means its packages have been explicitly blocked from installation. " if ( $target_state eq 'uninstalled' );
+
+        print "If this was unintentional, you may be able to remove\nthis flag by running the following command and then re-running setupnameserver\n";
+        print "\n    /usr/local/cpanel/scripts/update_local_rpm_versions --del target_settings.$dnstype\n\n";
+
+        print "If you meant to do this, please re-run setupnameserver with --force\n\n";
+        exit 2;
+    }
+}
+
+my $pid_obj = Cpanel::PID->new( { 'pid_file' => '/var/run/setupnameserver.pid' } );
+unless ( $pid_obj->create_pid_file() > 0 ) {
+    print "Setupnameserver appears to be running already.\n";
+    print "Please wait for the conversion to finish before attempting another.\n";
+    exit 1;
+}
+
+# check bind rpm before any actions, as we are not going to autofix it, but le the admin take care of it
+check_bind() if $dnstype eq 'bind';
+
+{
+    my $cpconf_guard = Cpanel::Config::CpConfGuard->new();
+    print "Setting name server to $dnstype in /var/cpanel/cpanel.config\n";
+    $cpconf_ref->{'local_nameserver_type'} = $cpconf_guard->{'data'}->{'local_nameserver_type'} = $dnstype;
+    $cpconf_guard->save();
+}
+
+my $init = Cpanel::Init->new();
+
+suspend_chksrvd_monitoring();
+
+_disable_systemd_resolved_stub_resolver();
+
+#branch to uninsall/install functions
+if ( $dnstype eq 'bind' ) {
+    disable_none();
+    disable_powerdns();
+    enable_bind();
+    enable_chksrvd_monitoring();
+}
+elsif ( $dnstype eq 'powerdns' ) {
+    disable_none();
+    disable_bind();
+    enable_powerdns();
+    enable_chksrvd_monitoring();
+}
+else {
+    disable_chksrvd_monitoring();
+    enable_none();
+    disable_bind();
+    disable_powerdns();
+    install_cpanel_rpms();
+}
+
+if ( $force && $dnstype && $dnstype ne 'disabled' && $dnstype ne 'bind' && !$ENV{'CPANEL_BASE_INSTALL'} ) {
+    print "\nChecking status of installed packages for $dnstype\n";
+    system( '/usr/local/cpanel/scripts/check_cpanel_pkgs', '--fix', '--long-list', '--targets', $dnstype );
+}
+
+restart_dnsadmin();
+
+# Rebuild global cache so that the 'is_dnssec_supported' value is updated
+Cpanel::ServerTasks::schedule_task( ['CpDBTasks'], 5, 'build_global_cache' );
+
+$pid_obj->remove_pid_file();
+
+print "\nNameserver conversion complete\n";
+
+exit 0;
+
+sub disable_bind {
+    return unless Cpanel::OS::list_contains_value( 'dns_supported', 'bind' );
+    print "\nHalting BIND\n";
+    my $output = eval { $init->run_command( 'named', 'stop' ) };
+    print "\nDisabling BIND in init system\n";
+    $output = $init->run_command_for_one( 'disable', 'named' );
+
+    return;
+}
+
+sub disable_powerdns {
+    return unless Cpanel::OS::list_contains_value( 'dns_supported', 'powerdns' );
+    if ( Cpanel::Pkgr::is_installed('cpanel-pdns') ) {
+        print "\nHalting PowerDNS\n";
+        eval { $init->run_command( 'pdns', 'stop' ) };
+        print "\nDisabling PowerDNS in init system\n";
+        $init->run_command_for_one( 'disable', 'pdns' );
+    }
+    unlink('/var/cpanel/usepowerdns') if ( -e '/var/cpanel/usepowerdns' );
+
+    return;
+}
+
+sub disable_none {
+    unlink('/etc/nameddisable')    if ( -e '/etc/nameddisable' );
+    unlink('/etc/binddisable')     if ( -e '/etc/binddisable' );
+    unlink('/etc/powerdnsdisable') if ( -e '/etc/powerdnsdisable' );
+
+    return;
+}
+
+# Strictly speaking, touching /etc/nameddisable will cause chksrvd to skip over
+# restarting BIND or PDNS, but this will stop it from even polling for these processes
+sub disable_chksrvd_monitoring {
+    my %monitored_services = Cpanel::Chkservd::Manage::getmonitored();
+    return unless ( $monitored_services{'named'} );
+    Cpanel::Chkservd::Manage::disable('named');
+    local $@;
+    eval { Cpanel::ServerTasks::queue_task( ['CpServicesTasks'], "restartsrv tailwatchd" ); };
+    warn if $@;
+    return;
+}
+
+sub check_bind {
+    print "Checking that BIND is installed\n";
+
+    return if Cpanel::Pkgr::is_installed('bind');
+
+    my $advice = q[/scripts/sysup];
+    $advice = q[yum install bind] if Cpanel::OS::is_yum_based();
+
+    print STDERR <<"EOS";
+Error: The 'bind' package is not installed on your system.
+Run the '$advice' command to install it before you run this command again.
+EOS
+    exit 1;    ## no critic qw(Cpanel::NoExitsFromSubroutines)
+}
+
+# dummy helper to use or not html
+sub restartservice {
+    my $service = shift or die;
+
+    # We do not taskqueue here since we want bind up right away on fresh installs
+    my @args = $html ? ( 1, 0, \&Cpanel::Encoder::Tiny::safe_html_encode_str ) : ();
+    return Cpanel::Services::Restart::restartservice( $service, @args );
+}
+
+sub enable_bind {
+    print "\nUninstalling unused nameservers\n";
+    install_cpanel_rpms($force);
+
+    print "\nEnabling the BIND service...\n";
+    my $output = $init->run_command_for_one( 'enable', 'named' );
+
+    # Setup rndc
+    print "\nSetting up rndc configuration\n";
+    my @args = $html ? ('--html') : ();
+    system( '/usr/local/cpanel/scripts/fixrndc', '-f', '-v', @args );
+
+    print "\nStarting BIND\n";
+    $output = restartservice('named');
+    return;
+}
+
+sub enable_powerdns {
+    print "\nChecking that PowerDNS is installed\n";
+
+    system( 'touch', '/var/cpanel/usepowerdns' );
+    install_cpanel_rpms($force);
+
+    # Ensure that the dnssec.db exists
+    my $dnssec_db_file = '/var/cpanel/pdns/dnssec.db';
+    if ( !-e $dnssec_db_file ) {
+        my $rc = system( '/usr/bin/pdnsutil', 'create-bind-db', $dnssec_db_file );
+        if ( !$rc ) {
+            chmod 0600, $dnssec_db_file;
+            my $uid = getpwnam 'named';
+            my $gid = getgrnam 'named';
+            chown $uid, $gid, $dnssec_db_file;
+        }
+        else {
+            warn "Error creating $dnssec_db_file:  $rc";
+        }
+    }
+
+    print "\nEnabling PowerDNS in init system\n";
+    my $output = $init->run_command_for_one( 'enable', 'pdns' );
+
+    print "\nStarting PowerDNS\n";
+    $output = restartservice('named');
+    return;
+}
+
+sub enable_none {
+    system( 'touch', '/etc/nameddisable' );
+    return;
+}
+
+# Both BIND and PDNS are monitored by chksrvd using restartsrv_named
+sub enable_chksrvd_monitoring {
+    my %monitored_services = Cpanel::Chkservd::Manage::getmonitored();
+    return if ( $monitored_services{'named'} );
+    Cpanel::Chkservd::Manage::enable('named');
+    local $@;
+    eval { Cpanel::ServerTasks::queue_task( ['CpServicesTasks'], "restartsrv tailwatchd" ); };
+    warn if $@;
+    unsuspend_chksrvd_monitoring();
+    return;
+}
+
+sub unsuspend_chksrvd_monitoring {
+    return Cpanel::Chkservd::Tiny::resume_service('named');
+}
+
+sub suspend_chksrvd_monitoring {
+    return Cpanel::Chkservd::Tiny::suspend_service( 'named', 600 );
+}
+
+sub install_cpanel_rpms {
+
+    # Cpanel::RPM::Versions::Directory intentionally avoids installing the configured DNS service in the initial installation environment so that it will only occur once, when this script runs.
+    # It is necessary to hide the installation environment so that the installation happens now.
+    local $ENV{'CPANEL_BASE_INSTALL'} = 0;
+
+    # This object should always be re-instantiated here changing targets means Cpanel::RPM::Versions::Directory is invalid prior to now
+    my $versions = Cpanel::RPM::Versions::File->new( { 'only_targets' => [qw/powerdns/] } );
+
+    print "\nCalling package installer object\n";
+    $versions->stage();
+    $versions->commit_changes();
+    return;
+}
+
+sub restart_dnsadmin {
+    if ( Cpanel::Services::Enabled::is_enabled('dnsadmin') ) {
+        local $@;
+        eval { Cpanel::ServerTasks::queue_task( ['CpServicesTasks'], "restartsrv dnsadmin" ); };
+        warn if $@;
+    }
+
+    return;
+}
+
+sub usage {
+    print <<EO_USAGE;
+setupnameserver [options] [nameserver type]
+
+    Options:
+      --help       Brief help message
+      --force      Rerun configuration routines even if the selected
+                   nameserver type is already configured
+      --current    Show the currently selected nameserver type
+
+
+    Nameserver Types:
+      powerdns     Suggested. High performance. Supports DNSSEC. Functions
+                   only as authoritative nameserver.
+      bind         Functions as both authoritative and caching nameserver.
+      disabled     Disable the local nameserver.
+EO_USAGE
+    exit 0;    ## no critic qw(Cpanel::NoExitsFromSubroutines) - existing sub
+}
+
+sub _disable_systemd_resolved_stub_resolver {
+    my $conf_path = '/etc/systemd/resolved.conf';
+
+    return if !-e $conf_path;
+
+    print "\nDisabling systemd-resolved stub resolver\n";
+
+    # I wanted to use Config::Simple to preserve comments, but it's not available on fresh install
+    my $conf = Config::Tiny->read($conf_path) || return;
+
+    # see `man resolved.conf`
+    $conf->{'Resolve'} //= {};
+    $conf->{'Resolve'}->{'DNSStubListener'} = 'no';
+    $conf->write($conf_path);
+
+    Cpanel::RestartSrv::Systemd::restart_via_systemd('systemd-resolved');
+
+    return;
+}

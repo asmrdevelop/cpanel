@@ -1,0 +1,73 @@
+[%
+    USE Uapi;
+    USE Dumper;
+
+    SET CPANEL.CPVAR.dprefix = "../";
+
+
+    # We need to do this trick here because the Store API doesn't allow
+    # a query string in the redircet URL for the purchase completion.
+    SET matches = CPANEL.ENV.REQUEST_URI.match('/purchase_(\w+)_completion');
+    SET product_name = matches.0;
+
+    SET product_info_result = execute(
+        'Market',
+        'get_product_info',
+        {
+            product_name => product_name,
+        }
+    );
+
+    SET redirect_url_success = product_info_result.data.redirect_url_success;
+
+    SET success = (FORM.order_status == 'success')
+%]
+[% WRAPPER '_assets/master.html.tt'
+    app_key = 'store'
+    include_legacy_stylesheets = 0
+    include_legacy_scripts = 0
+    include_cjt = 0
+    use_master_bootstrap = 0
+-%]
+[% IF success %]
+    <meta http-equiv="refresh" content="1;url=[% redirect_url_success -%]">
+[% END %]
+
+<div class="row">
+    <div class="col-xs-12 col-sm-6">
+[% IF success %]
+        <div class="alert alert-success">
+            <span class="glyphicon glyphicon-ok-sign"></span>
+            <div class="alert-message">
+                [% locale.maketext('The order was successful.') %]
+                <br>
+                <i id="spinner" class="fas fa-sync fa-spin"></i>
+                [% locale.maketext('The system is redirecting you.') %]
+                <span id="redirect-link" style="display:none;">
+                    <br>
+                    [% locale.maketext('If the system does not redirect you, [output,url,_1,click here,target,_parent].',redirect_url_success) %]
+                </span>
+            </div>
+        </div>
+[% ELSE %]
+    <div class="alert alert-danger">
+        <span class="glyphicon glyphicon-remove-sign"></span>
+        <div class="alert-message">
+            <strong>[% locale.maketext('Error:') %]</strong>
+            [% locale.maketext('The order was unsuccessful.') %]
+        </div>
+    </div>
+[% END %]
+    </div>
+</div>
+<script>
+    var redirectLink = document.getElementById("redirect-link");
+    var five_seconds = 5000;
+
+    if (redirectLink) {
+        setTimeout(function() {
+            redirectLink.style.display = "block";
+        }, five_seconds);
+    }
+</script>
+[% END #wrapper -%]

@@ -1,0 +1,36 @@
+<div class="row">
+    <div class="col-xs-12">
+        <p>[% locale.maketext("This action will update all packages with the latest version.") %] [% locale.maketext("If you proceed with this update, the system may require the removal of unnecessary packages associated with the update or that conflict with your request.") %]</p>
+        <div ng-show="!running && !finished" class="checkbox">
+            <label for="kernel">
+                [% locale.maketext("Include kernel packages[comment,no punctuation due to usage]") %]
+                <input type="checkbox" name="kernel" id="kernel" ng-model="kernel" value="">
+            </label>
+        </div>
+        <button class="btn btn-lg btn-primary" id="updateButton" ng-click="update()" ng-show="!running && !finished" ng-disabled="finished">[% locale.maketext("Update") %]</button>
+        <p ng-show="running"><span spinner id="runningSpinner" class="addSpinner" title="[% locale.maketext('Running system update …') %]"></span> [% locale.maketext("Running system update …") %]</p>
+        <p class="alert alert-success" ng-show="finished && !errorDetected">[% locale.maketext("System update has run successfully.") %]</p>
+        <p class="alert alert-danger" ng-show="finished && errorDetected">[% locale.maketext("System update produced errors, please check the log.") %]</p>
+        <pre class="log" id="log" ng-show="running || finished">
+<span ng-bind-html="realTimeLogDisplay"></span>
+<a id="bottom"></a>
+        </pre>
+        <p class="alert alert-success" id="resultText_success" ng-show="finished && !errorDetected">[% locale.maketext("System update has run successfully.") %]</p>
+        <p class="alert alert-danger" id="resultText_fail" ng-show="finished && errorDetected">[% locale.maketext("System update produced errors, please check the log.") %]</p>
+        <button ng-click="finished=false" id="doneButton" class="btn btn-primary" ng-show="finished">[% locale.maketext("Done") %]</button>
+        <button class="btn btn-link" id="downloadLogButton" ng-show="finished" ng-click="saveLog()"><span class="glyphicon glyphicon-save"></span> [% locale.maketext("Download Log") %]</button>
+    </div>
+</div>
+<script type="text/ng-template" id="updateModalContent.tmpl">
+<div class="modal-header">
+    <h3 class="modal-title" id="updateModalLabel">[% locale.maketext("Confirm Your Action") %]</h3>
+</div>
+<div class="modal-body">
+    <h3>[% locale.maketext("Run system update?") %]</h3>
+    <p>[% locale.maketext("Confirm that you wish for the system to update all packages.") %]</p>
+</div>
+<div class="modal-footer">
+    <button class="btn btn-link" ng-click="closeModal()">[% locale.maketext("Close") %]</button>
+    <button class="btn btn-primary" ng-click="runIt()">[% locale.maketext("Yes, run system update.") %]</button>
+</div>
+</script>

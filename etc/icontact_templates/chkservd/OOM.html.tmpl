@@ -1,0 +1,165 @@
+[%# Available NOTICE keys
+
+    The process_killed and
+    data keys are always provided
+      {
+          'data' => 'A block of OOM messages from dmesg...',
+          'uid'  => 'The uid of the process that OOM killed',
+          'user'  => 'The username of the process that OOM killed',
+          'pid'  => 'The pid of the process that OOM killed',
+          'proc_name' => 'The name of the process that OOM killed',
+          'score' => 'The OOM score of the process that OOM killed',
+          'total_vm' => 'The total system virtual memory consumed by the process that OOM killed',
+          'anon_rss' => 'The anonymous resident set size consumed by the process that OOM killed',
+          'file_rss' => 'The file resident set size consumed by the process that OOM killed',
+          'process_killed' => '1 if OOM killed a process, 0 if no process was killed'
+      }
+%]
+
+[%
+    PROCESS "include/colors.tmpl";
+    PROCESS "include/icons.tmpl";
+    PROCESS "include/styles.tmpl";
+    PROCESS "include/code_inline.tmpl";
+    PROCESS "include/code_block.tmpl";
+    PROCESS 'include/system_info_rows.tmpl';
+    WRAPPER 'wrapper/main.html.tmpl';
+
+
+    IF NOTICE.proc_name;
+      NOTICE.email_reason = CPANEL.locale.maketext('Out of memory: The process “[_1]” was terminated because the system is low on memory.', NOTICE.proc_name);
+    ELSE;
+      NOTICE.email_reason = CPANEL.locale.maketext('Out of memory: A process was terminated because the system is low on memory.');
+    END;
+
+    SET zebra_stripe = 0;
+%]
+    <p>
+        [% IF NOTICE.pid && NOTICE.proc_name %]
+          [% CPANEL.locale.maketext('In order to avoid a system crash due to low memory, the kernel terminated the process named “[_1]” with the [output,abbr,PID,process ID] “[_2]”.', NOTICE.proc_name, NOTICE.pid) %]
+        [% ELSIF NOTICE.proc_name %]
+          [% CPANEL.locale.maketext('In order to avoid a system crash due to low memory, the kernel terminated the process named “[_1]”.', NOTICE.proc_name) %]
+        [% ELSIF NOTICE.pid %]
+          [% CPANEL.locale.maketext('In order to avoid a system crash due to low memory, the kernel terminated the process with [output,abbr,PID,process ID] “[_1]”.', NOTICE.pid) %]
+        [% END %]
+
+
+        <table style="
+            margin: 5px 10px;
+            border: 2px solid [% medium_gray %];
+            padding: 0;"
+            cellpadding="5" cellspacing="0"
+            width="[% content_width - 20 %]px">
+            <tbody>
+                <tr style="background-color:[% zebra_stripe? light_gray : white %]">
+                    [% zebra_stripe = !zebra_stripe %]
+                    <th align="left">[% CPANEL.locale.maketext('Server') %]</th>
+                    <td align="left">[% NOTICE.hostname FILTER html %]</td>
+                </tr>
+                <tr style="background-color:[% zebra_stripe? light_gray : white %]">
+                    [% zebra_stripe = !zebra_stripe %]
+                    <th align="left">[% CPANEL.locale.maketext('Primary [output,abbr,IP,Internet Protocol] Address') %]</th>
+                    <td align="left">[% NOTICE.mainip FILTER html %]</td>
+                </tr>
+                [% IF NOTICE.proc_name %]
+                  <tr style="background-color:[% zebra_stripe? light_gray : white %]">
+                      [% zebra_stripe = !zebra_stripe %]
+                      <th align="left">[% CPANEL.locale.maketext('Process Name') %]</th>
+                      <td align="left">[% NOTICE.proc_name FILTER html %]</td>
+                  </tr>
+                [% END %]
+                [% IF NOTICE.time %]
+                  <tr style="background-color:[% zebra_stripe? light_gray : white %]">
+                      [% zebra_stripe = !zebra_stripe %]
+                      <th align="left">[% CPANEL.locale.maketext('Event Time') %]</th>
+                      <td align="left"> [% CPANEL.locale.datetime(NOTICE.time, 'datetime_format_full') %]</td>
+                  </tr>
+                [% END %]
+                [% IF NOTICE.pid %]
+                  <tr style="background-color:[% zebra_stripe? light_gray : white %]">
+                      [% zebra_stripe = !zebra_stripe %]
+                      <th align="left">[% CPANEL.locale.maketext('[output,abbr,PID,process ID]') %]</th>
+                      <td align="left">[% NOTICE.pid FILTER html %]</td>
+                  </tr>
+                [% END %]
+                [% IF NOTICE.uid.size %]
+                  <tr style="background-color:[% zebra_stripe? light_gray : white %]">
+                      [% zebra_stripe = !zebra_stripe %]
+                      <th align="left">[% CPANEL.locale.maketext('Process [output,abbr,UID,user ID]') %]</th>
+                      <td align="left">[% NOTICE.uid FILTER html %]</td>
+                  </tr>
+                [% END %]
+                [% IF NOTICE.user %]
+                  <tr style="background-color:[% zebra_stripe? light_gray : white %]">
+                      [% zebra_stripe = !zebra_stripe %]
+                      <th align="left">[% CPANEL.locale.maketext('Process Username') %]</th>
+                      <td align="left">[% NOTICE.user FILTER html %]</td>
+                  </tr>
+                [% END %]
+                [% IF NOTICE.total_vm %]
+                  <tr style="background-color:[% zebra_stripe? light_gray : white %]">
+                      [% zebra_stripe = !zebra_stripe %]
+                      <th align="left">[% CPANEL.locale.maketext('Process Total Virtual Memory') %]</th>
+                      <td align="left">[% NOTICE.total_vm FILTER html %]</td>
+                  </tr>
+                [% END %]
+                [% IF NOTICE.anon_rss %]
+                  <tr style="background-color:[% zebra_stripe? light_gray : white %]">
+                      [% zebra_stripe = !zebra_stripe %]
+                      <th align="left">[% CPANEL.locale.maketext('Process Anonymous Resident Set Size') %]</th>
+                      <td align="left">[% NOTICE.anon_rss FILTER html %]</td>
+                  </tr>
+                [% END %]
+                [% IF NOTICE.file_rss %]
+                  <tr style="background-color:[% zebra_stripe? light_gray : white %]">
+                      [% zebra_stripe = !zebra_stripe %]
+                      <th align="left">[% CPANEL.locale.maketext('Process File Resident Set Size') %]</th>
+                      <td align="left">[% NOTICE.file_rss FILTER html %]</td>
+                  </tr>
+                [% END %]
+                [% IF NOTICE.score %]
+                  <tr style="background-color:[% zebra_stripe? light_gray : white %]">
+                      [% zebra_stripe = !zebra_stripe %]
+                      <th align="left">[% CPANEL.locale.maketext('Process [output,abbr,OOM,Out Of Memory] Score') %]</th>
+                      <td align="left">[% NOTICE.score FILTER html %]</td>
+                  </tr>
+                [% END %]
+                <tr style="background-color:[% zebra_stripe? light_gray : white %]">
+                    [% zebra_stripe = !zebra_stripe %]
+                    <th align="left">[% CPANEL.locale.maketext('Status') %]</th>
+                    <td align="left">[% CPANEL.locale.maketext('Out of Memory') %] [% get_icon(icon='warn') %]</td>
+                </tr>
+                [% SET system_info_table_zebra = zebra_strip; %]
+                [% system_info_rows() %]
+            </tbody>
+        </table>
+    </p>
+
+    <p>
+        [% CPANEL.locale.maketext('For addtional details, see the attached [asis,dmesg] log dump.') %]
+    </p>
+
+    <p>
+        [% FOREACH log IN NOTICE.log_preview %]
+            [% SET loop_index = loop.index; %]
+            [% code_block(formatted_code=log, title=CPANEL.locale.maketext('Preview of “[_1]”', NOTICE.log_preview_name.$loop_index) ) %]
+        [% END %]
+    </p>
+
+
+    <p>
+        [% CPANEL.locale.maketext('Configure Monitor[comment,program that observes] Settings'); %]:<br>
+        <a href="[% NOTICE.service_manager_url %]">[% NOTICE.service_manager_url %]</a>
+    </p>
+
+    <p>
+        [% CPANEL.locale.maketext('Configure [asis,chkservd]'); %]:<br>
+        <a href="[% NOTICE.tweaksettings_chkservd_url %]">[% NOTICE.tweaksettings_chkservd_url %]</a>
+    </p>
+
+    <p>
+        [% CPANEL.locale.maketext('Disable [output,abbr,HTML,Hypertext Markup Language] notifications'); %]:<br>
+        <a href="[% NOTICE.tweaksettings_chkservd_plaintext_notify_url %]">[% NOTICE.tweaksettings_chkservd_plaintext_notify_url %]</a>
+    </p>
+
+[% END %]

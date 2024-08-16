@@ -1,0 +1,82 @@
+#!/bin/bash
+# sshd - System V init script for CentOS
+#
+# chkconfig: 2345 61 61
+# description: sshd
+
+# Source function library.
+. /etc/init.d/cpfunctions
+
+if [ -e "/etc/sshddisable" ]; then
+	exit 1
+fi
+
+NAME="sshd"
+PROG="/usr/sbin/$NAME"
+PIDFILE="/var/run/$NAME.pid"
+
+rsa1()
+{
+    local KEY="/etc/ssh/ssh_host_key"
+    if [ ! -s $KEY ]; then
+	    /usr/bin/ssh-keygen -q -t rsa1 -f $KEY
+	    chmod 600 $KEY
+	    chmod 644 $KEY.pub
+	fi
+}
+
+rsa()
+{
+    local KEY="/etc/ssh/ssh_host_rsa_key"
+    if [ ! -s $KEY ]; then
+	    /usr/bin/ssh-keygen -q -t rsa -f $KEY
+	    chmod 600 $KEY
+	    chmod 644 $KEY.pub
+	fi
+}
+
+dsa()
+{
+    local KEY="/etc/ssh/ssh_host_dsa_key"
+    if [ ! -s $KEY ]; then
+	    /usr/bin/ssh-keygen -q -t dsa -f $KEY
+	    chmod 600 $KEY
+	    chmod 644 $KEY.pub
+	fi
+}
+
+start()
+{
+    rsa1
+    rsa
+    dsa
+    action "Starting $NAME:" $PROG
+}
+
+stop()
+{
+    echo "Shutting down $NAME: "
+    if [ -e "/var/lock/subsys/$NAME" ]; then
+        rm "/var/lock/subsys/$NAME"
+    fi
+    killproc $PROG
+}
+
+case "$1" in
+    start)
+        start
+		;;
+	stop)
+	    stop
+	    ;;
+	restart)
+        stop
+        start
+        ;;
+	status)
+	    status "$PROG"
+	    ;;
+	*)
+	    echo "Usage: $NAME {start|stop|restart|status}"
+	    ;;
+esac

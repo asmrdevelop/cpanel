@@ -1,0 +1,58 @@
+[% USE CPMath -%]
+[% SET
+	main_id     = 's' _ CPMath.rand(10000000000).int()
+	image_class = 's' _ CPMath.rand(10000000000).int()
+	head_class  = 's' _ CPMath.rand(10000000000).int()
+	p_class     = 's' _ CPMath.rand(10000000000).int()
+-%]
+[% PROCESS '_starthtml.tmpl'
+	extrastyle = "
+#$main_id {
+    margin: 0 auto;
+    clear: both;
+    height: 165px;
+    background-color: #" _ data.dev ? 'd0f1fe' : 'ffff00' _ ";
+    border: 1px solid #000000;
+}
+
+.$image_class {
+	float: left;
+}
+
+.$head_class {
+	float: left;
+	font-size: 14px;
+	font-weight: bold;
+	width: 120px;
+	text-align: center;
+	padding-top:8px;
+}
+
+.$p_class {
+	float: left;
+	padding-top: 10px;
+	padding-left:10px;
+}"
+-%]
+<div id="[% main_id %]">
+<div class="[% image_class %]"><img
+[% data.dev ? 'width="42" height="41"' : 'width="55" height="55"' -%]
+src="
+[% MagicRevision( '/icons/' _ ( data.dev ? 'dev_icon.gif' : 'warning.png' ),
+    '/scripts/command',
+    '/usr/local/cpanel/base'
+) -%]
+" alt="[% data.dev ? '' : 'Warning!' %]" /></div>
+[% IF data.dev -%]
+<div class="[% head_class %]">DEVELOPMENT LICENSE</div>
+<div class="[% p_class %]">This server is running on a development license.
+If this server is being used in a production environment, please notify
+<a href="mailto:cs@cpanel.net?subject=[% data.hostname %]%20([% data.mainip %],%20[% data.mainserverip %])%20is%20using%20a%20dev%20license%20in%20a%20production%20environment">cs@cpanel.net</a>
+immediately.</div>
+[% ELSE -%]
+<div class="[% head_class %]">TRIAL LICENSE</div>
+<div class="[% p_class %]">This copy of cPanel
+/ WHM is a trial version and will expire at the end of the trial term.
+You will need to upgrade to a
+paid copy of cPanel / WHM to continue using the software after that term.</div>
+[% END -%]

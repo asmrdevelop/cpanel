@@ -1,0 +1,170 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - bin/unlock_interface                    Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::unlock_interface;
+
+use v5.14;
+
+use strict;
+
+use Cpanel::Config::Users ();
+use Cpanel::InterfaceLock ();
+use Getopt::Long          ();
+
+# Constants
+our $VERSION = '01.01';
+
+# Application state
+my $opts = {};
+
+exit _main(@ARGV) unless caller;
+
+sub _main {
+    my (@args) = @_;
+
+    my $show_version;
+    my $show_help;
+    my $debug   = 0;
+    my $verbose = 0;
+    my $name;
+    my @users;
+    my $all = 0;
+
+    Getopt::Long::GetOptionsFromArray(
+        \@args,
+        'version' => \$show_version,
+        'help'    => \$show_help,
+        'verbose' => \$verbose,
+        'debug'   => \$debug,
+        'all'     => \$all,
+        'name=s'  => \$name,
+        'user=s'  => \@users,
+      )
+      and !@args
+      or do { print_help(); exit 1; };
+
+    if ($show_help) {
+        print_help();
+        return 0;
+    }
+
+    if ($show_version) {
+        print_version();
+        return 0;
+    }
+
+    if ( !$name ) {
+        print STDERR "You did not provide a lock name.\n";
+        print_help();
+        return 254;
+    }
+
+    if ($all) {
+        @users = Cpanel::Config::Users::getcpusers();
+        if ( !@users ) {
+            print STDERR "There are no users on your system.\n";
+            return 253;
+        }
+    }
+
+    $opts = {
+        'verbose' => $verbose,
+        'name'    => $name,
+        'users'   => \@users,
+    };
+
+    if ($debug) {
+        print_arguments_debug( $opts, "Parsed Options:" );
+    }
+
+    return unlock_interface($opts);
+}
+
+sub unlock_interface {
+    my ($opts) = @_;
+    my $failed = 0;
+
+    my @users  = @{ $opts->{users} };
+    my $global = scalar @users ? 0 : 1;
+    push @users, '' if !@users;
+
+    foreach my $user (@users) {
+
+        if ( $opts->{verbose} && $global ) {
+            print "Unlocking global lock $opts->{name}.\n";
+        }
+        elsif ( $opts->{verbose} ) {
+            print "Unlocking $opts->{name} for $user.\n";
+        }
+
+        my $lock = Cpanel::InterfaceLock->new(
+            name => $opts->{name},
+            $user ? ( user => $user ) : (),
+            unlock_on_destroy => 0
+        );
+
+        my $ok = $lock->unlock();
+
+        if ( !$ok ) {
+            if ($global) {
+                print STDERR "The system cannot unlock global lock $opts->{name}.\n";
+            }
+            else {
+                print STDERR "The system cannot unlock $opts->{name} for $user.\n";
+            }
+
+            $failed++;
+        }
+        else {
+            if ($global) {
+                print "Unlocked $opts->{name} globally.\n";
+            }
+            else {
+                print "Unlocked $opts->{name} for $user.\n";
+            }
+        }
+    }
+
+    if ($failed) {
+        print STDERR "Failed $failed unlocks. See details above.\n";
+    }
+
+    return $failed ? 1 : 0;
+
+}
+
+sub print_version {
+    print <<VERSION_HELP;
+    unlock_interface $VERSION
+VERSION_HELP
+    return;
+}
+
+sub print_help {
+    print <<EO_USAGE;
+Usage: unlock_interface [options]
+
+  This program unlocks one or more interfaces by removing a touch file in a well known
+  location. The touch file's presence indicates that the lock is active, so its removal is how the
+  unlocking occurs. It can be used to unlock supporting features globally or by user depending
+  on how the feature is implemented. If no user is provided and --all is not included, this
+  name applies to a global lock. Locks are kept under the /var/cpanel/.application-locks
+  directory.
+
+Options:
+
+  --help           This help information.
+  --version        Display the script version.
+  --name           Name of the lock.
+  --all            Use user name locks and iterate over all users on the system. (Note: This is not the same as a global lock.)
+  --user           Use user name locks and iterate over the users provided. May provide multiple instances of this argument.
+
+EO_USAGE
+    return;
+}
+
+1;

@@ -1,0 +1,137 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/fastmail                        Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::fastmail;
+
+use strict;
+use warnings;
+
+use Cpanel::ServerTasks                  ();
+use Cpanel::PwCache::Helpers             ();
+use Cpanel::PwCache::Build               ();
+use Cpanel::Config::LoadCpConf           ();
+use Cpanel::AccessIds::ReducedPrivileges ();
+use Cpanel::Config::Users                ();
+
+my $MIN_INOTIFY_NEEDED       = 4096;
+my $MIN_INOTIFY_QUEUE_NEEDED = 16384;
+
+__PACKAGE__->script(@ARGV) unless caller();
+
+sub script {    ## no critic qw(Subroutines::ProhibitExcessComplexity)
+    my ( $self, @args ) = @_;
+
+    # TODO: This modulino needs to have its core functionality moved to
+    # a module and have its test coverage improved.  Once done the
+    # install/* scripts should call the module directly instead of
+    # loading this modulino.
+    if ( grep( /auto|daemonize/, @args ) ) {
+        if ( fork() ) { exit; }
+    }
+    my $cpconf_ref = Cpanel::Config::LoadCpConf::loadcpconf_not_copy();
+
+    if ( -w '/proc/sys/fs/inotify/max_user_instances' || -w '/proc/sys/filesystem/inotify/max_user_instances' ) {
+        Cpanel::PwCache::Helpers::no_uid_cache();    #uid cache only needed if we are going to make lots of getpwuid calls
+
+        Cpanel::PwCache::Build::init_passwdless_pwcache();
+
+        my $pwcache_ref = Cpanel::PwCache::Build::fetch_pwcache();
+
+        my $inotify_needed       = 128;
+        my $inotify_queue_needed = 16384;
+        my %CPUSERS              = map { $_ => 1 } Cpanel::Config::Users::getcpusers();
+
+        foreach my $pwref (@$pwcache_ref) {
+            my $current_inotify_needed = 0;
+            next if !$CPUSERS{ $pwref->[0] };
+            my $homedir = (@$pwref)[7];
+            my $privs   = $pwref->[2] ? Cpanel::AccessIds::ReducedPrivileges->new( $pwref->[2], $pwref->[3] ) : 0;
+            if ( -e $homedir . '/.cpanel/email_accounts.json' && ( stat(_) )[7] < 1000000 && open( my $email_account_fh, '<', $homedir . '/.cpanel/email_accounts.json' ) ) {
+                while ( readline($email_account_fh) ) {
+                    $current_inotify_needed += 10 while (m/"diskused":/gs);
+                }
+                close($email_account_fh);
+
+                $inotify_queue_needed += $current_inotify_needed;
+
+                $current_inotify_needed += 128;
+
+                if ( $current_inotify_needed > $inotify_needed ) {
+                    $inotify_needed = $current_inotify_needed;
+                }
+            }
+        }
+
+        $inotify_queue_needed += $inotify_needed;
+
+        if ( $inotify_needed < $MIN_INOTIFY_NEEDED ) {
+            $inotify_needed = $MIN_INOTIFY_NEEDED;
+        }
+
+        if ( $inotify_queue_needed < $MIN_INOTIFY_QUEUE_NEEDED ) {
+            $inotify_queue_needed = $MIN_INOTIFY_QUEUE_NEEDED;
+        }
+
+        foreach my $key ( 'fs', 'filesystem' ) {
+            if ( -w '/proc/sys/' . $key . '/inotify/max_user_instances' && open( my $inotify_proc, '>', '/proc/sys/' . $key . '/inotify/max_user_instances' ) ) {
+                print {$inotify_proc} $inotify_needed . "\n";
+                close($inotify_proc);
+            }
+            if ( -w '/proc/sys/' . $key . '/inotify/max_queued_events' && open( my $inotify_proc, '>', '/proc/sys/' . $key . '/inotify/max_queued_events' ) ) {
+                print {$inotify_proc} $inotify_queue_needed . "\n";
+                close($inotify_proc);
+            }
+
+        }
+
+        if ( $cpconf_ref->{'mailserver'} eq 'dovecot' ) {
+            if ( open( my $fastmail_fh, '>', '/var/cpanel/fastmail' ) ) {
+                print {$fastmail_fh} '2';
+                close($fastmail_fh);
+            }
+        }
+        else {
+            unlink('/var/cpanel/fastmail');
+        }
+
+    }
+    else {
+        require Cpanel::CachedDataStore;
+        my $conf_dir        = '/var/cpanel/conf/dovecot';
+        my $conf_file       = $conf_dir . '/main';
+        my $dovecot_conf_hr = {};
+
+        # Usage is safe as we own the dir and file
+        $dovecot_conf_hr = Cpanel::CachedDataStore::fetch_ref($conf_file) if ( -e $conf_file );
+
+        my $restart = 0;
+        if ( !exists $dovecot_conf_hr->{'mailbox_idle_check_interval'} ) {
+            $dovecot_conf_hr->{'mailbox_idle_check_interval'} = 30;
+            $restart = 1;
+        }
+
+        if ($restart) {
+            mkdir $conf_dir, 0755 if !-e $conf_dir;
+
+            # Usage is safe as we own the dir and file
+            Cpanel::CachedDataStore::store_ref( $conf_file, $dovecot_conf_hr );
+            system('/usr/local/cpanel/scripts/builddovecotconf');
+            Cpanel::ServerTasks::schedule_task( ['CpServicesTasks'], 1, "restartsrv dovecot" );
+        }
+
+        if ( $cpconf_ref->{'mailserver'} eq 'dovecot' ) {
+            if ( open( my $fastmail_fh, '>', '/var/cpanel/fastmail' ) ) {
+                print {$fastmail_fh} '1';
+                close($fastmail_fh);
+            }
+        }
+        else {
+            unlink('/var/cpanel/fastmail');
+        }
+    }
+    return;
+}

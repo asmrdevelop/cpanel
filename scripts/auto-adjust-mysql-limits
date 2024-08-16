@@ -1,0 +1,73 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/auto-adjust-mysql-limits        Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::auto_adjust_mysql_limits;
+
+use strict;
+use warnings;
+
+use Cpanel::Usage                     ();
+use Cpanel::MysqlUtils::MyCnf::Adjust ();
+use Cpanel::MysqlUtils::Running       ();
+use Cpanel::Services::Enabled         ();
+
+run(@ARGV) unless caller();
+
+sub run {
+    my (@args) = @_;
+
+    my $verbose    = 0;
+    my $debug      = 0;
+    my $no_restart = 0;
+    my $force      = 0;
+
+    my %opts = (
+        'verbose'    => \$verbose,
+        'no-restart' => \$no_restart,
+        'force'      => \$force,
+        'debug'      => \$debug,
+    );
+
+    Cpanel::Usage::wrap_options( \@args, \&usage, \%opts );
+
+    if ( !Cpanel::Services::Enabled::is_enabled("mysql") ) {
+        die "mysql is not enabled";
+    }
+
+    Cpanel::MysqlUtils::Running::wait_for_mysql_to_come_online();
+
+    Cpanel::MysqlUtils::MyCnf::Adjust::auto_adjust(
+        {
+            'force'      => ( $force      || 0 ),
+            'debug'      => ( $debug      || 0 ),
+            'verbose'    => ( $verbose    || 0 ),
+            'no-restart' => ( $no_restart || 0 ),
+        }
+    );
+
+    return 1;
+}
+
+sub usage {
+    my $prog = $0;
+    $prog =~ s{^.+/(.+)$}{$1};
+    print <<EOF;
+$prog [options]
+
+This script auto adjusts MySQL limits.
+
+Modifiers Flags:
+
+    --verbose       - display some friendly verbose messages.
+    --debug         - do not perform the update.
+    --help          - display this help message and exit.
+    --no-restart    - do not restart MySQL upon update.
+EOF
+    exit;
+}
+
+1;

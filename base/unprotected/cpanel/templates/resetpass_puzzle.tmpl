@@ -1,0 +1,58 @@
+[%
+    SET application_dir = 'cpanel';
+    SET file = 'resetpass';
+%]
+[% PROCESS '_assets/cjt2_header_include.tt' %]
+
+<div id="content">
+    <div id="reset-forms">
+        <form id="reset_form" name="reset_form" method="POST" action="/resetpass" ng-controller="puzzleController as puzzle">
+            <input type="hidden" name="action" value="puzzle">
+            <input ng-non-bindable type="hidden" name="user" value="[% user %]">
+            <input type="hidden" name="answer" value="{{ puzzle.guess }}">
+            <input type="hidden" name="debug" value="[%CPANEL.is_debug_mode_enabled() ? '1' : '' %]">
+
+            <div class="input-req-login">
+                <label for="puzzle-guess-input">[% locale.maketext('Contact Email Address') %]</label>
+            </div>
+            <div class="input-field-login icon puzzle-container placeholder-container" ng-class="{ 'placeholder-active' : puzzle.isFocused || reset_form['puzzle-guess-input'].$viewValue }">
+                <input name="puzzle-guess-input"
+                       id="puzzle-guess-input"
+                       type="email"
+                       ng-model="puzzle.guess"
+                       email="rfc"
+                       class="std_textbox"
+                       tabindex="1"
+                       required
+                       autofocus
+                       ng-focus="puzzle.focus()"
+                       ng-blur="puzzle.blur()">
+                <span class="placeholder-help-block" id="hint" ng-click="puzzle.focus()">[% locale.maketext('Hint: [_1]', puzzle) %]</span>
+            </div>
+
+            <ul validation-container field-name="puzzle-guess-input" ng-cloak>
+                <li validation-item field-name="puzzle-guess-input" validation-name="required" id="puzzle-guess-input-required">
+                   [% locale.maketext('You must complete this field.') %]
+               </li>
+            </ul>
+
+            <div class="controls">
+                <div class="login-btn">
+                    <input name="login"
+                           type="submit"
+                           id="login"
+                           value="[% locale.maketext('Send Security Code') %]"
+                           disabled="disabled"
+                           ng-disabled="reset_form.$invalid">
+                </div>
+            </div>
+            <div class="controls">
+                <div class="reset-pw">
+                    <a href="/" id="btnCancel">[% locale.maketext('Cancel') %]</a>
+                </div>
+            </div>
+            <div class="clear"></div>
+        </form>
+        <span id="resetpass-puzzle">[%# marker for testing%]</span>
+    </div>
+</div>

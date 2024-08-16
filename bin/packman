@@ -1,0 +1,105 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - bin/packman                             Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+
+use App::CmdDispatch    ();
+use Cpanel::PackMan     ();
+use Getopt::Param::Tiny ();
+
+my $pkm = Cpanel::PackMan->instance;
+my $ea4 = Cpanel::PackMan->instance( type => "ea4" );
+
+my ( $cmds, $opts ) = _get_cmd_dispatch($pkm);
+App::CmdDispatch->new( $cmds, $opts )->run(@ARGV);
+
+sub _get_cmd_dispatch {
+    my ($pkm) = @_;
+
+    my $hint_blurb = "This tool supports the following commands (i.e. $0 {command} …):";
+    my %opts       = (
+        'help:pre_hint'  => $hint_blurb,
+        'help:pre_help'  => "Various cPanel package managment utilities\n\n$hint_blurb",
+        'help:post_help' => q{
+All documentation can be found in the cPanel package managment portal at:
+    https://cpanel.wiki/display/TODO
+},
+        'default_commands' => 'shell help',
+    );
+
+    my %cmds = (
+        'running' => {
+            'clue'     => 'running',
+            'abstract' => 'Get information on the currently running build.',
+            'help'     => '',
+            'code'     => sub {
+                if ( my $file = $pkm->build->is_running ) {
+                    print "The currently running build output is in “$file”.\n";
+                    if ( -f "$file.pid" ) {
+                        if ( open( my $fh, '<', "$file.pid" ) ) {
+                            my $pid = <$fh>;
+                            close($fh);
+                            chomp($pid);
+                            print "The currently running build is PID $pid.\n" if $pid;
+                        }
+                    }
+
+                }
+                else {
+                    print "There is currently no build.\n";
+                    exit(1);
+                }
+            },
+        },
+        'build' => {
+            clue     => 'build {operations}',
+            abstract => 'Kick off a multiple operation build',
+            help     => 'TODO',
+            code     => sub {
+                my $arg = Getopt::Param::Tiny->new( { 'array_ref' => \@_ } );
+                my $pid = $pkm->build->start(
+                    sub {
+                        $pkm->multi_op(
+                            {
+                                install   => [ $arg->param('install') ],
+                                upgrade   => [ $arg->param('upgrade') ],
+                                uninstall => [ $arg->param('uninstall') ],
+                            }
+                        );
+                    },
+                );
+
+                if ($pid) {
+                    print "Build started!\n";
+                    exec( $0, "watch" ) if $arg->param("watch");
+                    exit 0;
+                }
+                else {
+                    print "Failed to start the build.\n";
+                    exit 1;
+                }
+            },
+        },
+        'watch' => {
+            clue     => 'watch',
+            abstract => 'Watch the currently running build.',
+            help     => '',
+            code     => sub {
+                if ( my $file = $pkm->build->is_running ) {
+                    system("tail -f $file | sed '/^-- \\/[0-9]\\+ --\$/q'");
+
+                }
+                else {
+                    print "There is currently no build to watch.\n";
+                    exit(1);
+                }
+            },
+        },
+    );
+
+    return ( \%cmds, \%opts );
+}

@@ -1,0 +1,52 @@
+[% SET CPANEL.CPVAR.dprefix = "../" %]
+
+[%
+    SET adddb_result = execute("Postgresql", "create_database", {'name' => RAW_FORM.item('db')});
+    SET new_db = (ExpVar.expand('$dbownerprefix') _ RAW_FORM.item('db'));
+%]
+
+[% WRAPPER '_assets/master.html.tt'
+    app_key = 'postgresql_databases'
+-%]
+<div class="body-content">
+
+    [% IF CPANEL.CPDATA.item('DEMO') %]
+    <div id="demo" class="alert alert-warning">
+        <span id="demoImg" class="glyphicon glyphicon-exclamation-sign"></span>
+        <span id="demoMsg">
+            [% locale.maketext("This feature is disabled in demo mode.") %]
+        </span>
+    </div>
+    [% END %]
+
+    [% IF adddb_result.status %]
+    <div id="details" class="alert alert-success">
+        <span id="detailsImg" class="glyphicon glyphicon-info-sign"></span>
+        <span id="detailsMsg">
+            [% locale.maketext("Added the database “[_1]”.",new_db.html()) %]
+        </span>
+    </div>
+    [% ELSE %]
+        [% IF adddb_result.errors.size %]
+            [% FOREACH message IN adddb_result.errors %]
+                <div class="alert alert-danger" role="alert">
+                    <span class="glyphicon glyphicon-remove-sign" aria-hidden="true"></span>
+                    <div class="alert-message">
+                        <strong class="alert-title">
+                            [% locale.maketext('Error:') %]
+                        </strong>
+                        <span class="alert-body">
+                        <span id="error-[% loop.index() %]">
+                            [% message.html() %]
+                        </span>
+                    </span>
+                    </div>
+                </div>
+            [% END %]
+        [% END %]
+    [% END %]
+
+    [% INCLUDE _assets/return_link.html.tt return_location='index.html' return_link_text=locale.maketext('Go Back') %]
+
+</div>
+[% END #wrapper %]

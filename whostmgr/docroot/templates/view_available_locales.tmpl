@@ -1,0 +1,68 @@
+[% WRAPPER 'master_templates/master.tmpl'
+    theme="yui"
+    app_key='view_available_locales' -%]
+
+<link rel="stylesheet" type="text/css" href="/yui/container/assets/container.css" />
+<script type="text/javascript" src="/yui/utilities/utilities.js"></script>
+<script type="text/javascript" src="/yui/container/container.js"></script>
+<script type="text/javascript" src="/js/popupbox.js"></script>
+<style type="text/css">
+        .info_box {
+            background-color:#FFFFCC;
+            border:1px solid #666666;
+            margin-left:20px;
+            padding:5px;
+            width:500px;
+        }
+        .info_box_transparent {
+            font-weight: bold;
+            border:1px solid #666666;
+            margin-left:20px;
+            padding:5px;
+            width:500px;
+        }
+</style>
+<script type="text/javascript" nonce="[% CPANEL.nonce %]">
+     function dialog_i_tags() {
+         var content = document.getElementById('_legacy_lang_name_tmpl').innerHTML;
+         display_quickpopupbox('Locale Tag Names', content);
+     }
+</script>
+
+<table class="datatable indent">[%# does not need to be sortable %]
+   <tr>
+      <th>&nbsp;Provider&nbsp;</th><th>Name</th><th>Locale</th>
+      [% FOREACH theme IN data.themes %]
+      <th>[% theme FILTER html %]</th>
+      [% END %]
+[% SET rowcount = 0 %] [%# isn't there a class that auto-alternates row color ? %]
+[% FOREACH tag IN data.locale_menu.1 %]
+    [% rowcount = rowcount + 1 %]
+    <tr class="[% rowcount % 2 ? 'tdshade1' : 'tdshade2' %]">
+       [% IF data.cpanel_provided.exists(tag) %]
+           <td title="The locale '[% tag %]' is included as part of cPanel/WHM.">&nbsp;<img src="[% MagicRevision('/images/cpanel.png') %]"/>&nbsp;</td>
+       [% ELSE %]
+           <td title="The locale '[% tag %]' is not included as part of cPanel/WHM.">&nbsp;<img src="[% MagicRevision('/images/3rdparty.png') %]"/>&nbsp;</td>
+       [% END %]
+       <td [% IF data.locale_menu.2.exists(tag) %] dir="[% data.locale_menu.2.$tag %]"[% END %]>[% data.locale_menu.0.$tag %]</td>
+       <td>[% tag %]</td>
+       [% FOREACH theme IN data.themes %]
+           [% IF data.existance_map.$theme.$tag %]
+       <td><img title="The locale '[% tag %]' exists in '[% theme FILTER html %]'" src="/green-status.gif"/></td>
+           [% ELSE %]
+       <td><img title="The locale '[% tag %]' does not exist in '[% theme FILTER html %]'" src="/red-status.gif"/></td>
+           [% END %]
+       [% END %]
+    </tr>
+[% END %]
+
+</table>
+<p><em>Comments:</em>
+    <ul>
+        <li>If a locale seems to be missing you may need to <a href="javascript:display_quickpopupbox('Compiling locale databases','<iframe height=90% width=100% src=[% cp_security_token %]/cgi/build_locale_databases.pl />')">rebuild the locale databases</a> in order to bring it into the system.</li>
+        <li><a href="javascript:dialog_i_tags();">Click here</a> for information about locale tags and the 'i_' convention.</li>
+    </ul>
+</p>
+<div style="display:none" id="_legacy_lang_name_tmpl">[% PROCESS '_legacy_lang_name.tmpl' %]</div>
+
+[% END %]

@@ -1,0 +1,105 @@
+<!-- Breadcrumb Start -->
+<div id="navigation">
+    [% #Breadcrumb construction
+    SET home = locale.maketext('Home');
+    IF ( breadcrumbdata.url );  #if we got anything useful...
+        SET breadcrumb = '';
+        FOREACH previous = breadcrumbdata.previous;
+            SET previous_name = previous.name;
+            SET localized_previous_name = locale.makevar(previous_name);    # Variable can translate (extracted from whostmgr/docroot/themes/x/breadcrumb)
+            IF(localized_previous_name == home);
+                SET breadcrumb = breadcrumb
+                _ "<li>"
+                _   "<a href=\"${cp_security_token}${previous.url}\">"
+                _       "<span class=\"imageNode\">"
+                _        localized_previous_name
+                _        "</span>"
+                _   "</a> <span>/</span>"
+                _ "</li>";
+            ELSE;
+                SET breadcrumb = breadcrumb
+                _ "<li data-name=\"${previous_name}\">"
+                _   "<a uniquekey=\"${previous.unique_key}\" href=\"${cp_security_token}${previous.url}\">"
+                _       "<span>"
+                _        localized_previous_name
+                _        "</span>"
+                _   "</a> <span>/</span>"
+                _ "</li>";
+            END;
+        END;
+
+        SET name = breadcrumbdata.name;
+        SET localized_name = locale.makevar(name);      # Variable can translate (extracted from whostmgr/docroot/themes/x/breadcrumb)
+        IF (localized_name != home);
+           SET breadcrumb = breadcrumb
+            _ "<li data-name=\"${name}\">"
+            _   "<a uniquekey=\"${breadcrumbdata.unique_key}\" href=\"${cp_security_token}${breadcrumbdata.url}\""
+            _       ( breadcrumbdata.active ? ' class="leafNode"' : '' )
+            _   ">"
+            _       "<span>"
+            _           localized_name
+            _       "</span>"
+            _   "</a>"
+            _ "</li>";
+        ELSIF (localized_name == home);
+            SET breadcrumb = breadcrumb
+            _ "<li>"
+            _    "<a href=\"${cp_security_token}/scripts/command?PFILE=${dnsonlytext}main\" class=\"leafNode\">"
+            _       "<span class=\"imageNode\">"
+            _           localized_name
+            _       "</span>"
+            _    "</a>"
+            _ "</li>";
+        END;
+    ELSE;   #if we got no breadcrumb...
+        SET name = "home";
+        SET breadcrumb =
+          "<li>"
+        _   "<a href=\"${cp_security_token}/scripts/command?PFILE=${dnsonlytext}main\" class=\"active\">"
+        _       "<span class=\"imagenode\">"
+        _            home
+        _       "</span>"
+        _    "</a>"
+        _ "</li>";
+    END;
+    # help_url defaults to https://go.cpanel.net/whmdocs when not set
+    SET docs_url = "https://go.cpanel.net/whmdocs" _ name.remove('\W+').uri;
+    IF (breadcrumbdata.help_url);
+        SET docs_url = breadcrumbdata.help_url;
+    END;
+    SET docs_link = "<a id=\"docs-link\" href=\"${docs_url}\" target=\"_blank\"><img src=\"" _ Whostmgr.find_file_url('/images/questioncircle.svg') _ "\" title=\"" _ locale.maketext('Documentation') _ "\"></a>";
+    SET breadcrumb = breadcrumb _ "<li id=\"docs-crumb\">" _ docs_link _ "</li>";
+    -%]
+    <script type="text/javascript" nonce="[% CPANEL.nonce %]">
+        window.COMMON = window.COMMON || {};
+        window.COMMON.release_version = [% Whostmgr.RELEASE_VERSION.json() %];
+        [% IF CPANEL.is_debug_mode_enabled() %]
+            [% INSERT master_templates/breadcrumbs.js %]
+        [% ELSE %]
+            [% INSERT master_templates/breadcrumbs.min.js %]
+        [% END %]
+    </script>
+    <div id="breadcrumbsContainer">
+        <ul id="breadcrumbs_list" class="breadcrumbs [% skipheader ? 'breadcrumbs--without-heading' : ''  %]">
+        [% breadcrumb %]
+        </ul>
+    </div>
+    [%
+    # Leaving this in since we have had so many problems
+    #  with breadcrumbs over the years. To show this debugging
+    #  data, just send a DEBUG_BREAD_CRUMBS=1 in the query string.
+    IF Whostmgr.FORM.DEBUG_BREAD_CRUMBS;
+    %]
+    <div style="position: absolute; right: 0; z-index: 1000;border: 1px solid #fafafa; background-color: #f0f0f0; padding: 10px">
+        <b>[% locale.maketext('Breadcrumb Debug Data:') %]</b><br/>
+        <pre style="line-height: 0.8;">
+            [%-
+            USE Dumper;
+            Dumper.dump_html(breadcrumbdata);
+            -%]
+        </pre>
+    </div>
+    [% END %]
+</div>
+<div id="navigation_affix_padding"></div>
+<!-- Breadcrumb End -->

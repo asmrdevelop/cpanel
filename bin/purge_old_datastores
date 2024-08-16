@@ -1,0 +1,120 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - bin/purge_old_datastores                Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+use warnings;
+
+package bin::purge_old_datastores;
+
+my $current_version = 0.4;
+my $last_version;
+
+__PACKAGE__->script(@ARGV) unless caller();
+
+sub script {    ## no critic qw(Subroutines::ProhibitExcessComplexity)
+    my ( $self, @args ) = @_;
+
+    # TODO: This modulino needs to have its core functionality moved to
+    # a module and have its test coverage improved.  Once done the
+    # install/* scripts should call the module directly instead of
+    # loading this modulino.
+    my $force   = ( @args && grep( /--force/,   @args ) ) ? 1 : 0;
+    my $verbose = ( @args && grep( /--verbose/, @args ) ) ? 1 : 0;
+
+    if ( !$force && -e '/var/cpanel/version/purged_old_datastores' ) {
+        if ( open my $version_fh, '<', '/var/cpanel/version/purged_old_datastores' ) {
+            my $last_version = readline $version_fh;
+            close $version_fh;
+            if ( defined $last_version ) {
+                chomp $last_version;
+            }
+            return if ( $last_version && $last_version >= $current_version );
+            $last_version ||= 0;
+        }
+    }
+
+    if ( open my $version_fh, '>', '/var/cpanel/version/purged_old_datastores' ) {
+        print {$version_fh} $current_version . "\n";
+        close $version_fh;
+    }
+
+    require Cpanel::PwCache;
+    require Cpanel::PwCache::Build;
+    require Cpanel::Config::Users;
+    require Cpanel::AccessIds::ReducedPrivileges;
+    require Cpanel::Chdir;
+
+    Cpanel::PwCache::Build::init_passwdless_pwcache();
+
+    my @cpusers = Cpanel::Config::Users::getcpusers();
+
+    foreach my $user (@cpusers) {
+
+        # Remove borked filename from Cpanel::Config::LoadCpUserFile::loadcpuserfile (Case 35217)
+        if ( -e '/var/cpanel/users.cache' . $user ) {
+            print 'Unlinking /var/cpanel/users.cache' . $user . "\n" if $verbose;
+            unlink '/var/cpanel/users.cache' . $user;
+        }
+
+        my ( $uid, $gid, $homedir ) = ( Cpanel::PwCache::getpwnam($user) )[ 2, 3, 7 ];
+        my $privs = Cpanel::AccessIds::ReducedPrivileges->new( $uid, $gid );
+
+        if ( !$homedir || !-d $homedir ) { next; }
+        my $chdir = Cpanel::Chdir->new($homedir) or do { warn "Could not chdir to $homedir"; next; };
+
+        my @root_caches = glob('./.cpanel/datastore/*_root');
+        if (@root_caches) {
+            foreach my $file (@root_caches) {
+                if ( -f $file && -r _ ) {
+                    print "Purging old cache file $homedir/$file\n";
+                    $file =~ m/(.+)/;    # Untaint
+                    unlink $1;
+                }
+
+            }
+        }
+
+        # Previous purge cleanup
+        return if ( !$force && defined $last_version && $last_version == 0 );
+
+        foreach my $deaddir ( '.cpanel-datastore', '.cpanel_unreadable', '.cpanel/nvdata_unreadable' ) {    #.cpanel-datastore is the old dir,  .cpanel_unreadale and .cpanel/nvdata_unreadable are from broken xfers
+            if ( -d $homedir . '/' . $deaddir && -r _ ) {
+                print "Purging old datastore directory: $homedir/$deaddir\n";
+                system 'rm', '-rfv', $homedir . '/' . $deaddir;
+            }
+        }
+        foreach my $purgedir ( '.cpanel', '.cpanel/datastore', '.cpanel/nvdata' ) {
+
+            my $exists   = stat( $homedir . '/' . $purgedir );
+            my $readable = -r _;
+            my $isdir    = -d _;
+
+            if ( $exists && !$readable ) {
+                print "$homedir/$purgedir is unreadable, attempting to move it away so cPanel can rebuild it.\n";
+                rename( $homedir . '/' . $purgedir, $homedir . '/' . $purgedir . '_unreadable' );
+            }
+
+            if ( $exists && $isdir ) {
+                opendir( my $pur_dh, $homedir . '/' . $purgedir );
+                while ( my $file = readdir($pur_dh) ) {
+                    next if ( $file =~ m/^\.+$/ );
+                    next if ( $file =~ m/_unreadable$/ );
+                    if ( ( stat( $homedir . '/' . $purgedir . '/' . $file ) )[4] != $uid ) {
+                        print "Purging unowned file: $homedir/$purgedir/$file\n";
+                        my $safefile = $homedir . '/' . $purgedir . '/' . $file;
+                        $safefile =~ /(.*)/;
+                        $safefile = $1;
+                        unlink($safefile);
+                    }
+                }
+                closedir($pur_dh);
+            }
+        }
+    }
+
+    return;
+}

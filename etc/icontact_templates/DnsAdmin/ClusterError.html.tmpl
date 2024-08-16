@@ -1,0 +1,44 @@
+[%#
+Variables passed in:
+
+dnspeer             - the dns peer with the error
+clusterstatus       - the status code of the error
+clustererror        - the textual representation of the error status code
+url_host            - the url to use for WHM access
+log_preview         - An arrayref of 10(or less) line preview of attached log file
+
+For more information about how to customize notification templates, read our documentation at https://go.cpanel.net/notificationtemplates
+
+-%]
+
+[%
+    PROCESS "include/colors.tmpl";
+    PROCESS "include/styles.tmpl";
+    PROCESS "include/code_block.tmpl";
+
+    WRAPPER 'wrapper/main.html.tmpl';
+
+    IF NOTICE.clustererror == "ERROR_INVALID_RESPONSE_LOGGED";
+      NOTICE.email_reason = CPANEL.locale.maketext('Invalid response from [output,abbr,DNS,Domain Name Service] Cluster Peer “[_1]”.', NOTICE.dnspeer);
+    ELSIF NOTICE.clustererror == "ERROR_AUTH_FAILED_LOGGED";
+      NOTICE.email_reason = CPANEL.locale.maketext('Failed to authenticate to [output,abbr,DNS,Domain Name Service] Cluster Peer “[_1]”.', NOTICE.dnspeer);
+    ELSIF NOTICE.clustererror == "ERROR_NO_PERMISSION";
+      NOTICE.email_reason = CPANEL.locale.maketext('Permission denied from [output,abbr,DNS,Domain Name Service] Cluster Peer “[_1]”.', NOTICE.dnspeer);
+    ELSE;
+      NOTICE.email_reason = CPANEL.locale.maketext('[output,abbr,DNS,Domain Name Service] Cluster Error with peer “[_1]”.', NOTICE.dnspeer);
+    END;
+
+%]
+
+<p>
+    [% IF NOTICE.clustererror == "ERROR_AUTH_FAILED_LOGGED"  %]
+        [% CPANEL.locale.maketext('You should update the authentication credential for “[_1]” at [output,url,_2,_2,target,_3].', NOTICE.dnspeer, NOTICE.cluster_status_url,'_blank') %]
+    [% ELSIF NOTICE.clustererror == "ERROR_NO_PERMISSION" %]
+        [% CPANEL.locale.maketext('You will need to contact the server administrator of “[_1]” and get permission to make the changes you have attempted.', NOTICE.dnspeer) %]
+    [% END %]
+</p>
+<p>
+    [% code_block(formatted_code=NOTICE.log_preview.0, title=CPANEL.locale.maketext('Review the attached error log for further details.')) %]
+</p>
+
+[% END %]

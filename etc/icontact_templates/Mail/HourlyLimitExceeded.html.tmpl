@@ -1,0 +1,48 @@
+[%#
+    Variables passed in:
+
+
+  For more information about how to customize notification templates, read our documentation at https://go.cpanel.net/notificationtemplates
+
+-%]
+
+[%
+    PROCESS "include/colors.tmpl";
+    PROCESS "include/styles.tmpl";
+    PROCESS "include/code_block.tmpl";
+
+    WRAPPER 'wrapper/main.html.tmpl';
+
+    NOTICE.email_reason = CPANEL.locale.maketext('Maximum hourly emails notification limit reached for “[_1]”.', NOTICE.domain);
+%]
+
+[%
+    # Compat for including cPanel template below
+    locale = CPANEL.locale;
+    mail_client_settings = NOTICE;
+    in_html_email = 1;
+%]
+
+<p>
+ [% CPANEL.locale.maketext("The domain [_1] on account [_2] exceeded the maximum number of emails per hour.", NOTICE.domain, NOTICE.user) %]
+ [% IF NOTICE.limit_type == 'domain' %]
+   [% CPANEL.locale.maketext("The domain violated its domain-level limit, which is currently [_1].", NOTICE.threshold) %]
+ [% ELSIF NOTICE.limit_type == 'account' %]
+   [% CPANEL.locale.maketext("The domain violated its account-level limit, which is currently [_1].", NOTICE.threshold) %]
+ [% ELSE %]
+   [% CPANEL.locale.maketext("The domain violated the global limit, which is currently [_1].", NOTICE.threshold) %]
+ [% END %]
+</p>
+<p>
+ [% CPANEL.locale.maketext("To run a sent email report, use the [_1] interface in [asis,WHM] at [output,url,_2,_2,target,_3].", CPANEL.locale.maketext('Mail Delivery Reports'), CPANEL.assemble_whm_url("scripts11/emailstats_search"), '_blank'); %]
+</p>
+<p>
+ [% CPANEL.locale.maketext("This notification indicates that the system has blocked or deferred one or more emails. If you wish to set sent email limits, read our documentation at [output,url,_1,_1,target,_2].","https://go.cpanel.net/how-to-set-email-send-limits",'_blank'); %]
+<ul>
+<li> [% CPANEL.locale.maketext("To manage domain-level limits, you must manually edit [asis,/var/cpanel/users/username]."); %] </li>
+<li> [% CPANEL.locale.maketext("To manage account-level limits, set the “Maximum Hourly Email by Domain Relayed” field in the [_1] interface in [asis,WHM] at [output,url,_2,_2,target,_3].", CPANEL.locale.maketext('Modify an Account'),CPANEL.assemble_whm_url("scripts/edituser"),'_blank'); %] </li>
+<li> [% CPANEL.locale.maketext("To manage global limits, set the “Max hourly emails per domain” option in the [_1] interface in [asis, WHM] at [output,url,_2,_2,target,_3].", CPANEL.locale.maketext('Tweak Settings'), CPANEL.assemble_whm_url("scripts2/tweaksettings"), '_blank'); %]</li>
+</ul>
+</p>
+
+[% END %]

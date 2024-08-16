@@ -1,0 +1,474 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/backups_create_metadata         Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+################################################################################
+
+package scripts::backups_create_metadata;
+
+use strict;
+use warnings;
+
+use Cpanel::Backup::Config         ();
+use Cpanel::Backup::Metadata       ();
+use Cpanel::Backup::StreamFileList ();
+use Cpanel::Config::LoadCpConf     ();
+use Cpanel::ConfigFiles            ();
+use Cpanel::FileUtils::Path        ();
+use Cpanel::IONice                 ();
+use Cpanel::Logger                 ();
+use Cpanel::OSSys                  ();
+use Cpanel::OSSys::Capabilities    ();
+use Cpanel::SafeRun::Simple        ();
+
+use Getopt::Long ();
+use File::Glob   ();
+use File::Spec   ();
+
+use Try::Tiny;
+
+################################################################################
+
+our $all;
+our $backup;
+our $user;
+our $vacuum;
+our $schedule_rebuild;
+our $fix_corrupt;
+
+our $logger;
+
+sub _help {
+    my ($msg) = @_;
+
+    print qq{$msg
+
+Usage:
+
+--all - Create metadata for all backups in the configured directory.
+
+e.g. $0 --all
+This creates metadata for all backups and users.
+If metadata exists, it will delete it and create new metadata.
+You cannot combine --all with other options.
+
+--vacuum - Defragment the database and release unused space, runs in the background
+
+e.g. $0 --vacuum
+This defragments the database and release unused space.
+You cannot combine --vacuum with other options.
+
+--backup=monthly/YYYY-MM-DD - Create metadata for all users in the backup directory that you specify.
+
+e.g. $0 --backup=monthly/2017-03-01
+This creates metadata for all users in this backup directory.
+You can combine this option with the --user option.
+e.g. $0 --backup=monthly/2017-03-01 --user=alvin
+This creates metadata for this user in this backup directory.
+
+--user=user - Create metadata only for this user.
+
+e.g. $0 --user=alvin
+This creates metadata only for this user.
+You can combine this option with the --backup=monthly/YYYY-MM-DD option.
+e.g. $0 --backup=monthly/2017-03-01 --user=alvin
+This creates metadata for this user in this backup directory.
+
+--schedule_rebuild - Rebuild all metadata in the background.
+
+e.g. $0 --schedule_rebuild
+This rebuilds all metadata. The script returns to the command line immediately and
+continues to rebuild the metadata in a background task.
+You can combine this option with the --fix_corrupt option.
+e.g. $0 --schedule_rebuild --fix_corrupt
+This scans all user metadata and rebuilds corrupt metadata. The script returns to
+the command line immediately and continues to rebuild the metadata in a background
+task.
+
+--fix_corrupt - Scans all user metadata to identify and rebuild corrupt metadata.
+e.g. $0 --fix_corrupt
+This scans all user metadata and rebuilds corrupt metadata.
+You can combine this option with the --schedule_rebuild option.
+e.g. $0 --schedule_rebuild --fix_corrupt
+This scans all user metadata and rebuilds corrupt metadata. The script returns to
+the command line immediately and continues to rebuild the metadata in a background
+task.
+};
+
+    exit 0;
+}
+
+sub _invalid_parms {
+    _help("invalid parameters");
+    die "Invalid Command Line Parameters\n";
+}
+
+sub _output {
+    my ($line) = @_;
+
+    print $line . "\n";
+
+    return;
+}
+
+sub clean_old_metadata_files {
+    my ($dir) = @_;
+
+    opendir( my $accounts_dir, "$dir/accounts/" );
+    foreach my $file ( readdir($accounts_dir) ) {
+        if ( ( $file =~ m/\-\=\-meta/ || $file eq '.sql_dump.gz' ) && -f "$dir/accounts/$file" ) {
+            print "Removing old metadata file $dir/accounts/$file\n";
+            unlink("$dir/accounts/$file");
+        }
+    }
+    closedir($accounts_dir);
+
+    # Clean old version of single sqlitedb
+    unlink '/var/cpanel/backups/metadata.sqlite';
+
+    return;
+}
+
+sub create_master_meta {
+    my ($dir) = @_;
+
+    my $meta_master = $dir . "/accounts/.master.meta";
+    if ( !-e $meta_master ) {
+        my $ref = Cpanel::Backup::Metadata::introspect_old_backup($dir);
+        if ( defined( $ref->{'backup'}->{'backup_type'} ) && $ref->{'backup'}->{'backup_type'} ne 'ERROR' ) {
+            Cpanel::Backup::Metadata::create_meta_master_with_users_from_introspect( $dir, $ref );
+        }
+        else {
+            return 0;    # ignore if the directory cannot be determined
+        }
+    }
+
+    return 1;
+}
+
+# Set our "nice" level
+
+sub apply_nice_level_to_process {
+    my ($logger) = @_;
+    my $cpconf_ref;
+    ( %{$cpconf_ref} ) = Cpanel::Config::LoadCpConf::loadcpconf();
+
+    Cpanel::OSSys::nice(18);    # needs to be one higher for cpuwatch
+    my $CAPABILITIES = Cpanel::OSSys::Capabilities->load;
+    if ( $CAPABILITIES->capable_of('ionice') ) {
+        if ( Cpanel::IONice::ionice( 'best-effort', exists $cpconf_ref->{'ionice_cpbackup'} ? $cpconf_ref->{'ionice_cpbackup'} : 6 ) ) {
+            $logger->info( "Setting I/O priority to reduce system load: " . Cpanel::IONice::get_ionice() );
+        }
+    }
+    return;
+}
+
+sub _run_vacuum {
+    require Cpanel::Daemonizer::Tiny;
+
+    Cpanel::Daemonizer::Tiny::run_as_daemon(
+        sub {
+            require Cpanel::Logger;
+            my $logger = Cpanel::Logger->new();
+            sleep 15;
+            Cpanel::Backup::Metadata::vacuum_metadata($logger);
+        },
+        ""
+    );
+
+    return;
+}
+
+sub _get_raw_backup_dirs {
+    my ($backup_master_dir) = @_;
+
+    # get all backup dirs under the main backup
+    my %backup_dirs_hash;
+
+    foreach my $dir (
+        File::Glob::bsd_glob( $backup_master_dir . "/2*/accounts" ),
+        File::Glob::bsd_glob( $backup_master_dir . "/monthly/2*/accounts" ),
+        File::Glob::bsd_glob( $backup_master_dir . "/weekly/2*/accounts" ),
+        File::Glob::bsd_glob( $backup_master_dir . "/incremental/accounts" )
+    ) {
+        next if ( !-d $dir );
+        my ( $xdir, $accounts ) = Cpanel::FileUtils::Path::dir_and_file_from_path($dir);
+        $backup_dirs_hash{$xdir} = 1;
+    }
+
+    return %backup_dirs_hash;
+}
+
+sub _get_all_backup_dirs {
+    my ( $backup_master_dir, %backup_dirs_hash ) = @_;
+
+    # sort this in a smart manner so it plays out like it would have had
+    # bin/backup done it.
+
+    my @order;
+    foreach my $dir ( sort keys %backup_dirs_hash ) {
+        my $introspect_ref;
+        try {
+            $introspect_ref = Cpanel::Backup::Metadata::introspect_old_backup($dir);
+        };
+        next if !$introspect_ref;                                        # if it dies this is not a valid backup dir, so just move on
+        next if !exists $introspect_ref->{'backup'}->{'backup_id'};
+        next if $introspect_ref->{'backup'}->{'backup_id'} eq 'ERROR';
+
+        my @users = keys %{ $introspect_ref->{'users'} };
+        next if !@users;
+        my $user = $users[0];
+
+        my $category_ref = Cpanel::Backup::StreamFileList::categorize_backup( $backup_master_dir, $dir, $user );
+
+        my $sort_path = $category_ref->{'backupID'};
+        if ( $sort_path =~ m{^(monthly|weekly)/(.*)$} ) {
+            $sort_path = $2 . '/' . $1;
+        }
+        else {
+            $sort_path .= '/a';    # for sorting consistency a is before (m)onthly
+        }
+
+        $category_ref->{'sort_path'} = $sort_path;
+        push( @order, $category_ref );
+    }
+
+    my @dirs = map { $_->{'path'} } sort { $a->{'sort_path'} cmp $b->{'sort_path'} } @order;
+
+    return @dirs;
+}
+
+sub fix_corrupt_metadata {
+    my ( $backup_master_dir, @users ) = @_;
+
+    # delete the users db's
+    foreach my $user (@users) {
+        my $user_db_path = Cpanel::Backup::Metadata::get_metadata_filename( $user, 0 );
+        unlink $user_db_path if -f $user_db_path;
+    }
+
+    my @dirs = _get_all_backup_dirs( $backup_master_dir, _get_raw_backup_dirs($backup_master_dir) );
+    foreach my $user (@users) {
+        print "Fixing corrupt backup metadata for $user\n";
+        foreach my $dir (@dirs) {
+            Cpanel::Backup::Metadata::create_metadata_for_backup_user( $dir, $user, $logger );
+        }
+    }
+
+    return;
+}
+
+sub script {    ##no critic qw(ProhibitExcessComplexity)
+    my (@args) = @_;
+
+    $ENV{'LANG'} = 'en_US.UTF-8';
+
+    local $| = 1;
+    $logger //= Cpanel::Logger->new( { 'alternate_logfile' => '/dev/stdout' } );
+
+    apply_nice_level_to_process($logger);
+
+    my $opts = Getopt::Long::GetOptionsFromArray(
+        \@args,
+        'all'              => \$all,
+        'backup=s'         => \$backup,
+        'user=s'           => \$user,
+        'vacuum'           => \$vacuum,
+        'schedule_rebuild' => \$schedule_rebuild,
+        'fix_corrupt'      => \$fix_corrupt,
+    ) or _invalid_parms();
+
+    _help("You must provide at least one option to execute the script.") if ( !$all && !$backup && !$vacuum && !$schedule_rebuild && !$user && !$fix_corrupt );
+
+    _help("You cannot combine --all with other options.") if ( $all && ( $backup || $user || $vacuum || $schedule_rebuild || $fix_corrupt ) );
+
+    _help("You cannot combine --vacuum with other options.") if ( $vacuum && ( $all || $backup || $user || $schedule_rebuild || $fix_corrupt ) );
+
+    _help("You can only combine this option with the --user option.")   if ( $backup && ( $all || $schedule_rebuild || $fix_corrupt || $vacuum ) );
+    _help("You can only combine this option with the --backup option.") if ( $user   && ( $all || $schedule_rebuild || $fix_corrupt || $vacuum ) );
+
+    _help("You can only combine this option with the --fix_corrupt option.")      if ( $schedule_rebuild && ( $all || $backup || $user || $vacuum ) );
+    _help("You can only combine this option with the --schedule_rebuild option.") if ( $fix_corrupt      && ( $all || $backup || $user || $vacuum ) );
+
+    my $conf              = Cpanel::Backup::Config::load();
+    my $backup_master_dir = $conf->{'BACKUPDIR'};
+
+    # if --user is on the command line by itself, leverage the --all code to
+    # process all the backups but for this user only.
+
+    if ( $user && !$backup ) {
+        $all = $backup_master_dir;
+    }
+
+    # if disabled do not do anything, unless it is all then allow the
+    # cleanup operation to happen, but then fail
+
+    Cpanel::Backup::Metadata::metadata_disabled_check(1) if ( !$all );
+
+    #We use this two places, may as well just get it now
+    my @users;
+
+    if ($user) {
+        push( @users, $user );
+    }
+    else {
+        @users = Cpanel::Backup::Metadata::get_all_users();
+    }
+
+    if ($all) {
+        $all = $backup_master_dir;
+
+        foreach my $this_user (@users) {
+            my $db = Cpanel::Backup::Metadata::get_metadata_filename($this_user);
+            unlink $db if -f $db;
+        }
+
+        my %backup_dirs_hash = _get_raw_backup_dirs($backup_master_dir);
+
+        # clean old metadata
+        foreach my $dir ( sort keys %backup_dirs_hash ) {
+            try {
+                clean_old_metadata_files($dir);
+
+                # delete existing master meta, as it may be of an older type
+                my $meta_master = $dir . "/accounts/.master.meta";
+                unlink $meta_master if -e $meta_master;
+            }
+            catch {
+                $logger->warn("Failed to clean old metadata for $dir :$_:");
+            };
+        }
+
+        # allow the clean up to take place regardless of disabled or not
+        # but then fail if metadata is disabled
+        Cpanel::Backup::Metadata::metadata_disabled_check(1);
+
+        my @dirs = _get_all_backup_dirs( $backup_master_dir, %backup_dirs_hash );
+        foreach my $dir (@dirs) {
+            print "Processing directory “$dir”\n";
+            my $ret;
+
+            try {
+                $ret = create_master_meta($dir);
+            }
+            catch {
+                $logger->warn("Failed to create metadata for $dir :$_:");
+            };
+
+            next if !$ret;    # ignore if the directory cannot be determined
+
+            try {
+                if ($user) {
+                    Cpanel::Backup::Metadata::create_metadata_for_backup_user( $dir, $user, $logger );
+                }
+                else {
+                    Cpanel::Backup::Metadata::create_metadata_for_backup( $dir, $logger );
+                }
+            }
+            catch {
+                $logger->warn("Failed to create metadata for $dir : $! ($_)");
+            };
+        }
+
+        _run_vacuum();
+    }
+    elsif ($backup) {
+        $backup = $backup_master_dir . "/$backup";
+
+        my $backup_ref = Cpanel::Backup::StreamFileList::categorize_backup( $backup_master_dir, $backup, "dontcare" );
+        if ( $backup_ref->{'backupID'} eq "ERROR" ) {
+            _help("backup parameter is not a valid backup");
+        }
+
+        if ($user) {
+            $backup_ref = Cpanel::Backup::StreamFileList::categorize_backup( $backup_master_dir, $backup, $user );
+            if ( $backup_ref->{'type'} eq 'unknown' ) {
+                _help("user parameter is not a valid backup");
+            }
+
+            try {
+                if ( !create_master_meta($backup) ) {
+                    die "Cannot create backup";    # is caught and warned
+                }
+                my $master_meta = Cpanel::Backup::Metadata::load_master_meta($backup);
+                foreach my $user_ref ( values %{ $master_meta->{'users'} } ) {
+
+                    next if ( $user_ref->{'user'} ne $user );
+                    $logger->info("Processing Backup $backup for User $user");
+                    Cpanel::Backup::Metadata::create_metadata_for_backup_user( $backup, $user_ref->{'user'}, $logger );
+                    last;
+                }
+            }
+            catch {
+                $logger->warn("Failed to create metadata for $backup");
+            }
+        }
+        else {
+            try {
+                if ( !create_master_meta($backup) ) {
+                    die "Cannot create backup";    # is caught and warned
+                }
+
+                $logger->info("Processing Backup $backup");
+                Cpanel::Backup::Metadata::create_metadata_for_backup( $backup, $logger );
+            }
+            catch {
+                $logger->warn("Failed to create metadata for $backup");
+            }
+        }
+
+        _run_vacuum();
+        $logger->info("Processing is complete.");
+    }
+    elsif ($vacuum) {
+        _run_vacuum();
+    }
+    elsif ($schedule_rebuild) {
+        if ($fix_corrupt) {
+            print "Fixing corrupted backup metadata in the background\n";
+        }
+        else {
+            print "Creating all backup metadata in the background\n";
+        }
+
+        # remove old metadata, and regen with new schema
+        require Cpanel::Daemonizer::Tiny;
+
+        Cpanel::Daemonizer::Tiny::run_as_daemon(
+            sub {
+                # Don't lose output from the script when it detaches from here and goes off on it's own
+                open( STDERR, '>>', $Cpanel::ConfigFiles::CPANEL_ROOT . '/logs/error_log' ) or warn "Could not open cPanel Error Log: $!";
+                open( STDOUT, '>>', $Cpanel::ConfigFiles::CPANEL_ROOT . '/logs/error_log' ) or warn "Could not open cPanel Error Log: $!";
+
+                if ($fix_corrupt) {
+                    Cpanel::SafeRun::Simple::saferun( '/usr/local/cpanel/scripts/backups_create_metadata', '--fix_corrupt' );
+                }
+                else {
+                    Cpanel::SafeRun::Simple::saferun( '/usr/local/cpanel/scripts/backups_create_metadata', '--all' );
+                }
+            },
+            ""
+        );
+    }
+    elsif ($fix_corrupt) {
+        my ( $dbs_valid, $broken_users_ar ) = Cpanel::Backup::Metadata::is_database_valid( \@users );
+        if ($dbs_valid) {
+            print "No user metadata is corrupt\n";
+        }
+        else {
+            try {
+                fix_corrupt_metadata( $backup_master_dir, keys %{$broken_users_ar} );
+            }
+            catch {
+                print "Error fixing corrupt backup metadata: $_\n";
+            };
+        }
+    }
+
+    return 1;
+}
+
+exit( script(@ARGV) ? 0 : 1 ) unless caller();

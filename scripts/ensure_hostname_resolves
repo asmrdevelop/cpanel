@@ -1,0 +1,97 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+# cpanel - scripts/ensure_hostname_resolves        Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::ensure_hostname_resolves;
+
+=encoding utf8
+
+=head1 NAME
+
+ensure_hostname_resolves
+
+=head1 DESCRIPTION
+
+Utility that checks to ensure that the hostname resolves to the server.
+
+It can also update the hostname to use an 'autodomain' hostname which is guaranteed to resolve.
+
+=head1 SYNOPSIS
+
+    ensure_hostname_resolves [OPTIONS]
+
+    --yes           Skip the prompts, and assume 'yes'
+
+    --help          This documentation.
+
+=cut
+
+use cPstrict;
+
+use Try::Tiny;
+
+use IO::Prompt                       ();
+use Cpanel::Exception                ();
+use Cpanel::Hostname                 ();
+use Cpanel::IP::Loopback             ();
+use Whostmgr::Hostname               ();
+use Cpanel::Domain::ExternalResolver ();
+
+use constant _OPTIONS => ('yes');
+
+use parent qw( Cpanel::HelpfulScript );
+
+exit __PACKAGE__->new(@ARGV)->run() unless caller();
+
+sub run ($self) {
+    die Cpanel::Exception::create('RootRequired')->to_string_no_id() unless ( $> == 0 && $< == 0 );
+
+    my $hostname_resolves_local;
+
+    try {
+        if ( $hostname_resolves_local = $self->hostname_resolves() ) {
+            print "[+] Hostname resolves to the server.\n";
+        }
+        else {
+            print "[!] Hostname does NOT resolve to the server.\n";
+        }
+    }
+    catch {
+        my $str = Cpanel::Exception::get_string($_);
+        print "[!] Failed to determine if hostname resolves to the server: $str\n";
+    };
+
+    return 0 if $hostname_resolves_local;
+
+    if ( $self->getopt('yes') || $self->prompt_yn() ) {
+        print "[*] Configuring auto-resolving hostname...\n";
+        my $new_hostname = Whostmgr::Hostname::set_autodomain_hostname();
+        if ( $self->hostname_resolves() ) {
+            print "[+] Successfully updated hostname to auto-resolving hostname: $new_hostname\n";
+        }
+        else {
+            print "[!] Failed to update hostname to an auto-resolving hostname.\n";
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
+sub hostname_resolves ($self) {
+    my $hostname = Cpanel::Hostname::gethostname(1);
+    return 0 if Cpanel::IP::Loopback::is_loopback($hostname);
+    return Cpanel::Domain::ExternalResolver::domain_is_on_local_server($hostname);
+}
+
+sub prompt_yn ($self) {
+    return IO::Prompt::prompt(
+        '-yes',
+        '-one_char',
+        '[*] Do you want the system to update the hostname to an auto-resolving hostname? [y/n] '
+    );
+}
+
+1;

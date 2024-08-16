@@ -1,0 +1,100 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/disable_prelink                 Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::disable_prelink;
+
+use parent qw( Cpanel::HelpfulScript );
+
+use strict;
+use warnings;
+use Try::Tiny;
+
+use Cpanel::Autodie          ();
+use Cpanel::FileUtils::Write ();
+use Cpanel::LoadFile         ();
+use Cpanel::Pkgr             ();
+use Cpanel::OS               ();
+
+our $cron_prelink_script = '/etc/cron.daily/prelink';
+
+my $exit = 0;
+$exit = __PACKAGE__->new(@ARGV)->run() unless caller();
+
+=encoding utf-8
+
+=head1 NAME
+
+disable_prelink
+
+=head1 USAGE
+
+scripts/disable_prelink [--help]
+
+=head1 DESCRIPTION
+
+This script disables RPM prelinking. It is run nightly so we are sure it does not re-appear.
+
+If you want to disable this behavior, you can touch /var/cpanel/dont_remove_prelink.
+
+B<WARNING>: Prelinking often causes issues, and we no longer support it as of cPanel & WHM version 54.
+When you enable prelinking, you may experience problems with broken RPMs.
+
+See https://go.cpanel.net/how-to-disable-prelinking for further information
+
+=cut
+
+sub run {
+    return 0 if prelink_is_wanted();
+    return 0 unless prelink_is_installed();
+    return 0 unless prelink_is_enabled();
+
+    # For more information, see CPANEL-4332.
+    print "Prelink is installed and enabled. This can cause cPanel packages to break during package manager updates.\n";
+
+    return disable_prelink();
+}
+
+sub prelink_is_wanted {
+    return Cpanel::Autodie::exists_nofollow('/var/cpanel/dont_remove_prelink');
+
+}
+
+sub prelink_is_installed {
+    return Cpanel::Pkgr::is_installed('prelink');
+}
+
+sub prelink_is_enabled {
+    my $config_file      = Cpanel::OS::prelink_config_path();
+    my $prelink_contents = Cpanel::LoadFile::load($config_file);
+
+    return   if !$prelink_contents;                                    # The File is missing.
+    return 1 if $prelink_contents =~ m{^\s*PRELINKING\s*=\s*yes\b}m;
+    return 0;
+}
+
+sub disable_prelink {
+    local ( $/, $? );
+
+    my $config_file      = Cpanel::OS::prelink_config_path();
+    my $prelink_contents = Cpanel::LoadFile::load($config_file);
+
+    $prelink_contents =~ s{^\s*PRELINKING\s*=\s*yes\s*$}{PRELINKING=no}m;
+
+    Cpanel::FileUtils::Write::overwrite_no_exceptions( $config_file, $prelink_contents, 0644 );
+
+    if ( -e $cron_prelink_script ) {
+        system "$cron_prelink_script 2>&1";
+        my $status = $? >> 8;
+        return $status == 0 ? 1 : 0;
+    }
+    else {
+        print "ERROR: $cron_prelink_script is missing. Could not fully disable prelinking.\n";
+        return 2;
+    }
+}
+
+sub _OPTIONS { return }

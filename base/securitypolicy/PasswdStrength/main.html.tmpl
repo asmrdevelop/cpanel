@@ -1,0 +1,118 @@
+<link rel="stylesheet" type="text/css" href="/unprotected/yui/container/assets/container.css" />
+<script type="text/javascript" src="/unprotected/yui-gen/utilities_container/utilities_container.js"></script>
+<script type="text/javascript" src="/cjt/cjt-min.js"></script>
+
+<style media="screen" type="text/css">
+.label-column {
+    font-weight: bold;
+    text-align: right;
+}
+
+a:link, a:visited, a:active, .action_link {
+    color: #08c;
+    cursor: pointer;
+}
+
+.password_strength {
+   height: 20px;
+   width: 100%;
+   border: 1px solid black;
+}
+
+tr {
+  height: 20px;
+}
+
+#userform input {
+  width: 300px;
+  height: 20px;
+  margin: 5px 0 5px 0;
+}
+
+</style>
+
+<form  id="userform" method="post" name="userform" onSubmit="return do_validate(this.id);" action="[% cp_security_token %]/?key=[% acct_randkey %]" target="_top">
+  <!-- prevent password autofill -->
+  <input type="text" style="display:none">
+  <input type="password" autocomplete='off' style="display:none">
+  <input type="hidden" name="formaction" value="changepw">
+  <div class="highlight">
+    <p>[% locale.maketext('Your password does not meet the strength requirements, you must change it now to avoid having your account compromised.') %]</p>
+  </div>
+
+  <table>
+    <tbody>
+      <tr>
+        <td class="label-column">[% locale.maketext('Old Password:') %]</td>
+        <td>
+          <input type="password" autocomplete='off' maxLength="128" name="oldpass" id="oldpassword" size="20" />
+        </td>
+        <td style="width:280px;">&nbsp;</td>
+      </tr>
+      <tr>
+        <td class="label-column">[% locale.maketext('New Password:') %]</td>
+        <td>
+          <input type="password" autocomplete='off' name="newpass" id='password' />
+        </td>
+        <td>
+          <div id="password_error"></div>
+        </td>
+      </tr>
+      <tr>
+        <td class="label-column">[% locale.maketext('Reenter New Password:') %]</td>
+        <td>
+          <input maxLength="128" size="20" name="newpass2" id="pass2" type="password" autocomplete='off' onChange="checksubmit();" />
+        </td>
+        <td>
+          <div id="pass2_error"></div>
+        </td>
+      </tr>
+      <tr>
+        <td class="label-column">[% locale.maketext('Password Strength') %] ( <div style="display:inline;" id="why_strong_passwords_link" class="action_link">Why?</div> ):</td>
+        [% INCLUDE 'why_strong_passwords.html.tt' %]
+        <td>
+          <div id="password_strength" class="password_strength"></div>
+        </td>
+        <td style="text-align:left;">
+          <input type="button" class="btn-secondary" style="width:auto;text-align:left;" id="create_strong_password" value="[% locale.maketext("Password Generator") %]" tabindex="-1" />
+        </td>
+      </tr>
+      <tr style="height:30px;">
+        <td></td>
+        <td style="align:center;"><input name="B1" style="height:30px;margin:0px;padding:0px;" type="submit" class="input-button" value="[% locale.maketext('Change your password now!') %]" /></td>
+        <td></td>
+      </tr>
+      <tr>
+        <td></td>
+        <td style="align:center;"><input type="button" style="height:30px;margin:0px;padding:0px;" value="[% locale.maketext('Log Out') %]" class="input-button" onClick="document.location.replace( '/logout' );"></td>
+        <td></td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2>[% locale.maketext('Protect your password:') %]</h2>
+
+  <p>
+  [% locale.maketext('Do [output,em,not] write down your password. Instead, memorize it.') %]
+  [% locale.maketext('Do not share your password, in particular with anyone who claims to be from computer support or a vendor, unless you are certain that they are who they say they are.') %]
+  [% locale.maketext('Do not allow anyone to watch you enter your password.') %]
+  [% locale.maketext('Do not enter your password on a computer that you do not trust.') %]
+  [% locale.maketext('Change your password often.') %]
+  </p>
+
+  <h2>[% locale.maketext('Tips for choosing a password:') %]</h2>
+
+  <p>
+  [% locale.maketext('The system attempts to prevent particularly insecure passwords, but it is not foolproof.') %]
+  [% locale.maketext('Create your password wisely.') %]
+  [% locale.maketext('Do not use words that are in a dictionary, names, or any personal information (for example, your birthday or phone number).') %]
+  [% locale.maketext('Avoid simple patterns. Instead, use UPPER and lower case letters, numbers, and symbols. Make certain that your password is at least eight characters long.') %]
+  [% locale.maketext('When you choose a new password, make certain that it is not related to your previous passwords.') %]
+  </p>
+
+</form>
+
+<script language="javascript">
+    window.pwminstrength = parseInt('[% minpwstrength %]') || 0;
+    var passwordValidator = CPANEL.password.setup("password", "pass2", "password_strength", window.pwminstrength, "create_strong_password", "why_strong_passwords_link", "why_strong_passwords_text");
+</script>

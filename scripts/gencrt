@@ -1,0 +1,214 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/gencrt                          Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+## no critic qw(RequireUseWarnings) # TODO: Make this use warnings
+
+use Sys::Hostname              ();
+use Cpanel::Config::Contact    ();
+use Cpanel::OpenSSL            ();
+use Cpanel::SSLStorage::User   ();
+use Cpanel::TempFile           ();
+use Cpanel::SSL::Create        ();
+use Cpanel::Validate::EmailRFC ();
+
+alarm(1200);
+
+my $hostname = Sys::Hostname::hostname();
+
+my $now     = time();
+my $gendate = localtime($now);
+my $xemail  = $ARGV[0];
+my $host    = $ARGV[1];
+my $country = $ARGV[2];
+my $state   = $ARGV[3];
+my $city    = $ARGV[4];
+my $co      = $ARGV[5];
+my $cod     = $ARGV[6];
+my $email   = $ARGV[7];
+my $pass    = $ARGV[8];
+
+if ( !-t STDIN && ( !$xemail || !$host || !$country || !$state || !$city || !$co || !$cod || !$email || !$pass ) ) {
+    die "Can't get vars ... did you forget one of them ?";
+}
+
+my $contactemail = Cpanel::Config::Contact::get_public_contact();
+
+my $send_key_yn;
+
+#GenCRT script by cPanel, L.L.C.
+
+if ( -t STDIN ) {
+    print "[==========Generating an SSL Key, Certificate, and CSR=================]\n";
+    print "Before we begin please tell me where to email the CSR to: ";
+    $xemail = <STDIN>;
+    $xemail =~ s/\n//g;
+    die "Invalid Email address: $email, please re-enter" unless Cpanel::Validate::EmailRFC::is_valid($xemail);
+    print "Enter the domain to make a certificate for: ";
+    $host = <STDIN>;
+    $host =~ s/\n//g;
+    print "=*=*=Certificate Information=*=*=\n";
+    print "Enter the Country Code (2 letters, e.g., US): ";
+    $country = <STDIN>;
+    $country =~ s/\n//g;
+    print "Enter the State: ";
+    $state = <STDIN>;
+    $state =~ s/\n//g;
+    print "Enter the City: ";
+    $city = <STDIN>;
+    $city =~ s/\n//g;
+    print "Enter the Company Name: ";
+    $co = <STDIN>;
+    $co =~ s/\n//g;
+    print "Enter the Company Division: ";
+    $cod = <STDIN>;
+    $cod =~ s/\n//g;
+    print "Enter the Contact Email Address: ";
+    $email = <STDIN>;
+    $email =~ s/\n//g;
+    die "Invalid Email address: $email, please re-enter" unless Cpanel::Validate::EmailRFC::is_valid($email);
+
+    $pass = ' ';
+    while ( length $pass < 4 ) {
+        print "Enter a challenge password for the CSR (at least 4 characters): ";
+        $pass = <STDIN>;
+        $pass =~ s/\n//g;
+    }
+
+    print "\nWould you like the key emailed to you as well as the CSR?\nThis is only useful to install SSL onto a server other than this one;\nit is otherwise a security risk.\nIf you are unsure, indicate “no” by pressing ENTER.\n? ";
+    $send_key_yn = <STDIN>;
+    $send_key_yn = ( $send_key_yn =~ m{y}i ) ? 1 : 0;
+}
+
+#-------------------------------------------
+
+$host = lc($host);
+
+my $openssl = Cpanel::OpenSSL->new();
+my $genkey  = $openssl->generate_key();
+
+if ( !$genkey || !$genkey->{'status'} || !$genkey->{'stdout'} ) {
+    die "Key generation failed: $genkey->{'stderr'}\n";
+}
+my $key = $genkey->{'stdout'};
+
+if ( !-t STDIN ) {
+    print "<table border=1><tr><td><b>KEY (RSA Key)</b><pre>";
+    print qq{<textarea name=key cols=66 rows=23>};
+}
+print "$key\n";
+if ( !-t STDIN ) {
+    print qq{</textarea>};
+    print "</td></tr></table>";
+}
+
+if ($send_key_yn) {
+    open( SENDMAIL, "|/usr/sbin/sendmail -t" );
+    print SENDMAIL "To: $contactemail\n";
+    print SENDMAIL "To: $xemail\n";
+    print SENDMAIL "From: ssl\@$hostname\n";
+    print SENDMAIL "Subject: SSL RSA PRIVATE KEY for $host ($gendate)\n\n";
+    print SENDMAIL $key;
+    close(SENDMAIL);
+}
+
+#---------------------------
+
+my $csr;
+eval {
+    $csr = Cpanel::SSL::Create::csr(
+        key           => $key,
+        subject_names => [
+            [ dNSName => $host ],
+        ],
+        subject => [
+            [ countryName            => $country ],
+            [ emailAddress           => $email ],
+            [ localityName           => $city ],
+            [ organizationName       => $co, ],
+            [ organizationalUnitName => $cod ],
+            [ stateOrProvinceName    => $state ],
+        ],
+    );
+} or die "Failed to generate the CSR: $@";
+
+if ( !-t STDIN ) {
+    print "<table border=1><tr><td><b>CSR (Certificate Signing Request)</b><pre>";
+    print qq{<textarea name=csr cols=66 rows=23>};
+}
+print "$csr\n\n";
+if ( !-t STDIN ) {
+    print qq{</textarea>};
+    print "</td></tr></table>";
+}
+
+open( SENDMAIL, "|/usr/sbin/sendmail -t" );
+print SENDMAIL "To: $contactemail\n";
+print SENDMAIL "To: $xemail\n";
+print SENDMAIL "From: ssl\@$hostname\n";
+print SENDMAIL "Subject: SSL CERTIFICATE SIGNING REQUEST for $host ($gendate)\n\n";
+print SENDMAIL<<EOM;
+countryName (C):             $country
+stateOrProvinceName (ST):    $state
+localityName (L):            $city
+organizationName (O):        $co
+organizationalUnitName (OU): $cod
+commonName (CN):             $host
+emailAddress:                $email
+
+challenge password: $pass
+========================================================
+$csr
+EOM
+close(SENDMAIL);
+
+#--------------------------------------
+my $cert;
+{
+    my $tf = Cpanel::TempFile->new();
+    my ( $keyfile, $key_fh ) = $tf->file();
+    print {$key_fh} $key;
+    close $key_fh;
+
+    my $gen = $openssl->generate_cert(
+        {
+            'keyfile'  => $keyfile,
+            'country'  => $country,
+            'state'    => $state,
+            'city'     => $city,
+            'company'  => $co,
+            'division' => $cod,
+            'hostname' => $host,
+            'email'    => $email,
+        }
+    );
+    die "$gen->{'stderr'}\n" if !$gen->{'status'};
+    $cert = $gen->{'stdout'};
+}
+
+if ( !-t STDIN ) {
+    print "<table border=1><tr><td><b>CRT (Self Signed Certificate)</b><pre>";
+    print qq{<textarea name=crt cols=66 rows=23>};
+}
+print $cert;
+if ( !-t STDIN ) {
+    print qq{</textarea>};
+    print "</td></tr></table>";
+}
+
+my ( $ok, $sslstorage ) = Cpanel::SSLStorage::User->new();
+die "$sslstorage\n" if !$ok;
+
+my $err;
+( $ok, $err ) = $sslstorage->add_key( 'text' => $key );
+die "$err\n" if !$ok;
+
+( $ok, $err ) = $sslstorage->add_certificate( 'text' => $cert );
+die "$err\n" if !$ok;
+
+( $ok, $err ) = $sslstorage->add_csr( 'text' => $csr );
+die "$err\n" if !$ok;

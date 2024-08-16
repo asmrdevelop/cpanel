@@ -1,0 +1,31 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/make_hostname_unowned           Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+use warnings;
+
+use Cpanel::ConfigFiles         ();
+use Cpanel::Config::CpUserGuard ();
+use Cpanel::FileUtils::Modify   ();
+use Cpanel::Sys::Hostname::Tiny ();
+
+my $hostname = Cpanel::Sys::Hostname::Tiny::gethostname();
+die "Unable to obtain hostname" unless $hostname;
+
+print "Removing ownership of $hostname from $Cpanel::ConfigFiles::USERDOMAINS_FILE\n";
+Cpanel::FileUtils::Modify::remlinefile( $Cpanel::ConfigFiles::USERDOMAINS_FILE, "$hostname:", 'begin' );
+
+print "Ensuring that the system user does not own $hostname\n";
+
+my $cpuser_guard = Cpanel::Config::CpUserGuard->new('system');
+if ($cpuser_guard) {
+    @{ $cpuser_guard->{'data'}->{'DOMAINS'} } = grep { $_ ne $hostname } @{ $cpuser_guard->{'data'}->{'DOMAINS'} };
+    $cpuser_guard->save();
+}
+else {
+    print "System user file does not exist\n";
+}

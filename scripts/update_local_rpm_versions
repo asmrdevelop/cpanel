@@ -1,0 +1,175 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/update_local_rpm_versions       Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+use warnings;
+
+use Cpanel::RPM::Versions::File ();
+use Cpanel::Usage               ();
+use Cpanel::SafeDir::MK         ();
+
+# ACTIVATION: remove this activation piece when cPanel on CentOS 7 is officially available #
+use Cpanel::ConfigFiles::RpmVersions ();
+
+my $add       = '';
+my $edit      = '';
+my $del       = '';
+my $directory = '';
+my $file      = '';
+my $key       = 0;
+my $section   = 1;
+my $value     = '';
+my $packages  = '';
+
+my %opts = (
+    'directory' => \$directory,
+    'file'      => \$file,
+    'add'       => \$add,
+    'edit'      => \$edit,
+    'del'       => \$del,
+);
+
+# --add section.key.key value
+my $cmdl_regex = {
+    'modify' => qr/--                    # -- to begin the command
+                   (:?add|edit)          # add or edit
+                   \s+                   # one or more spaces
+                   (:?\S+?)              # keys
+                   \s+                   # one or more spaces
+                   (.+?)                 # value is the rest of the provided text.
+                   \s*                   # Ignore any trailing spaces
+                   $/x,    # end of command
+
+    'delete' => qr/--                    # -- to begin the command
+                   (:?del)               # Delete command
+                   \s+                   # one or more spaces
+                   (:?\S+?)              # keys
+                   $/x,    # end of command
+};
+
+my $orig_cmdl = join ' ', @ARGV;
+my $return    = Cpanel::Usage::wrap_options( \@ARGV, \&usage, \%opts );
+
+exit $return if $return;
+
+$file      ||= $Cpanel::ConfigFiles::RpmVersions::RPM_VERSIONS_FILE;
+$directory ||= '/var/cpanel/rpm.versions.d';
+
+if ( !-d $directory ) {
+    Cpanel::SafeDir::MK::safemkdir( $directory, '0750' );
+}
+
+my $versions = Cpanel::RPM::Versions::File->new( { file => $file, directory => $directory } );
+
+if ( $add || $edit ) {
+
+    if ( $orig_cmdl !~ /$cmdl_regex->{'modify'}/ ) {
+        usage();
+        exit 1;
+    }
+
+    my $cmdl = $add ? $add : $edit;
+    my ( $section, $keys, $value ) = parse_cmd($cmdl);
+
+    if ( !$section || !@{$keys} || !defined $value ) {
+        usage();
+        exit 1;
+    }
+
+    my $set_method = "set_$section";
+    if ( $versions->can($set_method) ) {
+        $value = [ split /\s*\,\s*/, $value ] if $value =~ /\,/;
+
+        my $error = $versions->$set_method( { 'key' => $keys, 'value' => $value } );
+
+        if ($error) {
+            print $error . "\n\n";
+            usage();
+            exit 2;
+        }
+
+        $versions->save();
+    }
+    else {
+        print "Section $section does not exist.\n";
+        usage();
+        exit 1;
+    }
+    exit(0);
+
+}
+elsif ($del) {
+
+    if ( $orig_cmdl !~ /$cmdl_regex->{'delete'}/ ) {
+        usage();
+        exit 1;
+    }
+
+    my ( $section, $keys ) = parse_cmd($del);
+
+    if ( !$section || !$keys ) {
+        usage();
+        exit 1;
+    }
+
+    my $del_method = "delete_$section";
+    if ( $versions->can($del_method) ) {
+        $versions->$del_method( { 'key' => $keys } );
+        $versions->save();
+    }
+    else {
+        print "Section $section does not exist.\n\n";
+        usage();
+        exit 1;
+    }
+
+    exit(0);
+
+}
+
+print "Unknown arguments passed to $0\n\n";
+usage();
+exit 3;
+
+sub usage {
+    my $prog = $0;
+    $prog =~ s{^.+/(.+)$}{$1};
+    print <<EOF;
+Usage: $prog
+            <
+                --add <section.key> <value> |
+                --edit <section.key> <value> |
+                --del <section.key>
+            >
+            [--file <file>]
+            [--drectory <directory>]
+            [--<help|usage>]
+
+        Where:
+          --add:       Add a <value> to <section>.<key>
+          --edit:      Edit a <value> in <section>.<key>
+          --del:       Delete <section>.<key>
+          --file:      Get default values from <file>
+                       (Default: $Cpanel::ConfigFiles::RpmVersions::RPM_VERSIONS_FILE)
+          --directory: Write output to local.versions in <directory>
+                       (Default: /var/cpanel/rpm.versions.d)
+          --help:      This display
+          --usage:     This display
+EOF
+
+    return;
+}
+
+sub parse_cmd {
+    my ($cmd) = @_;
+    my ( $section, @keys ) = split /\./, $cmd;
+
+    my $value;
+    $value = $ARGV[-1] if $ARGV[-1] ne $ARGV[0];
+
+    return ( $section, \@keys, $value );
+}

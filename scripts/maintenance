@@ -1,0 +1,1391 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+#                                      Copyright 2024 WebPros International, LLC
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited.
+
+package scripts::maintenance;
+
+use strict;
+use warnings;
+
+use Try::Tiny;
+
+use Cpanel::iContact::Class::Update::EndOfLife     ();
+use Cpanel::AccessIds                              ();
+use Cpanel::Binaries                               ();
+use Cpanel::TimeHiRes                              ();
+use Cpanel::Config::LoadCpConf                     ();
+use Cpanel::ConfigFiles                            ();
+use Cpanel::Cron::Utils                            ();
+use Cpanel::Crypt::GPG::Settings                   ();
+use Cpanel::Crypt::GPG::VendorKeys::TimestampCache ();
+use Cpanel::Env                                    ();
+use Cpanel::IOCallbackWriteLine                    ();
+use Cpanel::MysqlUtils::Version                    ();
+use Cpanel::Notify                                 ();
+use Cpanel::OS                                     ();
+use Cpanel::Rand::Get                              ();
+use Cpanel::RPM::Versions::Directory               ();
+use Cpanel::SafeRun::Object                        ();
+use Cpanel::SafeRun::BG                            ();
+use Cpanel::Server::Type                           ();
+use Cpanel::ServerTasks                            ();
+use Cpanel::Services::Enabled                      ();
+use Cpanel::Sync::CheckRestore                     ();
+use Cpanel::Update::Config                         ();
+use Cpanel::Config::Crontab                        ();
+use Cpanel::Update::Logger                         ();
+use IO::Handle                                     ();
+use IO::Select                                     ();
+
+# hash we'll use to process each request
+our $RPM_IS_BROKEN             = 0;
+our $_UPGRADE_IN_PROGRESS_FILE = '/usr/local/cpanel/upgrade_in_progress.txt';
+my $DRY_RUN;
+
+our $SQLITE_AUTO_REBUILD_LAST_RAN_FILE = '/var/cpanel/.last_ran_sqlite_auto_rebuild_from_maintenance';
+
+# Internal documentation: https://cpanel.wiki/x/zwwFAw
+sub script {
+    my ( $class, @args ) = @_;
+
+    if ( $> != 0 ) {
+        print "This cPanel maintenance script must be run as root, not uid $>.\n";
+        return 2;
+    }
+
+    umask(0022);
+    my $security_token = $ENV{'cp_security_token'} || '';
+
+    # default pcent when none are defined
+    my $starting_pbar  = 0;
+    my $finishing_pbar = 100;
+
+    # in case we are called before and outside of upcp
+    setupenv();
+
+    my $only_run;
+
+    # create a default logfile path, if called from upcp, use the log it passes
+    my $now          = time();
+    my $logfile_path = '/var/cpanel/updatelogs/maintenance' . $now . '.log';
+
+    my $custom_pbar;
+
+    foreach my $arg (@args) {
+        if ( $arg =~ m/^--log\=(.*)/ ) {
+            $logfile_path = $1;
+        }
+        elsif ( $arg =~ m/^--pbar-start=([0-9]+)/ ) {
+            $custom_pbar   = 1;
+            $starting_pbar = int($1);
+        }
+        elsif ( $arg =~ m/^--pbar-stop=([0-9]+)/ ) {
+            $custom_pbar    = 1;
+            $finishing_pbar = int($1);
+        }
+        elsif ( $arg =~ m/^--dry-run$/ ) {    # no doc required: dev only
+            $DRY_RUN = 1;
+        }
+        elsif ( $arg =~ m/^--pre$/ ) {        # no doc required: upcp only
+            $only_run = 'pre';
+        }
+        elsif ( $arg =~ m/^--post$/ ) {       # no doc required: upcp only
+            $only_run = 'post';
+        }
+        elsif ( $arg =~ m/^--help/ ) {
+            return usage();
+        }
+    }
+
+    open( STDERR, ">&STDOUT" );
+    $| = 1;
+
+    # when start pbar is unset progress bar is not displayed
+    setup_logger( $logfile_path, $custom_pbar ? $starting_pbar : undef );
+
+    # helper which normalize all percentage to be in [ $starting_pbar .. $finishing_pbar ]
+    #    the only thing that we should care are the capping values which should be between [ 0..100 ]
+    my $increment_pbar;    # initialize later as we can count how many tasks to run
+
+    my $do_progress_bar = sub {
+        my (@args) = @_;
+        return bless sub { $increment_pbar->(@args) }, 'PBAR';
+    };
+
+    #############################################################################
+    # maintenance actions are split in 2 groups: pre and post
+    # by default maintenance is going to run both groups: pre than post
+    # /scripts/maintenance is similar to run
+    #   1. ~maintenance --pre
+    #   2. ~maintenance --post
+    # but we can now run only one of these groups, this allow to run post_sync_cleanup earlier during upcp
+    # /scripts/upcp is going to use maintenance script using 2 different calls
+    #   1. update.now
+    #   2. maintenance --pre
+    #   3. post_sync_cleanup
+    #   4. maintenance --post
+
+    my $blocks = { pre => [ _default_pre_actions() ], post => [ _default_post_actions() ] };
+
+    if ( !Cpanel::Server::Type::is_dnsonly() ) {
+        push @{ $blocks->{'post'} }, (
+            action_sprite_generator(),
+            action_update_rdns_ips_cache(),
+            show_status('Updating services and databases'),
+            '/usr/local/cpanel/scripts/listcheck',
+            action_purge_modsec(),
+            ( $ENV{'CPANEL_BASE_INSTALL'} ? () : ( action_ftpquotacheck() ) ),
+            '/usr/local/cpanel/scripts/updateuserdomains',
+
+            '/usr/local/cpanel/bin/empty_user_trash --quiet --all',
+            '/usr/local/cpanel/scripts/build_maxemails_config',
+            '/usr/local/cpanel/scripts/updateuserdatacache --force',
+
+            show_status('Checking system maxmem setting'),
+            '/usr/local/cpanel/scripts/check_maxmem_against_domains_count --always-fix',
+
+            show_status('Running various cleanup scripts'),
+            '/usr/local/cpanel/scripts/resetmailmanurls',
+            show_status('Checking MySQL to ensure we can connect'),
+            (    # Base install does this in the background before upcp
+                $ENV{'CPANEL_BASE_INSTALL'} ? () : (
+                    '/usr/local/cpanel/scripts/mysqlconnectioncheck'    # POST or leave it there ??
+                                                                        # We must update the rules before we compile them
+                )
+            ),
+            action_update_spamassassin_rules(),
+            show_status('Checking PostgreSQL to ensure we can connect'),
+            '/usr/local/cpanel/bin/postgrescheck --check-auth --reset-pass-on-fail',    # POST or leave it there ??
+            action_repair_mailman(),
+            action_repair_mysql(),
+            show_status('Running sanity checks and notifications'),                     # status update
+            '/usr/local/cpanel/scripts/chkpaths',
+            '/usr/local/cpanel/scripts/hackcheck',
+            '/usr/local/cpanel/scripts/oopscheck',
+            '/usr/local/cpanel/scripts/fixetchosts',
+            '/usr/local/cpanel/scripts/check_unreliable_resolvers --notify',
+            '/usr/local/cpanel/bin/is_script_stuck --script=autossl_check --time=3h --kill --notify=root',
+            ( $ENV{'CPANEL_BASE_INSTALL'} ? () : ('/usr/local/cpanel/scripts/quotacheck') ),
+            '/usr/local/cpanel/scripts/email_archive_maintenance',
+            '/usr/local/cpanel/scripts/email_hold_maintenance',
+            '/usr/local/cpanel/scripts/expunge_expired_certificates_from_sslstorage',
+            '/usr/local/cpanel/scripts/notify_expiring_certificates',
+            '/usr/local/cpanel/scripts/notify_expiring_certificates_on_linked_nodes',
+            '/usr/local/cpanel/scripts/expunge_expired_transfer_sessions',
+            '/usr/local/cpanel/scripts/expunge_expired_pkgacct_sessions',
+            '/usr/local/cpanel/scripts/smartcheck',
+            '/usr/local/cpanel/scripts/compilerscheck',
+            '/usr/local/cpanel/scripts/check_mount_procfs',
+            sqlite_auto_rebuild_if_needed(),
+            '/usr/local/cpanel/scripts/setup_modsec_db',
+            '/usr/local/cpanel/scripts/modsec_vendor update --auto',
+            '/usr/local/cpanel/bin/check_cpstore_in_sync_with_local_storage',
+
+            action_purge_dead_comet_files(),
+            action_update_freshclam(),
+
+            show_status('Restoring compiler permissions'),
+            '/usr/local/cpanel/scripts/compilers restore',
+
+            show_status('Cleaning up mailbox trash'),
+            '/usr/local/cpanel/scripts/dovecot_maintenance --background',
+
+            show_status('Checking MySQL Version'),
+            sub { check_mysql_version() },
+
+            show_status('Cleaning up root datastores and caches'),
+            '/usr/local/cpanel/bin/clean-datastores --background root',
+        );
+
+    }    # end !dnsonly
+
+    push @{ $blocks->{'post'} }, (
+        action_buildexim(),
+        action_eximstats(),
+        action_exim_purge_old_tracker_files(),
+        sub { Cpanel::Sync::CheckRestore::check_and_restore("img-sys/powered_by_cpanel.svg") },
+        action_cleanup_signature(),
+        action_enable_onboot_handler(),
+    );
+
+    if ( !Cpanel::Server::Type::is_dnsonly() ) {    # not dnsonly
+
+        push @{ $blocks->{'post'} }, (
+            (
+                $ENV{'CPANEL_BASE_INSTALL'} ? () : (
+                    show_status('Cleaning SpamAssassin DBM files'),
+                    '/usr/local/cpanel/scripts/spamassassin_dbm_cleaner'
+                )
+            ),
+            show_status('Cleaning Roundcube attachment directory'),
+            \&clean_roundcube_attachment_directory,
+
+            (
+                # This was causing an OOM on fresh install on the
+                # $5/mo DO instance
+                # There will be no one to notify on a fresh install
+                # and this will run a few hours after the install
+                # anyways
+                $ENV{'CPANEL_BASE_INSTALL'} ? () : (
+                    show_status('Checking for new security advice'),
+                    '/usr/local/cpanel/scripts/check_security_advice_changes --notify --background',
+                )
+            ),
+
+            show_status('Running former postinstall scripts'),
+            '/usr/local/cpanel/bin/dcpumon --killproc',
+            '/usr/local/cpanel/bin/setupdbmap',
+            '/usr/local/cpanel/bin/fix_userdata_perms',
+            '/usr/local/cpanel/scripts/detect_env_capabilities',
+            (    # Base install does this in the background before upcp
+                $ENV{'CPANEL_BASE_INSTALL'} ? () : (
+                    show_status('Updating cPGreyList Common Mail Providers'),
+                    '/usr/local/cpanel/scripts/manage_greylisting --init --update_common_mail_providers'
+                )
+            ),
+
+            show_status('Checking for deprecated PHP local.ini'),
+            '/usr/local/cpanel/scripts/migrate_local_ini_to_php_ini --run --verbose',
+
+            show_status('Ensuring an "Active" MySQL profile is set'),
+            \&ensure_active_mysql_profile_is_present,
+            run( '/usr/local/cpanel/scripts/check_mysql', { 'exit_ok' => [ 2, 255 ] } ),
+            action_cloudlinux_update(),
+
+            show_status('Updating plugins data cache'),
+            '/usr/local/cpanel/bin/refresh_plugin_cache',
+
+            show_status('Ensuring SSL certificate information for CCS is up to date.'),
+            '/usr/local/cpanel/scripts/ccs-check --run --ssl',
+
+            show_status('Ensure cpanel-plugins yum repo exists'),
+            \&_create_cpanel_plugins_repo,
+
+            show_status('Checking Addon Licenses'),
+            check_addon_licenses(),
+
+            show_status('Updating Public Suffix List'),
+            update_public_suffix_list(),
+        );
+
+    }
+
+    push @{ $blocks->{'post'} }, (
+        show_status('Checking End Of Life for current version.'),
+        \&check_end_of_life,
+    );
+
+    my $maintenance_complete = Cpanel::Server::Type::is_dnsonly() ? q{DNSONLY maintenance complete.} : q{Maintenance complete.};
+
+    # build the todo list depending which block we want to run
+    #   default = pre + post
+
+    my @todo = ( @{ $blocks->{'pre'} }, @{ $blocks->{'post'} } );    # Remove the todo once done
+    if ( $only_run && ref $blocks->{$only_run} ) {
+        @todo = @{ $blocks->{$only_run} };
+        $maintenance_complete .= " [state=$only_run]";
+    }
+
+    # we have now reach 100%, move the progress bar
+    push @todo, (
+        $do_progress_bar->( complete => 1 ),
+        show_status("\n\n$maintenance_complete\n"),
+    );
+
+    # how many actions do we have to run which are neither a status nor a pbar item
+    my $total_actions = grep { my $ref = ref $_; $ref ne 'PBAR' && $ref !~ /Action::(?:Status|Command)/ } @todo;
+
+    # initialize progress bar with: from % to % and number of elements
+    $increment_pbar = increment_pbar( $starting_pbar, $finishing_pbar, $total_actions );
+
+    run_actions( \@todo, $increment_pbar );
+
+    return logger()->get_need_notify() ? 1 : 0;
+}
+
+# Encapsulate to pick up "a few dollars more" of cover, especially because
+# cplint complained about it in CPANEL-38056. Oh no, I lost cover otherwise.
+# Original comment below:
+# This is the only pre block in this script. Only things that MUST happen before post_sync_cleanup should live here.
+sub _default_pre_actions {
+    return (
+        show_status('Assuring needed symlinks in 3rdparty/bin are in place.'),
+        '/usr/local/cpanel/scripts/link_3rdparty_binaries',
+
+        show_status('Setting clock'),
+        '/usr/local/cpanel/scripts/rdate',
+
+        # Process any possibly pending PHP PEAR updates from cpanel-php pear RPMs in the background,
+        # as they should have already been installed during update.now
+        action_update_pear_registry_in_the_background(),
+
+        action_set_up_dns_resolver_workarounds(),
+        action_background_refresh_dkim_validity_cache(),
+
+        action_find_and_fix_rpm_issues(),    # set RPM_IS_BROKEN (at run time): used by sysup and check_cpanel_pkgs
+        action_update_packages(),
+        action_ensure_mysql_upgrade_hook(),
+    );
+}
+
+sub _default_post_actions {
+    return (
+        show_status('Purging cpupdate.conf of invalid entries'),
+        \&purge_cpupdate_conf,
+        \&purge_upcp_logs,
+
+        action_updatesigningkey(),
+        action_sysup(),
+
+        action_update_feature_flags(),
+
+        #We do it right after post sync cleanup and sysup
+        #to ensure cPanel services have been restarted before we
+        #do any system ones so that they can access cPanel
+        #and monitor the system while the system services are
+        #being restarted.
+        show_status('Restarting any outdated services'),
+        $ENV{'CPANEL_BASE_INSTALL'} ? () : ( run( '/usr/local/cpanel/scripts/find_outdated_services --auto', { exit_ok => [1] } ) ),    # Base install does this in the background before upcp
+
+        action_vps_optimizer(),                                                                                                         # not on dnsonly
+        show_status('Checking for a valid C Compiler.'),
+        '/usr/local/cpanel/scripts/checkccompiler',
+        action_build_locale_databases(),
+        show_status('Migrating feature lists to current version (if needed)'),
+        '/usr/local/cpanel/bin/migrate_all_feature_lists_to_current',
+
+        show_status('Checking for main IP changes'),
+        '/usr/local/cpanel/scripts/mainipcheck',
+
+        show_status('Updating neighbor netblocks'),
+        '/usr/local/cpanel/scripts/update_neighbor_netblocks',
+
+        show_status('Updating known proxy ips'),
+        '/usr/local/cpanel/scripts/update_known_proxy_ips',
+
+        show_status('Validating server hostname'),
+
+        # No need to check this on a fresh install since we already validate in the installer
+        ( $ENV{'CPANEL_BASE_INSTALL'} ? () : ('/usr/local/cpanel/scripts/check_valid_server_hostname --notify') ),
+
+        show_status('Validating cPanel system users'),
+        '/usr/local/cpanel/scripts/checkusers',
+        action_fixrndc(),
+        action_init_wwwacct_conf(),
+        action_ipaliases(),
+        action_check_cpanel_pkgs(),
+        action_check_plugin_packages(),
+        show_status('Running env auto repair'),
+        '/usr/local/cpanel/scripts/vzzo-fixer',
+        '/usr/local/cpanel/scripts/quota_auto_fix',
+        '/usr/local/cpanel/scripts/clear_orphaned_virtfs_mounts --inactiveonly',
+        '/usr/local/cpanel/scripts/disable_prelink',
+        show_status('Cleaning up orphaned filesystem quotas'),
+        '/usr/local/cpanel/scripts/cleanquotas',
+        ( $ENV{'CPANEL_BASE_INSTALL'} ? () : ('/usr/local/cpanel/scripts/autorepair autorepair') ),
+        '/usr/local/cpanel/scripts/purge_old_config_caches',
+        '/usr/local/cpanel/scripts/cleansessions',
+        '/usr/local/cpanel/scripts/checkbashshell',
+        action_passwd(),
+        \&setupcrontab,
+        '/usr/local/cpanel/scripts/dnsqueuecron',
+        show_status('Rebuild WHM chrome cache'),
+        '/usr/local/cpanel/scripts/rebuild_whm_chrome',
+        '/usr/local/cpanel/scripts/clear_showtemplate.stor_caches',
+
+        # checkallsslcerts needs to run on DNSONLY
+        # because we need an ssl cert for dovecot for it to startup
+
+        # Ensure /var/cpanel/ssl/*-SIGNATURE_CHAIN_VERIFIED and
+        #  /var/cpanel/ssl/*-NO_AFTER is updated so Cpanel::Redirect
+        #  can make good descisions.  This also ensures that
+        #  admins get timely notice of the expire time being
+        #  reached on their ssl certificates.
+        action_checkallsslcerts(),
+
+        show_status('Purging invalid or soon-to-expire Domain TLS entries for service domains'),
+        '/usr/local/cpanel/scripts/check_domain_tls_service_domains.pl --prune',
+
+        show_status('Cleaning up temporary wheel/sudo users'),
+        '/usr/local/cpanel/scripts/clean_up_temp_wheel_users',
+
+    );
+}
+
+sub check_end_of_life {    # EOL
+
+    # Send a notification if this version is nearing end of life
+    local $@;
+    eval {
+        open my $mainip_fh, '<', '/var/cpanel/mainip' or die "Can't open < /var/cpanel/mainip: $!";
+        my $ip = <$mainip_fh>;
+        close $mainip_fh;
+        chomp $ip;
+
+        my $icontact_class = 'Update::EndOfLife';
+        Cpanel::Notify::notification_class(
+            constructor_args => [ origin => 'upcp', source_ip_address => $ip ],
+            map { $_ => $icontact_class } qw(class application),
+        );
+        1;
+    } or logger()->warning("Error while checking end of life: $@");
+
+    return;
+}
+
+sub sqlite_auto_rebuild_if_needed {
+    return if !_is_saturday_or_sunday();
+
+    #If the touch file is newer than the current time
+    #we assume the system had a clock issue and run.
+    my $now      = time();
+    my $last_ran = ( stat $SQLITE_AUTO_REBUILD_LAST_RAN_FILE )[9] || 0;
+    return if $last_ran < $now && $now < ( $last_ran + ( 5 * 86400 ) );
+
+    do { open( my $fh, '>', $SQLITE_AUTO_REBUILD_LAST_RAN_FILE ) or warn "open($SQLITE_AUTO_REBUILD_LAST_RAN_FILE): $!" };
+
+    #This gets a longer timeout because on heavily populated
+    #servers it can take over an hour to finish.
+    return run(
+        '/usr/local/cpanel/scripts/perform_sqlite_auto_rebuild_db_maintenance',
+        {
+            timeout => 10000,
+        },
+    );
+}
+
+#mocked in tests
+sub _is_saturday_or_sunday {
+
+    #Only run on Saturday or Sunday
+    my $wday = (localtime)[6];
+    return ( ( $wday == 0 ) || ( $wday == 6 ) );
+}
+
+our %touch_file_mock;    # Used to fake if touch files are present.
+
+sub touch_file_exists {
+    my ($file) = @_;
+    $file or return;
+
+    # Provide an easy way to mock file existance.
+    return $touch_file_mock{$file} if exists $touch_file_mock{$file};
+
+    return -e $file;
+}
+
+sub file_is_executable {
+    my $file = shift;
+
+    # for now use the same mock hash
+    return $touch_file_mock{$file} if exists $touch_file_mock{$file};
+    return -x $file;
+}
+
+sub populated_touch_file_exists {
+    my ($file) = @_;
+    $file or return;
+
+    # Provide an easy way to mock file existance.
+    return $touch_file_mock{$file} if exists $touch_file_mock{$file};
+
+    return -e $file && !-z _;
+}
+
+################################################################
+####[ Subroutines ]#############################################
+################################################################
+
+sub run_action {    # avoid to use array ref when using it from a single action
+    my (@todo) = @_;
+    return run_actions( \@todo );
+}
+
+sub run_actions {
+    my ( $todo, $increment_pbar ) = @_;
+    die unless ref $todo;
+    foreach my $cmd (@$todo) {
+        my $start_time = Cpanel::TimeHiRes::time();
+        my $type       = ref $cmd;
+        my $action     = {};
+
+        if ( $type eq 'Action::Command' ) {
+            $action = {%$cmd};
+            $cmd    = $action->{'cmd'};
+        }
+        elsif ( $type eq 'Action::Status' ) {
+            $action = { status => $cmd->[0] };
+            $cmd    = undef;
+        }
+        elsif ($type) {
+            if ( $type eq 'CODE' ) {
+                if ($DRY_RUN) {
+                    print "[dry-run mode] CodeRef\n";
+                }
+                else {
+                    # custom cases with some extra code around the action
+                    #   let them do what they want
+                    local $@;
+
+                    # Ensure that we do not allow a single action to
+                    # cause the entire script to fail.
+                    eval { $cmd->(); };
+                    warn if $@;
+                }
+                $increment_pbar->() if ref $increment_pbar;
+                my $runtime = sprintf( "%0.3f", Cpanel::TimeHiRes::time() - $start_time );
+                logger()->info(" - Finished in $runtime seconds");
+            }
+            elsif ( $type eq 'PBAR' ) {
+                $cmd->();
+            }
+
+            next;
+        }
+        $action->{cmd} = [ split( /\s+/, $cmd ) ] if $cmd;
+        process($action);
+        my $runtime = sprintf( "%0.3f", Cpanel::TimeHiRes::time() - $start_time );
+        logger()->info(" - Finished command `$cmd` in $runtime seconds") if $cmd;
+        $increment_pbar->()                                              if ref $increment_pbar;
+    }
+
+    return;
+}
+
+sub show_status {
+    my $msg = shift;
+    return unless defined $msg or length $msg;
+
+    my $status = [$msg];
+    bless $status, 'Action::Status';
+
+    return $status;
+}
+
+sub run {
+    my ( $cmd, $options ) = @_;
+
+    my $status = { %$options, cmd => $cmd };
+    bless $status, 'Action::Command';
+
+    return $status;
+}
+
+sub process {
+    my ($action) = @_;
+
+    $action->{'status'} = '' if !defined $action->{'status'};
+    if ( length( $action->{'status'} ) ) {
+        logger()->info("Processing: $action->{'status'}");
+        return;
+    }
+
+    my @cmd = @{ $action->{'cmd'} };
+
+    if ($DRY_RUN) {
+        print "[dry-run mode] " . join( ' ', @cmd, "\n" );
+        return;
+    }
+    logger()->info(" - Processing command `@cmd`");
+
+    my ( $program, @args ) = @cmd;
+
+    my $logger = logger();
+    my $run    = eval {
+        Cpanel::SafeRun::Object->new(
+            'program' => $program,
+            'args'    => \@args,
+            'stdout'  => Cpanel::IOCallbackWriteLine->new(
+                sub {
+                    $logger->info("   [$program] $_[0]");
+                }
+            )
+        );
+    };
+
+    $? = -1;    ## no critic qw(Variables::RequireLocalizedPunctuationVars) -- needed for compat
+    if ($@) {
+        logger()->error( "   [$program] $@", 1 );
+        logger()->set_need_notify();
+        return;
+    }
+
+    $? = $run->CHILD_ERROR();    ## no critic qw(Variables::RequireLocalizedPunctuationVars) -- needed for compat
+    if ( my $exit = $run->CHILD_ERROR() ) {
+        $exit >>= 8;
+        return if $exit && $action->{'exit_ok'} && grep { $exit == $_ } @{ $action->{'exit_ok'} };
+        if ( my $stderr = $run->stderr() ) {
+            foreach my $line ( split( m{\n}, $stderr ) ) {
+                logger()->error( "   [$program] " . $line );
+            }
+        }
+        logger()->error( "   [$program] " . $run->autopsy(), 1 );
+        logger()->set_need_notify();
+        return;
+    }
+
+}
+
+# list of actions which need some extra logic or being postponed
+
+sub action_vps_optimizer {
+    return if Cpanel::Server::Type::is_dnsonly();    # idea move this check to the script itself
+    return (
+        show_status('Running platform specific optimizations'),
+        '/usr/local/cpanel/scripts/vps_optimizer'
+    );
+}
+
+sub action_update_feature_flags {
+    return if $ENV{'CPANEL_BASE_INSTALL'};
+    return (
+        show_status('Updating the available feature flags'),
+        '/usr/local/cpanel/scripts/update_feature_flags'
+    );
+}
+
+sub action_update_spamassassin_rules {
+    return if $ENV{'CPANEL_BASE_INSTALL'};
+    return unless Cpanel::Update::Config::is_permitted( 'SARULESUP', get_update_conf() );
+    return sub {
+        return run_action(
+            show_status('Updating Apache SpamAssassin™ rules'),
+            background_update_spamassassin_rules(),
+        );
+    };
+
+}
+
+sub action_update_rdns_ips_cache {
+    return sub {
+        return run_action(
+            show_status('Updating Reverse DNS Cache'),
+            background_update_rdns_ips_cache(),
+        );
+    };
+
+}
+
+sub background_update_rdns_ips_cache {
+    return sub {
+        warn if !eval { Cpanel::ServerTasks::queue_task( ['DNSTasks'], "update_reverse_dns_cache" );    1; };
+        warn if !eval { Cpanel::ServerTasks::schedule_task( ['CpDBTasks'], 600, "update_userdomains" ); 1; };
+    };
+}
+
+sub background_update_spamassassin_rules {
+    return sub {
+        warn if !eval { Cpanel::ServerTasks::queue_task( ['SpamassassinTasks'], 'update_spamassassin_rules' ); 1 };
+    };
+}
+
+sub background_sprite_generator {
+    return sub {
+        eval { Cpanel::ServerTasks::queue_task( ['SpriteTasks'], 'sprite_generator' ); };
+    };
+}
+
+sub action_set_up_dns_resolver_workarounds {
+    return sub {
+        return run_action(
+            show_status('Setting up resolver workarounds'),
+            background_set_up_dns_resolver_workarounds(),
+        );
+    };
+
+}
+
+sub background_set_up_dns_resolver_workarounds {
+    return sub {
+        warn if !eval { Cpanel::ServerTasks::queue_task( ['DNSTasks'], "set_up_dns_resolver_workarounds" ); 1; };
+    };
+}
+
+sub action_sprite_generator {
+    return sub {
+        return run_action(
+            show_status('Rebuilding sprites'),
+            background_sprite_generator(),
+        );
+    };
+}
+
+sub background_freshclam {
+    return sub {
+        eval { Cpanel::ServerTasks::queue_task( ['ClamTasks'], 'freshclam --quiet -l /var/log/clam-update.log' ); };
+    };
+}
+
+sub action_background_refresh_dkim_validity_cache {
+    return sub {
+        eval { Cpanel::ServerTasks::queue_task( ['DKIMTasks'], 'refresh_entire_dkim_validity_cache' ); };
+    };
+}
+
+sub action_update_freshclam {
+    return sub {    # postpone the check if the binary is restored by RPM transaction
+        my $freshclam_bin = Cpanel::Binaries::path('freshclam');
+        return unless file_is_executable($freshclam_bin);
+
+        return run_action(
+            show_status('Updating virus patterns'),
+            background_freshclam(),
+        );
+    }
+}
+
+sub action_purge_dead_comet_files {
+    return (
+        show_status('Purging old comet files'),
+        '/usr/local/cpanel/bin/purge_dead_comet_files --quiet',
+    );
+}
+
+sub action_update_packages {
+    return sub {    # need RPM_IS_BROKEN to be set
+        return unless Cpanel::Update::Config::is_permitted( 'RPMUP', get_update_conf() );
+        return if $RPM_IS_BROKEN;
+
+        return run_action(
+            show_status('Running update-packages'),
+            '/usr/local/cpanel/scripts/update-packages'
+        );
+    };
+}
+
+sub action_ensure_mysql_upgrade_hook {
+    return sub {
+
+        require Cpanel::MariaDB;
+
+        my $config = scalar Cpanel::Config::LoadCpConf::loadcpconf();
+
+        my $set_version = $config->{'mysql-version'};
+        return if $set_version < 5.7;
+
+        if ( Cpanel::MariaDB::version_is_mariadb($set_version) ) {
+            require Cpanel::MariaDB::Install;
+
+            my $mysql_install_obj = Cpanel::MariaDB::Install->new( 'output_obj' => logger() );
+            $mysql_install_obj->install_upgrade_hook();
+            return 1;
+        }
+
+        require Cpanel::Mysql::Install;
+
+        my $mysql_install_obj = Cpanel::Mysql::Install->new( 'output_obj' => logger() );
+        $mysql_install_obj->install_upgrade_hook();
+        return 1;
+    }
+}
+
+sub action_update_pear_registry_in_the_background {
+    return sub {
+        return Cpanel::SafeRun::BG::nooutputsystembg('/usr/local/cpanel/scripts/process_pending_cpanel_php_pear_registration');
+    };
+}
+
+sub _create_cpanel_plugins_repo {
+    warn if !eval {
+        require Cpanel::Plugins::Repo;
+        Cpanel::Plugins::Repo::install();
+        1;
+    };
+    return;
+}
+
+sub action_sysup {
+    return if $ENV{'CPANEL_BASE_INSTALL'};    # This will already have been run on initial install
+    return sub {                              # need RPM_IS_BROKEN to be set
+        if ($RPM_IS_BROKEN) {
+            logger()->error('RPM is not functioning. Skipping sysup.');
+            return;
+        }
+
+        return run_action(
+            show_status('Updating system packages: sysup'),
+            '/usr/local/cpanel/scripts/sysup'
+        );
+    };
+}
+
+sub _find_and_fix_rpm_issue_script {    # for testing purpose
+    return '/usr/local/cpanel/scripts/find_and_fix_rpm_issues';
+}
+
+sub action_find_and_fix_rpm_issues {
+    return unless Cpanel::OS::is_rpm_based();
+
+    return if $ENV{'CPANEL_BASE_INSTALL'};    # we will not get here if rpm is broken
+    return sub {
+        local $?;
+        process( { 'status' => 'Checking RPM DB for corruption' } );
+        process( { 'cmd'    => [ _find_and_fix_rpm_issue_script() ] } );
+
+        if ( ( $? >> 8 ) > 0 ) {
+            logger()->error('RPM is not functioning and automatic repair failed.');
+            logger()->error('Tasks for update-packages, sysup, and check_cpanel_pkgs will be skipped.');
+            $RPM_IS_BROKEN = 1;
+        }
+
+        return;
+    };
+}
+
+sub action_updatesigningkey {
+
+    # Update signing keys, if enabled.
+    return unless Cpanel::Crypt::GPG::Settings::signature_validation_enabled();
+    return (
+        show_status('Updating cPanel signing keys.'),
+        '/usr/local/cpanel/scripts/updatesigningkey'
+    );
+}
+
+sub action_cloudlinux_update {
+
+    return unless Cpanel::OS::supports_or_can_become_cloudlinux();
+
+    return (
+        show_status('Checking CloudLinux installation'),
+        '/usr/local/cpanel/bin/cloudlinux_update',
+    );
+}
+
+sub action_checkallsslcerts {
+
+    # Base install does this in the background before upcp
+    return if $ENV{'CPANEL_BASE_INSTALL'};
+
+    my $max_delay_seconds = 18 * 60 * 60;                                                  # 18 hours
+    my $bytes_to_get      = length($max_delay_seconds) + 1;
+    my $rand_int          = Cpanel::Rand::Get::getranddata( $bytes_to_get, [ 0 .. 9 ] );
+    my $delay_seconds     = $rand_int % $max_delay_seconds;
+
+    # Should be between 1 and $max_delay_seconds
+    # scheduling a task for 0 seconds will cause queueprocd to throw an error
+    $delay_seconds++;
+
+    return (
+        show_status('Scheduling task to check service default SSL/TLS certificates'),
+        sub {
+            Cpanel::ServerTasks::schedule_task(
+                ['SSLTasks'],
+                $delay_seconds,
+                'checkallsslcerts'
+            );
+        }
+    );
+}
+
+sub action_build_locale_databases {
+    return if $ENV{'CPANEL_BASE_INSTALL'};
+    return (
+        show_status('Ensuring locale databases are up to date'),
+        sub {
+            Cpanel::ServerTasks::schedule_task( ['LocaleTasks'], 300, "build_locale_databases" );
+        }
+    );
+}
+
+sub action_init_wwwacct_conf {
+    return if touch_file_exists('/etc/wwwacct.conf');
+    return (
+        show_status('Creating account configuration file /etc/wwwacct.conf'),
+        '/usr/local/cpanel/scripts/mkwwwacctconf',
+    );
+}
+
+sub action_fixrndc {
+    return if touch_file_exists('/etc/nameddisable') or touch_file_exists('/etc/binddisable');
+    return if $ENV{'CPANEL_BASE_INSTALL'};                                                       # Base install does this in the background before upcp
+
+    my $status = 'Checking and repairing nameserver config';
+    if ( !touch_file_exists( Cpanel::OS::dns_named_basedir() ) ) {
+        return sub {
+            my $named_perms = Cpanel::OS::var_named_permissions();
+            mkdir( Cpanel::OS::dns_named_basedir(), $named_perms->{'mode'} );    # probably safe to do it earlier and simplify this code
+
+            return run_action(
+                show_status($status),
+                '/usr/local/cpanel/scripts/fixrndc -f',
+            );
+        };
+    }
+
+    return (
+        show_status($status),
+        '/usr/local/cpanel/scripts/fixrndc'
+    );
+}
+
+sub action_ipaliases {
+    return (
+        show_status('Setting up IP aliases startup'),
+        '/usr/local/cpanel/whostmgr/bin/setupipaliases',
+    );
+}
+
+sub action_check_cpanel_pkgs {
+    return if $ENV{'CPANEL_BASE_INSTALL'};
+    return sub {    # need RPM_IS_BROKEN to be set
+        my $cpconf = get_cpconf();
+        if ($RPM_IS_BROKEN) {
+            logger()->error('RPM is not functional. Skipping check_cpanel_pkgs.');
+        }
+        elsif ( $cpconf->{'maintenance_rpm_version_check'} ) {
+            my $status        = 'Checking cPanel packages';
+            my @rpmcheck_args = (qw{ --list-only --long-list --notify });
+            my $its_a_weekday = _is_saturday_or_sunday() ? 0 : 1;
+            if ( !$cpconf->{'maintenance_rpm_version_digest_check'} || $ENV{'CPANEL_BASE_INSTALL'} || $its_a_weekday ) {
+
+                # the user doesn't want a digest check and we're not being forced into it #
+                # In order to minimize server load and reduce install times we only do
+                # a full digest check on the weekends if the user hasn't disabled it.
+                $status .= ' (with no digest check or broken check)';
+                push @rpmcheck_args, '--no-digest';
+                push @rpmcheck_args, '--no-broken';
+            }
+            return run_action(
+                show_status($status),
+                join( ' ', '/usr/local/cpanel/scripts/check_cpanel_pkgs', @rpmcheck_args ),
+            );
+        }
+        else {
+            logger()->info('Skipping cPanel package check due to configuration');
+        }
+        return;
+    };
+}
+
+sub action_check_plugin_packages {
+    return sub {    # need RPM_IS_BROKEN to be set
+        if ($RPM_IS_BROKEN) {
+            logger()->error('RPM is not functional. Skipping check_plugin_pkgs.');
+            return;
+        }
+
+        my @pkgs_to_check = (
+            'cpanel-analytics',
+            'cpanel-banners-plugin',
+        );
+
+        require Cpanel::FeatureFlags;
+        push( @pkgs_to_check, 'cpanel-koality-plugin' ) if !Cpanel::FeatureFlags::is_feature_enabled('disable-koality-plugin');
+        push( @pkgs_to_check, 'cpanel-sitejet-plugin' ) if !Cpanel::FeatureFlags::is_feature_enabled('disable-sitejet-plugin');
+
+        return run_action(
+            show_status('Checking plugin packages'),
+            join( ' --pkg ', '/usr/local/cpanel/scripts/check_plugin_pkgs', @pkgs_to_check ),
+        );
+    };
+}
+
+sub action_ftpquotacheck {
+    return unless Cpanel::Services::Enabled::is_enabled('ftp');
+    return '/usr/local/cpanel/scripts/ftpquotacheck';
+}
+
+sub action_repair_mailman {
+    return sub {    # postpone it as can binary can be there only once RPM is fixed
+        my $cpconf = get_cpconf();
+        return unless ( !$cpconf->{'skipmailman'} && file_is_executable("$Cpanel::ConfigFiles::MAILMAN_ROOT/bin/check_perms") );
+        chdir("$Cpanel::ConfigFiles::MAILMAN_ROOT/bin");
+        my $ok = run_action(
+            show_status('Repairing Mailman Permissions'),
+            './check_perms -f --noarchives',
+        );
+        chdir('/usr/local/cpanel');    # return where we should be ?
+        return $ok;
+    };
+}
+
+sub _mysqld_sh_path { return '/usr/local/etc/rc.d/mysqld.sh' }    # for unit test purpose only
+
+sub action_repair_mysql {
+    return unless touch_file_exists( _mysqld_sh_path() );
+    return sub {
+        unlink _mysqld_sh_path();
+        return run_action(
+            show_status('Repairing MySQL startup'),
+            '/usr/local/cpanel/scripts/restartsrv mysql',
+        );
+    };
+}
+
+sub action_purge_modsec {
+    return if $ENV{'CPANEL_BASE_INSTALL'};
+    return '/usr/local/cpanel/scripts/purge_modsec_log';
+}
+
+# for unit test purpose only
+sub _passwd_files_to_chmod {
+    return [ '/etc/shadow.tmpeditlib', '/etc/master.passwd.tmpeditlib' ];
+}
+
+sub action_passwd {
+    return sub {
+        my $files = _passwd_files_to_chmod();
+
+        # Quick security check on the tmpeditlib files in case they are there
+        foreach my $f (@$files) {
+            chmod( 0600, $f ) if touch_file_exists($f);
+        }
+
+        return;
+    };
+}
+
+sub action_buildexim {
+    return sub {    # postponed if the file is created/touched by one rpm (hook)... to preserve original behavior
+        return
+          if populated_touch_file_exists('/etc/exim.conf')
+          and populated_touch_file_exists('/etc/exim.pl.local');
+
+        # run only if one of the file is missing / empty
+        return run_action(
+            show_status('EXIM sanity checking'),
+            '/usr/local/cpanel/scripts/buildeximconf --no_chown_spool',
+        );
+    };
+}
+
+sub action_eximstats {
+    return sub {
+
+        # Eximstats recover of /var/cpanel/sql/eximstats.sql, if it exists
+        return unless touch_file_exists('/var/cpanel/sql/eximstats.sql');
+
+        return run_action(
+            show_status('Recovering data stored in /var/cpanel/sql/eximstats.sql'),
+            '/usr/local/cpanel/scripts/restartsrv_eximstats'
+        );
+
+    };
+}
+
+# If eximstats is disabled, we need to handle clearing of old tracker files here.
+sub action_exim_purge_old_tracker_files {
+    return sub {
+        my $cpconf = get_cpconf();
+        return unless $cpconf->{'skipeximstats'} && $cpconf->{'skipeximstats'} eq '1';
+        require Cpanel::EmailTracker::Purge;
+        logger()->info('Purging old email tracker files');
+        Cpanel::EmailTracker::Purge::purge_old_tracker_files();
+        return;
+    };
+}
+
+sub action_cleanup_signature {
+    return (
+        show_status('Cleaning Signature Timestamp Cache'),
+        sub {
+            my $sig_cache = Cpanel::Crypt::GPG::VendorKeys::TimestampCache->new();
+            $sig_cache->cleanup_signature_cache();
+            return;
+        },
+    );
+}
+
+sub action_enable_onboot_handler {
+    return sub {
+
+        # Ensure that the handler for code on reboot is enabled
+        my $root_crontab = Cpanel::Cron::Utils::fetch_user_crontab('root');
+
+        # Already enabled.
+        return if $root_crontab =~ /\@reboot\s+\/usr\/local\/cpanel\/bin\/onboot_handler/;
+
+        logger()->info("Enabling onboot_handler for root in cron");
+        $root_crontab .= "\@reboot /usr/local/cpanel/bin/onboot_handler\n";
+        Cpanel::Cron::Utils::save_root_crontab($root_crontab);
+    }
+}
+
+# </end of actions>
+
+# local cache configuration to be able to use them
+{
+    my $conf;    # state like variable
+
+    sub get_update_conf {
+        $conf = { Cpanel::Update::Config::load() } if !defined $conf;
+        return $conf;
+    }
+
+    sub reset_update_conf {    # for testing purpose
+        undef($conf);
+        return;
+    }
+}
+
+# loadcpconf already caches this so we don't need to re-cache it here.
+*get_cpconf = \&Cpanel::Config::LoadCpConf::loadcpconf;
+
+{
+
+    my $logger;
+
+    sub setup_logger {
+        my ( $logfile_path, $starting_pbar ) = @_;
+        return $logger = Cpanel::Update::Logger->new( { 'logfile' => $logfile_path, 'stdout' => 1, 'log_level' => 'info', defined $starting_pbar ? ( 'pbar' => $starting_pbar ) : () } );
+    }
+
+    sub logger {
+        $logger = setup_logger() unless defined $logger;    # mainly for mocking
+        return $logger;
+    }
+}
+
+sub increment_pbar {
+    my ( $start, $end, $items ) = @_;
+
+    my $_current_ratio = $start;
+    my $_last_update   = 0;
+
+    # do a -1 to the total to leave it to the end
+    my $points = ( $end - $start - 1 ) || 1;
+
+    $items ||= $points;          # number of elements in our array
+    my $w = $points / $items;    # default points to increase +1
+
+    return sub {
+        my (%opts) = @_;
+
+        if ( $opts{complete} ) {
+
+            # we reach the end we can now use the final result
+            $_last_update = $_current_ratio = $end;
+            logger()->update_pbar($end);
+            return;
+        }
+
+        my $previous = $_current_ratio;
+        $_current_ratio += $w;
+        $_current_ratio = $end if $_current_ratio > $end;
+
+        my $normalize = int($_current_ratio);
+
+        # includes a protection to avoid displaying duplicates
+        logger()->update_pbar($normalize);
+
+        return;
+    }
+}
+
+sub setupenv {
+    Cpanel::Env::clean_env();
+    delete $ENV{'DOCUMENT_ROOT'};
+    delete $ENV{'SERVER_SOFTWARE'};
+    if ( $ENV{'WHM50'} ) {
+        $ENV{'GATEWAY_INTERFACE'} = 'CGI/1.1';
+    }
+    ( $ENV{'USER'}, $ENV{'HOME'} ) = ( getpwuid($>) )[ 0, 7 ];
+    $ENV{'PATH'} .= ':/sbin:/usr/sbin:/usr/bin:/bin:/usr/local/bin';
+    $ENV{'LANG'}   = 'C';
+    $ENV{'LC_ALL'} = 'C';
+
+    return;
+}
+
+sub setupcrontab {
+    logger()->info('Setting up cronjobs');
+    logger()->info('Setting Up update_db_cache Crontab');
+    logger()->info('Setting Up update_maiman_cache Crontab');
+    logger()->info('Setting Up dcpumon Crontab');
+
+    try {
+        Cpanel::Config::Crontab::sync_root_crontab();
+    }
+    catch {
+        warn "Failed to sync root crontab: $_";
+    };
+
+    return;
+}
+
+sub clean_roundcube_attachment_directory {
+    my $roundcube_tmp = '/var/cpanel/roundcube/tmp';
+    opendir my $dh, $roundcube_tmp or return;
+    my @old_files = grep { -M $_ > 7.0 } map { "$roundcube_tmp/$_" } grep { !m/^\.{1,2}$/ } readdir $dh;
+    closedir $dh;
+
+    my $clean = sub { unlink @old_files };
+    return Cpanel::AccessIds::do_as_user( 'cpanelroundcube', $clean );
+}
+
+sub check_mysql_version {
+
+    # no need to check on first install
+    return if $ENV{'CPANEL_BASE_INSTALL'};
+
+    my ( $reco_version, $current_version, $version_is_mysql, $display_name, $err );
+
+    try {
+        $current_version = Cpanel::MysqlUtils::Version::current_mysql_version();
+    }
+    catch {
+        $err = $_;
+    };
+
+    if ($err) {
+        logger()->info("Unable to determine MySQL version because of an error: $err. Skipping MySQL version check...");
+        return;
+    }
+    elsif ( !$current_version->{'short'} ) {
+        logger()->info("Unable to determine MySQL version. Skipping MySQL version check...");
+        return;
+    }
+
+    # We check the remote mysql version in Install::CheckRemoteMySQLVersion,
+    # so we'll skip the check here
+    return if $current_version->{'is_remote'};
+
+    $current_version  = $current_version->{'short'};
+    $version_is_mysql = Cpanel::MysqlUtils::Version::version_is_mysql();
+    $display_name     = $version_is_mysql ? "MySQL"                                                         : "MariaDB";
+    $reco_version     = $version_is_mysql ? $Cpanel::MysqlUtils::Version::MINIMUM_RECOMMENDED_MYSQL_RELEASE : $Cpanel::MysqlUtils::Version::MINIMUM_RECOMMENDED_MARIADB_RELEASE;
+
+    # if less than the minimum recommended version, recommend an update.
+    if ( Cpanel::MysqlUtils::Version::is_at_least( $current_version, $reco_version ) ) {
+        logger()->info("“$display_name” version “$current_version” is greater than or equal to the recommended minimum version, “$reco_version”.");
+    }
+    else {
+        logger()->info("“$display_name” version “$current_version” is less than the recommended minimum version, “$reco_version”.");
+
+        my @outdated = ();
+        push @outdated,
+          {
+            'label'            => $display_name,
+            'current_version'  => $current_version,
+            'min_reco_version' => $reco_version,
+            'upgrade_url'      => 'https://go.cpanel.net/whmdocsUpgradeDBVersion',
+          };
+
+        require Cpanel::Notify;
+        Cpanel::Notify::notification_class(
+            'class'            => 'OutdatedSoftware::Notify',
+            'application'      => 'OutdatedSoftware::Notify',
+            'constructor_args' => [
+                'origin'            => 'scripts/maintenance',
+                'outdated_software' => \@outdated,
+            ]
+        );
+    }
+
+    return;
+}
+
+sub ensure_active_mysql_profile_is_present {
+    eval {
+        require Cpanel::MysqlUtils::RemoteMySQL::ProfileManager;
+        Cpanel::MysqlUtils::RemoteMySQL::ProfileManager->new()->generate_active_profile_if_none_set();
+    };
+    return 1;
+}
+
+#############################################################################
+
+## Goes through cpupdate.conf and purge entries invalid since 11.36
+sub purge_cpupdate_conf {
+
+    my $dir = Cpanel::RPM::Versions::Directory->new( { 'directory' => '/var/cpanel/rpm.versions.d', 'logger' => logger() } );
+    if ( $dir->config_changed() ) {
+        $dir->save();
+    }
+    return;
+}
+
+our $upcp_log_dir = '/var/cpanel/updatelogs';
+
+sub purge_upcp_logs {
+    my ($days) = @_;
+
+    if ( !defined $days ) {
+        my $cpconf = get_cpconf();
+        $days = $cpconf->{'upcp_log_retention_days'};
+    }
+
+    # On initial upgrade, upcp_log_retention_days isn't set yet. We'll enforce the default here.
+    if ( $days < 3 ) {
+        logger()->warning("upcp_log_retention_days unexpectedly set to $days. Temporarily setting to 45 days.");
+        $days = 45;
+    }
+
+    logger()->info("Purging upcp logs older than $days days.");
+
+    my $purge_older_than = time - ( 86400 * $days );
+    opendir( my $dir_fh, $upcp_log_dir ) or do {
+        logger()->warning("Cannot read '$upcp_log_dir' for purging.");
+    };
+
+    while ( my $file = readdir($dir_fh) ) {
+
+        # Special files we don't purge
+        next if ( $file eq '.' or $file eq '..' or $file eq 'summary.log' );
+
+        # Skip if the file is new enough.
+        my @stats = lstat("$upcp_log_dir/$file");
+        next unless ( @stats && $stats[9] < $purge_older_than );
+
+        # The file can be removed.
+        unlink "$upcp_log_dir/$file";
+    }
+
+    closedir($dir_fh);
+    return;
+}
+
+sub check_addon_licenses {
+    return sub {
+
+        # Base install does this in the background before upcp
+        if ( !$ENV{'CPANEL_BASE_INSTALL'} ) {
+
+            # Fire these off in a taskqueue so as not to hold up the rest of the script
+            eval { Cpanel::ServerTasks::queue_task( ['ScriptTasks'], 'run_script /usr/local/cpanel/scripts/litespeed-check --run' ); };
+            eval { Cpanel::ServerTasks::queue_task( ['ScriptTasks'], 'run_script /usr/local/cpanel/scripts/jetbackup-check --run' ); };
+        }
+    };
+}
+
+sub update_public_suffix_list {
+
+    try {
+        require IO::Socket::SSL::PublicSuffix;
+        IO::Socket::SSL::PublicSuffix::update_self_from_url();
+
+        require Cpanel::PublicSuffix;
+        Cpanel::PublicSuffix::clear_cache();
+    }
+    catch {
+        logger()->info('Unable to update the Pubic Suffix list');
+    };
+
+    return;
+}
+
+sub usage {
+    print <<EOM;
+Usage: $0 [options]
+
+Perform cPanel nightly maintenance tasks for upcp.
+
+Where the supported options are:
+
+  --help
+               Display this screen and exit
+
+  --log={logfile path}
+               Log program output to the file named by {logfile path}
+
+EOM
+    return 0;
+}
+
+exit( __PACKAGE__->script(@ARGV) || 0 ) if !caller();
+
+1;

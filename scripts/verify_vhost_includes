@@ -1,0 +1,213 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/verify_vhost_includes           Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+use warnings;
+use File::Spec;
+use Cpanel::ConfigFiles::Apache          ();
+use Getopt::Param                        ();
+use Cpanel::SafeRun::Errors              ();
+use Cpanel::FileUtils::Move              ();
+use Cpanel::FileUtils::TouchFile         ();
+use Cpanel::ConfigFiles::Apache::modules ();
+
+my $apacheconf = Cpanel::ConfigFiles::Apache->new();
+
+my $prm = Getopt::Param->new(
+    {
+        'help_coderef' => sub {
+            print <<"END_HELP";
+Verify that vhost includes are valid with the current apache.
+
+$0 --help  (this screen)
+
+   --commit
+     Actually do changes, otherwise it's only an informational dryrun
+
+   --hide-valid
+     Do not show output for files that are ok
+
+   --show-test-output
+     Show the output of the test
+
+   --only-ext=(owner|conf)
+     Only check a specific type of incldue. Valid values are:
+        'conf'  - *.conf files
+        'owner' - *.owner-{RESELLER_NAME_HERE}
+
+END_HELP
+            exit;
+        },
+    }
+);
+
+die $apacheconf->bin_httpd() . " does not exist"    if !-e $apacheconf->bin_httpd();
+die $apacheconf->bin_httpd() . " is not executable" if !-x $apacheconf->bin_httpd();
+
+my $httpdconf             = $apacheconf->file_conf();
+my $vhostless_for_testing = $apacheconf->dir_conf() . '/_ensure_vhost_includes_vhostless_test_file';
+
+my $default_target_empty_file = "$vhostless_for_testing.conf";
+Cpanel::FileUtils::TouchFile::touchfile($default_target_empty_file);
+die "default include for test is not empty" if -s $default_target_empty_file;
+
+my $include_symlink = "$vhostless_for_testing.inc";
+if ( ( readlink($include_symlink) || '' ) ne $default_target_empty_file ) {
+    unlink $include_symlink;    # must remove it so it can be created
+    symlink( $default_target_empty_file, $include_symlink );
+
+    if ( ( readlink($include_symlink) || '' ) ne $default_target_empty_file ) {
+        die "Default symlink for test failed";
+    }
+}
+
+my $test_mtime = ( stat($vhostless_for_testing) )[9] || 0;
+if ( ( stat($httpdconf) )[9] >= $test_mtime ) {
+
+    # create $vhostless_for_testing
+    if ( open my $fh_r, '<', $httpdconf ) {
+        if ( open my $fh_w, '>', $vhostless_for_testing ) {
+          READ_CONF:
+            while ( my $line = readline($fh_r) ) {
+                if ( $line =~ m/^\s*\<VirtualHost /i ) {
+                    last READ_CONF;
+                }
+                print {$fh_w} $line;
+            }
+            print {$fh_w} "<VirtualHost *>\nInclude \"$include_symlink\"\n</VirtualHost>\n";
+            close $fh_w;
+        }
+        else {
+            die "Could not open '$vhostless_for_testing' for writing: $!";
+        }
+        close $fh_r;
+    }
+    else {
+        die "Could not open '$httpdconf' for reading: $!";
+    }
+}
+
+my $initial_test_result = Cpanel::SafeRun::Errors::saferunallerrors( $apacheconf->bin_httpd(), qw(-DSSL -t -f), $vhostless_for_testing );
+if ( $initial_test_result !~ m{Syntax\s+OK}i ) {
+    die "Default vhostless config file for test has bad syntax";
+}
+
+my $only = $prm->get_param('only-ext') || '';
+$only = '' if $only ne 'conf' && $only ne 'owner';
+
+my $testout = $prm->get_param('show-test-output') || '';
+my $hideok  = $prm->get_param('hide-valid')       || '';
+
+my $dryrun = !$prm->get_param('commit') ? 1 : 0;
+
+my $no_vhost_httpd_conf = 'TODO';
+
+my $path = $apacheconf->dir_conf_userdata();
+_proc_files_in($path);
+
+my $apache_version = Cpanel::ConfigFiles::Apache::modules::apache_version( { 'places' => 2 } );
+for my $type (qw( std ssl )) {
+    _proc_files_in("$path/$type");
+    for my $apv ( qw( 1 2 ), $apache_version ) {
+        _proc_files_in("$path/$type/$apv");
+        for my $user ( _get_dirs_in("$path/$type/$apv") ) {
+            _proc_files_in( "$path/$type/$apv/$user", 1 );    # IE no .owner- here
+            for my $domain ( _get_dirs_in("$path/$type/$apv/$user") ) {
+                _proc_files_in( "$path/$type/$apv/$user/$domain", 1 );    # IE no .owner- here
+            }
+        }
+    }
+}
+
+# cleanup for next time:
+unlink $include_symlink;    # must remove it so it can be created
+symlink( $default_target_empty_file, $include_symlink );
+
+sub _get_dirs_in {
+    my ($dir) = @_;
+    return if !-d $dir;
+    opendir my $root_dh, $dir or die qq{Could not opendir '$dir': $!};
+    my @dirs = grep { !m{ \A [.]+ \z }xms && -d "$dir/$_" } readdir($root_dh);
+    closedir $root_dh;
+    return @dirs;
+}
+
+sub _proc_files_in {
+    my ($path) = @_;
+    return if !-d $path;
+
+    opendir my $root_dh, $path or die qq{Could not opendir '$path': $!};
+    my @files = grep { !m{ \A [.]+ \z }xms && -f "$path/$_" } readdir($root_dh);
+    closedir $root_dh;
+
+    for my $file ( map { File::Spec->catfile( $path, $_ ) } @files ) {
+        _handle_abs_path($file);
+    }
+}
+
+sub _handle_abs_path {
+    my ( $abs_path, $no_owner ) = @_;
+
+    my $is_owner  = $abs_path =~ m{ [.] owner [-] \S+ \z }xms ? 1 : 0;
+    my $is_conf   = $abs_path =~ m{ [.] conf \z }xms          ? 1 : 0;
+    my $is_broken = $abs_path =~ m{ [.] broken \z }xms        ? 1 : 0;
+
+    return if $is_owner && $no_owner;
+    return if $is_owner && $only eq 'conf';
+    return if $is_conf  && $only eq 'owner';
+
+    unlink $include_symlink;    # must remove it so it can be created
+    symlink( $abs_path, $include_symlink );
+
+    if ( readlink($include_symlink) ne $abs_path ) {
+        return;
+    }
+
+    my $test_result = Cpanel::SafeRun::Errors::saferunallerrors( $apacheconf->bin_httpd(), qw(-DSSL -t -f), $vhostless_for_testing );
+    if ( $test_result =~ m{Syntax\s+OK}i ) {
+        print "Testing $abs_path...ok\n" if !$hideok;
+        if ($is_broken) {
+            print "Testing $abs_path...ok\n" if $hideok;    # print it her eunder this circumstance even if we're not above and not if we already have
+            if ( !$dryrun ) {
+                my $orig = $abs_path;
+                $orig =~ s{.broken}{};
+                if ( Cpanel::FileUtils::Move::safemv( $abs_path, $orig ) ) {
+                    print "\tMoved '$abs_path'\n\tback to '$orig'...\n";
+                }
+                else {
+                    print "\tUnable to move '$abs_path'\nto '$orig' for safety, you will want to do this manually...\n";
+                }
+            }
+            else {
+                print "\tNo changes made without --commit flag\n";
+            }
+        }
+        print "[TEST RESULTS]\n$test_result\n[/TEST RESULTS]\n\n" if $testout && !$hideok;
+    }
+    else {
+        print "Testing $abs_path...";
+        if ($is_broken) {
+            print "Still broken\n";
+        }
+        else {
+            print "FAILED\n";
+            if ( !$dryrun ) {
+                if ( Cpanel::FileUtils::Move::safemv( $abs_path, $abs_path . '.broken' ) ) {
+                    print "\tMoved '$abs_path'\n\tto '$abs_path.broken' for safety...\n";
+                }
+                else {
+                    print "\tUnable to move '$abs_path'\nto '$abs_path.broken'for safety, you will want to do this manually...\n";
+                }
+            }
+            else {
+                print "\tNo changes made without --commit flag\n";
+            }
+        }
+
+        print "[TEST RESULTS]\n$test_result\n[/TEST RESULTS]\n\n" if $testout;
+    }
+}

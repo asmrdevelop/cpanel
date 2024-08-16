@@ -1,0 +1,27 @@
+
+sub convert_address_directory_to_dovecot_lda_destination_username {
+    my $local_part = Exim::expand_string('$local_part');
+    my $domain     = Exim::expand_string('$domain');
+    $primary_hostname ||= Exim::expand_string('$primary_hostname');
+    my $address_file = Exim::expand_string('$address_file');
+
+    if ( $address_file !~ m{mail/\Q$domain\E} ) {
+        return ( getpwuid($>) )[0];
+    }
+    else {
+        return $local_part . '@' . $domain;
+    }
+
+}
+
+sub convert_address_directory_to_dovecot_lda_mailbox {
+    my $address_file = Exim::expand_string('$address_file');
+
+    my ($mailbox) = $address_file =~ m{/\.([^\/]+)};
+    if ($mailbox) {
+        return "INBOX.$mailbox";
+    }
+
+    return 'INBOX';
+
+}

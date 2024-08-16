@@ -1,0 +1,125 @@
+<div cp-loading-panel id="loading-panel" ng-show="dnssec.is_loading">
+[% locale.maketext("Loading …") %]
+</div>
+<cp-alert type="danger" id="notAllowedWarning" ng-show="dnssec.loading_error">{{ dnssec.loading_error_message }}</cp-alert>
+<section id="dns_sec_ds_records_container" ng-hide="dnssec.is_loading || dnssec.loading_error">
+    <div class="row">
+        <div class="col-xs-12 col-sm-8 col-md-6">
+            <form name="dnssec.generateForm" novalidate>
+                <div class="panel panel-default">
+                    <div class="panel-heading">
+                        <h2 class="widget-title pull-left flip">
+                            [% locale.maketext('[asis,DNSSEC] Key Details') %]
+                        </h2>
+                        <div class="clearfix"></div>
+                    </div>
+                    <div class="panel-body">
+                        <cp-alert id="domainRegistrarInfo" type="info">
+                            [% locale.maketext('To enable [asis,DNSSEC] for your domain, you must go to your domain registrar website and use the information below to fill out their [asis,DNSSEC] forms.') %]
+                        </cp-alert>
+                        <div class="form-group">
+                            <div class="row">
+                                <div class="col-xs-12">
+                                    <label for="lblDomain">
+                                        [% locale.maketext('Domain') %]
+                                    </label>
+                                </div>
+                                <div class="col-xs-12">
+                                    <span id="lblDomain" class="wordbreak">
+                                        {{dnssec.domain}}
+                                    </span>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="form-group">
+                            <div class="row">
+                                <div class="col-xs-12">
+                                    <label for="lblKeyTag">
+                                        [% locale.maketext('Key Tag') %]
+                                    </label>
+                                </div>
+                                <div class="col-xs-12">
+                                    <span id="lblKeyTag">
+                                        {{dnssec.keyContent.keyTag}}
+                                    </span>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="form-group">
+                            <div class="row">
+                                <div class="col-xs-12">
+                                    <label for="lblKeyAlgo">
+                                        [% locale.maketext('Algorithm') %]
+                                    </label>
+                                </div>
+                                <div class="col-xs-12">
+                                    <span id="lblKeyAlgo">
+                                        {{dnssec.keyContent.algoDesc}} {{dnssec.keyContent.bitsMsg}}
+                                        [% locale.maketext('(Algorithm [_1])', '{{ dnssec.keyContent.algoNum }}') %]
+                                    </span>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="form-group">
+                            <div class="row">
+                                <div class="col-xs-12">
+                                    <label for="lblKeyCreated">
+                                        [% locale.maketext('Created') %]
+                                    </label>
+                                </div>
+                                <div class="col-xs-12">
+                                    <span id="lblKeyCreated">
+                                        {{:: dnssec.keyContent.created }}
+                                    </span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="form-group">
+                            <div class="row">
+                                <div class="col-xs-12">
+                                    <label>
+                                        [% locale.maketext('The following digests are available:') %]
+                                    </label>
+                                </div>
+                            </div>
+                            <div class="row">
+                                <div class="col-xs-12">
+                                    <ul class="list-unstyled">
+                                        <li class="digest-list-item" ng-repeat="d in dnssec.keyContent.digests">
+                                            <label for="digestType_{{$index}}">[% locale.maketext('Digest Type') %]</label>
+                                            <p id="digestType_{{$index}}">{{d.algoDesc}} [% locale.maketext('(Algorithm [_1])', '{{ d.algoNum }}') %]</p>
+                                            <label id="digest_{{$index}}">[% locale.maketext('Digest') %]</label>
+                                            <p id="digest_{{$index}}" class="wordbreak">{{d.digest}}
+                                                <button id="cloneDigestBtn_{{$index}}"
+                                                    type="button"
+                                                    class="btn btn-link btn-sm"
+                                                    ng-click="dnssec.putOnClipboard(d.digest)"
+                                                    aria-label="[% locale.maketext('Copy the digest for “[_1]” to the clipboard.', '{{ d.algoDesc }}') %]">
+                                                    <i class="far fa-copy" aria-hidden="true"></i>
+                                                    [% locale.maketext("Copy") %]
+                                                </button>
+                                            </p>
+                                        </li>
+                                    </ul>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="panel-footer clearfix">
+                        <button id="btnCancel"
+                            type="button"
+                            class="btn btn-link pull-right flip"
+                            ng-click="dnssec.backToListView()"
+                            aria-label="[% locale.maketext('Go back to the list of keys.') %]">
+                            <i class="fas" ng-class="{ 'fa-arrow-left': !dnssec.isRTL, 'fa-arrow-right': dnssec.isRTL }" aria-hidden="true"></i>
+                            [% locale.maketext('Go Back') %]
+                        </button>
+                    </div>
+                </div>
+            </form>
+        </div>
+        <ng-include src="'views/dnssec_sidebar_help.html.tt'"></ng-include>
+    </div>
+</section>
+

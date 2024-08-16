@@ -1,0 +1,669 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - bin/taskrun                             Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package Bin::TaskRun;
+
+use strict;
+## no critic qw(TestingAndDebugging::RequireUseWarnings)
+
+use Cpanel::Update::Logger             ();
+use Algorithm::Dependency::Ordered     ();
+use Algorithm::Dependency::Source::HoA ();
+use Cpanel::SafeFile                   ();
+use Cpanel::Task                       ();    # PPI USE OK - leave it for now
+use Cpanel::Task::Base                 ();
+use Cpanel::Task::Pre                  ();
+use Cpanel::Task::Main                 ();
+use Cpanel::Task::Post                 ();
+use Cpanel::Time                       ();
+use Cpanel::TimeHiRes                  ();
+use Cpanel::Usage                      ();
+use Cpanel::Version::Full              ();
+use FileHandle                         ();
+
+{
+
+    package Bin::TaskRun::STDRedirector;
+
+    sub new {
+        my ( $class, %options ) = @_;
+        $options{'logger'} ||= Cpanel::Update::Logger->new();
+        return bless {
+            'logger' => $options{'logger'},
+        }, $class;
+    }
+
+    sub _get_output_log_filename {
+        my ($self) = @_;
+        my $dir = '/var/cpanel/updatelogs';
+        if ( !-d $dir ) {
+            if ( -e $dir ) {
+                rename( $dir, $dir . '.bak-' . time ) || $self->_die("Unable to store logs in $dir");
+            }
+            mkdir( $dir, 0700 ) || $self->_die("Unable to create $dir: $!");
+        }
+
+        my $timestamp = Cpanel::Time::time2condensedtime();
+        my $filename  = "$dir/taskrun-$timestamp.log";
+        return $filename;
+    }
+
+    # Just a bit of shorthand
+    sub _die {
+        my ( $self, $msg ) = @_;
+        return $self->{'logger'}->die($msg);
+    }
+
+    sub begin_redirect {
+        my ( $self, $filename ) = @_;
+
+        $filename = $self->_get_output_log_filename() unless $filename;
+
+        $self->{'fh'} = FileHandle->new();
+        $self->{'fh'}->autoflush();
+        $self->{'flock'} = Cpanel::SafeFile::safeopen( $self->{'fh'}, '>>', $filename );
+
+        if ( $self->{'flock'} ) {
+            print "Writing log to $filename\n";
+            open $self->{'old_stdout'}, '>&', \*STDOUT      || $self->_die('Unable to dup STDOUT');
+            open $self->{'old_stderr'}, '>&', \*STDERR      || $self->_die('Unable to dup STDERR');
+            open STDOUT,                '>&', $self->{'fh'} || $self->_die('Unable to reopen STDOUT');
+            open STDERR,                '>&', $self->{'fh'} || $self->_die('Unable to reopen STDERR');
+            return 1;
+        }
+
+        return;
+    }
+
+    sub finish_redirect {
+        my ($self) = @_;
+        close STDOUT || $self->_die('Unable to close duped STDOUT');
+        close STDERR || $self->_die('Unable to close duped STDERR');
+        open STDOUT, '>&', $self->{'old_stdout'} || $self->_die('Unable to restore STDOUT');
+        open STDERR, '>&', $self->{'old_stderr'} || $self->_die('Unable to restore STDERR');
+        return Cpanel::SafeFile::safeclose( $self->{'fh'}, $self->{'flock'} ) if $self->{'flock'};
+    }
+}
+
+{
+
+    package Bin::TaskRun::CycleDetector;
+
+    sub new {
+        my ($class) = @_;
+        return bless {}, $class;
+    }
+
+    sub _detect {
+        my ( $self, %options ) = @_;
+
+        my $node = $options{'path'}->[-1];
+
+        if ( !ref $options{'nodes_in_path'} ) {
+            $options{'nodes_in_path'} = { $node => undef };
+        }
+
+        for my $dep ( @{ $options{'deps'}{$node} } ) {
+            next if !exists $options{'nodes'}{$dep};
+            push @{ $options{'path'} }, $dep;
+            return $options{'path'} if exists $options{'nodes_in_path'}{$dep};
+            $options{'nodes_in_path'}{$dep} = 1;
+            if ( my $cycle = $self->_detect(%options) ) {
+                return $cycle;
+            }
+        }
+
+        delete $options{'nodes'}{$node};
+        return;
+    }
+
+    sub detect {
+        my ( $self, $hr_names_to_deps ) = @_;
+        my @path;
+        my %nodes = map { $_ => undef } keys %$hr_names_to_deps;
+
+        my @node_keys = keys %nodes;
+        while ( my $node = pop @node_keys ) {
+            @path = ($node);
+            my $cycle = $self->_detect(
+                'path'  => \@path,
+                'nodes' => \%nodes,
+                'deps'  => $hr_names_to_deps,
+            );
+            return $cycle if $cycle;
+            @node_keys = keys %nodes;
+        }
+
+        return;
+    }
+}
+
+my $logger;
+our $error = "";
+
+exit( run( argv => \@ARGV ) ) unless caller();
+
+sub run {
+    my (%opts) = @_;
+
+    return unless $opts{argv} && ref $opts{argv} eq ref [];
+    my $unfiltered_args = {};
+    Cpanel::Usage::wrap_options( $opts{argv}, \&usage, $unfiltered_args );
+
+    # apply filter on flags
+    # not all options are binary toggles
+    my %options = map { my $k = $_; $k => $unfiltered_args->{$k}; } (qw( debug dry force log_file no_deps pbar-start pbar-stop ));
+
+    $logger = Cpanel::Update::Logger->new( { $options{log_file} ? ( 'logfile' => $options{log_file} ) : (), 'stdout' => 1, 'log_level' => $options{debug} ? 'debug' : 'info', pbar => $options{'pbar-start'} || 0 } );
+
+    # pull out any specified tasks named
+    # will run all if none provided
+    my @targets = grep { !m/^\-\-/ } @{ $opts{argv} };
+
+    # This call is using object syntax, so to preserve the
+    # provided hash (leaving an extra, unused record), the
+    # first argument must be undef.
+    return !__PACKAGE__->_main(
+        undef,
+        %options,
+        'targets' => scalar @targets ? \@targets : undef,
+        'script'  => 1,
+    );
+}
+
+sub get_base_dir {
+    return '/usr/local/cpanel/install/';
+}
+
+sub get_task_dir {
+    return get_base_dir();
+}
+
+sub get_history_filename {
+    my $filename = '/var/cpanel/version/task-history';
+    return $filename;
+}
+
+sub short_name_if_valid_module {
+    my ($name)      = @_;
+    my $dir_name    = get_task_dir();
+    my $module_path = $dir_name . $name;
+
+    if ( !( -e $module_path && -r _ && -T _ ) ) {
+        return ();
+    }
+
+    # TODO: could do more extensive checking to see if the module is good
+
+    $name =~ s/^(.*?)\.pm$/$1/;
+    return $name;
+}
+
+sub get_task_module_names {
+    my $dir_name = get_task_dir();
+    my $dir_handle;
+    my @full_names;
+
+    if ( -e $dir_name && -r _ && -d _ && opendir $dir_handle, $dir_name ) {
+        @full_names = grep /\.pm$/, readdir $dir_handle;
+        closedir $dir_handle;
+    }
+    else {
+        $logger->warning("Unable to read from directory $dir_name");
+    }
+
+    my @names = map { short_name_if_valid_module($_) } @full_names;
+
+    return @names;
+}
+
+sub add_to_history {
+    my ($msg) = @_;
+    my $history_file_name = get_history_filename();
+    open( my $history_file_handle, '>>', $history_file_name ) or $logger->_die("Unable to add to the history file: open($history_file_name): $!");
+    syswrite( $history_file_handle, "$msg\n" );
+    return 1;
+}
+
+sub populate_performed_task {
+    my ( $performed_task, $relevant_history_entries, $write_base_entry ) = @_;
+
+    foreach my $task_name (@$relevant_history_entries) {
+        $performed_task->{$task_name} = 1;
+    }
+
+    if ($write_base_entry) {
+        my $base_task = Cpanel::Task::Base->new();
+        add_to_history( $base_task->create_history_msg() );
+    }
+
+    return 1;
+}
+
+sub valid_history_file {
+    my ($filename) = @_;
+
+    if ( !-e $filename ) {
+        $logger->warning("History file does not exist ($filename)");
+        return;
+    }
+    elsif ( !-r _ ) {
+        $logger->_die("History file cannot be read ($filename)");
+    }
+    elsif ( !-w _ ) {
+        $logger->_die("History file cannot be written to ($filename)");
+    }
+    elsif ( !( -f _ && -T _ ) ) {
+        $logger->_die("History file is invalid ($filename)");
+    }
+
+    return 1;
+}
+
+sub extract_performed_tasks_from_history {
+    my ($performed_task)   = @_;
+    my $history_filename   = get_history_filename();
+    my $current_version    = Cpanel::Version::Full::getversion();
+    my $history_filehandle = FileHandle->new();
+    my @relevant_history_entries;
+    my $write_base_entry = 1;
+
+    # The history file can be very large so its important
+    # not to read back from the start as it can take a few seconds
+    # to parse and slow down the whole update.  Since we
+    # don't have multiple readers and writers there is no
+    # need to lock
+    my $readback_max = 131072;
+
+    if ( valid_history_file($history_filename) ) {
+        if ( open( $history_filehandle, '<', $history_filename ) ) {
+            my $size = ( stat($history_filehandle) )[7];
+
+            if ( $size > $readback_max ) {
+                seek( $history_filehandle, $size - $readback_max, Fcntl::SEEK_SET() );
+                readline($history_filehandle);
+            }
+            while (<$history_filehandle>) {
+                my ( $task_name, $version, $timestamp ) = split( /:/, $_ );
+
+                if ( $current_version ne $version ) {
+                    undef @relevant_history_entries;
+                }
+                elsif ( 'base' eq $task_name ) {
+                    $write_base_entry = 0;
+                }
+                else {
+                    push @relevant_history_entries, $task_name;
+                }
+            }
+        }
+        else {
+            $logger->_die('Unable to extract from history file');
+        }
+    }
+
+    populate_performed_task( $performed_task, \@relevant_history_entries, $write_base_entry );
+
+    return 1;
+}
+
+sub perform {
+    my ($task) = @_;
+
+    eval { $task->perform(); };
+    if ($@) {
+        warn $@;
+        return;
+    }
+
+    return 1;
+}
+
+sub perform_task {
+    my ( $task, $performed_task, $dry_run ) = @_;
+    my $task_name    = $task->get_internal_name();
+    my $display_name = $task->get_display_name();
+    my $start_time   = Cpanel::TimeHiRes::time();
+
+    print "[Starting $display_name]\n";
+
+    if (   $performed_task->{$task_name} && $task->only_perform_once()
+        || $task->already_performed() ) {
+        print "Already performed.\n";
+        $performed_task->{$task_name} = 1;
+    }
+    elsif ($dry_run) {
+        print 'Dry run of ', $task->get_display_name(), "\n";
+        $performed_task->{$task_name} = 1;
+    }
+    elsif ( perform($task) ) {
+        $performed_task->{$task_name} = 1;
+        add_to_history( $task->create_history_msg() );
+    }
+    else {
+        $logger->warning("Failed to perform $task_name");
+        $logger->set_need_notify();
+        print "\nFailed to perform.";
+        print "[Finished $display_name]\n";
+        return;
+    }
+
+    my $runtime = sprintf( "%0.3f", Cpanel::TimeHiRes::time() - $start_time );
+    print "[Finished $display_name ($runtime seconds)]\n";
+
+    return 1;
+}
+
+sub verify_and_perform_task {
+    my ( $task, $dep_tree, $performed_task, $dry_run ) = @_;
+
+    if ( !defined $task ) {
+        $logger->warning("Undefined task object");
+        return;
+    }
+
+    my $internal_name = $task->get_internal_name();
+
+    foreach my $dependency ( @{ $dep_tree->depends($internal_name) } ) {
+        if ( !$performed_task->{$dependency} ) {
+            $logger->warning("$internal_name relies on $dependency. However, $dependency has not run, and the upgrade process is past the point of no return. The upgrade will continue.");
+
+            # CPANEL-17119:
+            # If we are past the point of no return we must continue on as
+            # skipping the rest of the install scripts will likely be much
+            # more dire than a single failed one.  Much of dependency
+            # system is about making sure tasks run in order to avoid
+            # race conditions so if one fails we still need to proceed.
+        }
+    }
+
+    return perform_task( $task, $performed_task, $dry_run );
+}
+
+sub load_module_tasks {
+    my ( $task_named, $deps ) = @_;
+
+    foreach my $module_name ( get_task_module_names() ) {
+        my $module_path = get_task_dir() . $module_name . '.pm';
+
+        my $task;
+        my $task_name;
+
+        if ( !eval { require $module_path } ) {
+            $logger->panic("Unable to load task module from $module_path: $@");
+            next;
+        }
+        elsif ( !eval { $task = "Install::$module_name"->new() } ) {
+            $logger->panic("Unable to new $module_path: $@");
+            next;
+        }
+        elsif ( !$task->isa('Cpanel::Task') ) {
+            $logger->panic("$module_path is not derived from Cpanel::Task");
+            next;
+        }
+        elsif ( !( $task_name = $task->get_internal_name() ) ) {
+            $logger->warning("$module_path does not provide an internal name");
+            next;
+        }
+
+        $logger->debug("Loaded module $module_name");
+        $task_named->{$task_name} = $task;
+        $deps->{$task_name}       = $task->get_dependencies();
+
+        $logger->info("Loaded task $task_name");
+    }
+
+    return 1;
+}
+
+sub load_builtin_tasks {
+    my ( $task_named, $deps ) = @_;
+
+    my @tasks;
+    push @tasks, Cpanel::Task::Pre->new();
+    push @tasks, Cpanel::Task::Main->new();
+    push @tasks, Cpanel::Task::Post->new();
+
+    foreach my $task (@tasks) {
+        my $name = $task->get_internal_name();
+        $task_named->{$name} = $task;
+        $deps->{$name}       = $task->get_dependencies();
+    }
+
+    return 1;
+}
+
+sub establish_sections {
+    my ($deps) = @_;
+
+    my @pre;
+    my @main;
+    my @post;
+
+    while ( my ( $task_name, $dependencies ) = each %$deps ) {
+        if (   'pre' eq $task_name
+            || 'main' eq $task_name
+            || 'post' eq $task_name ) {
+        }
+        elsif ( grep { /pre/ } @$dependencies ) {
+            push @pre, $task_name;
+        }
+        elsif ( grep { /post/ } @$dependencies ) {
+            push @post, $task_name;
+        }
+        else {
+            push @main,          $task_name;
+            push @$dependencies, 'main';
+        }
+    }
+
+    $deps->{'main'} = [@pre];
+    $deps->{'post'} = [@main];
+
+    return 1;
+}
+
+sub get_dependency_tree {
+    my ($deps) = @_;
+
+    # since Algorithm::Dependency won't do it
+    my @tasks = keys %$deps;
+    while ( my ( $name, $dependencies ) = each %$deps ) {
+        foreach my $dep (@$dependencies) {
+            if ( !( grep { $dep eq $_ } @tasks ) ) {
+                $logger->warning("$dep is required by $name but isn't scheduled");
+            }
+        }
+    }
+
+    my $source = Algorithm::Dependency::Source::HoA->new($deps);
+    if ( my $missing_deps = $source->missing_dependencies() ) {
+        $logger->_die( 'Missing dependencies: ' . join ', ', @$missing_deps );
+    }
+
+    my $dep_tree = Algorithm::Dependency::Ordered->new(
+        'source' => $source,
+    );
+
+    if ( !$dep_tree ) {
+        $logger->_die('Failed to build the dependency tree.');
+    }
+
+    return $dep_tree;
+}
+
+sub _main {
+    my (%options) = @_;
+
+    # disable logger as soon as possible
+    #   any included module will take advantage of this mock
+    #   but there is still a problem for external processes
+    #   that will try to use the logger...
+    my $disable_logger = $options{'no_log'} ? 1 : 0;
+
+    my $task_named     = {};
+    my $deps           = {};
+    my $performed_task = {};
+
+    load_module_tasks( $task_named, $deps );
+    load_builtin_tasks( $task_named, $deps );
+    if ( !$options{'no_deps'} ) {
+        establish_sections($deps);
+    }
+    if ( !$options{'force'} ) {
+        extract_performed_tasks_from_history($performed_task);
+    }
+
+    my $dep_tree = get_dependency_tree($deps);
+    my $schedule;
+
+    if ( $options{'targets'} ) {
+        $logger->debug("Scheduling subset of tasks");
+        $schedule = $dep_tree->schedule( @{ $options{'targets'} } );
+    }
+    else {
+        $logger->debug("Scheduling all tasks");
+        $schedule = $dep_tree->schedule_all();
+    }
+
+    if ( !$schedule ) {
+        my $cycle_detector = Bin::TaskRun::CycleDetector->new();
+        if ( my $cycle = $cycle_detector->detect($deps) ) {
+            $logger->_die( 'Cycle detected: ' . join ', ', @$cycle );
+        }
+        $logger->_die('Failed to build a dependency schedule');
+    }
+
+    my $std_redirector;
+
+    # redirect to a file
+    $std_redirector = Bin::TaskRun::STDRedirector->new( 'logger' => $logger );
+    $std_redirector->begin_redirect( $options{'log_file'} );
+
+    # need to be dynamic
+    my $pcent_start_at = $options{'pbar-start'} || 0;
+    my $pcent_stop_at  = $options{'pbar-stop'}  || 100;
+    my $pcent          = $pcent_start_at;
+    my $step           = 1;
+    $step = ( $pcent_stop_at - $pcent_start_at ) / scalar @$schedule if scalar @$schedule;
+    $logger->update_pbar($pcent_start_at);
+    foreach my $task_name (@$schedule) {
+        $pcent += $step;
+        $logger->update_pbar( int($pcent) );
+        my $task = $task_named->{$task_name};
+        verify_and_perform_task( $task, $dep_tree, $performed_task, $options{'dry'} );
+    }
+
+    $std_redirector->finish_redirect() if $std_redirector;
+
+    return $logger->get_need_notify() ? 0 : 1;
+}
+
+sub run_tasks {
+    my (%options) = @_;
+
+    # mainly required for testing purpose
+    $logger ||= Cpanel::Update::Logger->new();
+
+    eval { _main(%options); };
+    if ($@) {
+        $error = $@;
+        return;
+    }
+    return 1;
+}
+
+sub usage {
+
+    print qq{Usage: taskrun [options] name1 name2 [...]
+This script loads, arranges, and executes tasks.
+
+options list
+    --dry : do not run task
+    --debug
+    --force
+    --log_file=[filename]
+    --no_deps
+};
+    exit;
+}
+
+1;
+
+__END__
+
+=pod
+
+=head1 NAME
+
+taskrun - Executes the Cpanel::Task modules in /usr/local/cpanel/install.
+
+=head1 SYNOPSIS
+
+taskrun
+
+taskrun --dry
+
+taskrun --debug
+
+taskrun --force
+
+taskrun --log_file=[filename]
+
+taskrun --no_deps
+
+taskrun name1 name2 [...]
+
+=head1 DESCRIPTION
+
+This script loads, arranges, and executes Tasks.  Running with the --dry flag will cause the Tasks to be loaded and arranged, but not run.
+
+=head2 Loading Tasks
+
+Each Perl module in /usr/local/cpanel/install is loaded and tested to ensure that it will work with taskrun.  At a minimum, each Task should provide an internal name, which will be accessed as $task->get_internal_name().  Any Tasks that cannot be loaded for whatever reason will be discarded.
+
+Three dummy Tasks are added to the loaded Tasks to allow for organizing the overall set of Tasks into three, distinct phases of operation.
+
+=head2 Arranging Tasks
+
+Each Task is allowed to specify a list of other Tasks on which it depends.  In addition, Tasks may also depend on either of the dummy Tasks "pre" or "post".  Depending on the "pre" Task will cause the Task to be scheduled to run before the main set of Tasks, while depending on the "post" Task will cause the Task to be scheduled after the main set of Tasks.
+
+Any Task that couldn't be loaded will be removed from the set of scheduled Tasks.  If there are any Tasks that rely on a Task that isn't loaded, taskrun will fail to construct the schedule of Tasks to perform and will fail to execute, notifying the user accordingly.
+
+Task dependencies may be discarded by supplying the 'no_deps' named argument.
+
+=head2 Executing Tasks
+
+After the Tasks are loaded and arranged, taskrun walks the schedule and processes each Task.  If the Task has a relevant entry in the history file, it is not run.  If the Task's already_performed method returns true, it is not run.  Otherwise, the perform method of the Task is run.  If the Task fails, it will cause all dependent Tasks to not be run.
+
+The caller may provide a list of specific tasks he wants run by simply naming the tasks on the command line, or by providing a 'targets' named argument that points at a list reference of task names to run to run_tasks.
+
+The 'force' named parameter will circumvent the history to allow tasks that are only intended to be run once to be run again.
+
+
+=head1 IMPORTANT FILES
+
+=head2 /usr/local/cpanel/install/*.pm
+
+These are the modules that will be loaded as Tasks.
+
+=head2 /var/cpanel/version/task-history
+
+This is the history file that is used to store the state of which Tasks have been performed.
+
+=head2 /var/cpanel/updatelogs/taskrun-[timestamp].log
+
+This file may be overridden using the 'log_file' named parameter to run_tasks.
+
+All output from runs of taskrun is stored in these files.
+
+
+=head1 BUGS
+
+taskrun is not completely isolated from problems in individual Tasks, and can be caused to die in unfortunate ways.
+
+=cut

@@ -1,0 +1,36 @@
+[% SET list_mail_domains_response = execute("Email", "list_mail_domains", {}); %]
+
+[% IF list_mail_domains_response.status %]
+<div id="manage-list" class="section">
+    <form method="get" action="" id="manage_list_form">
+    <div class="form-group">
+        <label for="manage_list_select" id="txt_Managing">
+            [% locale.maketext("Managing") %]
+        </label>
+        <div class="row">
+            <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                <select name="domain" id="manage_list_select" class="form-control">
+                    <option value="" selected>[% locale.maketext("All Domains") %]</option>
+                    [% FOREACH domain IN list_mail_domains_response.data %]
+                        <option value="[% domain.domain.html() %]">[% domain.domain.html() %]</option>
+                    [% END %]
+                </select>
+            </div>
+        </div>
+    </div>
+    <noscript>
+        <div class="form-group">
+            <input type="submit" class="btn btn-primary" id="btn_domainSelect_go" value="[% locale.maketext("Go") %]" />
+        </div>
+    </noscript>
+    </form>
+</div>
+[% ELSE %]
+    [% SET error_list = list_mail_domains_response.errors %]
+    [% INCLUDE '_assets/errors.html.tt' %]
+[% END %]
+<script type="text/javascript">
+YAHOO.util.Event.onDOMReady(function() {
+    YAHOO.util.Event.on("manage_list_select", "change", function() { YAHOO.util.Dom.get("manage_list_form").submit(); });
+});
+</script>

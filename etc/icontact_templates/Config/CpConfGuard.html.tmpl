@@ -1,0 +1,52 @@
+[%#
+Variables passed in:
+
+origin                  - the system component from which the request originated
+critical_values         - values
+
+For more information about how to customize notification templates, read our documentation at https://go.cpanel.net/notificationtemplates
+
+-%]
+
+[%
+    PROCESS "include/colors.tmpl";
+    PROCESS "include/styles.tmpl";
+    PROCESS "include/zebra_table.tmpl";
+
+    WRAPPER 'wrapper/main.html.tmpl';
+          NOTICE.email_reason = CPANEL.locale.maketext('The system has restored the main [asis,cPanel] [output,amp] [asis,WHM]’s server configuration file on “[_1]”.', NOTICE.host_server);
+
+
+    # Create the titles
+    NOTICE.table_titles = [CPANEL.locale.maketext('Critical Value'), CPANEL.locale.maketext('Current Setting')];
+    NOTICE.table_items = [];
+
+    # Organize the values into columns that mirror the titles
+    FOREACH cvalue IN NOTICE.critical_values;
+        NOTICE.table_items.push([cvalue.key,cvalue.value]);
+    END;
+
+%]
+
+<p>
+    [% CPANEL.locale.maketext('[asis,cPanel] [output,amp] [asis,WHM]’s server configuration file, [_1], was not present the last time it was checked.', NOTICE.cpanel_config_path) %]
+</p>
+<p>
+    [% CPANEL.locale.maketext('Your server has copied the defaults from your cache and the configuration defaults file ([_1]) to [_2], and it has generated the following critical values:', NOTICE.default_cpanel_config_path, NOTICE.cpanel_config_path) %]
+</p>
+
+<p style="text-align:center">
+    [% zebra_table(titles=NOTICE.table_titles, items=NOTICE.table_items)%]
+</p>
+
+<p>
+    [% CPANEL.locale.maketext('If you wish to change these settings, you can manually update the [_1] file.', NOTICE.cpanel_config_path) %]
+</p>
+<p>
+[% CPANEL.locale.maketext('You can update most of these settings in [asis,WHM]’s [_1] interface at: [output,url,_2,_2,target,_3]', CPANEL.locale.maketext('Tweak Settings'), CPANEL.assemble_whm_url("scripts2/tweaksettings"),'_blank') %]
+</p>
+<p>
+    [% CPANEL.locale.maketext('Read the [asis,cPanel] [output,amp] [asis,WHM]’s server configuration file [output,url,_1,documentation,target,_2] for more information about this file.', 'https://go.cpanel.net/cpconfig','_blank') %]
+</p>
+
+[% END %]

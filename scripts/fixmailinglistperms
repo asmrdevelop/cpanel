@@ -1,0 +1,36 @@
+#! /usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/fixmailinglistperms             Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+
+use Cpanel::Mailman::Filesys     ();
+use Cpanel::Mailman::ListManager ();
+
+sub usage {
+    my ($message) = @_;
+
+    print STDERR "$message\n" if $message;
+    print STDERR <<"END";
+usage: $0 <list>
+
+Repair the permissions of all the files and directories comprising a mailing
+list.
+END
+
+    exit 1;
+}
+
+usage('Not enough arguments') unless @ARGV;
+
+foreach my $list (@ARGV) {
+    if ( !Cpanel::Mailman::Filesys::does_full_list_exist($list) ) {
+        warn "This system does not have a mailing list named “$list”.$/";
+        next;
+    }
+
+    Cpanel::Mailman::ListManager::fix_mailman_list_permissions( { 'list' => $list } );
+}

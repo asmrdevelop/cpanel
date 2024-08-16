@@ -1,0 +1,25 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/phpini_tidy                     Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use Cpanel::Env          ();
+use Cpanel::PHPINI::Tidy ();
+
+my $invoked_as_script = !caller();
+
+__PACKAGE__->script(@ARGV) if ($invoked_as_script);
+
+sub script {
+    Cpanel::Env::clean_env( 'http_purge' => 1 );
+
+    Cpanel::PHPINI::Tidy::phpini_tidy();
+
+    if ($invoked_as_script) {
+        exit(0);
+    }
+
+    return 1;
+}

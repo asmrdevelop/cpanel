@@ -1,0 +1,88 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - etc/init/checkmailman                   Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+use warnings;
+
+use Cpanel::Logger             ();
+use Cpanel::Services           ();
+use Cpanel::Services::Restart  ();
+use Cpanel::Config::LoadCpConf ();
+
+my $verbose = 0;
+
+if (@ARGV) {
+    require Cpanel::Usage;
+    Cpanel::Usage::wrap_options( \@ARGV, \&usage, { 'verbose' => \$verbose } );
+}
+
+my $cpconf = Cpanel::Config::LoadCpConf::loadcpconf_not_copy();
+
+if ( $cpconf->{'skipmailman'} ) {
+    print "Mailman is disabled in cpanel.config.\n" if $verbose;
+    exit 0;
+}
+
+if ( mailman_lists_present() ) {
+    print "This system has mailing lists.\n" if $verbose;
+    if ( !mailman_is_running() ) {
+        print "Mailman is not currently running. Starting now.\n" if $verbose;
+        Cpanel::Services::Restart::restartservice('mailman') or exit 1;
+        exit 0;
+    }
+    else {
+        print "Mailman is already running.\n" if $verbose;
+        exit 0;
+    }
+}
+else {
+    print "This system has no mailing lists.\n" if $verbose;
+    if ( Cpanel::Logger::is_smoker() ) {
+        print "Mailman will not be disabled on smoker servers.\n" if $verbose;
+        exit 0;
+    }
+
+    if ( mailman_is_running() ) {
+        print "Mailman is currently running. Stopping now.\n" if $verbose;
+        require Whostmgr::Services;
+        Whostmgr::Services::stop('mailman') or exit 1;
+        exit 0;
+    }
+    else {
+        print "Mailman is already stopped.\n" if $verbose;
+        exit 0;
+    }
+}
+
+sub mailman_lists_present {
+    opendir( my $list_dh, '/usr/local/cpanel/3rdparty/mailman/lists' );
+    my @lists = readdir($list_dh);
+    closedir($list_dh);
+    foreach my $listname (@lists) {
+        if ( $listname !~ /^\.|^mailman$/ ) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+sub mailman_is_running {
+    return 0 unless Cpanel::Services::check_service( 'service' => 'mailmanctl',                   'user' => 'mailman' );
+    return 0 unless Cpanel::Services::check_service( 'service' => '3rdparty/mailman/bin/qrunner', 'user' => 'mailman' );
+    return 1;
+}
+
+sub usage {
+    print <<EO_USAGE;
+Usage: checkmailman [options]
+
+Options:
+    --verbose    Display debugging output
+
+EO_USAGE
+    exit 0;
+}

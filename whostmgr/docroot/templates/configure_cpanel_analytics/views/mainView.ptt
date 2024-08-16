@@ -1,0 +1,90 @@
+<div class="row">
+    <main class="col-xs-12 col-sm-8">
+        <p>
+            [% locale.maketext('You can allow [asis,cPanel~, L.L.C.] to collect data about your users’ interaction with the product. We record data about your server and how [asis,cPanel]®, [asis,WHM]®, and Webmail account owners (“users”) navigate the interface.') %]
+        </p>
+        <p>
+            [% locale.maketext('For more information about the data we collect and how we use it, read our [output,url,_1,documentation,target,_2,id,_3].', 'https://go.cpanel.net/analytics', 'analytics-documentation', 'analytics-documentation-link') %]
+        </p>
+
+        <cp:alert ng-if="vm.isUserChoiceEnabled && vm.isTrialLicense && vm.isEnabledForCurrentUser && vm.isRootUser && vm.defaultToOn" type="info" closable="false">
+            [% locale.maketext('Behavioral data collection for the root user for [asis,WHM] is enabled by default since your server is running with a trial license.') %]
+        </cp:alert>
+
+        <div class="panel panel-default">
+            <div class="panel-heading">
+                <div class="toggle-option">
+                    <div class="toggle-label-container">
+                        <label for="interface-analytics" id="toggle-label">
+                            [% locale.maketext('Interface Analytics') %]
+                        </label>
+                        <div>
+                            <small ng-show="vm.isUserChoiceEnabled">[% locale.maketext('Interface Analytics are enabled server-wide. Users can opt-in for their individual accounts.') %]</small>
+                            <small ng-show="!vm.isUserChoiceEnabled">[% locale.maketext('Interface Analytics are disabled server-wide. Individual users cannot opt in.') %]</small>
+                        </div>
+                    </div>
+                    <toggle-switch
+                        ng-model="vm.isUserChoiceEnabled"
+                        on-toggle="vm.toggleInterfaceAnalytics()"
+                        label-position="left"
+                        spinner-position="left"
+                        id="interface-analytics"
+                        aria-labelledby="toggle-label"
+                    />
+                </div>
+            </div>
+            <div class="panel-body">
+                <div class="compact-description">
+                    <p>[% locale.maketext('Interface Analytics collects data the cPanel Development team uses to improve the product.') %]</p>
+                </div>
+                <div class="extended-description"
+                     id="interface-analytics-extended-description"
+                     uib-collapse="vm.isCollapsed"
+                     aria-live="polite">
+                    <p>[% locale.maketext('We collect the following kinds of data when you enable Interface Analytics:') %]</p>
+                    <p>
+                        <ul>
+                            <li>[% locale.maketext('Behavioral data about how users interact with [asis,cPanel], [asis,WHM], and [asis,Webmail] interfaces.') %]</li>
+                            <li>[% locale.maketext('Devices used to access the user interface.') %]</li>
+                            <li>[% locale.maketext('Features used in the product.') %]</li>
+                            <li>[% locale.maketext('Specific [asis,cPanel amp() WHM] configurations.') %] </li>
+                            <li>[% locale.maketext('The [asis,cPanel amp() WHM] version.') %]</li>
+                            <li>[% locale.maketext('The operating system version.') %]</li>
+                            <li>[% locale.maketext('License related information.') %]</li>
+                            <li>[% locale.maketext('User account types.') %]</li>
+
+                        </ul>
+                    </p>
+                    <p ng-if="vm.isTrialLicense">[% locale.maketext('After you enable Interface Analytics here, we will [output,strong,not] collect behavioral data for specific users, until the non-root user also consents. Users enable and disable Interface Analytics for [asis,cPanel], [asis,WHM], and [asis,Webmail] separately.') %]</p>
+                    <p ng-if="!vm.isTrialLicense">[% locale.maketext('After you enable Interface Analytics here, we will [output,strong,not] collect behavioral data for specific users until the user also consents. Users enable and disable Interface Analytics for [asis,cPanel], [asis,WHM], and [asis,Webmail] separately.') %]</p>
+                </div>
+            </div>
+            <div class="panel-footer">
+                <button class="btn btn-link btn-block" ng-click="vm.toggleIsCollapsed()" aria-expanded="{{ !vm.isCollapsed }}" aria-controls="interface-analytics-extended-description">
+                    <span ng-show="vm.isCollapsed">
+                        <span class="underline-on-hover" aria-hidden="true">[% locale.maketext('Learn More') %]</span>
+                        <span class="underline-on-hover sr-only">[% locale.maketext('Learn more about Interface Analytics.') %]</span>
+                    </span>
+                    <span ng-show="!vm.isCollapsed">
+                        <span class="underline-on-hover" aria-hidden="true">[% locale.maketext('Hide') %]</span>
+                        <span class="underline-on-hover sr-only">[% locale.maketext('Hide information about Interface Analytics.') %]</span>
+                    </span>
+                    <i class="fas fa-caret-up" ng-class="{ 'fa-caret-up-rotated': vm.isCollapsed }"></i>
+                </button>
+            </div>
+        </div>
+    </main>
+    <aside class="col-xs-12 col-sm-4">
+        <section class="widget">
+            <h3 class="widget-title">[% locale.maketext('More about [asis,cPanel] Analytics')%]</h3>
+            <ul class="fa-ul">
+                <li ng-if="vm.isTrialLicense"><span class="fa-li" ><i class="fas fa-check"></i></span>[% locale.maketext('We automatically collect behavioral data for the root user in [asis,WHM] since you started with a trial license.')%]</li>
+                <li ng-if="vm.isTrialLicense"><span class="fa-li" ><i class="fas fa-check"></i></span>[% locale.maketext('[asis,cPanel] Analytics behavioral data collection is opt-in for other user accounts. User privacy is important to us whenever we gather data. Also, we do not collect individual users’ data without consent. We do not collect information about who users are or the private data related to their accounts.')%]</li>
+                <li ng-if="!vm.isTrialLicense"><span class="fa-li" ><i class="fas fa-check"></i></span>[% locale.maketext('[asis,cPanel] Analytics behavioral data collection is opt-in only. User privacy is important to us whenever we gather data. We do [output,strong,not] collect data without your consent. We do not collect information about who users are or the private data related to their accounts.')%]</li>
+                <li><span class="fa-li" ><i class="fas fa-check"></i></span>[% locale.maketext('We use the collected data to improve your [asis,cPanel amp() WHM]® experience. This data will allow us to target the most popular interfaces for improvements. Enabling [asis,cPanel] Analytics makes sure that your voice is heard when we plan the future of [asis,cPanel amp() WHM].') %]</li>
+                <li><span class="fa-li" ><i class="fas fa-check"></i></span>[% locale.maketext('You can find out more about [asis,cPanel] Analytics and how we protect your privacy in our [output,url,_1,documentation,target,_2,id,_3].', 'https://go.cpanel.net/analytics', 'analytics-documentation', 'analytics-documentation-link')%]</li>
+                <li><span class="fa-li" ><i class="fas fa-check"></i></span>[% locale.maketext('We keep [asis,cPanel] Analytics data for 26 months and then delete it.')%]</li>
+            </ul>
+        </section>
+    </aside>
+</div>

@@ -1,0 +1,42 @@
+[%#
+    Variables passed in:
+
+
+  For more information about how to customize notification templates, read our documentation at https://go.cpanel.net/notificationtemplates
+
+-%]
+
+[%
+    PROCESS "include/colors.tmpl";
+    PROCESS "include/styles.tmpl";
+    PROCESS "include/code_block.tmpl";
+
+    WRAPPER 'wrapper/main.html.tmpl';
+
+    NOTICE.email_reason = CPANEL.locale.maketext('Daily email send notification limit reached for “[_1]”.', NOTICE.domain);
+%]
+
+[%
+    # Compat for including cPanel template below
+    locale = CPANEL.locale;
+    mail_client_settings = NOTICE;
+    in_html_email = 1;
+%]
+
+<p>
+ [% CPANEL.locale.maketext("The domain [_1] on account [_2] has exceeded the “Number of emails a domain may send per day before the system sends a notification” setting defined in Tweak Settings.", NOTICE.domain, NOTICE.user) %]
+ [% CPANEL.locale.maketext("The threshold is currently [_1] emails per day.", NOTICE.threshold) %]
+</p>
+<p>
+ [% CPANEL.locale.maketext("To run a sent email report, use the [_1] interface in [asis,WHM] at [output,url,_2,_2,target,_3].", CPANEL.locale.maketext('Mail Delivery Reports'), CPANEL.assemble_whm_url("scripts11/emailstats_search"), '_blank'); %]
+</p>
+<p>
+ [% CPANEL.locale.maketext("This notification does not block sent emails. If you wish to set sent email limits, read our documentation at [output,url,_1,_1,target,_2].","https://go.cpanel.net/how-to-set-email-send-limits",'_blank'); %]
+<ul>
+<li> [% CPANEL.locale.maketext("To manage domain-level limits, you must manually edit [asis,/var/cpanel/users/username]."); %] </li>
+<li> [% CPANEL.locale.maketext("To manage account-level limits, set the “Maximum Hourly Email by Domain Relayed” field in the [_1] interface in [asis,WHM] at [output,url,_2,_2,target,_3].", CPANEL.locale.maketext('Modify an Account'),CPANEL.assemble_whm_url("scripts/edituser"),'_blank'); %] </li>
+<li> [% CPANEL.locale.maketext("To manage global limits, set the “Max hourly emails per domain” option in the [_1] interface in [asis, WHM] at [output,url,_2,_2,target,_3].", CPANEL.locale.maketext('Tweak Settings'), CPANEL.assemble_whm_url("scripts2/tweaksettings"), '_blank'); %]</li>
+</ul>
+</p>
+
+[% END %]

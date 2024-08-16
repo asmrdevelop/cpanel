@@ -1,0 +1,748 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - bin/build_ftp_conf                      Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package bin::build_ftp_conf;
+
+#----------------------------------------------------------------------
+# XXX XXX IMPORTANT!! XXX XXX
+#
+# This modulino is loaded and run as a module in at least one place.
+# Do NOT add exit() to this code!
+#----------------------------------------------------------------------
+
+use cPstrict;
+
+use Cpanel::AcctUtils::Account               ();
+use Cpanel::AcctUtils::DomainOwner::Tiny     ();
+use Cpanel::Autodie                          ();
+use Cpanel::Config::LoadConfig               ();
+use Cpanel::ConfigFiles                      ();
+use Cpanel::ConfigFiles::Apache              ();
+use Cpanel::DIp::MainIP                      ();
+use Cpanel::Exception                        ();
+use Cpanel::FileUtils::Copy                  ();
+use Cpanel::FileUtils::Write                 ();
+use Cpanel::FtpUtils::Config                 ();
+use Cpanel::LoadFile                         ();
+use Cpanel::LoadModule                       ();
+use Cpanel::NAT                              ();
+use Cpanel::OS                               ();
+use Cpanel::Path                             ();
+use Cpanel::PwCache                          ();
+use Cpanel::StringFunc::Case                 ();
+use Cpanel::StringFunc::LineIterator         ();
+use Cpanel::StringFunc::LineIterator::Indent ();
+use Cpanel::Template::Ftp                    ();
+use Cpanel::Transaction::File::Raw           ();
+
+use Path::Tiny;
+use Try::Tiny;
+
+my $apacheconf = Cpanel::ConfigFiles::Apache->new();
+
+# TODO: Move this into Cpanel::FtpUtils::Config::Proftpd::CfgFile
+our $CONF_PERMISSIONS = 0644;
+
+# TODO: Move this into Cpanel::FtpUtils::Config::Proftpd::CfgFile
+our $DEFAULT_PROFTPD_CONFIG_FILE_TEMPLATE = '/usr/local/cpanel/etc/proftpd.conf.default.template';
+
+# TODO: Move this into Cpanel::FtpUtils::Config::Proftpd::Vhosts
+our $STANDARD_NO_ANONYMOUS_VHOST_TEMPLATE = 'stdvhostnoanon';
+
+# TODO: Move this into Cpanel::FtpUtils::Config::Proftpd::Vhosts
+our $STANDARD_VHOST_TEMPLATE = 'stdvhost';
+
+# TODO: Move this into Cpanel::FtpUtils::Config::Proftpd::Vhosts
+our $VHOST_PASSWD_FILE = "$Cpanel::ConfigFiles::FTP_PASSWD_DIR/passwd.vhosts";
+
+our $OLD_XFERLOG = '/var/log/xferlog';
+our $NEW_XFERLOG = $apacheconf->dir_domlogs() . '/ftpxferlog';
+
+our ( $_TLS_KEY_PATH, $_TLS_CERT_PATH, $_TLS_CAB_PATH );
+
+BEGIN {
+    $_TLS_KEY_PATH  = '/etc/ftpd-rsa-key.pem';
+    $_TLS_CERT_PATH = '/etc/ftpd-rsa.pem';
+    $_TLS_CAB_PATH  = '/etc/ftpd-ca.pem';
+}
+
+exit( __PACKAGE__->script(@ARGV) // 0 ) unless caller();
+
+sub script ( $class, @argv ) {
+
+    my $html = grep { m/^\-+html$/ } @argv;
+
+    my $no_restart = grep { tr<-><>sr eq '-no-restart' } @argv;
+
+    my $self = $class->new();
+
+    return 1 unless ref $self;
+
+    my @calls = ('relocate_ftpxferlog_to_domlogs_if_needed');
+
+    if ( $self->{'type'} eq 'proftpd' ) {
+
+        push @calls, qw(
+          ensure_proftpd_has_no_identlookups
+          recreate_proftpd_conf_if_broken
+          add_missing_vhosts_to_proftpd_conf
+          ensure_proftpd_conf_is_setup
+          ensure_proftpd_has_tls
+        );
+    }
+
+    foreach my $call (@calls) {
+        try {
+            $self->$call();
+        }
+        catch {
+            warn Cpanel::Exception::get_string($_);
+        };
+    }
+
+    $self->sync_config_to_datastore();
+
+    if ( !$no_restart && $self->{'configuration_has_been_modified'} ) {
+        require Cpanel::ServerTasks;
+        Cpanel::ServerTasks::schedule_task( ['CpServicesTasks'], 1, "restartsrv ftpd" );
+    }
+
+    return 0;
+}
+
+sub new ($class) {
+
+    my $self = bless {
+        'configuration_has_been_modified' => 0,
+        'ftputils_config_obj'             => Cpanel::FtpUtils::Config->new()
+    }, $class;
+
+    $self->{'type'}   = $self->{'ftputils_config_obj'}->get_type();
+    $self->{'config'} = $self->{'ftputils_config_obj'}->get_config(1);
+
+    #written to in tests
+    $self->{'conf_file'} = $self->{'ftputils_config_obj'}->find_conf_file();
+
+    return $self;
+}
+
+# Note: this was refactored from the original build_ftp_conf
+###########################################################################
+#
+# Method:
+#   recreate_proftpd_conf_if_broken
+#
+# Description:
+#   This function creates the proftpd.conf file
+#   in the event it does not pass the _proftpd_conf_looks_sane
+#   sanity check
+#
+# Parameters:
+#   none
+#
+# Exceptions: yes
+#
+# Returns:
+#   1 - The conf was successfully created
+#   0 - The conf did not need to be created
+#
+
+sub recreate_proftpd_conf_if_broken ($self) {
+
+    my $conf_looks_sane = 0;
+    try { $conf_looks_sane = $self->_proftpd_conf_looks_sane() };
+
+    my $why_part;
+
+    if ($conf_looks_sane) {
+        $conf_looks_sane = $self->_check_proftpd_conf() or do {
+            print STDERR "“$self->{'conf_file'}” failed ProFTPD’s validity test. Rebuilding …\n";
+            $why_part = 'cpsanity';
+        };
+    }
+    else {
+        print STDERR "“$self->{'conf_file'}” failed cPanel’s sanity test. Rebuilding …\n";
+        $why_part = 'validity';
+    }
+
+    return 0 if $conf_looks_sane;
+
+    Cpanel::LoadModule::load_perl_module('Cpanel::Time::ISO');
+
+    my $rename_to = join(
+        '.',
+        $self->{'conf_file'},
+        "INVALID-$why_part",
+        Cpanel::Time::ISO::unix2iso(),
+        sprintf( '%x', substr( rand, 2 ) ),
+    );
+
+    if ( Cpanel::Autodie::exists( $self->{'conf_file'} ) ) {
+        my ( $copy_ok, $copy_msg ) = Cpanel::FileUtils::Copy::copy( $self->{'conf_file'}, $rename_to );
+        if ($copy_ok) {
+            print STDERR "Copied “$self->{'conf_file'}” to “$rename_to”\n";
+        }
+        else {
+            warn "Failed to copy “$self->{'conf_file'}” to “$rename_to”: $copy_msg";
+        }
+    }
+
+    return $self->_install_default_conf_file();
+}
+
+sub _install_default_conf_file ($self) {
+
+    my $destination = $self->{'conf_file'} or die q[Missing destination file.];
+
+    my $content = Cpanel::LoadFile::loadfile($DEFAULT_PROFTPD_CONFIG_FILE_TEMPLATE)
+      or die q[Cannot load default proftd configuration file.];
+
+    my $tt = {
+        WHEEL  => Cpanel::OS::sudoers(),
+        NOBODY => Cpanel::OS::nobody(),
+    };
+
+    $content =~ s{~([A-Z]+)~}{$tt->{$1}}g;
+
+    Cpanel::FileUtils::Write::overwrite( $destination, $content, 0600 )    #
+      or die Cpanel::Exception->create_raw("Cannot set default proftd configuration.");
+
+    $self->{'configuration_has_been_modified'} = 1;
+    print STDERR "Installed proftpd.conf from template to “$destination”\n";
+
+    return 1;
+}
+
+sub _check_proftpd_conf ($self) {
+
+    Cpanel::LoadModule::load_perl_module('Cpanel::FtpUtils::Proftpd::Check');
+
+    my $report_hr = Cpanel::FtpUtils::Proftpd::Check::check_config_by_path(
+        $self->{'conf_file'},
+    );
+
+    warn $report_hr->{'detail'} if length $report_hr->{'detail'};
+
+    return $report_hr->{'status'};
+}
+
+# Note: this was refactored from scripts/rebuildproftpd
+###########################################################################
+#
+# Method:
+#   add_missing_vhosts_to_proftpd_conf
+#
+# Description:
+#   This function adds missing virtual hosts to proftpd.conf
+#
+# Parameters:
+#   none
+#
+# Exceptions: yes
+#
+# Returns:
+#   1 - Any hosts that were missing have been added
+#
+# TODO: Move this into Cpanel::FtpUtils::Config::Proftpd::Vhosts
+sub add_missing_vhosts_to_proftpd_conf ($self) {
+
+    my $domain_ips_ref = Cpanel::Config::LoadConfig::loadConfig( $Cpanel::ConfigFiles::DEDICATED_IPS_FILE, undef, ':\s+' );
+    if ( !$domain_ips_ref ) {
+        die Cpanel::Exception->create_raw("Failed to load the dedicated ips file “$Cpanel::ConfigFiles::DEDICATED_IPS_FILE”.");
+    }
+
+    my %SEENIPS;
+    my $no_anonftp = $self->{'config'}->{'cPanelAnonymousAccessAllowed'} eq 'no';
+
+    $self->_ftp_transaction(
+        sub ($ftp_conf_data_sr) {
+
+            my $iterator;
+            Cpanel::StringFunc::LineIterator->new(
+                $$ftp_conf_data_sr,
+                sub {
+                    my $line = $_;
+                    $iterator ||= shift;
+
+                    if ( $line =~ m/^[ \t]*#/ ) {
+                        return;
+                    }
+                    elsif ( $line =~ /^[ \t]*<[ \t]*virtualhost[ \t]+([^\>\s]+)/i ) {
+                        my $ip = $1;
+                        $SEENIPS{$ip} = 1;
+                    }
+                }
+            );
+
+            my $first_modified_offset;
+            foreach my $ip ( sort keys %{$domain_ips_ref} ) {
+                next if $SEENIPS{$ip};
+
+                my $domain = $domain_ips_ref->{$ip};
+
+                #TODO : refactored from rebuildproftpd.. is this needed?
+                $domain =~ s/^www\.//g;
+                my $user    = Cpanel::AcctUtils::DomainOwner::Tiny::getdomainowner($domain);
+                my $homedir = Cpanel::PwCache::gethomedir($user);
+
+                #TODO : refactored from rebuildproftpd.. is this needed?
+                $homedir =~ s/\/public_html$//g;
+
+                next if ( !$ip || !$domain || !$user || !$homedir || !Cpanel::AcctUtils::Account::accountexists($user) );
+                print STDERR "Restoring missing virtual host for user “$user” on ip “$ip” with domain “$domain”.\n";
+
+                $first_modified_offset ||= length $$ftp_conf_data_sr;
+                my $template = $no_anonftp ? $STANDARD_NO_ANONYMOUS_VHOST_TEMPLATE : $STANDARD_VHOST_TEMPLATE;
+                $$ftp_conf_data_sr .= "\n" . Cpanel::Template::Ftp::getftptemplate( $template, 'proftpd', $domain, $ip, $user, $homedir ) . "\n";
+            }
+            return $first_modified_offset;
+        }
+    );
+
+    return 1;
+}
+
+# Note: this was refactored from the original build_ftp_conf
+###########################################################################
+#
+# Method:
+#   sync_config_to_datastore
+#
+# Description:
+#   This function ensures that the current ftp configuration
+#   is in sync with the datastore and all flag files are
+#   created or removed as need.
+#
+# Parameters:
+#   none
+#
+# Exceptions: none
+#
+# Returns:
+#   The results of the update_config call (usually 1)
+sub sync_config_to_datastore ($self) {
+
+    my $conf_obj = $self->{'ftputils_config_obj'};
+    my $conf_hr  = $self->{'configuration_has_been_modified'} ? $conf_obj->get_config(1) : $self->{'config'};
+    $conf_obj->save_datastore($conf_hr);
+
+    return $conf_obj->update_config($conf_hr);
+}
+
+# Note: this was refactored from the original proftpdtls
+###########################################################################
+#
+# Method:
+#   ensure_proftpd_has_tls
+#
+# Description:
+#   This function ensures that the current proftpd.conf
+#   and all vhosts are setup to do tls
+#
+# Parameters:
+#   none
+#
+# Exceptions: yes
+#
+# Returns:
+#   1 - The configuration was successfully updated
+sub ensure_proftpd_has_tls ($self) {
+
+    if ( !$self->{'ftputils_config_obj'}->min_version('1.2.4') ) {
+        die "proftpd must be version 1.2.4 or later to support TLS";
+    }
+    my $conf_hr                 = $self->{'config'};
+    my @required_tls_directives = (qw(TLSCipherSuite TLSOptions TLSRequired));
+
+    my $cert_pem_path    = path($_TLS_CERT_PATH);
+    my $ca_pem_file_name = $_TLS_CAB_PATH;
+    my $tlsvhostconfig   = <<"END_TLS_VHOST_CONFIG";
+TLSEngine on
+TLSRequired $conf_hr->{'TLSRequired'}
+TLSRSACertificateFile @{[ "$cert_pem_path" ]}
+TLSRSACertificateKeyFile $_TLS_KEY_PATH
+TLSVerifyClient off
+TLSCipherSuite $conf_hr->{'TLSCipherSuite'}
+TLSOptions $conf_hr->{'TLSOptions'}
+END_TLS_VHOST_CONFIG
+    chomp $tlsvhostconfig;
+
+    Cpanel::LoadModule::load_perl_module('Cpanel::Apache::TLS::Index');
+    Cpanel::LoadModule::load_perl_module('Cpanel::SSLStorage::Utils');
+
+    my $cert_pem = $cert_pem_path->slurp;
+    my ( $c_ok, $cert_id ) = Cpanel::SSLStorage::Utils::make_certificate_id($cert_pem);
+    die "get cert ID: $cert_id" if !$c_ok;
+
+    my $atls_idx = Cpanel::Apache::TLS::Index->new();
+    my @recs     = $atls_idx->get_for_certificate_id($cert_id);
+
+    my $cab_text;
+
+    if (@recs) {
+        Cpanel::LoadModule::load_perl_module('Cpanel::Apache::TLS');
+        my ( undef, @cab ) = Cpanel::Apache::TLS->get_certificates( $recs[0]{'vhost_name'} );
+        $cab_text = join( "\n", @cab );
+    }
+    else {
+        Cpanel::LoadModule::load_perl_module('Cpanel::SSL::Objects::Certificate');
+        my $cert_obj = Cpanel::SSL::Objects::Certificate->new( cert => $cert_pem );
+
+        if ( my $url = $cert_obj->caIssuers_url() ) {
+            Cpanel::LoadModule::load_perl_module('Cpanel::SSL::CABundleCache');
+
+            try {
+                $cab_text = Cpanel::SSL::CABundleCache->load($url);
+            }
+            catch {
+                warn "Failed to fetch caIssuers URL “$url”: " . Cpanel::Exception::get_string($_);
+            };
+        }
+    }
+
+    if ($cab_text) {
+        Cpanel::LoadModule::load_perl_module('Cpanel::FileUtils::Write');
+        Cpanel::FileUtils::Write::overwrite( $ca_pem_file_name, $cab_text );
+        $tlsvhostconfig .= "\nTLSCertificateChainFile $ca_pem_file_name";
+    }
+    else {
+        $self->{'ftputils_config_obj'}{'remove_settings'}{'TLSCertificateChainFile'} = 1;
+        $self->{'ftputils_config_obj'}{'contexts_built'}                             = 0;
+        $self->{'configuration_has_been_modified'}                                   = 1;
+
+    }
+
+    my $tlsconfig = $tlsvhostconfig . "\nTLSProtocol $conf_hr->{'TLSProtocol'}";
+
+    return $self->_ftp_transaction(
+        sub ($ftp_conf_data_sr) {
+
+            my $in_ifmodule_mod_tls = 0;
+            my $in_virtual_host     = 0;
+            my $iterator;
+            my %seen_directives = (
+                'current_vhost' => {},
+                'main'          => {}
+            );
+            Cpanel::StringFunc::LineIterator::Indent->new(
+                $$ftp_conf_data_sr,
+                sub {
+                    my $line = $_;
+                    $iterator ||= shift;
+                    if ( $line =~ m/^[ \t]*#/ ) {
+                        return;
+                    }
+                    elsif ( $line =~ /^[\t ]*\<IfModule[\t ]+mod_tls/ ) {
+                        $in_ifmodule_mod_tls = 1;
+                    }
+                    elsif ( $line =~ /^[\t ]*\<\/IfModule\>/i ) {
+                        my $directive_store = $in_virtual_host ? 'current_vhost' : 'main';
+                        if ($in_ifmodule_mod_tls) {
+                            my $lines_prepended = 0;
+                            foreach my $required (@required_tls_directives) {
+                                if ( !$seen_directives{$directive_store}{ Cpanel::StringFunc::Case::ToLower($required) } && $conf_hr->{$required} !~ /^\s*$/ ) {
+                                    if ( $lines_prepended++ ) {
+                                        $iterator->prepend_same_indent_level( "$required " . $conf_hr->{$required} . "\n" );
+                                    }
+                                    else {
+                                        $iterator->prepend_increased_indent_level( "$required " . $conf_hr->{$required} . "\n" );
+                                    }
+                                }
+                            }
+                        }
+                        $in_ifmodule_mod_tls = 0;
+                    }
+                    elsif ( $line =~ /^[ \t]*<[ \t]*\/virtualhost/i ) {
+                        if ( !$seen_directives{'current_vhost'}{'tlsengine'} ) {
+                            $iterator->prepend_same_indent_level("</IfModule>\n");
+                            $iterator->prepend_increased_indent_level( $tlsvhostconfig . "\n" );
+                            $iterator->prepend_decreased_indent_level("<IfModule mod_tls.c>\n");
+                        }
+                        $in_virtual_host = 0;
+                    }
+                    elsif ($in_virtual_host) {
+                        if ( $line =~ /^[\t ]*(\S+)/i ) { $seen_directives{'current_vhost'}{ Cpanel::StringFunc::Case::ToLower($1) } = 1; }
+                    }
+                    elsif ( !$in_virtual_host ) {
+                        if ( $line =~ /^[\t ]*(\S+)/i ) { $seen_directives{'main'}{ Cpanel::StringFunc::Case::ToLower($1) } = 1; }
+
+                        if ( $line =~ /^[ \t]*<[ \t]*virtualhost/i ) {
+                            $in_virtual_host = 1;
+                            $seen_directives{'current_vhost'} = ();
+                        }
+                        elsif ( $line =~ /^[\t ]*Port/i && !$seen_directives{'main'}{'tlsengine'} ) {
+                            $iterator->prepend_same_indent_level("</IfModule>\n");
+                            $iterator->prepend_increased_indent_level( $tlsconfig . "\n" );
+                            $iterator->prepend_decreased_indent_level("<IfModule mod_tls.c>\n");
+                        }
+                    }
+                }
+            );
+
+            die q[Iterator is unset] unless ref $iterator;
+
+            return $iterator->get_first_modified_offset();
+        }
+
+    );
+
+}
+
+###########################################################################
+#
+# Method:
+#   ensure_proftpd_conf_is_setup
+#
+# Description:
+#   This function ensures that the current proftpd.conf
+#   configuration directives are sane and match
+#   what is configured in the ftputils config object.
+#
+# Parameters:
+#   none
+#
+# Exceptions: yes
+#
+# Returns:
+#   1 - The configuration was successfully updated
+sub ensure_proftpd_conf_is_setup ($self) {
+
+    my $use_displaychdir = $self->{'ftputils_config_obj'}->min_version('1.3.1');
+
+    return $self->_ftp_transaction(
+        sub ($ftp_conf_data_sr) {
+
+            my $in_virtual_host = 0;
+            my %seen_directives = ( 'main' => {} );
+            my $iterator;
+
+            Cpanel::StringFunc::LineIterator::Indent->new(
+                $$ftp_conf_data_sr,
+                sub {
+                    my $line = $_;
+                    $iterator ||= shift;
+
+                    if ( $line =~ m/^[ \t]*#/ ) {
+                        return;
+                    }
+                    elsif ( $line =~ /^[ \t]*<[ \t]*\/virtualhost/i ) {
+                        $in_virtual_host = 0;
+                    }
+                    elsif ($in_virtual_host) {
+                        if ( $line =~ /^[ \t]*AuthUserFile[ \t+](\S+)/i ) {
+                            my $pwfile = $1;
+                            if ( !-e $pwfile ) {
+                                print STDERR "AuthUserFile $pwfile does not exist, setting to $VHOST_PASSWD_FILE.\n";
+                                $iterator->replace_with_same_indent_level(qq<AuthUserFile $VHOST_PASSWD_FILE\n>);
+                            }
+                        }
+                    }
+                    elsif ( !$in_virtual_host ) {
+                        if ( $line =~ /^[\t ]*(\S+)/i ) {
+                            $seen_directives{'main'}{ Cpanel::StringFunc::Case::ToLower($1) } = 1;
+                        }
+                        if ( $line =~ /^[ \t]*<[ \t]*virtualhost/i ) {
+                            $in_virtual_host = 1;
+                        }
+                        elsif ( $line =~ /^([ \t]*)DisplayFirstChdir([ \t]+)(\S+)/i && $use_displaychdir ) {
+                            $iterator->replace_with_same_indent_level(qq<${1}DisplayChdir${2}${3} true\n>);
+                        }
+                        elsif ( $line =~ /^([ \t]*)DisplayChdir([ \t]+)(\S+)/i && !$use_displaychdir ) {
+                            $iterator->replace_with_same_indent_level(qq<${1}DisplayFirstChdir${2}${3}\n>);
+                        }
+                        elsif ( $line =~ /^[ \t]*ServerType/i && !$seen_directives{'main'}{'authuserfile'} ) {
+                            $iterator->prepend_same_indent_level(qq<AuthUserFile $VHOST_PASSWD_FILE\n>);
+                            $seen_directives{'main'}{'authuserfile'} = 1;
+                        }
+                        elsif ( $line =~ /^[ \t]*TransferLog[ \t]+\Q$OLD_XFERLOG\E/i ) {
+                            $iterator->replace_with_same_indent_level(qq<TransferLog $NEW_XFERLOG\n>);
+                        }
+                        elsif ( $line =~ /^[ \t]*Group/i && $line !~ m{^[ \t]*Group[ \t]+proftpd}i ) {
+                            $iterator->replace_with_same_indent_level(qq<Group proftpd\n>);
+                        }
+                        elsif ( $line =~ /^[ \t]*Port/i ) {
+                            if ( !$seen_directives{'main'}{'authpam'} ) {
+                                $iterator->prepend_same_indent_level(qq<AuthPAM off\n>);
+                                $seen_directives{'main'}{'authpam'} = 1;
+                            }
+                            if ( !$seen_directives{'main'}{'transferlog'} ) {
+                                $iterator->prepend_same_indent_level(qq<TransferLog $NEW_XFERLOG\n>);
+                                $seen_directives{'main'}{'transferlog'} = 1;
+                            }
+                            if ( !$seen_directives{'main'}{'usereversedns'} ) {
+                                $iterator->prepend_same_indent_level(qq<UseReverseDNS off\n>);
+                                $seen_directives{'main'}{'usereversedns'} = 1;
+                            }
+                        }
+                    }
+
+                }
+            );
+
+            die q[Iterator is unset] unless ref $iterator;
+            my $first_modified_offset = $iterator->get_first_modified_offset();
+
+            if ( !$seen_directives{'main'}{'masqueradeaddress'} ) {
+
+                # Only add a MasqueradeAddress directive if the server is
+                # behind 1:1 NAT.
+                my $main_ip   = Cpanel::DIp::MainIP::getmainip();
+                my $public_ip = Cpanel::NAT::get_public_ip($main_ip);
+
+                if ( $main_ip ne $public_ip ) {
+                    $first_modified_offset ||= length $$ftp_conf_data_sr;
+                    $$ftp_conf_data_sr .= "\nMasqueradeAddress $public_ip\n";
+                }
+            }
+
+            if ( !$seen_directives{'main'}{'defaultroot'} ) {
+                $first_modified_offset ||= length $$ftp_conf_data_sr;
+                my $sudoers = Cpanel::OS::sudoers();
+                $$ftp_conf_data_sr .= "\nDefaultRoot ~ !$sudoers\n";
+            }
+
+            return $first_modified_offset;
+
+        }
+    );
+
+}
+
+# This was refactored from the original bin/proftpdvhosts
+# as of Nov 2014  proftpd.conf.default
+# and the config that comes with the rpm still do not
+# specify a TransferLog so this code is still needed
+sub relocate_ftpxferlog_to_domlogs_if_needed ($self) {
+
+    if (  !-l $OLD_XFERLOG
+        && -f _
+        && -s _ ) {
+
+        my $buffer;
+        Cpanel::Autodie::open( my $old_xfer_fh, '<',  $OLD_XFERLOG );
+        Cpanel::Autodie::open( my $new_xfer_fh, '>>', $NEW_XFERLOG );
+        while ( Cpanel::Autodie::read( $old_xfer_fh, $buffer, 32768 ) ) {
+            Cpanel::Autodie::print( $new_xfer_fh, $buffer );
+        }
+        Cpanel::Autodie::close($old_xfer_fh);
+        Cpanel::Autodie::close($new_xfer_fh);
+
+        Cpanel::Autodie::unlink($OLD_XFERLOG);
+
+        Cpanel::Path::relativesymlink( $NEW_XFERLOG, $OLD_XFERLOG ) || die Cpanel::Exception::create( 'IO::SymlinkCreateError', [ error => $!, oldpath => $OLD_XFERLOG, newpath => $NEW_XFERLOG ] );
+
+        print "FTP log relocated from “$OLD_XFERLOG” to “$NEW_XFERLOG”!\n";
+        $self->{'configuration_has_been_modified'} = 1;
+    }
+
+    return;
+}
+
+sub _ftp_transaction ( $self, $code ) {
+
+    die "“$self->{'conf_file'}” does not exist" if !-e $self->{'conf_file'};
+    die "“$self->{'conf_file'}” is empty"       if !-s _;
+
+    my $trans = Cpanel::Transaction::File::Raw->new(
+        path        => $self->{'conf_file'},
+        permissions => $CONF_PERMISSIONS,
+    );
+
+    my $ftp_conf_data_sr = $trans->get_data();
+
+    my $first_modified_offset = $code->($ftp_conf_data_sr);
+
+    my ( $ok, $err );
+
+    if ( defined $first_modified_offset ) {
+        print "Proftpd configuration was modified starting at $first_modified_offset.\n";
+        $trans->set_first_modified_offset($first_modified_offset);
+        ( $ok, $err ) = $trans->save_and_close();
+
+        $self->{'configuration_has_been_modified'} = 1;
+    }
+    else {
+        ( $ok, $err ) = $trans->abort();
+    }
+
+    die Cpanel::Exception->create_raw($err) if !$ok;
+    return 1;
+}
+
+sub _proftpd_conf_looks_sane ($self) {
+
+    my $conf_looks_sane;
+    $self->_ftp_transaction(
+        sub ($ftp_conf_data_sr) {
+            my $in_virtual_host = 0;
+            Cpanel::StringFunc::LineIterator->new(
+                $$ftp_conf_data_sr,
+                sub {
+                    my $line = $_;
+                    if ( $line =~ m/^[ \t]*#/ ) {
+                        return;
+                    }
+                    elsif ( $line =~ /^[ \t]*<[ \t]*\/virtualhost/i ) {
+                        $in_virtual_host = 0;
+                    }
+                    elsif ( !$in_virtual_host ) {
+                        if ( $line =~ /^[ \t]*<[ \t]*virtualhost/i ) {
+                            $in_virtual_host = 1;
+                        }
+                        elsif ( $line =~ /^[\t ]*Port/i ) {
+                            $conf_looks_sane //= 1;
+                        }
+                        elsif ( $line =~ /^[\t ]*IdentLookups\b/i ) {
+                            if ( $self->{'ftputils_config_obj'}->min_version('1.3.7') ) {
+
+                                # starting with 1.3.7 need to compile proftpd with mod_ident
+                                $conf_looks_sane //= 0;
+                            }
+                        }
+                    }
+                }
+            );
+            return undef;    #not modified
+        }
+    );
+
+    return $conf_looks_sane // 0;
+}
+
+sub ensure_proftpd_has_no_identlookups ($self) {
+
+    return unless $self->{'ftputils_config_obj'}->min_version('1.3.7');
+
+    return $self->_ftp_transaction(
+        sub ($ftp_conf_data_sr) {
+
+            my $iterator;
+
+            Cpanel::StringFunc::LineIterator::Indent->new(
+                $$ftp_conf_data_sr,
+                sub ($it) {
+                    my $line = $_;
+                    $iterator //= $it;
+
+                    return if $line =~ m/^\s*#/;
+
+                    if ( $line =~ /^\s*IdentLookups\b/i ) {
+                        say "Disable IdentLookups from Proftpd configuration.";
+                        $iterator->replace_with("# $line");
+                    }
+
+                    return;
+                }
+            );
+
+            return unless ref $iterator;
+            return $iterator->get_first_modified_offset();
+        }
+    );
+}
+
+1;

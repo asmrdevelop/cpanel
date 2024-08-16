@@ -1,0 +1,245 @@
+[%
+USE CPList;
+USE CPIcons;
+USE CPScalar;
+USE SSL;
+
+WRAPPER 'master_templates/master.tmpl'
+    app_key = 'manage_ssl_hosts'
+    theme = "bootstrap"
+    include_legacy_stylesheets = 1
+    scripts = '/js/sorttable.js';
+
+SET ONE_DAY = 60 * 60 * 24;
+SET NEARLY_EXPIRED_WINDOW = 30 * ONE_DAY;
+
+SET MINIMUM_MODULUS_LENGTH = SSL.DEFAULT_KEY_SIZE;
+
+MACRO floor(n)
+     GET n
+     FILTER format("%d");
+
+MACRO ceiling(n)
+     GET n + 1
+     FILTER format("%d");
+
+IF !sslvhosts.size %]
+    <h3 class="simpleheading">[% locale.maketext('SSL Hosts') %]</h3>
+    <div>
+        [% locale.maketext('There are no secure sites configured on your server!') %]
+    </div>
+[% ELSE %]
+    [% PROCESS '_ajaxapp_header.tmpl' -%]
+
+    <div id="cjt_pagenotice_container"></div>
+
+    <section>
+    <h3 class="section-heading">[% locale.maketext('Installed SSL Hosts') %]</h3>
+    <div class="tblActionBar form-inline">
+    </div>
+    <div class="table-responsive">
+        <table role="table" class="table table-hover table-bordered table-condensed table-striped sortable" id="domainlist">
+        <tr>
+            <th>[% locale.maketext('Domains') %]</th>
+            [% IF httpd_is_enabled -%]
+                <th>[% locale.maketext('IP Address') %]</th>
+                <th>[% locale.maketext('IP Address Type') %]</th>
+                <th>[% locale.maketext('Is Primary Website on IP Address?') %]</th>
+                <th>[% locale.maketext('Is [output,acronym,SNI,Server Name Indication] Required?') %]</th>
+            [% END -%]
+            <th>[% locale.maketext('Document Root') %]</th>
+            <th>[% locale.maketext('Owner') %]</th>
+            <th>[% locale.maketext('Issuer') %]</th>
+            <th>[% locale.maketext('Expires') %]</th>
+            <th>[% locale.maketext('Key Type') %]</th>
+            <th class="sorttable_nosort">[% locale.maketext('Actions') %]</th>
+        </tr>
+
+        [%
+        SET sslvhosts = sslvhosts.sort('host');
+
+        SET now = CPANEL.now();
+        SET warn_icon = CPIcons.get_common_icon_markup("warning", 16);
+        SET error_icon = CPIcons.get_common_icon_markup("error", 16);
+
+        SET expiration_dates = sslvhosts.ofeach('crt').ofeach('not_after');
+        FOR expdate = expiration_dates;
+            expiration_dates.${loop.index} = expdate + 1;
+        END;
+
+        SET expiration_dates = locale.get_lookup_hash_of_multi_epoch_datetime( expiration_dates, 'date_format_short' );
+        # Removed datetimes because it slows the page down so much
+
+        SET expire_error_msg = locale.maketext('The certificate has expired.');
+        SET self_signed_warn_msg = locale.maketext('Self-signed certificates will cause browser warnings.');
+        SET key_critical_msg = locale.maketext('A key that does not use [asis,ECDSA] or at least [numf,_1]-bit [asis,RSA] does not provide adequate security.', MINIMUM_MODULUS_LENGTH);
+        SET self_signed = locale.maketext('[comment]- Self Signed -[comment,The decorating dashes are meant to visually distinguish this label from a certificate authority name.]');
+        SET expire_today = locale.maketext('The certificate will expire today.');
+
+        FOR hostdata = sslvhosts;
+            SET host = hostdata.sslhost;
+            SET user = hostdata.user;
+            SET ip = hostdata.ip;
+            SET iptype = hostdata.iptype;
+            SET docroot = hostdata.docroot;
+
+            IF ! user.defined();
+                SET user = 'nobody';
+            END;
+
+            SET issuer = self_signed;
+            SET issuer_warn = 1;
+            IF ! hostdata.crt.is_self_signed;
+                SET issuer = hostdata.crt.${'issuer.organizationName'};
+                SET issuer_warn = 0;
+            END;
+
+            SET not_after = hostdata.crt.not_after;
+            SET expiration_time = not_after + 1;
+            SET expired = (not_after < now);
+            SET nearly_expired = ((not_after - now) < NEARLY_EXPIRED_WINDOW);
+            IF !expired && nearly_expired;
+                SET daysUntilExpiration = ceiling((not_after - now) / ONE_DAY);
+                SET expires_today = (floor((not_after - now) / ONE_DAY) == 0 ? ((not_after - now) % ONE_DAY) > 0 : 0);
+                IF expires_today;
+                    SET expire_warn_msg = expire_today;
+                ELSE;
+                    SET expire_warn_msg = locale.maketext('Your certificate will expire in [quant,_1,day,days].', daysUntilExpiration);
+                END;
+            END;
+
+            SET domains_list = [host];
+            domains_list = domains_list.merge( hostdata.aliases.unique() ).sort();
+        %]
+        <tr>
+            <td class="column column-domains">
+                <ul>
+                    [% FOR domain = domains_list -%]
+                    <li>
+                        [%
+                            IF hostdata.crt.domains && SSL.validate_domains_lists_have_match(hostdata.crt.domains, domain);
+                                SET cert_icon = 'fa-lock';
+                                SET cert_class = 'working';
+                            ELSE;
+                                SET cert_icon = 'fa-unlock';
+                                SET cert_class = 'not-working';
+                            END;
+                        -%]
+                        [% IF domain.match('[*]') -%]
+                            <span class="[% cert_class %]">
+                                <i class="fas [% cert_icon %]"></i>
+                                [% domain FILTER html %]
+                            </span>
+                        [% ELSE -%]
+                            <a target="_blank" href="https://[% domain FILTER html %]" class="[% cert_class %]" rel="noreferrer">
+                                <i class="fas [% cert_icon %]"></i>
+                                [% domain FILTER html %]
+                            </a>
+                        [% END -%]
+                    </li>
+                    [% END -%]
+                </ul>
+            </td>
+            [% IF httpd_is_enabled -%]
+                <td class="column column-ip">[% ip %]</td>
+                <td class="column column-iptype">[% iptype %]</td>
+                <td class="column column-is-primary">[% hostdata.is_primary_on_ip ? locale.maketext('Yes') : locale.maketext('No') %]</td>
+                <td class="column column-sni">[% hostdata.needs_sni ? locale.maketext('Yes') : locale.maketext('No') %]</td>
+            [% END -%]
+            <td class="column column-docroot">[% docroot.html().breakOn('_') %]</td>
+            <td class="column column-user">[% user %]</td>
+            <td class="column column-issuer">
+                <div>
+                [% issuer %]
+                [% IF issuer_warn %][% warn_icon %]<div class="warn hidden"><span>[% self_signed_warn_msg %]</span></div>[% END %]
+                </div>
+            </td>
+            <td class="column column-expires" sorttable_customkey="[% expiration_time %]">
+                <div>
+                [% expiration_dates.${expiration_time} %]
+                [% IF expired %]
+                    [% error_icon %]<div class="error hidden"><span>[% expire_error_msg %]</span></div>
+                [% ELSIF nearly_expired %]
+                    [% warn_icon %]<div class="warn hidden"><span>[% expire_warn_msg %]</span></div>
+                [% END %]
+                </div>
+            </td>
+            <td class="column column-modulus"[% IF hostdata.key_critical %] title="[% key_critical_msg %]"[% END %]>
+                <div>
+                [% hostdata.key_type_label.html() %]
+                [% IF hostdata.key_critical %]
+                    [% error_icon %]<div class="error hidden"><span>[% key_critical_msg %]</span></div>
+                [% END %]
+                </div>
+            </td>
+            <td class="column column-action">
+                <a href='[% cp_security_token %]/scripts2/dodelsslhost?host=[% host FILTER uri %]' class='btn btn-link'>
+                    <span class="glyphicon glyphicon-trash"></span>
+                    [% locale.maketext('Delete') %]
+                </a>
+                [% IF httpd_is_enabled && !hostdata.is_primary_on_ip && !host.match('[*]') -%]
+                    <a href='javascript:void(0)' data-servername="[% host FILTER html %]" class='make-primary-button btn btn-link'>
+                        <span class='fas fa-star'></span>
+                        [% locale.maketext('Make Primary') %]
+                    </a>
+                [% END -%]
+            </td>
+        </tr>
+        [% END; %]
+        </table>
+    </div>
+    </section>
+
+    [% PROCESS '_ajaxapp_footer.tmpl' -%]
+
+    <script>
+        [% INSERT '/usr/local/cpanel/base/yui/event-mouseenter/event-mouseenter-min.js' %]
+
+        var EVENT = YAHOO.util.Event;
+        var DOM = YAHOO.util.Dom;
+
+        /**
+         * Initialize the page
+         */
+        var initialize = function() {
+
+            /**
+             * Initialize the handlers for the warning and errors.
+             * @param  {HTMLElement} el Node to attach the handers too.
+             */
+            var install_handlers = function(el) {
+                var parent = el.parentNode.parentNode;
+                EVENT.on(parent, "mouseenter", function(e) {
+                    var thatEl = el;
+                    if (DOM.hasClass(thatEl, "hidden")) {
+                        DOM.removeClass(thatEl, "hidden");
+                    }
+                });
+
+                EVENT.on(parent, "mouseleave", function(e) {
+                    var thatEl = el;
+                    if (!DOM.hasClass(thatEl, "hidden")) {
+                        DOM.addClass(thatEl, "hidden");
+                    }
+                });
+
+                EVENT.on(parent, "click", function(e) {
+                   var thatEl = el;
+                   hasHidden = DOM.hasClass(thatEl, "hidden");
+                    if (!hasHidden) {
+                        DOM.addClass(thatEl, "hidden");
+                    } else {
+                        DOM.removeClass(thatEl, "hidden");
+                    }
+                });
+            };
+
+            DOM.getElementsByClassName ( "error" , "div" , "domainlist" , install_handlers );
+            DOM.getElementsByClassName ( "warn" , "div" , "domainlist" , install_handlers );
+        };
+
+        EVENT.onDOMReady(initialize);
+    </script>
+[% END;
+END;
+-%]

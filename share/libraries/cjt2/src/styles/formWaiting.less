@@ -1,0 +1,92 @@
+@ttime: 0.25s;
+@mask_zindex: 1000;
+
+.cp-form-waiting-wrapper {
+    & {
+        position: relative;
+    }
+
+    & > .cp-form-waiting-mask {
+        position: absolute;
+        width: 100%;
+
+        /* This mask has to sit above whatever it covers;
+         * otherwise, another element’s background-image could
+         * preempt this one’s.
+         */
+        z-index: @mask_zindex;
+
+        /* height transition has some constraints here:
+         *  1) The mask can’t block an active form.
+         *  2) Once the form is disabled, the mask needs to cover it
+         *     right away.
+         *  3) When the form is re-enabled, the mask has to STAY
+         *     covering it until the transition is done; otherwise
+         *     we’ll get a “snap”.
+         *
+         *  See comments below for how this resolves that.
+         *
+         */
+        height: 0;
+
+        /* This could be gotten rid of if we want to go in a
+           Win10-sharp-corners-look direction.
+        */
+        border-radius: 5px;
+    }
+
+    & > .cp-form-waiting-mask {
+        transition: height 0s @ttime, opacity @ttime, background-color @ttime,
+            filter @ttime, -webkit-filter @ttime;
+    }
+
+    & > .cp-form-waiting-spinner {
+        transition: opacity @ttime;
+        position: absolute;
+        pointer-events: none;
+
+        /* Put the element at the center of its container.
+           By themselves, these would only center the element’s
+           top-left corner, leaving the element visually not quite centered.
+        */
+        top: 50%;
+        left: 50%;
+
+        /* Shift the element 50% of its width/height toward the up/left.
+           This centers the element at the place where we’ve just assigned
+           its top-left corner, which resolves the not-quite-centered look
+           and puts us where we want to be.
+        */
+        transform: translate(-50%, -50%);
+
+        opacity: 0;
+        z-index: 1 + @mask_zindex;
+    }
+}
+
+/* Use [disabled] rather than :disabled because every
+    IE version gets confused when <fieldset>s become :disabled.
+*/
+.cp-form-waiting-wrapper[disabled] {
+    & > .cp-form-waiting-mask {
+        opacity: 0.75;
+        background-color: rgba(0, 0, 0, 0.1);
+
+        /* On disable, change the height right away.
+         * This satisfies height transition criterion #2 above.
+         */
+        height: 100%;
+        transition: opacity @ttime, background-color @ttime, filter @ttime,
+            -webkit-filter @ttime;
+    }
+
+    & > .ng-transclude {
+        filter: blur(0.5px);
+        -webkit-filter: blur(0.5px);
+    }
+
+    & > .cp-form-waiting-spinner {
+        display: block;
+        opacity: 1;
+    }
+}

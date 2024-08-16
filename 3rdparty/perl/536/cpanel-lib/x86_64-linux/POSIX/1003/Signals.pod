@@ -1,0 +1,193 @@
+=encoding utf8
+
+=head1 NAME
+
+POSIX::1003::Signals - POSIX using signals
+
+=head1 SYNOPSIS
+
+  use POSIX::1003::Signals qw(:functions SIGPOLL SIGHUP);
+  sigaction($signal, $action, $oldaction);
+  sigpending($sigset);
+  sigprocmask($how, $sigset, $oldsigset)
+  sigsuspend($signal_mask);
+
+  kill SIGPOLL//SIGHUP, $$;
+
+  use POSIX::1003::Signals '%signals';
+  my $number = $signals{SIGHUP};
+  $signals{SIGNEW} = $number;
+
+=head1 DESCRIPTION
+
+This manual page explains the access to the POSIX C<sigaction>
+functions and its relatives. This module uses two helper objects:
+L<POSIX::SigSet|POSIX::SigSet> and L<POSIX::SigAction|POSIX::SigAction>.
+
+=head1 FUNCTIONS
+
+These functions are implemened in POSIX.xs
+
+=head2 Standard POSIX
+
+=over 4
+
+=item B<kill>($signal, $process)
+
+Simply L<perlfunc/kill>.
+
+B<Be warned> the order of parameters is reversed in the C<kill>
+exported by POSIX!
+
+  CORE::kill($signal, $pid);
+  ::Signals::kill($signal, $pid);
+  POSIX::kill($pid, $signal);
+
+=item B<raise>($signal)
+
+Send a signal to the executing process.
+
+=item B<sigaction>( $signal, $action, [$oldaction] )
+
+Detailed signal management.  The C<signal> must be a number (like SIGHUP),
+not a string (like "SIGHUP").  The  C<action> and C<oldaction> arguments
+are C<POSIX::SigAction> objects. Returns C<undef> on failure. 
+
+If you use the C<SA_SIGINFO flag>, the signal handler will in addition to
+the first argument (the signal name) also receive a second argument: a
+hash reference, inside which are the following keys with the following
+semantics, as defined by POSIX/SUSv3:
+
+  signo   the signal number
+  errno   the error number
+  code    if this is zero or less, the signal was sent by
+          a user process and the uid and pid make sense,
+          otherwise the signal was sent by the kernel
+
+The following are also defined by POSIX/SUSv3, but unfortunately
+not very widely implemented:
+
+  pid     the process id generating the signal
+  uid     the uid of the process id generating the signal
+  status  exit value or signal for SIGCHLD
+  band    band event for SIGPOLL
+
+A third argument is also passed to the handler, which contains a copy
+of the raw binary contents of the siginfo structure: if a system has
+some non-POSIX fields, this third argument is where to unpack() them
+from.
+
+Note that not all siginfo values make sense simultaneously (some are
+valid only for certain signals, for example), and not all values make
+sense from Perl perspective.
+
+=item B<signal>( $signal, <CODE|'IGNORE'|'DEFAULT'> )
+
+Set the CODE (subroutine reference) to be called when the $signal appears.
+See L<perlvar/%SIG>.
+
+   signal(SIGINT, \&handler);
+   $SIG{SIGINT} = \&handler;  # same
+
+=item B<sigpending>($sigset)
+
+Examine signals that are blocked and pending.  This uses C<POSIX::SigSet>
+objects for the C<sigset> argument.  Returns C<undef> on failure.
+
+=item B<sigprocmask>( $how, $sigset, [$oldsigset] )
+
+Change and/or examine calling process's signal mask.  This uses
+C<POSIX::SigSet> objects for the C<sigset> and C<oldsigset> arguments.
+Returns C<undef> on failure.
+
+Note that you can't reliably block or unblock a signal from its own signal
+handler if you're using safe signals. Other signals can be blocked or
+unblocked reliably.
+
+=item B<sigsuspend>($sigset)
+
+Install a signal mask and suspend process until signal arrives.
+This uses C<POSIX::SigSet> objects for the C<signal_mask> argument.
+Returns C<undef> on failure.
+
+=item B<strsignal>($signal)
+
+Returns a string reprentation of the $signal.  When the $signal is unknown,
+a standard string is returned (never undef)
+
+=back
+
+=head2 Additional
+
+=over 4
+
+=item B<sigaction_names>()
+
+Returns a list with all known sigaction names, unsorted.
+
+=item B<signal_names>()
+
+Returns a list with all known signal names, unsorted.
+
+=back
+
+=head1 CONSTANTS
+
+=over 4
+
+=item B<%signals>
+
+This exported variable is a (tied) HASH which maps C<SIG*> and
+C<SA_*> names to their numbers.
+
+=back
+
+=head2 Export tag C<:signals>
+
+The following constants are exported, shown here with the values
+discovered during installation of this module:
+
+=for comment
+#TABLE_SIGNALS_START
+
+  During installation, a symbol table will get inserted here.
+
+=for comment
+#TABLE_SIGNALS_END
+
+=head2 Export tag C<:actions>
+
+=for comment
+#TABLE_SIGACTIONS_START
+
+  During installation, a symbol table will get inserted here.
+
+=for comment
+#TABLE_SIGACTIONS_END
+
+=head2 Export tag C<:handlers>
+
+=for comment
+#TABLE_SIGHANDLERS_START
+
+  During installation, a symbol table will get inserted here.
+
+=for comment
+#TABLE_SIGHANDLERS_END
+
+=head1 SEE ALSO
+
+This module is part of POSIX-1003 distribution version 1.02,
+built on November 10, 2020. Website: F<http://perl.overmeer.net/CPAN>.  The code is based on L<POSIX>, which
+is released with Perl itself.  See also L<POSIX::Util> for
+additional functionality.
+
+=head1 COPYRIGHTS
+
+Copyrights 2011-2020 on the perl code and the related documentation
+ by [Mark Overmeer]. For other contributors see ChangeLog.
+
+This program is free software; you can redistribute it and/or modify it
+under the same terms as Perl itself.
+See F<http://dev.perl.org/licenses/>
+

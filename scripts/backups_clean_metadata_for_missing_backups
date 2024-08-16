@@ -1,0 +1,56 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/backups_clean_metadata_for_missing_backups
+#                                                  Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::backups_clean_metadata_for_missing_backups;
+
+use strict;
+use warnings;
+
+use Cpanel::Backup::Metadata ();
+
+sub _help {
+    print qq{
+The backups_clean_metadata_for_missing_backups script removes the metadata for
+backup files that a user manually removed from the system. Use this script when
+you want to remove metadata from the system outside of the daily Backup System
+run.
+
+Example:
+
+    rm -r /backup/20yy-mm-dd
+    $0
+
+The above demonstrates removing the backup files manually and then regenerating
+metadata for the missing backups. Please note that this script does not remove
+the metadata if an individual account is removed from a date.
+
+Example:
+
+    rm /backup/20yy-mm-dd/accounts/someacct.tar.gz
+    $0
+
+The above would not remove metadata corresponding to the missing tar file in
+this case. Doing this will cause errors in the File Restoration UI when you
+attempt to restore files from that specific account's backup for the deleted
+date.
+
+Usage:
+
+$0
+
+};
+    return 0;
+}
+
+sub script {
+    return _help() if grep { m/--help|-h/ } @_;
+    Cpanel::Backup::Metadata::remove_metadata_for_missing_backups();
+    return 0;
+}
+
+exit( script(@ARGV) ) unless caller();

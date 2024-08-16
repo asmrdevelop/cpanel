@@ -1,0 +1,118 @@
+<cp-alert type="danger" id="notAllowedWarning" ng-show="dnssec.loading_error">{{ dnssec.loading_error_message }}</cp-alert>
+<section id="dns_sec_ds_records_container" ng-hide="dnssec.loading_error">
+    <div class="row">
+        <div class="col-xs-12 col-sm-8 col-md-6">
+            <form name="dnssec.importForm" novalidate>
+                <div class="panel panel-default">
+                    <div class="panel-heading">
+                        <h2 class="widget-title pull-left flip">
+                            [% locale.maketext('Import [asis,DNSSEC] Key') %]
+                        </h2>
+                        <div class="pull-right flip">
+                            <button type="button"
+                                class="btn btn-default btn-xs"
+                                id="lnkshowHideHelp"
+                                ng-click="dnssec.toggleHelp()">
+                                [% locale.maketext("Show/Hide Help") %]
+                                <i class="far fa-question-circle form-info-sign"></i>
+                            </a>
+                        </div>
+                        <div class="clearfix"></div>
+                    </div>
+                    <div class="panel-body">
+                        <div class="form-group">
+                            <div class="row">
+                                <div class="col-xs-12">
+                                    <toggle-label-info
+                                        for="keyType"
+                                        label-text="[% locale.maketext('Key Type') %]"
+                                        label-id="lblKeyType"
+                                        info-icon-id="icoKeyType"
+                                        info-block-id="txtKeyType"
+                                        show-info-block="{{dnssec.settings.showAllHelp}}"
+                                        >
+                                        [% locale.maketext('The type of [asis,DNSSEC] key that you want to import.') %]
+                                    </toggle-label-info>
+                                </div>
+                                <div class="col-xs-12">
+                                    <div class="radio">
+                                        <label>
+                                            <input type="radio"
+                                                name="keyType"
+                                                id="kskKey"
+                                                ng-model="dnssec.details.keyType"
+                                                selected
+                                                value="KSK">
+                                            <span>[% locale.maketext('[asis,KSK] (Key Signing Key)') %]</span>
+                                        </label>
+                                    </div>
+                                    <div class="radio">
+                                        <label>
+                                            <input type="radio"
+                                                name="keyType"
+                                                id="zskKey"
+                                                ng-model="dnssec.details.keyType"
+                                                value="ZSK">
+                                            <span>[% locale.maketext('[asis,ZSK] (Zone Signing Key)') %]</span>
+                                        </label>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="form-group">
+                            <div class="row">
+                                <div class="col-xs-12">
+                                    <toggle-label-info
+                                        for="key"
+                                        label-text="[% locale.maketext('Key') %]"
+                                        label-id="lblKey"
+                                        info-icon-id="icoKey"
+                                        info-block-id="txtKey"
+                                        show-info-block="{{dnssec.settings.showAllHelp}}"
+                                        >
+                                        [% locale.maketext('The [asis,DNSSEC] key that you want to import.') %]
+                                    </toggle-label-info>
+                                </div>
+                                <div class="col-xs-12">
+                                    <textarea id="key" name="key"
+                                        ng-model="dnssec.details.keyToImport"
+                                        rows="10"
+                                        class="form-control"
+                                        required
+                                        ></textarea>
+                                </div>
+                                <div class="col-xs-12">
+                                    <ul validation-container field-name="key" role="alert" id="keyErrorPanel">
+                                        <li validation-item field-name="key" validation-name="required" id="keyRequired">
+                                            [% locale.maketext('Enter a key.') %]
+                                        </li>
+                                    </ul>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="panel-footer clearfix">
+                        <button id="btnImportKey"
+                                type="submit"
+                                spinner-id="spinnerImportKey"
+                                cp-action="dnssec.importKey(dnssec.details)">
+                                <i class="fas fa-plus" aria-hidden="true"></i>
+                                [% locale.maketext("Import") %]
+                        </button>
+                        <button id="btnCancel"
+                            type="button"
+                            class="btn btn-link pull-right flip"
+                            ng-click="dnssec.backToListView()"
+                            aria-label="[% locale.maketext('Go back to the list of keys.') %]">
+                            <i class="fas" ng-class="{ 'fa-arrow-left': !dnssec.isRTL, 'fa-arrow-right': dnssec.isRTL }" aria-hidden="true"></i>
+                            [% locale.maketext('Go Back') %]
+                        </button>
+                    </div>
+                </div>
+            </form>
+        </div>
+        <ng-include src="'views/dnssec_sidebar_help.html.tt'"></ng-include>
+    </div>
+</section>
+

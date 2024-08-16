@@ -1,0 +1,58 @@
+[%
+    SET CPANEL.CPVAR.dprefix = "../";
+    SET listwebalizer =  execute("Stats", "list_sites", {'engine' => 'webalizer', 'traffic' => 'ftp'} ); %]
+%]
+
+[% WRAPPER '_assets/master.html.tt'
+    app_key = 'webalizer_ftp'
+-%]
+
+<div class="body-content">
+    <p id="descWebalizerFTP" class="description">
+        [% locale.maketext("Webalizer FTP is a complex stats program that produces a variety of charts and graphs about who has visited your site using FTP protocol.") %]
+    </p>
+    [%
+        IF listwebalizer.data.list.size();
+        SET item = listwebalizer.data.item(0);
+        SET alt = locale.maketext('View the Webalizer FTP statistics for “[_1]”.', CPANEL.CPDATA.DNS).remove('"');
+    %]
+    <p>
+        <a id="lnkViewWebalizerFTP" alt="[% alt %]" title="[% alt %]" href="[% CPANEL.ENV.cp_security_token _ item.path %]" target="_blank">
+            <span id="imgWebalizerFTP" class="glyphicon glyphicon-search"></span>&nbsp;
+            [% locale.maketext("Click here to view Webalizer FTP stats for “[_1]”.", CPANEL.CPDATA.DNS) %]
+        </a>
+    </p>
+    [% ELSE %]
+        [% IF listwebalizer.errors.size %]
+            [% FOREACH error IN listwebalizer.errors %]
+                <div class="alert alert-danger" role="alert">
+                    <span class="glyphicon glyphicon-remove-sign" aria-hidden="true"></span>
+                    <div class="alert-message">
+                        <strong class="alert-title">
+                            [% locale.maketext('Error:') %]
+                        </strong>
+                        <span class="alert-body">
+                                <span id="error-[% loop.index() %]">
+                                    [% error.html() %]
+                                </span>
+                            </span>
+                    </div>
+                </div>
+            [% END %]
+        [% ELSE %]
+            <div class="alert alert-info" role="alert">
+                <span class="glyphicon glyphicon-info-sign" aria-hidden="true"></span>
+                <div class="alert-message">
+                    <strong class="alert-title">
+                        [% locale.maketext('Notice:') %]
+                    </strong>
+                    <span class="alert-body">
+                      [% locale.maketext("There are no [asis,Webalizer FTP] stats available.") %]
+                    </span>
+                </div>
+            </div>
+        [% END %]
+    [% END %]
+
+</div>
+[% END #wrapper -%]

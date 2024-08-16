@@ -1,0 +1,31 @@
+boxtrapper_autowhitelist:
+  driver = pipe
+  headers_only
+  command = /usr/local/cpanel/bin/boxtrapper --autowhitelist "${perl{untaint}{$authenticated_id}}"
+  user = ${perl{getemailuser}{$authenticated_id}{$received_protocol}{$sender_ident}}
+  group = ${extract{3}{:}{${lookup passwd{${perl{getemailuser}{$authenticated_id}{$received_protocol}{$sender_ident}}}{$value}}}}
+  log_output = true
+  return_fail_output = true
+  return_path_add = false
+  temp_errors = 64 : 69 : 70: 71 : 72 : 73 : 74 : 75 : 78
+
+local_boxtrapper_delivery:
+  driver = pipe
+  command = /usr/local/cpanel/bin/boxtrapper "${perl{untaint}{$local_part_data}}" $home
+  user = $local_part_data
+  group = ${extract{3}{:}{${lookup passwd{$local_part_data}{$value}}}}
+  log_output = true
+  return_fail_output = true
+  return_path_add = false
+  temp_errors = 64 : 69 : 70: 71 : 72 : 73 : 74 : 75 : 78
+
+virtual_boxtrapper_userdelivery:
+  driver = pipe
+  command = /usr/local/cpanel/bin/boxtrapper \
+    "${perl{untaint}{$local_part}}@${perl{untaint}{$domain}}" \
+    $home
+  user = "${lookup{${perl{untaint}{$domain}}}lsearch{/etc/userdomains}{$value}}"
+  log_output = true
+  return_fail_output = true
+  return_path_add = false
+  temp_errors = 64 : 69 : 70: 71 : 72 : 73 : 74 : 75 : 78

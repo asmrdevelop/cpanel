@@ -1,0 +1,555 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - whostmgr/docroot/themes/x/rebuildtmpl   Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+# Perl code to build menu templates
+# Processes dynamicui.conf file to build:
+# Left frame navigation template - docroot/templates/menu/command.tmpl
+# Navigation pages with icons and links - example:docroot/templates/menu/main.tmpl; docroot/templates/menu/Account_Functions.tmpl
+# Breadcrumb file which is used in breadcrumb logic - docroot/themes/x/breadcrumb
+# Processes raw:plugins "menu/plugins_list.tmpl" to include plugins in left frame and
+# Add code to process templates/plugins_icons.tmpl to display icons on the plugin page.
+
+use cPstrict;
+
+use Cpanel::Locale            ();
+use Cpanel::StringFunc::Group ();
+
+use Whostmgr::DynamicUI::Loader             ();
+use Whostmgr::Templates::Command::Directory ();
+
+my $WARNING            = "# This file is generated automatically.\n# Do not edit it manually; instead, edit the /usr/local/cpanel/whostmgr/docroot/themes/x/dynamicui.conf file.\n";
+my $TMPL_WARNING       = "[%# This file is generated automatically.\nDo not edit it manually; instead, edit the /usr/local/cpanel/whostmgr/docroot/themes/x/dynamicui.conf file. -%]\n";
+my $fallback_icon_path = 'fallback_icon.png';
+
+# Wrapper for main.tmpl and categories (Account_Function.tmpl, Account_Information.tmpl)
+# 'skipheader' - template flag to determine if we need to include page title.
+# ===CONTENT=== is a place holder for the content that goes into wrapper
+my $MAIN_HF_WRAPPER = $TMPL_WARNING . <<END;
+[% WRAPPER 'master_templates/master.tmpl'
+    theme="bootstrap"
+    app_key="===key==="
+ -%]
+[% USE Whostmgr -%]
+[% USE JSON -%]
+[% USE EasyApache -%]
+[% USE VarCache -%]
+[% USE ServerRoles -%]
+[% USE Services -%]
+[% USE CPOS -%]
+
+[% varcache.set('checkacl_all',Whostmgr.checkacl('all')); %]
+[% varcache.set('dnsonly',Whostmgr.dnsonly()); %]
+===CONTENT===
+[% END -%]
+END
+
+my $CATEGORY_WRAPPER = $TMPL_WARNING . <<END;
+===CONTENT===
+END
+
+# Wrapper for command.tmpl
+my $COMMAND_WRAPPER = $TMPL_WARNING . <<END;
+[% USE Whostmgr -%]
+[% USE JSON -%]
+[% USE EasyApache -%]
+[% USE VarCache -%]
+[% USE ServerRoles -%]
+[% USE Services -%]
+[% USE CPOS -%]
+[% varcache.set('checkacl_all',Whostmgr.checkacl('all')); %]
+[% varcache.set('dnsonly',Whostmgr.dnsonly()); %]
+
+    <div class="commandContainer">
+        <!-- command2.header3 -->
+        <div class="searchContainer">
+            <div class="searchBox">
+                <div class="quickJumpWrapper">
+                    <input name="find" id="quickJump" accesskey="f" title="[% locale.maketext('Search') %]" autocomplete="off" aria-label="Search">
+                    <div id="searchAction" class="quickJumpIcon search">&nbsp;</div>
+                </div>
+            </div>
+            <div id="toggleAll" class="collapseExpandContainer">
+                <div class="collapseExpandButtonContainer">
+                    <a class="collapseExpandButton collapse" title="[% locale.maketext('Collapse All') %]" href="javascript:void(0);"></a>
+                    <a class="collapseExpandButton expand" title="[% locale.maketext('Expand All') %]" href="javascript:void(0);"></a>
+                </div>
+            </div>
+        </div>
+
+        <div class="mainCommandWrapper">
+            <ul id="mainCommand" class="">
+            ===CONTENT===
+            </ul>
+
+            <div class="commandFooter">
+                <div class="jumpUp categoryHeader">
+                    <a href="javascript:void(0)" id="jumpUpLink" title="[% locale.maketext('Navigate to the top of the list.') %]">
+                        <img alt="[% locale.maketext('Back To Top')%]"
+                            src="[% Whostmgr.find_file_url('images/jumpUp.png') %]"
+                            class="backtotop" />
+                        [% locale.maketext('Back To Top') %]
+                    </a>
+                </div>
+                <div class="legal">
+                    <span class="soloWrapper" id="soloWrapper">
+                        [%  IF Whostmgr.has_multiuser == 0 %]
+                        <img class="logo" src="[%  Whostmgr.find_file_url('solo.svg') %]" alt="cPanel Solo" />
+                        [%  END %]
+                    </span>
+                    <span class="copyright">
+                        [% locale.maketext('Copyright©[output,nbsp][current_year] [output,url,_1,cPanel~, L.L.C.,title,cPanel Website,target,_2]', 'https://www.cpanel.com/', 'cpanel_company_website') %]
+                    </span>
+                    <a href="[% cp_security_token %]/scripts10/eula"
+                        title="[% locale.maketext_plain_context('[output,acronym,EULA,End User License Agreement]') %]">
+                        [% locale.maketext('[output,acronym,EULA,End User License Agreement]') %]
+                    </a>
+                    <a id="lnkTrademark" href="[% cp_security_token %]/scripts10/trademarks"
+                        title="[% locale.maketext('Trademarks') %]" class="trademark">
+                        [% locale.maketext('Trademarks') %]
+                    </a>
+                    <a id="lnkPrivacy" href="https://go.cpanel.net/privacy"
+                        title="[% locale.maketext('Privacy Policy') %]"
+                        target="_blank">
+                        [% locale.maketext('Privacy Policy') %]
+                    </a>
+                </div>
+            </div>
+        </div>
+    </div>
+END
+
+my ( $HICON, $HEADER_URL, $HF, $hf_buffer, $HDNS, $safeheader );
+
+my $MAIN_URL = "/scripts/command?PFILE=main";
+
+my $this_dir = $0;
+$this_dir =~ s{[^/]+\z}{};
+chdir $this_dir if $this_dir;
+my $tmpl_path = '/usr/local/cpanel/whostmgr/docroot/templates/menu';    # directory where generated templates are saved
+
+my $command_buffer;
+my $category_buffer;
+
+open( my $BREADCRUMB, '>', "breadcrumb" )      or die "Could not open breadcrumb: $!\n";
+open( my $COMMAND,    '>', \$command_buffer )  or die "Could not open command.tmpl: $!\n";
+open( my $CATEGORY,   '>', \$category_buffer ) or die "Could not open category.tmpl: $!\n";
+
+print $BREADCRUMB $WARNING;
+
+print $CATEGORY qq{
+<div id="iconSea" class="panel-body icon-container-body">
+};
+
+make_breadcrumb( $MAIN_URL, '', 'Home' );
+
+my $dynui_data = Whostmgr::DynamicUI::Loader::load_dynamicui_conf('/usr/local/cpanel/whostmgr/docroot/themes/x/dynamicui.conf');
+
+my $HEADER              = '';
+my $HKEY                = '';
+my $HADHEADER           = '-1';
+my $categoryIfCondition = '';
+
+my $slugified_item   = "";    # used to add slugified text to items/pages in a category
+my $slugified_header = "";    # used to add slugified text to a category
+my $application_key  = "";
+
+foreach my $group ( @{ $dynui_data->{'groups'} } ) {
+
+    #now, on to the new header....
+    $HEADER = $group->{'groupdesc'};
+    $HICON  = $group->{'file'} || $fallback_icon_path;
+    $HDNS   = $group->{'dnsonly_ok'} && $group->{'dnsonly_ok'} =~ m{dns};
+    $HKEY   = $group->{'key'};
+
+    if ( length $HEADER && $HEADER =~ m{\$LANG\{'?([^'\}]+)'?\}} ) {
+        $HEADER = $1;
+    }
+
+    $safeheader = $HEADER;
+    $safeheader =~ s{\s}{_}g;
+    $safeheader =~ s{/}{_}g;
+    $application_key = $HKEY;
+
+    #TODO: what is this for ???
+    if ( $safeheader =~ m{\AcPanel_} ) {
+        if ( $safeheader ne "cPanel_Cloud" ) {    # exclude cpanel cloud from this “what is this for” change
+            $safeheader = 'cPanel';
+        }
+    }
+
+    $HEADER_URL       = "/scripts/command?PFILE=$safeheader";
+    $slugified_header = Cpanel::StringFunc::Group::group_words($HEADER);
+
+    make_breadcrumb( $HEADER_URL, $HICON, $HEADER, $MAIN_URL, "$slugified_header" );
+
+    open $HF, '>', \$hf_buffer;
+
+    print $HF qq{
+                <div id="iconSea" class="panel-body icon-container-body">};
+    my $tmpl_if;
+
+    if ( $HADHEADER ne '-1' ) {
+
+        print $COMMAND qq{</ul></li>\n};
+
+        if ($categoryIfCondition) {
+            print $COMMAND "[% END -%]\n";
+        }
+
+        # re-initialize $categoryIfCondition to use for the next iteration
+        $categoryIfCondition = '';
+    }
+
+    if ( $group->{'group'} eq 'plugins' ) {
+
+        # The 'plugins' group is a special-case - and requires that the check
+        # use the "addons" flag - which translates to Whostmgr.check_flag("addons")
+        # in the template code.
+        $HADHEADER = 'addons';
+    }
+    else {
+        # Instead of tracking the ACL requirements for the group separately,
+        # we simply use the set of ACLs defined for the subitems in the group.
+        # This avoids problematic use cases wherein a 'subitem' requires ACLs
+        # that the group does not have.
+        my %group_acls;
+        foreach my $item ( @{ $group->{'items'} } ) {
+            my @item_acls = split /,/, $item->{'acl'};
+            $group_acls{$_}++ for grep { index( $_, 'ACL=' ) == 0 } @item_acls;
+        }
+        $HADHEADER = join ',', sort keys %group_acls;
+    }
+
+    my $add_if_statement_for_group = $HADHEADER || !$HDNS;
+
+    if ($add_if_statement_for_group) {
+        $tmpl_if = whmdefine_to_tmpl( $HADHEADER, $HDNS, $group );
+        print $CATEGORY "$tmpl_if\n";
+    }
+
+    # $HEADER value is marked for translation via TPDS build-tools/translations/dynamicui
+    print $CATEGORY <<"EOM";
+[% varcache.set('locale_str',locale.makevar("$HEADER")) %]<div class="item" data-page-type="feature">
+    <a class="item-link" href="[% cp_security_token %]$HEADER_URL" title="[% varcache.locale_str -%]" >
+        <img class="itemImageWrapper" src="[% Whostmgr.get_icon_url('icons/$HICON') %]" alt="[% varcache.locale_str -%]" />
+        <span class="itemTextWrapper">[% varcache.locale_str %]</span>
+    </a>
+</div>
+EOM
+
+    if ($add_if_statement_for_group) {
+        print $CATEGORY "\n[% END -%]\n";
+        print $COMMAND "\n$tmpl_if\n";
+        $categoryIfCondition = $tmpl_if;
+    }
+
+    if ( $safeheader eq 'Plugins' ) {
+        print $HF '[% PROCESS \'plugins_icons.tmpl\' plugins_data=Whostmgr.plugins_data -%]';
+    }
+
+    # $HEADER value is marked for translation via TPDS build-tools/translations/dynamicui
+    print $COMMAND <<"EOM";
+[% varcache.set('locale_str',locale.makevar("$HEADER")) %]<li id="${safeheader}" class="category expanded">
+    <div id="${safeheader}Header" class="categoryHeader" data-page-type="category">
+        <a id="$slugified_header" href="[% cp_security_token %]$HEADER_URL"
+            uniquekey="$slugified_header" title="[% varcache.locale_str -%]">
+            <img src="[% Whostmgr.get_icon_url('icons/$HICON') %]" alt="$HEADER" />
+            <span class="wraptext">[% varcache.locale_str -%]</span>
+        </a>
+        <div class="actionIconContainer" title="Collapse">
+            <div class="actionIcon"></div>
+        </div>
+    </div>
+    <ul id="${safeheader}Content" class="sub">
+EOM
+
+    #finish up the "incumbent" header file, if there is one
+    if ($HF) {
+
+        #handle all the items that have been queued up
+        handleitems( $group->{'items'} );
+
+        #close off list of icons
+        print $HF "</div>\n";
+
+        close $HF;
+
+        add_wrapper_and_save( $hf_buffer, $MAIN_HF_WRAPPER, "$tmpl_path/${safeheader}.tmpl", $application_key );
+
+        undef $HF;
+    }
+}
+
+foreach my $directive ( @{ $dynui_data->{'raw'} } ) {
+    print $COMMAND $directive->{'itemdesc'};
+    print $COMMAND "\n";
+}
+
+if ( $HADHEADER ne '-1' ) {
+    print $COMMAND <<'EOM';
+        </ul>
+    </li>
+EOM
+
+    if ( $HADHEADER || !$HDNS ) {    # $add_if_statement_for_group ??
+        print $COMMAND "\n[% END -%]\n";
+    }
+}
+
+# end icon list
+print $CATEGORY "</div>\n";
+
+close $CATEGORY;
+close $COMMAND;
+close $BREADCRUMB;
+
+add_wrapper_and_save( $hf_buffer,       $MAIN_HF_WRAPPER,  "$tmpl_path/${safeheader}.tmpl", $application_key );
+add_wrapper_and_save( $category_buffer, $CATEGORY_WRAPPER, "$tmpl_path/category.tmpl" );
+add_wrapper_and_save( $command_buffer,  $COMMAND_WRAPPER,  "$tmpl_path/command.tmpl" );
+
+Whostmgr::Templates::Command::Directory::clear_cache_dir();
+
+# Adds processed content to their respective templates
+sub add_wrapper_and_save ( $content, $wrapper, $file, $key = '' ) {
+
+    $wrapper =~ s{===CONTENT===\n}{$content};
+    $wrapper =~ s{===key===}{$key};
+
+    open( my $write_fh, '>', $file )
+      or die "Couldn't open $file for writing: $!\n";
+    print $write_fh $wrapper;
+    close $write_fh;
+
+    return;
+}
+
+# Generates breadcrumbs for some links inside pages
+sub handlesubitems ($items) {
+
+    foreach my $item (@$items) {
+        my ( $desc, $url, $icon );
+        $desc = $item->{'itemdesc'};
+        $url  = $item->{'url'};
+        $icon = $item->{'file'};
+        $icon ||= $fallback_icon_path;
+
+        if ( length $desc && $desc =~ m{\$LANG\{'?([^'\}]+)'?\}} ) {
+            $desc = $1;
+        }
+
+        my $item_unique_key = ($slugified_header) ? $slugified_header . "_$slugified_item" : "";
+        make_breadcrumb( $url, $icon, $desc, $item->{'breadcrumb'} || (), $item_unique_key );
+    }
+    return;
+}
+
+# Generates html markup for an item in command.tmpl, category templates (Account_Functions.tmpl etc)
+sub handleitem ($item) {
+
+    my $desc            = $item->{'itemdesc'};
+    my $url             = $item->{'url'};
+    my $icon            = $item->{'file'};
+    my $whm_define      = $item->{'acl'};
+    my $target          = $item->{'target'};
+    my $dnsonly_ok      = $item->{'dnsonly_ok'};
+    my $searchtext      = $item->{'searchtext'};
+    my $cpanel_os_check = $item->{'cpanel_os_check'};
+
+    # The experimental flag for experimental features
+    my $experimental_flag = $item->{'experimental'};
+
+    if ( length $desc && $desc =~ m{\$LANG\{'?([^'\}]+)'?\}} ) {
+        $desc = $1;
+    }
+
+    $icon       ||= $fallback_icon_path;
+    $target     ||= '';
+    $searchtext ||= '';
+
+    $slugified_item = Cpanel::StringFunc::Group::group_words($desc);
+    my $key_to_compare = ($slugified_header) ? $slugified_header . "_$slugified_item" : "";
+
+    make_breadcrumb( $url, $icon, $desc, $item->{'breadcrumb'} || $HEADER_URL || (), $key_to_compare );
+
+    handlesubitems( $item->{'subitems'} );
+
+    # TODO: Why are we matching $icon =~ m{\A/}???
+    my $iconpath =
+      ( $icon =~ m{\A/} )
+      ? $icon
+      : "icons/$icon";
+
+    $whm_define //= '';
+
+    my $add_if_statement_for_item = $whm_define || !$dnsonly_ok || $cpanel_os_check;
+
+    if ($add_if_statement_for_item) {
+        my $tmpl_if = whmdefine_to_tmpl( $whm_define, $dnsonly_ok, $item, $cpanel_os_check, $experimental_flag );
+        print $COMMAND "\n$tmpl_if\n";
+        print $HF "\n$tmpl_if\n";
+    }
+
+    if ( $url !~ tr{:}{} ) {
+        $url = "[% cp_security_token %]" . $url;
+    }
+    else {
+        $url = $url;
+    }
+
+    # $desc value is marked for translation via TPDS build-tools/translations/dynamicui
+    print $COMMAND qq{[% varcache.set('locale_str',locale.makevar("$desc")) %]<li searchtext="$desc $searchtext [% varcache.locale_str -%]"
+                        data-page-type="feature">
+                        <a id="$key_to_compare" href="$url" target="$target" uniquekey="$key_to_compare" title='[% varcache.locale_str -%]'>
+                            [% varcache.locale_str -%]
+                        </a>
+                    </li>\n};
+    print $HF <<"EOM";
+    [% varcache.set('locale_str',locale.makevar("$desc")) %]<div class="item" data-page-type="feature">
+        <a class="item-link" href="$url" target="$target" title='[% varcache.locale_str -%]'>
+            <img class="itemImageWrapper" src="[% Whostmgr.get_icon_url('$iconpath') %]" alt="[% varcache.locale_str -%]" />
+            <span class="itemTextWrapper">[% varcache.locale_str -%]</span>
+        </a>
+    </div>
+EOM
+
+    if ($add_if_statement_for_item) {
+        print $COMMAND "[% END %]\n";
+        print $HF "[% END %]\n";
+    }
+    return;
+}
+
+# url, icon, description, backurl
+# Inserts a single breadcrum entry into docroot/themes/x/breadcrumb
+sub make_breadcrumb {
+
+    #do the map to avoid concatenating undef
+    return print {$BREADCRUMB} join( ':', map { $_ || '' } @_ ) . "\n";
+}
+
+# Sorts the items and processes each item in handleitem sub
+sub handleitems {
+    my ($items) = @_;
+    foreach my $item (@$items) {
+        handleitem($item);
+    }
+    return;
+}
+
+# Defines rules for template to show and hide based on ACL, DNS only
+sub whmdefine_to_tmpl ( $whmdefine, $dnsonly_ok, $item, $cpanel_os_check = undef, $experimental_flag = undef ) {    ## no critic qw(ProhibitManyArgs)
+
+    my @conditions = ();
+    my @acls       = ();
+    my @flags      = ();
+
+    for my $piece ( split m{,}, $whmdefine ) {
+        if ( $piece eq 'ACL=all' ) {
+            push @acls, "varcache.checkacl_all";
+        }
+        elsif ( $piece =~ m{^ACL=(.*)} ) {
+            my $acl = "Whostmgr.checkacl('$1')";
+
+            # TODO: Remove this special case when the deprecated accesshash
+            # key authentication system is removed.
+            #
+            # This ties the 'manage-api-tokens' check for the 'Clusters' menu group to
+            # the 'allow_deprecated_accesshash' cpanel.config value to ensure that the
+            # empty group does not show in WHM.
+            if ( $item->{'group'} eq 'clusters' && $item->{groupdesc} && $1 eq 'manage-api-tokens' ) {
+                $acl = "(Whostmgr.checkacl('$1') && Whostmgr.check_flag('CPCONF=allow_deprecated_accesshash'))";
+            }
+            push @acls, $acl;
+        }
+        elsif ( $piece eq 'dns' ) {
+            $dnsonly_ok = 1;
+        }
+
+        # e.g. 'ea >= 4' implies 'EasyApache major version greater than or equal to 4'
+        elsif ( $piece =~ /^\s*ea\s*([<>=]+)\s*(\d+)\s*$/ ) {
+            push @flags, qq{EasyApache.get_ea_version() $1 $2};
+        }
+        else {
+            push @flags, "Whostmgr.check_flag('$piece')";
+        }
+    }
+
+    # add the acl & flag conditions into the common conditions array.
+    if ( scalar @acls > 0 ) {
+        push @conditions, '(' . join( ' || ', @acls ) . ')';
+    }
+
+    if ( scalar @flags > 0 ) {
+        push @conditions, '(' . join( ' && ', @flags ) . ')';
+    }
+    if ( !$dnsonly_ok ) {
+        push @conditions, '!varcache.dnsonly';
+    }
+    if ( length $cpanel_os_check ) {
+        my @checks = split( ',', $cpanel_os_check );
+        foreach my $check (@checks) {
+            my ( $k, $v ) = split( '=', $check, 2 );
+            push @conditions, "CPOS.check_eq('$k','$v')";
+        }
+    }
+    if ( $item->{role} ) {
+        if ( ref $item->{role} eq 'HASH' ) {
+            my @expvar = map { "ServerRoles.is_role_enabled('$_')" } @{ $item->{role}{roles} };
+            my $join   = $item->{role}{match} eq 'any' ? ' || ' : ' && ';
+            push @conditions, '(' . join( $join, @expvar ) . ')';
+        }
+        else {
+            push @conditions, "ServerRoles.is_role_enabled('" . $item->{role} . "')";
+        }
+    }
+
+    if ( $item->{profile} ) {
+        push @conditions, "Whostmgr.check_current_profile('" . $item->{profile} . "')";
+    }
+
+    if ( $item->{service} ) {
+        if ( ref $item->{service} eq 'HASH' ) {
+            my @expvar = map { "Services.is_service_provided('$_')" } @{ $item->{service}{services} };
+            my $join   = $item->{service}{match} eq 'any' ? ' || ' : ' && ';
+            push @conditions, '(' . join( $join, @expvar ) . ')';
+        }
+        else {
+            push @conditions, "Services.is_service_provided('" . $item->{service} . "')";
+        }
+    }
+
+    if ( my $minimum_accounts_needed = $item->{'minimum_accounts_needed'} ) {
+
+        #This deals with the # of cP accounts that are actually on the box.
+        push @conditions, "Whostmgr.minimum_accounts_needed($minimum_accounts_needed)";
+
+        #This deals with the license-allowed # of cP accounts
+        if ( $minimum_accounts_needed > 1 ) {
+            push @conditions, "Whostmgr.has_multiuser()";
+        }
+    }
+
+    if ($experimental_flag) {
+        push @conditions, "Whostmgr.experimental_feature_enabled('$experimental_flag')";
+    }
+
+    if ( $item->{'multiuser_required'} ) {
+        push @conditions, "Whostmgr.has_multiuser()";
+    }
+
+    if ( $item->{'sandbox_only'} ) {
+        push @conditions, "Whostmgr.is_sandbox()";
+    }
+
+    if ( $item->{'if_exists'} ) {
+        push @conditions, "Whostmgr.exists('$item->{if_exists}')";
+    }
+
+    # TODO: This function should return list of @conditions. Each call for this function should
+    # handle the template's IF statement.
+    return '[% IF ' . join( ' && ', @conditions ) . ' -%]';
+}

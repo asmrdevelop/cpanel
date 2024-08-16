@@ -1,0 +1,481 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/modsec_vendor                   Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::modsec_vendor;
+
+use strict;
+
+use IO::Interactive ();
+
+use Cpanel::CLIProgress ();
+use Cpanel::Exception   ();
+use Cpanel::Hooks       ();
+use Cpanel::Locale 'lh';
+use Cpanel::Logger                      ();
+use Cpanel::HttpUtils::ApRestart::Defer ();
+use Whostmgr::ModSecurity               ();
+use Whostmgr::ModSecurity::VendorList   ();
+use Whostmgr::ModSecurity::Vendor       ();
+
+# All functions in this script, including run, return true on success and false on failure.
+# The conversion to exit status happens here only.
+unless (caller) {
+    exit( run(@ARGV) ? 0 : 1 );
+}
+
+sub run {
+    my ( $command, @args ) = @_;
+
+    if ( !Whostmgr::ModSecurity::has_modsecurity_installed() ) {
+        _logger()->info( lh()->maketext(q{You do not have [asis,ModSecurity] installed. There is no work to do.}) );
+        return 1;
+    }
+
+    if ( $command eq 'list' ) {
+        return list(@args);
+    }
+    elsif ( $command eq 'add' ) {
+        return add(@args);
+    }
+    elsif ( $command eq 'remove' ) {
+        return remove(@args);
+    }
+    elsif ( $command eq 'update' ) {
+        return update(@args);
+    }
+    elsif ( $command eq 'enable' ) {
+        return enable(@args);
+    }
+    elsif ( $command eq 'disable' ) {
+        return disable(@args);
+    }
+    elsif ( $command eq 'enable-updates' ) {
+        return enable_updates(@args);
+    }
+    elsif ( $command eq 'disable-updates' ) {
+        return disable_updates(@args);
+    }
+    elsif ( $command eq 'enable-configs' ) {
+        return enable_configs(@args);
+    }
+    elsif ( $command eq 'disable-configs' ) {
+        return disable_configs(@args);
+    }
+    else {
+        _die_usage();
+    }
+    return 1;
+}
+
+sub list {
+    my @args = @_;
+    _die_usage() if @args;
+    my $vendors = Whostmgr::ModSecurity::VendorList::list_detail_and_provided();
+
+    if ( !@$vendors ) {
+        _logger()->info( lh()->maketext(q{There are no vendors.}) );
+        return 1;
+    }
+
+    for my $vendor_info (@$vendors) {
+        print _format_vendor_info($vendor_info);
+    }
+
+    return 1;
+}
+
+sub add {
+    my @args = @_;
+    _die_usage() if @args < 1;
+    my $all_ok = 1;
+
+    _trigger_hook( "pre", "modsec_vendor::add" );
+
+    for my $url (@args) {
+        local $@;
+        my $vendor_info = eval { Whostmgr::ModSecurity::VendorList::add($url); };
+        my $ex          = $@;
+        if ($ex) {
+            _logger()->warn( lh()->maketext( q{The system failed to add the vendor from the URL “[_1]”: [_2]}, $url, _format_exception($ex) ) );
+            $all_ok = 0;
+        }
+        else {
+            _logger()->info( lh()->maketext( q{You have added the vendor “[_1]”.}, $vendor_info->{name} ) );
+            print "\n" . _format_vendor_info($vendor_info);
+        }
+    }
+
+    _trigger_hook( "post", "modsec_vendor::add" );
+
+    return $all_ok;
+}
+
+sub remove {
+    my @args = @_;
+    _die_usage() if @args < 1;
+    my $all_ok = 1;
+
+    _trigger_hook( "pre", "modsec_vendor::remove" );
+
+    for my $vendor_id (@args) {
+        local $@;
+        eval {
+            my $vendor = Whostmgr::ModSecurity::Vendor->load( vendor_id => $vendor_id );
+            $vendor->uninstall;
+        };
+        my $ex = $@;
+        if ($ex) {
+            _logger()->warn( lh()->maketext( q{The system failed to remove the vendor “[_1]”: [_2]}, $vendor_id, _format_exception($ex) ) );
+            $all_ok = 0;
+        }
+        else {
+            _logger()->info( lh()->maketext( q{You have removed the vendor “[_1]”.}, $vendor_id ) );
+        }
+    }
+
+    _trigger_hook( "post", "modsec_vendor::remove" );
+
+    return $all_ok;
+}
+
+sub update {
+    my @args = @_;
+    _die_usage() if @args != 1;
+
+    my $all_ok = 1;
+
+    _trigger_hook( "pre", "modsec_vendor::update" );
+
+    for my $to_update (@args) {
+
+        my @urls;
+        if ( $to_update =~ /^http:/ ) {
+            push @urls, $to_update;
+        }
+        elsif ( $to_update eq '--auto' ) {
+            _logger()->info( lh()->maketext(q{Updates are in progress for all of the installed [asis,ModSecurity] vendors with automatic updates enabled.}) );
+            for my $vendor_detail ( @{ Whostmgr::ModSecurity::VendorList::list_detail() } ) {
+                my ( $vendor_id, $update, $enabled ) = @$vendor_detail{qw(vendor_id update enabled)};
+                my $vendor = Whostmgr::ModSecurity::Vendor->load( vendor_id => $vendor_id );
+                if ( !$update ) {
+                    _logger()->info( lh()->maketext( q{You have not configured the vendor “[_1]” to receive automatic updates.}, $vendor_id ) );
+                    next;
+                }
+                if ( !$enabled ) {
+                    _logger()->info( lh()->maketext( q{You have not enabled the vendor “[_1]”. The vendor will not receive automatic updates.}, $vendor_id ) );
+                    next;
+                }
+                if ( $vendor->{is_pkg} ) {
+                    push @urls, \$vendor->{is_pkg};
+                }
+                else {
+                    push @urls, $vendor->installed_from || die lh()->maketext( q{The system could not determine the [asis,installed_from] URL for the vendor “[_1]”.}, $vendor_id ) . "\n";
+                }
+            }
+        }
+        else {
+            my $vendor = Whostmgr::ModSecurity::Vendor->load( vendor_id => $to_update );
+            if ( $vendor->{is_pkg} ) {
+                push @urls, \$vendor->{is_pkg};
+            }
+            else {
+                push @urls, $vendor->installed_from || die lh()->maketext( q{The system could not determine the [asis,installed_from] URL for the vendor “[_1]”.}, $to_update ) . "\n";
+            }
+        }
+
+        my $defer = Cpanel::HttpUtils::ApRestart::Defer->new( 'lexical' => 1 );
+        $defer->block_restarts();
+
+        for my $url (@urls) {
+            local $@;
+            if ( ref($url) ) {
+                my $pkg = ${$url};
+
+                # we disable excludes because:
+                #  * --auto will have not added to @urls i.e. update-disabled packages won’t make it here
+                #  * the manual direct arg is intended to allow them to update a rule set at will even if they have it disabled (i.e. a controlled update)
+                require Cpanel::PackMan;
+                $defer->allow_restarts();    # this locks httpd.conf which means universal hooks bits will wait for that lock
+                eval { Cpanel::PackMan->instance->sys->upgrade( $pkg => "--disableexcludes=main" ) };
+                warn "Failed to upgrade “$pkg”, this will need done manually.\n" if $@;
+                $defer->block_restarts();
+                next;
+            }
+            my $result    = eval { Whostmgr::ModSecurity::VendorList::update( $url, 1 ); };
+            my $exception = $@;
+            if ($exception) {
+                if ( 'Cpanel::Exception::ModSecurity::VendorUpdateUnnecessary' eq ref $exception && '--auto' eq $to_update ) {
+                    _logger()->info( lh()->maketext( q{The vendor “[_1]” is already up to date.}, $exception->vendor_id ) );
+                    next;
+                }
+                $all_ok = 0;
+                my $err = lh()->maketext( q{The system failed to update the vendor from the URL “[_1]”: [_2]}, $url, _format_exception($exception) );
+                print $err . "\n";    #this is to ensure that scripts/maintenance sees the error and adds it to
+                _logger()->warn($err);
+            }
+            else {
+                my $vendor_info = $result->{vendor};
+                _logger()->info( lh()->maketext( q{You have updated the vendor “[_1]”.}, $vendor_info->{name} ) );
+                my $diagnostics = $result->{diagnostics};
+                if ( @{ $diagnostics->{added_configs} } ) {
+                    _logger()->info( lh()->maketext( q{You have added the following configuration files: [_1]}, @{ $diagnostics->{added_configs} } ) );
+                }
+                if ( @{ $diagnostics->{deleted_configs} } ) {
+                    _logger()->info( lh()->maketext( q{You have removed the following configuration files: [_1]}, @{ $diagnostics->{deleted_configs} } ) );
+                }
+                print "\n" . _format_vendor_info($vendor_info);
+            }
+        }
+
+        $defer->allow_restarts();
+    }
+
+    _trigger_hook( "post", "modsec_vendor::update" );
+
+    return $all_ok;
+}
+
+sub enable {
+    my @args = @_;
+    _die_usage() if @args != 1;
+    my ($vendor_id) = @args;
+
+    _trigger_hook( "pre", "modsec_vendor::enable" );
+
+    local $@;
+    if ( eval { Whostmgr::ModSecurity::Vendor->load( vendor_id => $vendor_id )->enable() } ) {
+        _logger()->info( lh()->maketext( q{You have enabled the vendor “[_1]”.}, $vendor_id ) );
+
+        _trigger_hook( "post", "modsec_vendor::enable" );
+
+        return 1;
+    }
+
+    my $ex = $@;
+    _logger()->warn( lh()->maketext( q{The system could not enable the vendor “[_1]”: [_2]}, $vendor_id, _format_exception($ex) ) );
+    return 0;
+}
+
+sub disable {
+    my @args = @_;
+    _die_usage() if @args != 1;
+    my ($vendor_id) = @args;
+
+    _trigger_hook( "pre", "modsec_vendor::disable" );
+
+    local $@;
+    if ( eval { Whostmgr::ModSecurity::Vendor->load( vendor_id => $vendor_id )->disable() } ) {
+        _logger()->info( lh()->maketext( q{You have disabled the vendor “[_1]”.}, $vendor_id ) );
+
+        _trigger_hook( "post", "modsec_vendor::disable" );
+
+        return 1;
+    }
+
+    my $ex = $@;
+    _logger()->warn( lh()->maketext( q{The system could not disable the vendor “[_1]”: [_2]}, $vendor_id, _format_exception($ex) ) );
+    return 0;
+}
+
+sub enable_updates {
+    my @args = @_;
+    _die_usage() if @args != 1;
+    my ($vendor_id) = @args;
+
+    _trigger_hook( "pre", "modsec_vendor::enable_updates" );
+
+    local $@;
+    if ( eval { Whostmgr::ModSecurity::Vendor->load( vendor_id => $vendor_id )->enable_updates() } ) {
+        _logger()->info( lh()->maketext( q{You have enabled updates for the vendor “[_1]”.}, $vendor_id ) );
+        _trigger_hook( "post", "modsec_vendor::enable_updates" );
+        return 1;
+    }
+
+    my $ex = $@;
+    _logger()->warn( lh()->maketext( q{The system could not enable updates for the vendor “[_1]”: [_2]}, $vendor_id, _format_exception($ex) ) );
+    return 0;
+}
+
+sub disable_updates {
+    my @args = @_;
+    _die_usage() if @args != 1;
+    my ($vendor_id) = @args;
+
+    _trigger_hook( "pre", "modsec_vendor::disable_updates" );
+
+    local $@;
+    if ( eval { Whostmgr::ModSecurity::Vendor->load( vendor_id => $vendor_id )->disable_updates() } ) {
+        _logger()->info( lh()->maketext( q{You have disabled updates for the vendor “[_1]”.}, $vendor_id ) );
+        _trigger_hook( "post", "modsec_vendor::disable_updates" );
+        return 1;
+    }
+
+    my $ex = $@;
+    _logger()->warn( lh()->maketext( q{The system could not disable updates for the vendor “[_1]”: [_2]}, $vendor_id, _format_exception($ex) ) );
+    return 0;
+}
+
+sub enable_configs {
+    my @args = @_;
+    _die_usage() if @args != 1;
+    my ($vendor_id) = @args;
+
+    my $progress_bar = Cpanel::CLIProgress->new( width => 30 );
+
+    _trigger_hook( "pre", "modsec_vendor::enable_configs" );
+
+    local $@;
+    my ( $ok, $outcomes ) = eval { Whostmgr::ModSecurity::Vendor->load( vendor_id => $vendor_id, progress_bar => $progress_bar )->enable_configs() };
+    if ($ok) {
+        _logger()->info( lh()->maketext( q{You have enabled all of the configuration files for the vendor “[_1]”.}, $vendor_id ) );
+
+        _trigger_hook( "post", "modsec_vendor::enable_configs" );
+
+        return 1;
+    }
+
+    my $ex = $@;
+    _logger()->warn( lh()->maketext( q{The system could not enable all of the configuration files for the vendor “[_1]”: [_2]}, $vendor_id, _format_exception($ex) ) );
+    return 0;
+}
+
+sub disable_configs {
+    my @args = @_;
+    _die_usage() if @args != 1;
+    my ($vendor_id) = @args;
+
+    my $progress_bar = Cpanel::CLIProgress->new( width => 30 );
+
+    _trigger_hook( "pre", "modsec_vendor::disable_configs" );
+
+    local $@;
+    my ( $ok, $outcomes ) = eval { Whostmgr::ModSecurity::Vendor->load( vendor_id => $vendor_id, progress_bar => $progress_bar )->disable_configs() };
+    if ($ok) {
+        _logger()->info( lh()->maketext( q{You have disabled all of the configuration files for the vendor “[_1]”.}, $vendor_id ) );
+        _trigger_hook( "post", "modsec_vendor::disable_configs" );
+        return 1;
+    }
+
+    my $ex = $@;
+    _logger()->warn( lh()->maketext( q{The system could not disable all of the configuration files for the vendor “[_1]”: [_2]}, $vendor_id, _format_exception($ex) ) );
+    return 0;
+}
+
+sub _format_vendor_info {
+    my ($vendor_info) = @_;
+
+    my ( $vert_divider, $wrap_heading );
+    if ( IO::Interactive::is_interactive() ) {
+        $vert_divider = "\033[7m \033[m";
+        $wrap_heading = sub { "\033[7m" . shift . "\033[m" };
+    }
+    else {
+        $vert_divider = '|';
+        $wrap_heading = sub { shift };
+    }
+
+    my $output = $wrap_heading->(
+        sprintf(
+            '[%s] %s',
+            @$vendor_info{qw(vendor_id name)},
+        )
+    ) . ( !$vendor_info->{installed} ? ' (not installed)' : '' ) . "\n";
+
+    for my $k ( sort keys %$vendor_info ) {
+        my $v = $vendor_info->{$k};
+        if ( 'ARRAY' eq ref $v ) {
+            $v = sprintf( "(%d)", scalar(@$v) );    # just the count
+        }
+        $output .= sprintf( "% 16s %s %s\n", $k, $vert_divider, $v );
+    }
+    $output .= "\n\n";
+    return $output;
+}
+
+sub _format_exception {
+    my $exception = shift;
+    chomp( $exception = Cpanel::Exception::get_string($exception) );
+    return $exception;
+}
+
+my $logger;
+
+sub _logger {
+    $logger ||= Cpanel::Logger->new();
+    return $logger;
+}
+
+sub _die_usage {
+    die <<EOU;
+usage: $0 <list | add | remove | update> ...
+
+list
+  - Lists the currently-installed vendors
+
+add <vendor metadata YAML URL>
+  - Installs a new vendor
+
+remove <vendor_id>
+  - Removes the vendor with the specified vendor id
+
+update <vendor_id | vendor metadata YAML URL | --auto>
+  - If a vendor_id is provided, this command updates the vendor specified by that id
+    from the same URL or package that was used to install it.
+  - If a URL is provided, this command updates an existing vendor from the specified URL.
+    The URL need not be the same as the one used to originally install the vendor.
+  - If --auto is specified, updates all installed vendors for which auto-update is enabled
+    using the URLs or packages from which they were originally installed.
+
+enable <vendor_id>
+  - Enables a vendor
+
+disable <vendor_id>
+  - Disables a vendor
+
+enable-updates <vendor_id>
+  - Enables automatic updates for a vendor
+
+disable-updates <vendor_id>
+  - Disables automatic updates for a vendor
+
+enable-configs <vendor_id>
+  - Enables all configs for a vendor
+
+disable-configs <vendor_id>
+  - Disables all configs for a vendor
+EOU
+}
+
+#-------------------------------------------------------------------------------------------------
+# Scope:
+#   private
+# Name:
+#   _trigger_hook
+# Desc:
+#   This function triggers the hook on scripts/modsec_vendor
+# Arguments:
+#   - pre_or_post - a string that should be only "pre" or "post".
+#   - event - a string that is the name of the api call.
+#        example: modsec_vendor::add
+# Returns:
+#   - Nothing is returned.
+#-------------------------------------------------------------------------------------------------
+sub _trigger_hook {
+    my ( $pre_or_post, $event ) = @_;
+
+    Cpanel::Hooks::hook(
+        {
+            'category' => 'scripts',
+            'event'    => $event,
+            'stage'    => $pre_or_post,
+        },
+    );
+
+    return;
+}
+
+1;

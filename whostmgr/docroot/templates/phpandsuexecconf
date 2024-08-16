@@ -1,0 +1,141 @@
+<script type="text/javascript" src="%MagicRevision:/yui-gen/utilities_json/utilities_json.js%"></script>
+<script type="text/javascript" src="%MagicRevision:/js/hidecells_optimized.js%"></script>
+<script type="text/javascript" src="%MagicRevision:/js/sorttable.js%"></script>
+<style>
+.th { align:left; text-align:left; }
+</style>
+
+<div>
+!configured=0!
+<span class="red">PHP and suEXEC have not yet been configured, the default values will be used.</span>
+!configured!
+This tool allows you to configure the Apache PHP Handler, the default PHP version and suEXEC support. The default PHP version determines which version of PHP is used for files with a '.php' extensions when served by Apache. Enabling suEXEC provides support for Apache to run CGI programs as the user ID of the account owner. suEXEC is not PHPSuExec. Ruid2 provides functionality similar to suExec, but is POSIX-based. Please refer to the <a href="https://go.cpanel.net/EAPHPHandling" target="_blank">documentation</a> for a detailed explanation of how each handler functions.
+<br />
+</div>
+<h2>Current Configuration</h2>
+<div>
+<table style="text-align:center;" class="sortable" id="phpconfig">
+<tr>
+    <th>Option</th>
+    <th>Configured Value</th>
+</tr>
+!configured=1!
+<tr>
+    <td>Default PHP Version (.php files)</td>
+    <td nonsortable="true">%phpversion%</td>
+</tr>
+<tr>
+    <td>PHP 5 Handler</td>
+    <td>%php5%</td>
+</tr>
+!hasphp4bin=1!
+<tr>
+    <td>PHP 4 Handler</td>
+    <td>%php4%</td>
+</tr>
+!hasphp4bin!
+!configured!
+<tr><td>&nbsp;</td><td>&nbsp;</td>
+<tr>
+    <td>Apache suEXEC</td>
+    <td>%suexec_display%</td>
+</tr>
+<tr>
+    <td>Apache Ruid2</td>
+    <td>%ruid2_display%</td>
+</tr>
+</table>
+</div>
+
+<form method="POST" action="../scripts2/dophpandsuexecconf">
+!popupbox=1!
+<input type="hidden" name="popupbox" value="1">
+!popupbox!
+<h2>Alter Configuration</h2>
+
+<div>
+!haderror=1!
+<div class="error">
+<p>
+There was an error while checking the available PHP versions. Please make sure your
+PHP 5 binary is working correctly, and try again. More information may be available
+in the error log. The specific error encountered was:
+</p>
+<pre>
+%error%
+</pre>
+</div>
+!haderror!
+<table class="sortable" id="newphpconfig">
+<tr>
+    <th>Option</th>
+    <th>Value</th>
+</tr>
+<tr>
+    <td>Default PHP Version (.php files)</td>
+    <td nonsortable="true">
+    <select autofill="off" autocomplete="off" name="phpversion">
+!@phpversion_options@!
+    <option value="%value%" %selected%>%name%</option>
+!@phpversion_options@!
+  	</select>
+    </td>
+</tr>
+<tr>
+    <td>PHP 5 Handler</td>
+    <td>
+    <select autofill="off" autocomplete="off" name="php5">
+!@php5_options@!
+    <option value="%value%" %selected%>%name%</option>
+!@php5_options@!
+    </select>
+    </td>
+</tr>
+!hasphp4bin=1!
+<tr>
+    <td>PHP 4 Handler</td>
+    <td>
+    <select autofill="off" autocomplete="off" name="php4">
+!@php4_options@!
+    <option value="%value%" %selected%>%name%</option>
+!@php4_options@!
+    </select>
+    </td>
+</tr>
+!hasphp4bin!
+!hasphp4bin=0!
+<input type="hidden" name="php4" value="none">
+!hasphp4bin!
+<tr><td>&nbsp;</td><td>&nbsp;</td>
+
+<tr>
+    <td>Apache suEXEC</td>
+    <td>
+!suexec_allowed=1!
+    <select autofill="off" autocomplete="off" name="suexec">
+!@suexec_options@!
+    <option value="%value%" %selected%>%name%</option>
+!@suexec_options@!
+    </select>
+!suexec_allowed!
+!suexec_allowed=0!
+!@suexec_options@!
+    <span>%value% *</span>
+!@suexec_options@!
+!suexec_allowed!
+    </td>
+</tr>
+
+</table>
+<br />
+!suexec_allowed=0!
+!@suexec_options@!
+<div class="help-block">%name%</div>
+!@suexec_options@!
+!suexec_allowed!
+<br />
+<input type="checkbox" name="dryrun" value="1"> Do a dryrun (do not actually apply the new settings, just view the php config that would be generated).
+<br />
+<input type="submit" value="Save New Configuration" class="btn-primary">
+</div>
+</form>

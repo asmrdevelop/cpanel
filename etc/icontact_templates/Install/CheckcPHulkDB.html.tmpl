@@ -1,0 +1,30 @@
+[%#
+Variables passed in:
+
+rebuild_details - a hashref containing details about the DB rebuild
+
+For more information about how to customize notification templates, read our documentation at https://go.cpanel.net/notificationtemplates
+
+-%]
+
+[%
+
+    PROCESS "include/colors.tmpl";
+    PROCESS "include/styles.tmpl";
+    PROCESS "include/code_block.tmpl";
+
+    WRAPPER 'wrapper/main.html.tmpl'
+        NOTICE.email_reason = CPANEL.locale.maketext("The system detected a corruption in the [asis,cPHulk] database");
+
+-%]
+[% IF NOTICE.rebuild_details.rebuilt_db %]
+    <p>[% CPANEL.locale.maketext("The system rebuilt the [asis,cPHulk] database because it became corrupt. Due to the nature of the rebuild process, you will need to recreate the whitelist and blacklist entries.") -%]</p>
+    [% IF NOTICE.rebuild_details.corrupted_db %]
+        <p>[% CPANEL.locale.maketext("The system left the corrupted database intact, and you can review the database at: [_1]", NOTICE.rebuild_details.corrupted_db) -%]</p>
+    [% END %]
+[% ELSE %]
+    <p>[% CPANEL.locale.maketext("The [asis,cPHulk] database is corrupt. However, the system failed to rebuild this database automatically due to the following error:") -%]</p>
+    <p>[% code_block(formatted_code=CPANEL.format_text_as_html(NOTICE.rebuild_details.rebuild_error)); %]</p>
+[% END %]
+
+[% END %]

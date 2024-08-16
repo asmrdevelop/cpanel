@@ -1,0 +1,45 @@
+[%
+
+    USE Master;
+    USE CPBranding;
+
+    SET CPANEL.CPVAR.dprefix = '../';
+
+    SET applist = ["contact_information"];
+    SET apps = {};
+
+    FOREACH applist_item IN applist;
+        apps.$applist_item = CPBranding.get_application_from_available_applications(varcache.available_applications, applist_item);
+    END;
+
+%]
+<section class="widget">
+    <h3 class="widget-title">[% locale.maketext('I want to …')%]</h3>
+    <ul>
+        [% IF apps.contact_information %]
+        <li>
+            <a
+                id="linkUpdateContactInfo"
+                ng-href="../[% apps.contact_information.url %]"
+                target="[% apps.contact_information.target ? apps.contact_information.target : '_blank' %]">
+                    <i class="fas fa-envelope" aria-hidden="true"></i>
+                    <span>[% locale.maketext('Update My Contact Information') %]</span>
+            </a>
+        </li>
+        [% END %]
+    </ul>
+</section>
+<section class="widget">
+    <h3 class="widget-title">[% locale.maketext('Need Help?')%]</h3>
+    <ul>
+        <li>
+            <a href="https://go.cpanel.net/webmailAccountPreferences"
+                id="linkAboutTheInterface"
+                title="[% locale.maketext('Need help? Click here to read more about how to update your account preferences.') %]"
+                target="webmail_documentation">
+                <i class="fas fa-fw fa-external-link-alt" aria-hidden="true"></i>
+                [% locale.maketext("About This Interface") %]
+            </a>
+        </li>
+    </ul>
+</section>

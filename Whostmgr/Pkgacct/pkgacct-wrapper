@@ -1,0 +1,131 @@
+#!/bin/bash
+eval 'if [ -x /usr/local/cpanel/3rdparty/bin/perl ]; then exec /usr/local/cpanel/3rdparty/bin/perl -x -- $0 ${1+"$@"}; else exec /usr/bin/perl -x $0 ${1+"$@"}; fi;'
+  if 0;
+
+#!/usr/bin/perl
+# cpanel - scripts/pkgacct-wrapper          Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+# NOTE: This script is designed to run on other systems during a transfer, usually as /usr/bin/perl.
+
+package main;
+
+use strict;
+
+BEGIN {
+    unshift @INC, '/usr/local/cpanel';
+    my %seen_inc;
+    @INC = grep { !/(?:^\.|\.\.|\/\.+)/ && !$seen_inc{$_}++ } @INC;
+    undef %seen_inc;
+}
+
+our $VERSION = '1.4';
+
+if ( @ARGV && grep( m{version}, @ARGV ) ) {
+    print "pkgacct-wrapper VERSION $VERSION\n";
+    exit(0);
+}
+
+if ( Cpanel::IONice::ionice( 'best-effort', 3 ) ) {
+    print "[pkgacct-wrapper] Setting I/O priority to reduce system load: " . Cpanel::IONice::get_ionice() . "\n";
+}
+
+if ( setpriority( 0, 0, 18 ) ) {
+    print "[pkgacct-wrapper] Setting cpu priority to reduce system load: 18\n";
+}
+
+my $cpunum = Cpanel::Cpu::get_physical_cpu_count();
+
+if ( -x '/usr/local/cpanel/bin/cpuwatch' ) {
+    print "[pkgacct-wrapper] Using cpuwatch\n";
+    exec '/usr/local/cpanel/bin/cpuwatch', "$cpunum.0", @ARGV;
+}
+else {
+    exec @ARGV;
+}
+
+package Cpanel::IONice;
+
+# cpanel - Cpanel/IONice.pm                      Copyright     2020 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+#
+my $ionice = '/usr/bin/ionice';
+
+sub ionice {
+    my ( $class, $class_data ) = @_;
+
+    my %class_map = ( 'keep' => 0, 'idle' => 3, 'best-effort' => 2, 'real time' => 1 );
+
+    $class = $class_map{$class} if $class !~ /^[0-3]$/;
+
+    if ( $class !~ /^[0-3]$/ ) {
+        warn("ionice: class must be number from 0-3");
+        return;
+    }
+    if ( $class_data !~ /^[0-7]$/ ) {
+        warn("ionice: class_data must be number from 0-7");
+        return;
+    }
+    if ( -x $ionice ) {
+        undef $class if $> != 0;
+
+        # If $class is 0 we explictly do not pass a class.
+        system( $ionice, ( $class ? ( '-c', $class ) : () ), '-n', $class_data, '-p', $$ );
+        return ( ( $? >> 8 ) == 0 ) ? 1 : 0;
+    }
+    else {
+
+        # ionice is not installed, normal case for BSD.
+        return;
+    }
+}
+
+sub get_ionice {
+    if ( -x $ionice ) {
+        my $ionice_current = `$ionice -p $$`;
+        chomp($ionice_current);
+        return $ionice_current;
+    }
+    else {
+
+        # ionice not installed, normal case for BSD.
+        # Don't fake a value, undef tells us this is unsupported.
+        return;
+    }
+}
+
+1;
+
+package Cpanel::Cpu;
+
+# cpanel - Cpanel/Cpu.pm                             Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+my $physical_cpu_count_cache;
+
+sub get_physical_cpu_count {
+    return $physical_cpu_count_cache if defined $physical_cpu_count_cache;
+
+    my $cpunum = 1;
+    if ( open my $cpuinfo, '<', CPUINFO() ) {
+        while ( my $line = readline $cpuinfo ) {
+            if ( $line =~ m/^processor\s*:\s*(\d+)/i ) {
+                $cpunum = $1;
+            }
+        }
+        close $cpuinfo;
+        $cpunum++;
+    }
+
+    return $physical_cpu_count_cache = $cpunum;
+}
+
+sub CPUINFO { return '/proc/cpuinfo'; }
+
+1;

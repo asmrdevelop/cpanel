@@ -1,0 +1,59 @@
+[% USE Whostmgr -%]
+[% IF start -%]
+[%
+    PROCESS 'master_templates/_defheader.tmpl'
+    theme = "yui"
+    app_key = 'view_mail_statistics_summary'
+        scripts = [
+            Whostmgr.find_file_url('/libraries/jquery/current/jquery.min.js'),
+        ]
+ -%]
+[% IF ! data.found_eximstats -%]
+Cannot find eximstats program!
+[% ELSIF ! data.found_elog -%]
+Cannot find exim main log!
+[% ELSE -%]
+<span id="generate">Generating stats; please wait.
+(This could take a minute).....</span>
+[% END -%]
+[% ELSIF ready -%]
+<script type="text/javascript">
+document.getElementById('generate').style.display = 'none';
+function scrolltoTop(){
+    $("#contentContainer").animate({scrollTop:0},300);
+}
+$(document).ready(function(){
+    /* uses link to find target and build a region */
+    function make_click_and_region(link){
+        var target = link.attr("href").replace(/^#(.+)/, "$1");
+        var top = $("a[name='" + target + "']").offset().top;
+        last.attr("href","#"+target)
+            .click(function(e){
+                if(this.hash !== ""){
+                    e.preventDefault();
+                    $("#contentContainer").animate({scrollTop:top - $("#topFrameWrapper").height() - $("#navigation").height()},300);
+                }
+            });
+        // Also inject a "back to top" link
+        var btt = $("<span>&nbsp;(<a href='javascript:scrolltoTop();' alt='[% locale.maketext('Back To Top') %]'>[% locale.maketext('Back To Top') %]</a>)</span>");
+        $("h2:contains("+link.text()+")").append(btt);
+    }
+    var last;
+    $("ul").find("li").find("a[href^='#']").each(function(){
+        /* start with second option to find bottom of region */
+        if(!last){
+            last = $(this);
+            return;
+        }
+
+        make_click_and_region(last);
+
+        last = $(this);
+    });
+    /* apply click and region to last item in list using bottom of document as bottom of region */
+    make_click_and_region(last);
+});
+</script>
+[% ELSE #end -%]
+[% PROCESS 'master_templates/_deffooter.tmpl' -%]
+[% END -%]

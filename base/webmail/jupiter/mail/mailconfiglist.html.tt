@@ -1,0 +1,148 @@
+[%
+USE ExpVar;
+
+SET categories = [ 'manage_inbox', 'calcontact', 'edit_settings', 'spam', 'other' ];
+
+SET category_descriptions = {
+    'manage_inbox'  => locale.maketext('Manage Your Inbox'),
+    'calcontact'    => locale.maketext('Calendars and Contacts'),
+    'edit_settings' => locale.maketext('Edit Your Settings'),
+    'spam'          => locale.maketext('Fight Spam'),
+    'other'         => locale.maketext('Other Webmail Features'),
+};
+
+SET app_descriptions = {
+    'autoresponders'              => locale.maketext("Are you going on vacation? Use this feature to configure your automated emails."),
+    'forwarders'                  => locale.maketext("Automatically send a copy of any incoming email from this email address to another."),
+    'email_filters'               => locale.maketext("Create and manage email filters for your main email account."),
+    'configure_mail_client'       => locale.maketext("Set up your email account on any device."),
+    'webmail_account_prefs'       => locale.maketext("Change your Webmail account settings."),
+    'calendar_and_contacts'       => locale.maketext("Set up your calendar and contacts on any device."),
+    'calendar-contact-management' => locale.maketext("Create/Edit/Delete calendars or contact lists."),
+    'manage-calendar-access'      => locale.maketext("Share calendars or contact lists with other users on this domain."),
+    'change_password'             => locale.maketext("Update your webmail password."),
+    'contact_information'         => locale.maketext("Set up a different email address to receive account notifications and password reset confirmations."),
+    'two_factor_authentication'   => locale.maketext("Configure a security measure that requires two forms of identification to log in."),
+    'boxtrapper'                  => locale.maketext("Protect your inbox from spam."),
+    'apache_spam_assassin'        => locale.maketext('Filter unwanted spam email before it reaches your inbox.'),
+    'solr_search_index'           => locale.maketext("IMAP Full-Text Search Index (powered by Apache Solr™) improves the speed and convenience of the search experience."),
+    'email_disk_usage'            => locale.maketext("Delete old messages from your mailbox. Recover disk space. It’s that simple."),
+    'track_delivery'              => locale.maketext("Review an email’s delivery route."),
+    'mailing_lists'               => locale.maketext("Create and manage email filters for your main email account."),
+};
+%]
+
+<section id="webmailFeatureList" class="constrained">
+    [% FOREACH category IN categories %]
+        [% should_show = 0 %]
+        <h3 id="[% category %]Title">[% category_descriptions.$category %]</h3>
+        <ul class="list-unstyled applications">
+            [% FOREACH page IN global.sitemap %]
+                [% NEXT IF page.value.category != category %]
+                [% IF page.value.condition %]
+                    [% NEXT IF page.value.condition.feature && !CPANEL.feature(page.value.condition.feature) %]
+                    [% NEXT IF page.value.condition.if && !ExpVar.expand_and_eval(page.value.condition.if) %]
+                    [% should_show = 1 %]
+                [% END %]
+                [% page_key = page.key %]
+                <li class="application">
+                    <a href="[% directory_prefix _ page.value.url %]" id="id_[% page_key %]" title="[% locale.maketext( 'Go to “[_1]”.', page.value.name ) %]">
+                        <img class="mr-10 application-icon" src="[% theme_magic_url('assets/application_icons/' _ page.value.icon.url _ '.svg') %]" aria-hidden="true" />
+                        <div class="application-details">
+                            <div class="application-title">[% page.value.name %]</div>
+                            <span class="application-description">[% app_descriptions.$page_key  %]</span>
+                        </div>
+                    </a>
+                </li>
+            [% END %]
+        </ul>
+        [% IF !should_show %]
+            <style>#[% category %]Title { display: none; }</style>
+        [% END %]
+    [% END %]
+</section>
+
+<!-- Styling for List of applications -->
+<style type="text/css">
+
+    .applications {
+        display: flex;
+        flex-direction: row;
+        flex-wrap: wrap;
+        align-content: flex-start;
+    }
+
+    html[dir="rtl"] .list-unstyled {
+        padding-right: 0;
+        padding-left: 0;
+    }
+
+    .application {
+        margin: 0 10px 10px 0;
+        text-decoration: none;
+    }
+
+    html[dir="rtl"] .application {
+        margin: 0 0 10px 10px;
+    }
+
+    .application a {
+        width: 365px;
+        flex-grow: 1;
+        display: flex;
+        align-items: flex-start;
+        padding: 10px 10px 10px 15px;
+        text-decoration: none;
+    }
+
+    .application a:hover {
+        text-decoration: none;
+    }
+
+    .application:hover,
+    .application:focus,
+    .application:active {
+        transition: box-shadow 0.15s cubic-bezier(0.4, 0, 0.2, 1);
+        box-shadow: 0 3px 3px -2px rgba(0, 0, 0, 0.2), 0 3px 4px 0 rgba(0, 0, 0, 0.14), 0 1px 8px 0 rgba(0, 0, 0, 0.12);
+        cursor: pointer;
+    }
+
+    .application-details {
+        flex: 1;
+    }
+
+    .application a:hover .application-details .application-title,
+    .application a:focus .application-details .application-title,
+    .application a:active .application-details .application-title {
+        color: #2a6496;
+    }
+
+    .application-icon {
+        height: 48px;
+    }
+
+    .mr-10 {
+        margin-right: 10px;
+    }
+    html[dir="rtl"] .mr-10 {
+        margin-right: 0;
+        margin-left: 10px;
+    }
+
+    .application-details {
+        flex: 1;
+    }
+
+    .application-title {
+        font-size: 18px;
+        font-weight: 600;
+        padding-bottom: 10px;
+        color: #428bca;
+    }
+
+    .application-description {
+        font-size: 13px;
+        color: #4c4c4c;
+    }
+
+</style>

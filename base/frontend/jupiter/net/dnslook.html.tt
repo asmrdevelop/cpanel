@@ -1,0 +1,69 @@
+[%
+SET CPANEL.CPVAR.dprefix = "../";
+
+Api2.pre_exec("Net", "dnszone");
+SET dns_zone = Api2.exec("Net", "dnszone", {
+    host = RAW_FORM.item('dns')
+});
+Api2.post_exec("Net", "dnszone");
+SET dns_lookup = execute("DNS", "lookup", {"domain" => RAW_FORM.dns});
+
+%]
+
+[% WRAPPER '_assets/master.html.tt'
+    app_key = 'track_dns'
+ -%]
+<div class="body-content">
+    <p>
+        [% IF dns_lookup.status %]
+
+            [% FOREACH result IN dns_lookup.data %]
+                [% result.html() %]<br>
+            [% END %]
+
+        [% ELSE %]
+
+            [% FOREACH message IN dns_lookup.errors %]
+
+                <div class="alert alert-danger" role="alert">
+                    <span class="glyphicon glyphicon-remove-sign" aria-hidden="true"></span>
+                    <div class="alert-message">
+                        <strong class="alert-title">[% locale.maketext('Error:') %]</strong>
+                        <span class="alert-body" id="error-[% loop.index() %]">
+                            [% message.html() %]
+                        </span>
+                    </div>
+                </div>
+
+            [% END %]
+
+        [% END %]
+    </p>
+    <h2>
+        [% locale.maketext("Zone Information") %]
+    </h2>
+    [% IF Api2.status().event.result %]
+    <textarea class="form-control" name="zoneinfo" cols="80" rows="15" readonly="readonly">
+    [%- FOREACH row IN dns_zone -%]
+    [%
+        row.line.html() _ "\n"
+    %]
+    [%- END -%]
+    </textarea>
+    [% ELSE %]
+    <div class="alert alert-danger" role="alert">
+        <span class="glyphicon glyphicon-remove-sign" aria-hidden="true"></span>
+        <div class="alert-message">
+            <strong class="alert-title">
+                [% locale.maketext('Error:') %]
+            </strong>
+            <span class="alert-body">
+                [% Api2.status().event.reason.html() %]
+            </span>
+        </div>
+    </div>
+    [% END %]
+
+    [% INCLUDE _assets/return_link.html.tt return_location='index.html' return_link_text=locale.maketext('Go Back') %]
+</div>
+[% END #wrapper -%]

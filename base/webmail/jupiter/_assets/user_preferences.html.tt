@@ -1,0 +1,134 @@
+[%-
+USE ExpVar;
+USE Uapi;
+
+SET pop_quota = is_email_account && execute_or_die('Email', 'get_pop_quota', {
+    as_bytes => 1,
+} ).data;
+
+-%]
+[% IF CPANEL.feature('email_disk_usage') && (is_default_cpanel_account || is_email_account) %]
+    <div class="btn-group">
+        <button id="lnkHeaderDiskUsage" onclick="location.href = '[% "${directory_prefix}mail/manage_disk_usage/" %]'"
+            uib-tooltip="[% locale.maketext('Total Mailbox Disk Usage') %]"
+            style="1px solid rgba(255,255,255,.05);"
+            class="btn btn-primary link-buttons btn-diskusage navbar-item [% disk_usage_class %]"
+            tooltip-placement="bottom"
+            role="link"
+            data-quotausage=""  [%# JS updates -%]
+            aria-label="[% locale.maketext('Disk Usage') %])"
+        >
+            <i class="fas fa-lg fa-chart-pie" id="imgDiskUsage"></i>
+            <span id="disk_usage_text">
+            <span id="total_disk_usage"><i class="fas fa-spinner fa-spin"></i></span>
+            [% IF pop_quota %]
+                /
+                [% locale.format_bytes(pop_quota) %]
+            [% END -%]
+            </span>
+        </button>
+    </div>
+[% END -%]
+<div class="btn-group">
+    <button id="btnUserPref" data-toggle="dropdown" class="btn btn-primary dropdown-toggle btn-sm navbar-item">
+        <span id="userImg" class="glyphicon glyphicon-user"></span>
+        <span id="lblUserNameTxt" class="hidden-inline-xs" ng-non-bindable style="text-transform:none;">[% auth_user | html %]</span>
+        <span id="caretImg" class="caret"></span>
+    </button>
+    <ul class="dropdown-menu dropdown-menu-right">
+
+        [% IF global.mail_client_list.size > 0 && has_webmail_access %]
+            [% FOREACH app IN global.mail_client_list %]
+            <li class="mail-app">
+                <a id="lnkUserPref[% app.id %]" href="[% CPANEL.ENV.cp_security_token %]/3rdparty/[% app.id %]/" title="[% locale.maketext( 'Go to “[_1]”.', app.displayname ) %]" class="app-name">
+                    [% app.displayname %]
+                </a>
+                <a id="lnkUserPrefFav[% app.id %]" href="javascript:void(0);" class="app-fav" data-default-webmail-app="[% app.id %]"
+                    title="[% locale.maketext( 'Set “[_1]” as my default webmail application.', app.displayname ) %]">
+                    <span id="imgUserPref[% app.id %]" class="far fa-star fa-fw pull-right" data-default-webmail-app="[% app.id %]"
+                        alt="[% locale.maketext( 'Set “[_1]” as my default webmail application.', app.displayname ) %]">
+                    </span>
+                </a>
+            </li>
+            [% END %]
+        <li class="divider"></li>
+        [% END %]
+        [% FOREACH page IN global.sitemap %]
+            [% IF page.value.condition %]
+                [% NEXT IF page.value.condition.feature && !CPANEL.feature(page.value.condition.feature) %]
+                [% NEXT IF page.value.condition.if && !ExpVar.expand_and_eval(page.value.condition.if) %]
+            [% END %]
+            [% NEXT IF page.key.substr(0,11) == 'boxtrapper_' || page.key == 'return_to_cpanel' %]
+            <li>
+                <a id="lnkUserPref[% page.key %]" href="[% directory_prefix _ page.value.url %]"
+                    title="[% locale.maketext( 'Go to “[_1]”.', page.value.description ) %]" class="app-name">
+                    [% locale.makevar(page.value.description) %]
+                </a>
+                <a id="lnkUserPrefFav[% page.key %]" href="javascript:void(0);" class="app-fav" data-default-webmail-app="[% page.key %]"
+                    title="[% locale.maketext( 'Set “[_1]” as my default webmail application.', page.value.description ) %]">
+                    <span id="imgUserPref[% page.key %]" class="far fa-star fa-fw pull-right" data-default-webmail-app="[% page.key %]"
+                        alt="[% locale.maketext( 'Set “[_1]” as my default webmail application.', page.value.description ) %]">
+                    </span>
+                </a>
+            </li>
+            [% IF page.key == 'boxtrapper' %]
+                [% FOREACH sub IN global.sitemap.boxtrapper.items %]
+                    [% NEXT IF sub.key != "boxtrapper_review_queue" %]
+                    <li class="sub-menu-item">
+                        <a id="lnkUserPref[% sub.key %]" href="[% directory_prefix _ sub.url %]" class="app-name"
+                            title="[% locale.maketext( 'Go to “[_1]”.', sub.description ) %]">
+                            [% locale.makevar(sub.description) %]
+                        </a>
+                        <a id="lnkUserPrefFav[% sub.key %]" href="javascript:void(0);" class="app-fav" data-default-webmail-app="[% sub.key %]"
+                            title="[% locale.maketext( 'Set “[_1]” as my default webmail application.', sub.description ) %]">
+                            <span id="img[% sub.key %]" class="far fa-star fa-fw pull-right" data-default-webmail-app="[% sub.key %]"
+                                alt="[% locale.maketext( 'Set “[_1]” as my default webmail application.', sub.description ) %]">
+                            </span>
+                        </a>
+                    </li>
+                [% END %]
+            [% END %]
+        [% END %]
+
+        [%
+            SET cpanel_url = CPANEL.ENV.item("cp_return_url");
+            IF cpanel_url;
+                SET cp_link_label = locale.makevar(global.sitemap.return_to_cpanel.description);
+            ELSIF is_default_cpanel_account || is_archive_user || CPANEL.ENV.item("CPRESELLER");
+                cpanel_url = cp_security_token _ global.sitemap.return_to_cpanel.url;
+                cp_link_label = locale.maketext('Go to cPanel');
+            END;
+        -%]
+
+        [% IF cpanel_url %]
+            <li class="divider"></li>
+            <li>
+                <a id="lnkReturnToCPanel" href="[% cpanel_url.html() %]" title="[% cp_link_label %]">
+                    [% cp_link_label %]
+                </a>
+            </li>
+        [% END %]
+    </ul>
+</div>
+
+[% IF CPANEL.feature('email_disk_usage') && (is_default_cpanel_account || is_email_account) %]
+<script>
+    var Disk_Usage_Meter;
+
+    window.addEventListener( "load", function() {
+    [% IF is_email_account -%]
+        Disk_Usage_Meter = new Disk_Usage_Meter_Mailuser(
+            document.getElementById("total_disk_usage"),
+            document.getElementById("lnkHeaderDiskUsage"),
+            [% pop_quota %]
+        );
+    [% ELSE -%]
+        var Disk_Usage_Meter = new Disk_Usage_Meter_Cpuser(
+            document.getElementById("total_disk_usage")
+        );
+    [% END -%]
+
+        Disk_Usage_Meter.refresh();
+    } );
+</script>
+[% END -%]

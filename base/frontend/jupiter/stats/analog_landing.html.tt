@@ -1,0 +1,88 @@
+[% SET CPANEL.CPVAR.dprefix = "../" %]
+[% SET analog_stats =  execute("Stats", "list_sites", {'engine' => 'analog'} ); %]
+[% SET rowCount = 0 %]
+
+[% WRAPPER '_assets/master.html.tt'
+    app_key = 'analog_stats'
+-%]
+
+<div class="body-content">
+    <p id="descAnalogStats" class="description">
+        [% locale.maketext("Analog produces a simple summary of all the people who have visited your site. It is fast and provides great lightweight statistics. Analog shows the people who have accessed your site during a specific month. It provides limited content but can be helpful to see where your main users are from.") %]
+    </p>
+    <div class="section">
+        <h2 id="hdrSelectDomain">
+            [% locale.maketext("Select a Domain") %]
+        </h2>
+        <table id="logs" class="sortable table table-striped">
+            <thead>
+                <tr>
+                    <th id="theadDomain">
+                        [% locale.maketext("Domain") %]
+                    </th>
+                    <th id="theadView" nowrap nonsortable="true">
+                        [% locale.maketext("Actions") %]
+                    </th>
+                </tr>
+            </thead>
+            <tbody>
+                [% IF analog_stats.data.size() %]
+                    [% FOREACH hashref IN analog_stats.data; %]
+                        [%
+                        SET domainName = hashref.domain.html();
+                        SET alt = locale.maketext_plain_context('View the statistics for “[_1]”.', hashref.domain).html();
+                        %]
+                    <tr id="row_[% domainName %]">
+                        <td id="domain_[% domainName %]">[%  domainName %] [% IF hashref.ssl %] <strong>SSL</strong> [% END %]</td>
+                        <td>
+                            <a target="_blank" id="lnkViewStats_[% domainName %]"
+                               href="[% hashref.path.html %]"
+                               alt="[% alt %]" title="[% alt %]"
+                               class="btn btn-link">
+                                <span id="imgViewStats_[% domainName %]"
+                                    class="glyphicon glyphicon-search"
+                                    title="[% alt %]" alt="[% alt %]"></span>
+                                [% locale.maketext("View") %]
+                            </a>
+                        </td>
+                    </tr>
+                    [% END %]
+                [% ELSE %]
+                <tr><td colspan="2">
+                    [% IF analog_stats.errors.size %]
+                        [% FOREACH error IN analog_stats.errors %]
+                            <div class="alert alert-danger" role="alert">
+                                <span class="glyphicon glyphicon-remove-sign" aria-hidden="true"></span>
+                                <div class="alert-message">
+                                    <strong class="alert-title">
+                                        [% locale.maketext('Error:') %]
+                                    </strong>
+                                    <span class="alert-body">
+                                <span id="error-[% loop.index() %]">
+                                    [% error.html() %]
+                                </span>
+                            </span>
+                                </div>
+                            </div>
+                        [% END %]
+                    [% ELSE %]
+                        <div class="alert alert-info" role="alert">
+                            <span class="glyphicon glyphicon-info-sign" aria-hidden="true"></span>
+                            <div class="alert-message">
+                                <strong class="alert-title">
+                                    [% locale.maketext('Notice:') %]
+                                </strong>
+                                <span class="alert-body">
+                              [% locale.maketext("There are no domains which have [asis,Analog] statistics to display.") %]
+                            </span>
+                            </div>
+                        </div>
+                    [% END %]
+                </td></tr>
+                [% END %]
+            </tbody>
+        </table>
+    </div>
+    [% INCLUDE _assets/return_link.html.tt return_location='../index.html' return_link_text=locale.maketext('Go Back') %]
+</div>
+[% END #wrapper -%]

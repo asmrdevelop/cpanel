@@ -1,0 +1,24 @@
+[% USE CPList %]
+[% WRAPPER 'master_templates/master.tmpl'
+   theme='bootstrap'
+   app_key= data.logtype == 'ftp' ? 'raw_ftp_log_download' : data.logtype == 'ea-nginx' ? 'raw_ea_nginx_log_download' : 'raw_apache_log_download'
+-%]
+
+<div id="content">
+  [% IF data.filesize %]
+    <div>
+      [% locale.maketext("The system is processing the raw “[_1]” log for the domain “[_2]”.", data.logtype, data.domain) FILTER html %]
+      [% locale.maketext("The size of the uncompressed file is “[format_bytes,_1]”.", data.filesize) FILTER html %]
+    </div>
+    <div>
+      [% locale.maketext("[output,url,_1,Click this link] to download the log file.", data.newuri) %]
+    </div>
+  [% ELSE %]
+    [% INCLUDE _raw_log_warnings.tmpl %]
+    <div>
+      <strong>[% locale.maketext("The requested log file for the domain “[_1]” is empty.", data.domain ) FILTER html %]</strong>
+    </div>
+  [% END %]
+</div>
+
+[% END #wrapper -%]

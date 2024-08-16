@@ -1,0 +1,150 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - bin/bwlimit_notify                      Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+# This utility is designed to be called from cpanellogd
+# The configuration value 'emailusersbandwidthexceed' is
+# checked by cpanellogd prior to executing this utility and
+# cpanellogd also checks for the existence of:
+#     /var/cpanel/bwlimitcheck.disabled
+# to determine if this utility is disabled.
+
+use strict;
+use warnings;
+
+use Cpanel::Config::LoadCpUserFile                         ();
+use Cpanel::Config::HasCpUserFile                          ();
+use Cpanel::AcctUtils::Domain                              ();
+use Cpanel::AcctUtils::Owner                               ();
+use Cpanel::PwCache                                        ();
+use Cpanel::ContactInfo                                    ();
+use Cpanel::Hostname                                       ();
+use Cpanel::iContact::Class::BandwidthUsageExceeded::Owner ();
+use Cpanel::iContact::Class::BandwidthUsageExceeded::User  ();
+use Time::Piece                                            ();
+use Time::Local                                            ();
+
+exit usage(0) if @ARGV && $ARGV[0] eq '--help';
+exit usage(1) if @ARGV < 6;
+
+my $user                = $ARGV[0];
+my $warn                = $ARGV[2];
+my $percent             = $ARGV[3];
+my $bwlimit             = $ARGV[4];
+my $bwused              = $ARGV[5];
+my $predictive_warnings = 1;          # TODO: Make this is a configured value that can be passed in from cpanellogd.
+## ARGV[1] is discarded; we use the value returned by Cpanel::AcctUtils::Domain::getdomain($user) instead
+
+# System receives MB but can work on and needs bytes to pass to template toolkit.
+
+$bwlimit *= ( 1024 * 1024 );
+$bwused  *= ( 1024 * 1024 );
+
+exit 1 unless Cpanel::Config::HasCpUserFile::has_cpuser_file($user);
+my $cpuser_ref = Cpanel::Config::LoadCpUserFile::loadcpuserfile($user);
+if ( !scalar keys %{$cpuser_ref} ) {
+    exit 1;
+}
+
+my $homedir      = Cpanel::PwCache::gethomedir($user);
+my $domain       = Cpanel::AcctUtils::Domain::getdomain($user);
+my $owner        = Cpanel::AcctUtils::Owner::getowner($user);
+my $owner_domain = Cpanel::AcctUtils::Domain::getdomain($owner);
+my $host         = Cpanel::Hostname::gethostname();
+
+my %UD;
+my %CPD;
+$UD{'root'} = '(system)';
+$UD{$user}  = $domain;
+$CPD{$user} = $cpuser_ref;
+if ( $owner ne 'root' && Cpanel::Config::HasCpUserFile::has_cpuser_file($owner) ) {
+    $UD{$owner}  = $owner_domain;
+    $CPD{$owner} = Cpanel::Config::LoadCpUserFile::loadcpuserfile($owner);
+}
+
+my $rCONTACT_INFO = Cpanel::ContactInfo::fetch_contactinfo( \%UD, \%CPD );
+
+my %EMAILS = (
+    'admin_bandwidth_limit' => {
+        ( $owner ne 'root' ) ? ( 'to' => $owner, 'username' => $owner ) : (),
+        'hasgoodcontact' => 0,
+        'user_domain'    => $domain,
+        'user'           => $user,
+        'host'           => $host,
+        'warn'           => $warn,
+        'bwlimit'        => $bwlimit,
+        'bwused'         => $bwused,
+        'warnpercent'    => $percent,
+        'class'          => 'Cpanel::iContact::Class::BandwidthUsageExceeded::Owner',
+    },
+    'bandwidth_limit' => {
+        'to'                                => $user,
+        'hasgoodcontact'                    => 0,
+        'user_domain'                       => $domain,
+        'user'                              => $user,
+        'username'                          => $user,
+        'warn'                              => $warn,
+        'bwlimit'                           => $bwlimit,
+        'bwused'                            => $bwused,
+        'warnpercent'                       => $percent,
+        'notification_targets_user_account' => 1,
+        'class'                             => 'Cpanel::iContact::Class::BandwidthUsageExceeded::User',
+    }
+);
+
+# Send notifications unless specifically disabled
+if ( exists $rCONTACT_INFO->{$owner}->{'notify_bandwidth_limit'} && $rCONTACT_INFO->{$owner}->{'notify_bandwidth_limit'} eq '0' ) {
+    delete $EMAILS{'admin_bandwidth_limit'};
+}
+
+# Send notifications unless specifically disabled
+if ( exists $rCONTACT_INFO->{$user}->{'notify_bandwidth_limit'} && $rCONTACT_INFO->{$user}->{'notify_bandwidth_limit'} eq '0' ) {
+    delete $EMAILS{'bandwidth_limit'};
+}
+
+foreach my $email ( keys %EMAILS ) {
+    my $template_args = $EMAILS{$email};
+    if ($predictive_warnings) {
+        my $now = Time::Piece->new();
+        my ( $cur_day, $month, $year ) = ( $now->mday(), $now->mon(), $now->year );
+        my $days_in_month = $now->month_last_day;
+        my $avg_usage_day = ( $bwused / $cur_day ) || 1;
+        my $day_exceeded  = $cur_day + int( ( $bwlimit - $bwused ) / $avg_usage_day );
+        $day_exceeded = $days_in_month if $day_exceeded > $days_in_month;
+
+        $template_args->{'date_exceeded'} = Time::Local::timelocal_modern(
+            0,
+            0,
+            0,
+            $day_exceeded,
+            $month - 1,
+            $year,
+        );
+        $template_args->{'avg_bw_usage'} = $avg_usage_day;
+        $template_args->{'predicted_bw'} = $bwused + ( ( $days_in_month - $cur_day ) * $avg_usage_day );
+    }
+
+    my $class = $template_args->{'class'};
+
+    $class->new(%$template_args);
+}
+
+sub usage {
+    my ($retval) = @_;
+    require IO::Handle;
+    my $fh = $retval ? \*STDERR : \*STDOUT;
+    $fh->print(<<EOM);
+Usage: bwlimit_notify USER DOMAIN WARN PERCENT BWLIMIT BWUSED
+
+Send a notification that USER (with domain DOMAIN) has exceeded or will soon
+exceed their bandwidth limit.  If WARN is 1, this is a warning about approaching
+the limit; otherwise, it is an error.
+
+PERCENT is the percentage of the limit used, and BWLIMIT and BWUSED are the
+bandwidth limit and amount used in mebibytes (MiB).
+EOM
+    return $retval;
+}

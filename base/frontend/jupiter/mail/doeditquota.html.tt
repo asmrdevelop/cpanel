@@ -1,0 +1,49 @@
+[%
+USE Uapi;
+
+SET CPANEL.CPVAR.dprefix = "../";
+
+SET edit_pop_quota_response = execute("Email", "edit_pop_quota", {
+    "email" => RAW_FORM.email,
+    "domain" => RAW_FORM.domain,
+    "quota" => RAW_FORM.quota
+});
+
+SET email = (FORM.email) _ "@" _ (FORM.domain);
+
+%]
+
+[% WRAPPER '_assets/master.html.tt'
+    app_key = 'email_accounts'
+-%]
+<div class="body-content">
+
+    [% IF edit_pop_quota_response.status %]
+
+    <div class="alert alert-success" id="quotaSuccess">
+        <span class="glyphicon glyphicon-info-sign" id="quotaSuccessImg"></span>
+        <div class="alert-message" id="quotaSuccessMsg">
+            [% locale.maketext("The quota for the email account “[_1]” was successfully modified.", email) %]
+        </div>
+    </div>
+
+    [% ELSE %]
+
+    <div class="alert alert-danger" role="alert">
+        <span class="glyphicon glyphicon-remove-sign" aria-hidden="true"></span>
+        <div class="alert-message">
+            <strong class="alert-title">[% locale.maketext('Error:') %]</strong>
+            <span class="alert-body">
+                [% FOREACH err IN edit_pop_quota_response.errors %]
+                    [% err.html() %]
+                [% END %]
+            </span>
+        </div>
+    </div>
+
+    [% END %]
+
+    [% INCLUDE _assets/return_link.html.tt return_location='../index.html' return_link_text=locale.maketext('Go Back') %]
+
+</div>
+[% END #wrapper %]

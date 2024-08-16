@@ -1,0 +1,32 @@
+[%#
+Variables passed in:
+
+origin          - the system component that originated the action
+log_preview     - An arrayref of 10(or less) line preview of attached log file
+
+For more information about how to customize notification templates, read our documentation at https://go.cpanel.net/notificationtemplates
+
+-%]
+
+[%
+    PROCESS "include/colors.tmpl";
+    PROCESS "include/styles.tmpl";
+    PROCESS "include/code_block.tmpl";
+
+    WRAPPER 'wrapper/main.html.tmpl';
+
+    NOTICE.email_reason = CPANEL.locale.maketext('Large logs detected.');
+
+%]
+
+<p>
+    [% CPANEL.locale.maketext('The following log files are almost 2 gigabytes in size. You should rotate or remove them to prevent an “File Size Exceeded” error in [asis,Apache].') %]
+
+[% CPANEL.locale.maketext('You can configure automatic log rotation in [asis,WHM]’s [_1] interface at: [output,url,_2,_2,target,_3]', CPANEL.locale.maketext('Log Rotation'), CPANEL.assemble_whm_url("cgi/apache_log_rotation.pl"),'_blank') %]
+
+</p>
+<p>
+    [% code_block(formatted_code=NOTICE.log_preview.0, title=CPANEL.locale.maketext('Big log list preview:')) %]
+</p>
+
+[% END %]

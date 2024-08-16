@@ -1,0 +1,31 @@
+[% USE Encoder %]
+[% PROCESS 'master_templates/_defheader.tmpl' theme="yui" -%]
+<p>Importing '[% Encoder.safe_html_encode_str( data.filename ) %]'.</p>
+[% IF !data.has_xmlwf %]<p class="warningmsg">Could not find the 'xmlwf' to pre-verify that the XML is valid.</p>[% END %]
+
+[% IF data.pre_check_errors.size %]
+    [% FOR error_number IN data.pre_check_errors %]
+        [% IF error_number == 1 %]
+           [% IF !data.filename %]
+             <p class="error">No file given.</p>
+           [% ELSE %]
+             <p class="error">The filename uploaded results in an invalid destination filename.</p>
+           [% END %]
+        [% ELSIF error_number == 2 %]
+           [% IF !data.filename %]
+             <p class="error">No file given.</p>
+           [% ELSE %]
+             <p class="error">Could not find uploaded file.</p>
+           [% END %]
+        [% ELSIF error_number == 3 %]
+<p class="error">The file does not contain well formed XML according to '[% data.has_xmlwf %]'.</p>
+        [% END %]
+    [% END %]
+[% ELSE %]
+     <pre>
+        [% SET rc = data.import_locale_cr(data.filepath, data.upload_type) %]
+     </pre>
+     [% IF !rc %]<p class="error">Failed to import '[% Encoder.safe_html_encode_str( data.filename ) %]'.</p>[% END %]
+[% END %]
+<p><a href="[% cp_security_token %]/scripts9/upload_locale_form">Back</a></p>
+[% PROCESS 'master_templates/_deffooter.tmpl' theme="yui" -%]

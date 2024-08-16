@@ -1,0 +1,168 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/check_immutable_files           Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+#
+# This is the authorative code used to sync /usr/local/cpanel
+# Accept no imitators.
+#
+
+use strict;
+use warnings;
+
+use Cpanel::Usage           ();
+use Cpanel::SafeRun::Errors ();
+
+my $frequency = 10;
+my $force     = 0;
+my $is_help   = 0;
+
+Cpanel::Usage::wrap_options(
+    \@ARGV,
+    \&usage,
+    {
+        'frequency' => \$frequency,
+        'force'     => \$force,
+        'help'      => \$is_help,
+    }
+);
+
+my $immutable_file_list = '/var/cpanel/immutable_files';
+check_last_usage($immutable_file_list);    # Will exit if not necessary to proceed.
+
+# Instead of just testing the exit code returned the script find-immutable-files
+# execution, checking for a "{number} immutable files have been found" output line
+# coming back from the script allows us to differentiate two distinct cases of
+# non-zero exit code, namely: 1) The script ran and actual immutable files were
+# found; 2) the script could not run at all for some reason. At some point we might
+# decide that the second of those two is not a reason to hold up execution of the
+# update script that calls this script.
+
+my $script = '/usr/local/cpanel/bin/find-immutable-files';
+my $n_found;
+
+( my $myname = $0 ) =~ s{.*/}{};
+my $consequences = "Script '$myname' will terminate now with non-zero exit code.";
+
+die("\"$script\" is not executable. $consequences") if ( !-x $script );
+
+my $output = Cpanel::SafeRun::Errors::saferunallerrors( 'nice', '-n', '20', $script, $frequency );
+die("Unable to run script \"$script\". $consequences") if ( !defined $output );
+
+if ( $output !~ /\b0 immutable files have been found\b/ ) {
+    my $foundmatch = qr/\bfound\s+the\s+following\s+files\s+marked\s+as\s+immutable\s+/;
+
+    $output =~ /$foundmatch/
+      or die "Script $script could not be run or returned incomplete information. $consequences\n";
+
+    if (
+        $output =~ m{
+                            ${foundmatch}in\s+the\s+[^\n]*location:\s*\n\n
+                            (
+                                (
+                                    [^\n]+\n
+                                )+
+                            )
+                            \n
+                         }xms
+    ) {
+        $n_found = $1 =~ y/\n//;
+    }
+
+    defined $n_found
+      or die "Script $script returned incomplete information. $consequences\n";
+
+    die "$n_found immutable files were found on the system. $consequences\n";
+}
+
+print "OK: No immutable files were found on the system.\n";
+exit 0;
+
+sub check_last_usage {
+    my $immutable_file_list = shift or die;
+
+    return if ($force);                        # --force passed on command line.
+    return if ( !-e $immutable_file_list );    # Check has never run.
+    return if ( -s $immutable_file_list );     # Re-run if files were found on last run.
+
+    # Run if the previous check was less than $frequency days ago
+    my $immutable_last_run_days = -M $immutable_file_list;
+    return if ( $immutable_last_run_days > $frequency );
+
+    my $interval = round($immutable_last_run_days);
+    if ( $interval >= round($frequency) ) {
+
+        # message to user should not say "was last run approx. 10 days ago which is less than 10 days"
+        $interval = round( $frequency - 1 );
+    }
+
+    if ( $interval <= 0 ) {
+
+        # message to user should not say "was last run approx. 0 days ago"
+        $interval = 'less than one day ago';
+    }
+    elsif ( $interval == 1 ) {
+        $interval = 'approximately one day ago';
+    }
+    else {
+        $interval = "approximately $interval days ago";
+    }
+
+    print "Not testing for immutable files, because the test was last run $interval (less than $frequency days)\n";
+    exit 0;
+}
+
+sub round {
+
+    # We could use Math::Round::round(), but tests show that loading that module
+    # would consume some 900K memory. Hence the following homegrown solution instead.
+    my $num = shift;
+    return int( .5 + $num );
+}
+
+sub usage {
+    print qq{Usage: $0 [options]};
+    print qq{
+
+    Options:
+      --frequency=N     Do not perform check if we have already done so in past N days; default = 10
+      --force           Force a check for immutable files, regardless of how recently it was last done
+      --help            Brief help message
+
+};
+}
+
+__END__
+
+=head1 NAME
+
+check_immutable_files - checks for immutable files in /usr/local/cpanel, if this has not already been done recently
+
+=head1 USAGE
+
+    # Normally called by maintenance with no flags.
+    # file being used to log all other update-related proceses.
+    /scripts/check_immutable_files
+
+=head1 DESCRIPTION
+
+When used standalone, you should probably use --verbose, otherwise
+it won't appear to do anything.
+
+Will not do anything if it has been invoked in the past 10 days (or
+whatever number of days are indicated with the --frequency option),
+unless called with --force. --frequency=0 is functionally
+equivalent to --force, unless you do something unusual like
+changing file mod times into the future.
+
+If the check is run, the exit status will indicate whether immutable
+files were found.
+
+    --frequency=N   Do not perform check if we have already done so in past N days; default = 10.
+
+    --force         Force a check for immutable files, regardless of how recently it was last done.
+
+    --help          Print a brief help message

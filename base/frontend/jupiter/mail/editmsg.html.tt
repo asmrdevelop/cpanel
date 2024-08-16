@@ -1,0 +1,79 @@
+
+[%
+    SET CPANEL.CPVAR.dprefix = "../";
+
+    IF (ExpVar.expand('$appname') == "webmail") && !FORM.item('account');
+        SET FORM.item('account') = CPANEL.authuser;
+    END;
+
+    SET template = execute("BoxTrapper", "get_email_template", {'email' => RAW_FORM.item("account"), 'template' => RAW_FORM.item("form")});
+%]
+
+[% WRAPPER '_assets/master.html.tt'
+    app_key = 'boxtrapper'
+%]
+<div class="body-content">
+
+    <div class="section">
+
+        [% IF !template.status %]
+            [% FOREACH error IN template.errors %]
+                <div class="alert alert-danger" role="alert">
+                    <span class='glyphicon glyphicon-remove-sign' aria-hidden="true"></span>
+                    <div class='alert-message'>
+                        <strong class="alert-title">
+                            [% locale.maketext('Error:') %]
+                        </strong>
+                        <span class="alert-body">
+                            <span id="error-[% loop.index() %]">
+                                [% error.html() %]
+                            </span>
+                        </span>
+                    </div>
+                </div>
+            [% END %]
+        [% ELSE %]
+
+            <h2 id="descBoxtrapperMessage">
+                [% locale.maketext("[asis,BoxTrapper] message for “[output,class,_1,status]”.", FORM.item('account')) %]
+            </h2>
+
+            <p id="descEditingMsg">
+                [%
+                    IF FORM.item('form') == 'verify';
+                        locale.maketext("You must leave “[_1]” line exactly as it appears for BoxTrapper to function correctly. When editing the verify message, you must leave “[_2]” in the subject line exactly as it appears. If you change this part of the subject line, BoxTrapper will not function correctly.", 'To: %email%', 'verify#%msgid%');
+                    ELSE;
+                        locale.maketext("You must leave “[_1]” line exactly as it appears for BoxTrapper to function correctly.", 'To: %email%');
+                    END;
+                %]
+            </p>
+            <form action="savefile.html" method="post">
+                <input id="hidTemplate" type="hidden" name="form" value="[% FORM.item('form') %]">
+                <input id="hidAccount" type="hidden" name="account" value="[% FORM.item('account') %]">
+                <input id="hidFileType" type="hidden" name="filetype" value="msg">
+                <input id="hidDir" type="hidden" name="dir" value="[% FORM.item('emaildir') %]">
+                <input id="hidFile" type="hidden" value="[% FORM.item('form') %]" name="file">
+
+                <div class="form-group">
+                    <label id="lblConfig" for="txtConfigFile">
+                        [% locale.maketext("You are editing: [output,strong,_1]", FORM.item('form')) %]
+                    </label>
+                    <div class="row">
+                        <div class="col-xs-12">
+                            <textarea id="txtConfigFile" name="page" rows="20" class="form-control">[% FORM.page ? FORM.page : template.data.html() %]</textarea>
+                        </div>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <input id="btnSave" type="submit" value="[% locale.maketext("Save") %]" class="btn btn-primary">
+                </div>
+
+            </form>
+        [% END %]
+</div>
+
+[%
+    INCLUDE _assets/return_link.html.tt return_location='editmsgs.html' post='1' formdata=FORM return_link_text=locale.maketext('Go Back')
+%]
+</div>
+[% END %]

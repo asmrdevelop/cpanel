@@ -1,0 +1,53 @@
+<script>
+    function generatePostForm(frmObj,data) {
+        if (!frmObj) { alert('generatePostForm requires a valid form object to post to'); }
+
+        clearFormKeys(frmObj);
+
+        for (var key in data) {
+            var newInputEl = document.createElement('input');
+            newInputEl.name=key;
+            newInputEl.type='hidden';
+            newInputEl.value=data[key];
+            frmObj.appendChild(newInputEl);
+        }
+
+        frmObj.submit();
+    }
+
+function clearFormKeys(frmObj) {
+    var loop_safe = 8192;
+    var inputs = frmObj.getElementsByTagName('input');
+    while(inputs.length) {
+        inputs[0].value='';
+        inputs[0].parentNode.removeChild(inputs[0]);
+        if (! loop_safe--) { break; }
+    }
+}
+
+function init() {
+    var ok = confirm('[% data.warning_msg %]');
+
+    if (!ok) {
+        window.location.href = '[% data.cp_security_token %]/scripts5/norootcopy';
+    }
+    else {
+        var donorootcopyFrm = document.getElementById('donorootcopyFrm');
+        if (!donorootcopyFrm) { alert("donorootcopyFrm element not found, please restart the process."); }
+        generatePostForm(donorootcopyFrm, {
+                             'continue' : 1,
+                             'host'     : '[% data.host %]',
+                             'domain'   : '[% data.domain %]',
+                             'user'     : '[% data.user %]',
+                             'pass'     : '[% data.pass %]',
+                             'ip'       : '[% data.ip %]'
+                         });
+    }
+}
+
+
+YAHOO.util.Event.onDOMReady(init);
+</script>
+
+<form action="[% data.cp_security_token %]/scripts5/donorootcopy" name="donorootcopyF" id="donorootcopyFrm" method="POST"><input type="hidden" name="dummy" value="1"></form>
+

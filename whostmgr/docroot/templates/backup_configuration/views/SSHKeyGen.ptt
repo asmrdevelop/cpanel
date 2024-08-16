@@ -1,0 +1,100 @@
+<ng-form name="sftp_key_form" novalidate>
+    <h4 class="section-heading">[% locale.maketext('Key Generation') %]</h4>
+    <div class="section-body">
+        <div class="form-group">
+            <div class="row">
+                <div class="col-xs-12 col-sm-6">
+                    <label for="sftp_key_name">[% locale.maketext('Key Filename') %]</label>
+                    <span class="info-block">[% locale.maketext('The filename of the key to generate.') %] [% locale.maketext('If left blank, the key’s filename will be [asis,id_rsa] or [asis,id_dsa], based on the key type that you select below.') %]</span>
+                </div>
+            </div>
+            <div class="row">
+                <div class="col-xs-12 col-sm-6">
+                    <input ng-model="newSSHKey.name" type="text" name="name" id="sftp_key_name" class="form-control" ng-pattern="keyNameRegEx" />
+                </div>
+                <div class="col-xs-12 col-sm-6" ng-if="sftp_key_form.name.$error.pattern">
+                    <ul class="validation-container">
+                        <li class="validation validation-error" ng-if="sftp_key_form.name.$error.pattern">
+                            <span class="glyphicon glyphicon-exclamation-sign"></span>
+                            <span class="validation-message">
+                                [% locale.maketext('Enter a valid filename for the key.') %]
+                            </span>
+                        </li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+        <div class="form-group">
+            <div class="row">
+                <div class="col-xs-12 col-sm-6">
+                    <label for="sftp_key_passphrase">[% locale.maketext('Passphrase') %]</label>
+                </div>
+            </div>
+            <div class="row">
+                <div class="col-xs-12 col-sm-6">
+                    <input ng-model="newSSHKey.passphrase" type="password" autocomplete='off' name="passphrase" id="sftp_key_passphrase" class="form-control" ng-minlength="5" ng-maxlength="128" />
+                </div>
+                <div class="col-xs-12 col-sm-6" ng-if="sftp_key_form.passphrase.$error.minlength || sftp_key_form.passphrase.$error.maxlength">
+                    <ul class="validation-container">
+                        <li class="validation validation-error" ng-if="sftp_key_form.passphrase.$error.minlength || sftp_key_form.passphrase.$error.maxlength">
+                            <span class="glyphicon glyphicon-exclamation-sign"></span>
+                            <span class="validation-message">
+                                [% locale.maketext('Passphrase must be between 5 and 128 characters.') %]
+                            </span>
+                        </li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+        <div class="form-group">
+            <div class="row">
+                <div class="col-xs-12 col-sm-6">
+                    <label for="sftp_key_algorithm">[% locale.maketext('Key Type') %]</label>
+                </div>
+            </div>
+            <div class="row">
+                <div class="col-xs-12 col-sm-6">
+                    <select name="algorithm" id="sftp_key_algorithm" class="form-control" ng-model="newSSHKey.algorithm" ng-change="toggleKeyType(newSSHKey.algorithm)">
+                        <option ng-value="rsa2">RSA</option>
+                        <option ng-value="dsa">DSA</option>
+                    </select>
+                </div>
+            </div>
+        </div>
+        <div class="form-group">
+            <div class="row">
+                <div class="col-xs-12 col-sm-6">
+                    <label for="sftp_key_bits">[% locale.maketext('Key Size') %]</label>
+                </div>
+            </div>
+            <div class="row">
+                <div class="col-xs-12 col-sm-6">
+                    <select name="bits" id="sftp_key_bits" class="form-control" ng-model="newSSHKey.bits" ng-disabled="destinationStateBitsSet">
+                        <option ng-value="4096">4096</option>
+                        <option ng-value="2048">2048</option>
+                        <option ng-value="1024">1024</option>
+                    </select>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div id="key_actions" class="form-group">
+        <div class="row" ng-if="destinationState.generatingKey">
+            <div class="col-xs-12 col-sm-6">
+                <div cp-loading-panel class="loading_panel" id="validate_destination_panel">
+                    [% locale.maketext("Generating …") %]
+                </div>
+            </div>
+        </div>
+        <div class="row">
+            <div class="col-xs-12 col-sm-6">
+                <button type="button" ng-click="generateKey(newSSHKey)" title="[% locale.maketext('Generate Key') %]" id="save_key" class="btn btn-primary" ng-disabled="!sftp_key_form.$valid">
+                    [% locale.maketext('Generate Key') %]
+                </button>
+                <button type="button" ng-click="toggleKeyGenerationForm()" title="[% locale.maketext('Cancel') %]" id="cancel_key" class="btn btn-link">
+                    [% locale.maketext('Cancel') %]
+                </button>
+            </div>
+        </div>
+    </div>
+</ng-form>

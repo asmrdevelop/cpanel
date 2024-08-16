@@ -1,0 +1,27 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/dumpcdb                         Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use Fcntl        ();
+use Data::Dumper ();
+use CDB_File     ();
+
+if ( $ARGV[0] eq '--bincheck' ) {
+    print "BinCheck ok\n";
+    exit();
+}
+
+if ( defined $ARGV[0] && -e $ARGV[0] ) {
+    my %CDB_FILE;
+    tie %CDB_FILE, 'CDB_File', $ARGV[0];
+    $Data::Dumper::Sortkeys = 1;
+    print Data::Dumper::Dumper( \%CDB_FILE );
+}
+else {
+    print "This tool is for displaying the contents of a cdb file.\n";
+    print "Example: $0 /var/cpanel/locale/themes/x3/en.cdb\n\n";
+    print "Usage: $0 [cdb file]\n";
+}

@@ -1,0 +1,93 @@
+[%
+    USE Whostmgr;
+    USE JSON;
+    USE String;
+
+    WRAPPER 'master_templates/master.tmpl'
+        header = data.header
+        theme = 'bootstrap';
+
+-%]
+<div id="block">
+
+    <section class="description">
+        <p>[% locale.maketext('The table below lists the differences between Restricted and Unrestricted restores, and displays notes about each item.') %]</p>
+        <p>[% locale.maketext('For more information, see: [output,url,_1,_1,_2,_3]', 'https://go.cpanel.net/insecurerestoreaccount', 'target', '_blank') %]</p>
+    </section>
+
+    <div ng-controller="RestoreModulesTableController as tableCtrl" class="list-container">
+        <div class="row search-page-container">
+            <div class="col-xs-12 col-sm-12 col-md-4 col-lg-4">
+                <search ng-model="meta.filterValue" ng-change="searchList()"></search>
+            </div>
+        </div>
+        <table class="table table-striped responsive-table">
+            <thead>
+                <tr>
+                    <th>
+                        <span toggle-sort id="sortModule" sort-meta="meta"
+                                  sort-field="module"
+                                  onSort="sortList">
+                            [% locale.maketext("Module") %]
+                        </span>
+                    </th>
+                    <th>
+                        <span toggle-sort id="sortModuleSummary" sort-meta="meta"
+                                  sort-field="summary"
+                                  onSort="sortList">
+                            [% locale.maketext("Module Summary") %]
+                        </span>
+                    </th>
+                    <th>
+                        <span toggle-sort id="sortRestrictedAvailable" sort-meta="meta"
+                                  sort-field="restricted_available"
+                                  onSort="sortList">
+                            [% locale.maketext("Restricted Restore?") %]
+                        </span>
+                    </th>
+                    <th>
+                        <span toggle-sort id="sortRestrictedModule" sort-meta="meta"
+                                  sort-field="restricted_summary"
+                                  onSort="sortList">
+                            [% locale.maketext("Restricted Summary") %]
+                        </span>
+                    </th>
+                </tr>
+            </thead>
+            <tbody ng-show="filteredList.length" class="ng-cloak">
+                <tr id="restoreModulesTableRow_{{}}" ng-repeat="module in filteredList">
+                    <td class="table-column-module" data-title="[% locale.maketext("Module") %]"  ng-bind="module.module"></td>
+                    <td class="table-column-summary" data-title="[% locale.maketext("Module Summary") %]" >
+                        <span ng-bind-html="module.summary"></span>
+                        <span ng-if="module.notes" class="help-block" ng-bind-html="module.notes"></span>
+                    </td>
+                    <td class="table-column-restricted_available" data-title="[% locale.maketext("Restricted Available") %]" >
+                        <span ng-if="module.restricted_available == 1" class='fas fa-check fa-lg'></span>
+                        <span ng-if="module.restricted_available == 0" class='fas fa-times fa-lg'></span>
+                    </td>
+                    <td class="table-column-restricted_summary" data-title="[% locale.maketext("Restricted Summary") %]" ng-bind="module.restricted_summary"></td>
+                </tr>
+                <tr ng-if="modules" ng-hide="filteredList.length" class="info empty-row">
+                    <td colspan="3">[% locale.maketext("No results match your query.") %]</td>
+                </tr>
+                <tr ng-hide="modules.length" class="info empty-row">
+                    <td colspan="3">[% locale.maketext("No modules were found.") %]</td>
+                </tr>
+            </tbody>
+            <tfoot ng-show="!filteredList.length">
+                <tr>
+                    <td colspan="4" class="text-center info">[% locale.maketext("Loading modules …") %]</td>
+                </tr>
+            </tfoot>
+        </table>
+    </div>
+</div>
+
+<script type="text/javascript">
+    var PAGE = PAGE || {};
+    PAGE.modules = [% JSON.stringify(data.modules) %];
+</script>
+
+[% PROCESS 'master_templates/cjt2_header_include.tt' %]
+
+[% END -%]

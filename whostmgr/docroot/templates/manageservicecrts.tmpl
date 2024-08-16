@@ -1,0 +1,242 @@
+[%
+USE Whostmgr;
+USE NVData;
+USE CPList;
+
+FOR svc_h = data.services;
+    IF svc_h.name == 'ftp';
+        SET has_ftp = 1;
+        LAST;
+    END;
+END;
+
+#Insert this directly into the page (below).
+extra_css = BLOCK;
+    INSERT 'sharedcss/sslinstall_optimized.css';
+    INSERT 'css/ssl_forms_optimized.css';
+    INSERT 'sharedcss/ssltable_optimized.css';
+    INSERT 'css/ssltable_optimized.css';    #WHM-specific stuff
+    %]
+    .tab-content {
+        padding:0 20px 20px 20px;
+    }
+    #tabSetInstall {
+        margin-top:20px;
+    }
+    div.installCert {
+        margin-top: 20px;
+    }
+    body.no-reset-links .reset-link {
+        display:none;
+    }
+
+[% END;
+
+WRAPPER 'master_templates/master.tmpl' theme="yui"
+    app_key='manage_services_ssl_certificates'
+    stylesheets = [
+        '/yui/datatable/assets/datatable-core.css'
+        '/yui/datatable/assets/datatable.css'
+        Whostmgr.find_file_url('yui/tabview/assets/skins/sam/tabview.css')
+        Whostmgr.find_file_url('css/notify.css')
+    ]
+    scripts = [
+        Whostmgr.find_file_url('yui/tabview/tabview-min.js')
+        Whostmgr.find_file_url('yui/layout/layout-min.js')
+        Whostmgr.find_file_url('/libraries/jsforge/0.7.0/forge.min.js')
+        Whostmgr.find_file_url('/sharedjs/pkcs12_optimized.js')
+    ]
+    extrastyle = extra_css
+;
+
+PROCESS '_ajaxapp_styles.tmpl';
+PROCESS '_ajaxapp_header.tmpl';
+-%]
+
+[% ssl_browse_html = BLOCK -%]
+    <input type="button" id="sslbrowse" value="[% locale.maketext("Browse Certificates") %]" title="[% locale.maketext("Browse for certificates to install.") %]" class="btn-secondary">
+    <input type="button" id="sslupload" value="[% locale.maketext("Choose a [asis,PKCS #12] Archive") %]" title="[% locale.maketext("Upload certificate bundle to install.") %]" class="btn-secondary" onclick="document.getElementById('sslfilebrowse').value = null; document.getElementById('sslfilebrowse').click();">
+    <input type="file" id="sslfilebrowse" style="visibility:hidden" onchange="PAGE.handleFileSelect(this)">
+    <div id="sslpasswordblock" style="display:none;border:1px solid #000; padding:10px;border-radius:4px;margin-left:8px;">
+        <p style="margin-top:0;"><label for="sslpassword" id="sslpassword_label"></label></p>
+        <input type="password" id="sslpassword" oninput="PAGE.certPasswordOnInput(event)">
+        <span id="sslpassword_error" class="no_panel"></span>
+        <p id="sslpassword_success" style="display:none"></p>
+    </div>
+[% END -%]
+
+[% ssl_form_top = BLOCK -%]
+    <div>
+        [% locale.maketext("Choose one or more services for SSL certificate installation:") %]
+        <input type="hidden" id="service_to_install">
+        <span class="checkbox-field-error" id="service_to_install_error"></span>
+    </div>
+    <div>
+        [% FOR svc = data.services.sort('description') -%]
+            [% NEXT IF svc.grouptype != 'default' -%]
+            <div class="install-service-group install-service-group-[% svc.grouptype %]">
+                <input type="checkbox" id="checkbox-[% svc.name %]" name="service" value="[% svc.name %]" [% data.services.size == 1 ? 'checked' : '' %]>
+                <label for="checkbox-[% svc.name %]">[% svc.description %]</label>
+            </div>
+        [% END -%]
+    </div>
+[% END -%]
+
+[% apns_form_top = BLOCK -%]
+    <div id="APNSSelectMsg">
+        [% locale.maketext("Choose the service this [output,acronym,APNs,Apple Push Notification service] certificate is for:") %]
+        <input type="hidden" id="APNS_to_install">
+        <span class="radio-field-error" id="APNS_to_install_error"></span>
+    </div>
+    <div id="APNSSelectRadio">
+        [% FOR svc = data.services.sort('description') -%]
+            [% NEXT IF svc.grouptype == 'default' -%]
+            <div class="APNS-service-group APNS-service-group-[% svc.grouptype %]">
+                <input type="radio" id="radio-[% svc.name %]" name="service" value="[% svc.name %]" [% svc.name == 'mail_apns' ? 'checked' : ''%] disabled>
+                <label for="radio-[% svc.name %]">[% svc.description %]</label>
+            </div>
+        [% END -%]
+    </div>
+[% END -%]
+
+<div class="description">
+    [% locale.maketext("Use this interface to manage SSL certificates for services other than Apache.") -%]
+</div>
+
+<div id="tabSet" class="yui-navset">
+    <ul class="yui-nav">
+        [%
+            SET daemons = ['cpsrvd', 'Dovecot', 'Exim'];
+            IF has_ftp;
+                daemons.push('FTP');
+            END;
+        -%]
+        <li class="selected"><a href="#/certificates/"><em>[% locale.maketext('Daemons ([list_and,_1])', daemons) %]</em></a></li>
+        <li><a href="#/certificates/iOS-mail"><em>[% locale.maketext('[asis,iOS] Mail Push Notifications ([asis,APNs])') %]</em></a></li>
+    </ul>
+    <div class="yui-content" style="display:none"></div>
+</div>
+
+<div id="ssl_table_area" class="ssl-table-area">
+    <div id="service_ssl_explanation" style="display:none"></div>
+
+    <div id="apns_explanation" style="display:none"></div>
+    <div id="ios_client_explanation" style="display:none"></div>
+    [%
+        IF has_ftp;
+            SET daemons_notice = locale.maketext('When the system processes a [output,abbr,TLS,Transport Layer Security] [output,abbr,SNI,Server Name Indication] request, the system serves a domain-specific certificate with all services except [output,abbr,FTP,File Transfer Protocol]. If no domain-specific certificate matches the [asis,SNI] request or if the client doesn’t send an [asis,SNI] request, the service uses its default certificate, which you can manage below.');
+        ELSE;
+            SET daemons_notice = locale.maketext('When a service receives a [output,abbr,TLS,Transport Layer Security] [output,abbr,SNI,Server Name Indication] request, the service tries to serve a certificate that matches that [asis,SNI] request. If no such certificate exists or if the client doesn’t send an [asis,SNI] request, the service serves its default certificate, which you can manage below.');
+        END;
+    -%]
+    <script>
+        new CPANEL.widgets.Page_Notice( {
+            container: "service_ssl_explanation",
+            level: "info",
+            content: [% JSON.stringify( daemons_notice _ '<br><br>' _ locale.maketext('We recommend that you install the same certificate for each service.') ) %],
+        } );
+        new CPANEL.widgets.Page_Notice( {
+            container: "apns_explanation",
+            level: "info",
+            content: [% JSON.stringify( locale.maketext('[asis,iOS Mail Push Notifications] trigger [asis,iOS] devices to check for new messages when a message is delivered to an email account’s INBOX. To add support for this feature to your server, [output,url,_1,follow these instructions,target,blank] to obtain an [output,abbr,APNs,Apple Push Notification service] mail certificate, and then install it below.', 'https://go.cpanel.net/iospushnotification') ) %],
+        } );
+        new CPANEL.widgets.Page_Notice( {
+            container: "ios_client_explanation",
+            level: "warn",
+            content: [% JSON.stringify( locale.maketext('[asis,iOS] client devices must close and [output,strong,relaunch] the Mail app to enable push notifications after the certificate is installed.') ) %],
+        } );
+    </script>
+    <div id="services_ssl_table"></div>
+</div>
+
+<div id="cjt_pagenotice_container"></div>
+
+<div id="tabSetInstall" class="yui-navset">
+    <ul class="yui-nav">
+        <li class="selected"><a href="#/install/"><em>[% locale.maketext("Install a New Certificate") %]</em></a></li>
+    </ul>
+    <div class="yui-content" style="display:none"></div>
+</div>
+
+<div class="span12 installCert">
+    [% PROCESS '_ssl_form_include.tmpl'
+        ssl_browse_html = ssl_browse_html,
+        ssl_form_top = ssl_form_top,
+        apns_form_top = apns_form_top,
+    -%]
+</div>
+
+
+
+<script id="table_action_template" type="text/x-handlebars-template">
+<div class="action-links">
+    <a href="javascript:void(0)" class="reset-link">[% locale.maketext("Reset Certificate") %]</a>
+    <span class="link-spacer"></span>
+
+    <a href="javascript:void(0)" class="details-link">[% locale.maketext("Certificate Details") %]</a>
+
+[% IF data.services.size > 1 -%]
+    <span class="link-spacer"></span>
+
+    <a href="javascript:void(0)" class="other-service-link">[% locale.maketext("Apply Certificate to Another Service") %]</a>
+[% END -%]
+</div>
+</script>
+
+<script id="batch_failure_template" type="text/x-handlebars-template">
+<table class="batch-failure">
+{{#each service}}
+    <tr>
+        <td class="service-name">{{name}}</td>
+        <td class="error-text">{{error}}</td>
+    </tr>
+{{/each}}
+</table>
+</script>
+
+<script id="reset_confirm_template" type="text/x-handlebars-template">
+<p>[% locale.maketext("This action will install a new generated key and self-signed certificate for the “[_1]” service. (The certificate will cover the domain “[_2]”.) If you proceed with this reset, obtain another certificate from a valid Certificate Authority to replace the self-signed certificate as soon as possible.", '{{service}}', data.hostname) -%]</p>
+<p>[% locale.maketext("Are you sure that you want to reset the SSL certificate for “[_1]”? You cannot undo this operation!", '{{service}}') %]</p>
+</script>
+
+<script id="display_restart_dialog" type="text/x-handlebars-template">
+<p>[% locale.maketext("In order to complete your SSL Certificate installation, you will need to restart cpsrvd.") %]</p>
+<p>[% locale.maketext("Restart [asis,cpsrvd] now?") %]</p>
+</script>
+
+
+<script>
+window.PAGE = [% JSON.stringify( {
+    nvdata => NVData.get_page_nvdata(),
+    services => data.services,
+    ui_mode => 'services',
+} ) -%];
+
+[% INSERT 'sharedjs/asn1_optimized.js' %]
+[% INSERT 'cjt/ssl-min.js' %]
+</script>
+
+[% PROCESS 'sslinstall_include.tmpl' cert_browser_users = data.users -%]
+[% PROCESS 'ssltable_include.tmpl' -%]
+[% PROCESS '_ajaxapp_footer.tmpl' -%]
+
+<script>
+[%# Better to load these separately to cache them? -%]
+[% INSERT 'yui/datasource/datasource-min.js' %]
+[% INSERT 'yui/datatable/datatable-min.js' %]
+[% INSERT 'sharedjs/yui2_datatable_row_expansion_optimized.js' -%]
+
+[%
+    SET lex_path = CPANEL.get_js_lex_app_rel_path('sharedjs/sslwidgets.js');
+    INSERT $lex_path IF lex_path;
+    INSERT 'sharedjs/sslwidgets_optimized.js';
+%]
+[%
+    SET lex_path = CPANEL.get_js_lex_app_rel_path('sharedjs/sslinstall.js');
+    INSERT $lex_path IF lex_path;
+    INSERT 'sharedjs/sslinstall_optimized.js';
+%]
+
+</script>
+
+[% END #wrapper -%]

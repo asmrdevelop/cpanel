@@ -1,0 +1,97 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/upgrade_bandwidth_dbs           Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::upgrade_bandwidth_dbs;
+
+use strict;
+use warnings;
+
+use parent qw( Cpanel::HelpfulScript );
+
+use Cpanel::AcctUtils::Account ();
+use Cpanel::BandwidthDB        ();
+use Cpanel::Config::Users      ();
+use Cpanel::PIDFile            ();
+
+use Try::Tiny;
+
+=encoding utf-8
+
+=head1 NAME
+
+scripts::upgrade_bandwidth_dbs
+
+=head1 SYNOPSIS
+
+    upgrade_bandwidth_dbs [ --all | --user <username> | --help ]
+
+=head1 DESCRIPTION
+
+This command will check the database schema of each bandwidth database on the system
+and upgrade it if needed.
+
+=cut
+
+our $PID_FILE = '/var/run/upgrade_bandwidth_dbs.pid';
+
+sub _OPTIONS {
+    return qw( user=s all );
+}
+
+__PACKAGE__->new(@ARGV)->script() unless caller();
+
+sub script {
+    my ($self) = @_;
+
+    if ( $self->getopt('user') ) {
+        my $user = $self->getopt('user');
+        print "Upgrading bandwidth database schema for the user '$user'.\n";
+
+        try {
+            $self->call_for_one_user($user);
+        }
+        catch {
+            warn "There was an error upgrading the schema of the bandwidth database for '$user': $_\n";
+        };
+
+        return;
+    }
+    elsif ( !$self->getopt('all') ) {
+        print "\n" . $self->help();
+        return;
+    }
+
+    Cpanel::PIDFile->do(
+        $PID_FILE,
+        sub {
+            print "Checking and upgrading the bandwidth databases for all users.\n";
+
+            for my $user ( Cpanel::Config::Users::getcpusers() ) {
+                try {
+                    $self->call_for_one_user($user);
+                }
+                catch {
+                    warn "There was an error upgrading the schema of the bandwidth database for '$user': $_\n";
+                };
+            }
+        }
+    );
+
+    return;
+}
+
+sub call_for_one_user {
+    my ( $self, $user ) = @_;
+
+    Cpanel::AcctUtils::Account::accountexists_or_die($user);
+
+    Cpanel::BandwidthDB::get_reader_for_root($user);
+
+    return;
+}
+
+1;

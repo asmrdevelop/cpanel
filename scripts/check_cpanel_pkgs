@@ -1,0 +1,335 @@
+#!/bin/bash
+eval '/usr/local/cpanel/scripts/fix-cpanel-perl && exec /usr/local/cpanel/3rdparty/bin/perl -x -- $0 ${1+"$@"}'    ## no critic qw(ProhibitStringyEval RequireUseStrict RequireUseWarnings)
+  if 0;
+
+#!/usr/bin/perl
+# cpanel - scripts/check_cpanel_pkgs                 Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::check_cpanel_pkgs;
+
+# This script will handle repairing/listing broken RPMs
+# -
+# Q: What is a broken aka altered RPM?
+# A: Any files output by a rpm -V RPM_PACKAGE_NAME that are listed to have a different MD5 sum or permission change indicate a broken RPM.
+
+use strict;
+use warnings;
+
+use Cpanel::Usage               ();
+use Cpanel::Update::Logger      ();
+use Cpanel::RPM::Versions::File ();
+use Cpanel::TempFile            ();
+use Cpanel::LoadModule          ();
+
+exit __PACKAGE__->script(@ARGV) unless caller();
+
+sub script {
+    my ( $class, @argv ) = @_;
+
+    local $| = 1;
+
+    my $list_only         = 0;
+    my $long_list         = 0;
+    my $fix               = 0;
+    my $contact           = 0;
+    my $targets           = 0;
+    my $nodir             = 0;
+    my $skip_digest_check = 0;
+    my $skip_broken_check = 0;
+    my $download_only     = 0;
+
+    my %opts = (
+        'long-list'     => \$long_list,
+        'list-only'     => \$list_only,
+        'fix'           => \$fix,
+        'notify'        => \$contact,
+        'targets'       => \$targets,
+        'nodir'         => \$nodir,
+        'no-digest'     => \$skip_digest_check,
+        'no-broken'     => \$skip_broken_check,
+        'download-only' => \$download_only,
+    );
+
+    my $self = bless {
+        'notification_rpms' => [],
+    }, $class;
+
+    my $status = Cpanel::Usage::wrap_options( { strict => 1 }, \@argv, \&usage, \%opts ) || 0;
+    usage(1) if $status > 2;
+    usage(1) if ( $list_only && $fix );
+
+    my $logger = Cpanel::Update::Logger->new( { 'stdout' => 1, 'log_level' => 'info' } );
+
+    my $temp;
+    my %directory_options = ();
+    if ($nodir) {
+        $temp = Cpanel::TempFile->new;
+        my $tempdir = $temp->dir;
+        $directory_options{'directory'} = $tempdir;
+    }
+
+    my $v;
+    if ($targets) {
+        my @targets = split( /\s*,\s*/, $targets );
+        $v = Cpanel::RPM::Versions::File->new( { 'only_targets' => \@targets, logger => $logger, %directory_options } );
+    }
+    else {
+        $v = Cpanel::RPM::Versions::File->new( { logger => $logger, %directory_options } );
+    }
+
+    # need to be sure that the update config is saved if we detect an *disable file
+    $v->dir_files()->save() if $v->dir_files()->config_changed();
+
+    my $found = 0;
+
+    my $installed_rpms = $v->list_rpms_in_state("installed");
+    my $upgraded_rpms  = $v->list_rpms_in_state("upgraded");
+
+    my $missing_rpms = $v->install_hash( $installed_rpms, $upgraded_rpms );
+
+    if (%$missing_rpms) {
+        $found++;
+
+        log_header($logger);
+        $logger->info("The following packages are missing from your system:");
+
+        foreach my $rpm ( sort keys %$missing_rpms ) {
+            $logger->info("$rpm-$missing_rpms->{$rpm}");
+            $self->_store_rpm_for_notify( "$rpm-$missing_rpms->{$rpm}", 'missing' );
+        }
+    }
+
+    my $unnecessary_rpms = $v->uninstall_hash($installed_rpms);
+
+    if (%$unnecessary_rpms) {
+        $found++;
+        log_header($logger);
+        $logger->info(" ");
+        $logger->info("The following packages are unneeded on your system and should be uninstalled:");
+
+        foreach my $rpm ( sort keys %$unnecessary_rpms ) {
+            $logger->info("$rpm-$unnecessary_rpms->{$rpm}");
+            $self->_store_rpm_for_notify( "$rpm-$unnecessary_rpms->{$rpm}", 'unnecessary' );
+
+        }
+    }
+
+    # The hash reference returned by get_dirty_rpms() looks like:
+    # {
+    #    'nsd,3.2.9-2.cp1136' => [
+    #                               '/etc/nsd'
+    #                            ]
+    # };
+
+    # Delete cached results otherwise this will need to be run twice if a RPM is altered.
+    # NOTE: This was changed recently. $v->reinstall is responsible for clearing this cache when appropriate.
+    # I will remove these comments in a future commit but leaving it here so the bug is obvious in the short
+    # term if it comes up.
+    #
+    #unless ($skip_broken_check) {
+    #    $v->clear_installed_packages_cache;
+    #}
+
+    # Suppress warnings from get_dirty_rpms call.
+    $v->logger->set_logging_level('ERROR');
+    my $broken_rpms = $skip_broken_check ? {} : $v->get_dirty_rpms($skip_digest_check);
+    $v->logger->set_logging_level('INFO');
+
+    my @broken_rpms_list = sort keys %$broken_rpms;
+
+    if (%$broken_rpms) {
+        $found++;
+
+        log_header($logger);
+        $logger->info(" ");
+        $logger->info("The following files were found to be altered from their original package form:") if ( !$long_list );
+        foreach my $rpm ( sort keys %$broken_rpms ) {
+            foreach ( @{ $broken_rpms->{$rpm} } ) {
+                my ( $broken_file, $reason ) = @$_;
+                $logger->info("$rpm,$reason,$broken_file") if $long_list;
+                $self->_store_rpm_for_notify( "$rpm-$broken_file", 'broken', $reason );
+
+            }
+            $logger->info("$rpm") if !$long_list;
+        }
+
+        $logger->info(" ");
+    }
+
+    if ($found) {
+
+        # Fix if necessary.
+        if ($download_only) {
+            $v->download_all();
+        }
+        elsif ( !$list_only ) {
+            if ( !$fix ) {
+                $fix = prompt('Do you want to repair these packages?');
+            }
+
+            if ($fix) {
+                $v->logger->{'stdout'} = 1;
+                $v->logger->set_logging_level('INFO');
+                $v->reinstall_rpms(@broken_rpms_list);
+                foreach my $rpm ( @{ $self->{'notification_rpms'} } ) {
+
+                    # TODO: reinstall_rpms assumes success here
+                    $rpm->{'status'} = $rpm->{'status'} eq 'broken' ? 'repaired' : $rpm->{'status'};
+                }
+            }
+
+        }
+
+        $self->notify() if $contact;
+    }
+
+    return $logger->get_need_notify ? 2 : 0;
+}
+
+sub _store_rpm_for_notify {
+    my ( $self, $rpm, $status, $info ) = @_;
+
+    push @{ $self->{'notification_rpms'} }, {
+        'rpm'    => $rpm,
+        'status' => $status,    #unnecessary #broken #missing #repaired
+        'info'   => $info,
+    };
+
+    return 1;
+}
+
+sub notify {
+    my ($self) = @_;
+
+    Cpanel::LoadModule::load_perl_module("Cpanel::iContact::Class::Check::CpanelPackages") || return;
+
+    require Cpanel::Notify;
+    Cpanel::Notify::notification_class(
+        'class'            => 'Check::CpanelPackages',
+        'application'      => 'Check::CpanelPackages',
+        'constructor_args' => [
+            origin => 'rpmcheck',
+            rpms   => $self->{'notification_rpms'},
+        ]
+    );
+}
+
+sub prompt {
+    return 0 if ( !-t STDIN );
+
+    print shift @_;
+
+    my $response = '';
+
+    eval { require Term::ReadKey };
+    unless ($@) {
+        local $SIG{INT} = sub { Term::ReadKey::ReadMode( 'restore', *STDIN ); exit };
+        Term::ReadKey::ReadMode( 'noecho', *STDIN );
+        Term::ReadKey::ReadMode( 'raw',    *STDIN );
+
+        $response = '';
+        while ( $response !~ m{^[ynYN]$} ) {
+            print "(y/n):\n";
+            $response = getc(*STDIN);
+        }
+
+        Term::ReadKey::ReadMode( 'restore', *STDIN );
+        print "$response\n";
+    }
+    else {
+        my $response = <>;
+        while ( $response !~ m{^[ynYN]$} ) {
+            print "(y/n):\n";
+            $response = getc(*STDIN);
+        }
+    }
+    return ( $response =~ m{[yY]} ) ? 1 : 0;
+}
+
+{
+    my $_has_header;
+
+    sub log_header {
+        return if $_has_header;
+        my ($logger) = @_;
+        my $header .= <<END;
+Problems were detected with cPanel-provided files which are controlled by packages.
+If you did not make these changes intentionally, you can correct them by running:
+
+> /usr/local/cpanel/scripts/check_cpanel_pkgs --fix
+
+END
+        $logger->info('');
+        foreach my $line ( split( /\n/, $header ) ) {
+            $logger->info($line);
+        }
+
+        $_has_header = 1;
+    }
+}
+
+sub usage {
+    my $exit_code    = shift || 0;
+    my $program_name = $0;
+    $program_name =~ s{/usr/local/cpanel/}{};
+
+    # TODO: Describe the output on Debian-like systems.
+    print qq{
+    $program_name
+      Responsible for validating the integrity of cPanel-managed packages and their corresponding files.
+      This script detects if there are any packages that have been unexpectedly altered. Files are
+      considered altered:
+
+       - If their ownership has changed,
+       - If they contain an MD5 mismatch
+       - If they are a symlink, the file points to the wrong path.
+
+      Any packages that should be installed or uninstalled will also be detected.
+
+      $program_name offers the opportunity to repair these issues by reinstalling the package that contains the
+      altered file(s).
+
+    Usage:
+      $program_name [options]
+
+    Options:
+      --fix       - Show any problems and automatically correct them.
+      --list-only - Only list altered packages and then exit.
+      --download-only - Downloads packages and exit
+      --long-list - Show in a more easily parsed format the altered packages and files.
+      --notify    - Send out a notification regarding any altered packages Additionally,
+                    it will describe any action that was taken.
+      --targets   - Filter packages based on provided targets (comma delimited).
+      --nodir     - This option will prevent the directory /var/cpanel/rpm.versions.d from being read.
+      --no-digest - This option will speed up “$0” run by skipping file digest checks.
+                    Changes to the contents of files will not be detected.
+      --no-broken - This option will prevent the system from checking for broken packages
+                    and it will only install missing and uninstall unneeded ones.
+
+    Checks Performed:
+      On systems which use RPM packages, $program_name runs the rpm -V check on all cPanel-managed RPMs.
+      rpm -V determines if the files have changed since their installation; configuration and documentation
+      files are ignored in this process. The table below shows the changes detected in the output of rpm -V.
+
+      Note: If the output indicates that only Mode or mTime have changed, then that file will not be
+      labeled as "changed."
+
+      Check  | Description
+        S    | File Size differs.
+        M    | Mode differs (includes permissions and file type).
+        5    | MD5 sum differs.
+        D    | Device major/minor number mismatch.
+        L    | readLink(2) path mismatch.
+        U    | User ownership differs.
+        G    | Group ownership differs.
+        T    | mTime differs.
+
+};
+
+    exit $exit_code;
+}
+
+1;

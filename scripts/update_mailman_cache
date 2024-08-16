@@ -1,0 +1,207 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/update_mailman_cache            Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::update_mailman_cache;
+
+use strict;
+use warnings;
+use Cpanel::Config::LoadCpConf ();
+use Cpanel::Config::Users      ();
+use Cpanel::CachedDataStore    ();
+use Cpanel::Mailman::Filesys   ();
+
+use Cpanel::DatastoreDir        ();
+use Cpanel::DatastoreDir::Init  ();
+use Cpanel::UserDatastore       ();
+use Cpanel::UserDatastore::Init ();
+
+require Cpanel::Mailman::DiskUsage;
+require Cpanel::Mailman::NameUtils;
+require Cpanel::Config::FlushConfig;
+require Cpanel::Config::LoadConfig;
+require Cpanel::AcctUtils::DomainOwner::Tiny;
+require Cpanel::PwCache;
+require Cpanel::SafeFile;
+require Cpanel::Finally;
+require Cpanel::Timezones;
+
+my $missing_info_mail_list = {};
+my $MAILMAN_DISK_USAGE_REF = {};
+my $MAILMAN_LIST_USAGE_REF = {};
+
+my $message      = undef;
+my $alert_status = undef;
+
+exit( __PACKAGE__->run(@ARGV) ) unless caller();
+
+sub run {    ## no critic qw(Subroutines::ProhibitExcessComplexity)
+    my ( $self, @args ) = @_;
+
+    # We call localtime quote a bit, lets make it a bit faster
+    local $ENV{'TZ'} = Cpanel::Timezones::calculate_TZ_env();
+
+    my $cpanel_conf  = Cpanel::Config::LoadCpConf::loadcpconf_not_copy();
+    my $NEEDDISKUSED = exists $cpanel_conf->{'disk_usage_include_mailman'} ? $cpanel_conf->{'disk_usage_include_mailman'} : 1;
+
+    if ( !$NEEDDISKUSED ) {
+        clear_db_caches();
+        return 0;
+    }
+
+    my $datastore_path          = Cpanel::DatastoreDir::Init::initialize();
+    my $missing_info_yaml_file  = "$datastore_path/mailman_missing_info_mail_list.yaml";
+    my $mailman_list_usage_file = _mailman_list_usage_file();
+    my $mailman_disk_usage_file = _mailman_disk_usage_file();
+    my $progress_file           = "$datastore_path/update_mailman_cache-in-progress";
+
+    my ( $user_to_rebuild, $list_to_rebuild ) = @args;
+
+    if ( $user_to_rebuild && !Cpanel::PwCache::getpwnam_noshadow($user_to_rebuild) ) {
+        die "Usage: $0 <user> [<list>]\n";
+    }
+
+    my $mmlock = Cpanel::SafeFile::safeopen( my $fh, '>', $progress_file );
+    if ( !$mmlock ) {
+        warn "Could not get a lock on '$progress_file': $!\n";
+        return 1;
+    }
+
+    my $finally = Cpanel::Finally->new( sub { unlink($progress_file); Cpanel::SafeFile::safeclose( $fh, $mmlock ); } );
+
+    $missing_info_mail_list = Cpanel::CachedDataStore::fetch_ref($missing_info_yaml_file);
+    $MAILMAN_LIST_USAGE_REF = Cpanel::CachedDataStore::fetch_ref($mailman_list_usage_file);
+
+    Cpanel::AcctUtils::DomainOwner::Tiny::build_domain_cache();
+    if ($user_to_rebuild) {
+
+        # load disk usage for all other users
+        $MAILMAN_DISK_USAGE_REF = Cpanel::Config::LoadConfig::loadConfig( $mailman_disk_usage_file, undef, ':\s+' );
+
+        # reset disk usage for current user ( will be computed later )
+        #   need to be deleted from hash as we do not want to save 0 in disk-usage
+        delete $MAILMAN_DISK_USAGE_REF->{$user_to_rebuild};
+    }
+
+    my %SEEN_LISTS;
+    if ( opendir( my $list_dir_dh, Cpanel::Mailman::Filesys::MAILING_LISTS_DIR() ) ) {
+        my $listuser;
+        while ( my $list = readdir($list_dir_dh) ) {
+            next if index( $list, '.' ) == 0;
+            $SEEN_LISTS{$list} = 1;
+            if ( index( $list, '_' ) != -1 ) {
+                ## takes advantage of the first .* being greedy; e.g. my_list_name_domain.com
+                ##   will appropriately split my_list_name and domain.com
+                my ( $listname, $listdomain ) = Cpanel::Mailman::NameUtils::parse_name($list);
+                $listuser = Cpanel::AcctUtils::DomainOwner::Tiny::getdomainowner( $listdomain, { 'default' => '' } );
+            }
+            else {
+                $listuser = '';
+            }
+            if ( !$listuser ) {
+                $listuser = 'root' if $list eq 'mailman';
+            }
+
+            if ( !$listuser ) {
+
+                # When detecting no listuser, only provide warning message once on the first time
+                # (The mailing list without the listuser info is added to the yaml file
+                # to prevent redundant notification on subsequent runs.)
+                $alert_status = 'provided message';
+                if ( !( exists( $missing_info_mail_list->{$list} ) && $missing_info_mail_list->{$list}->{'alert_status'} eq $alert_status ) ) {
+                    $message = "Could not determine the list owner for mailman mailing list \"$list\"";
+                    _warn_about_list_owner($message);
+                    $missing_info_mail_list->{$list}->{'alert_status'} = $alert_status;
+                    $missing_info_mail_list->{$list}->{'message'}      = $message;
+                }
+
+                next;
+            }
+
+            # skip other users ( usage comes from previous file ) when a user is defined
+            if ( $user_to_rebuild && $listuser ne $user_to_rebuild ) { next; }
+
+            my $disk_used;
+
+            if ( exists $MAILMAN_LIST_USAGE_REF->{$listuser}{$list} && ( $list_to_rebuild && $list ne $list_to_rebuild ) ) {
+
+                # Use previous value if we are only rebuilding a specific list
+                $disk_used = $MAILMAN_LIST_USAGE_REF->{$listuser}{$list};
+            }
+            else {
+                $disk_used = Cpanel::Mailman::DiskUsage::get_mailman_archive_dir_disk_usage($list) + Cpanel::Mailman::DiskUsage::get_mailman_archive_dir_mbox_disk_usage($list) + Cpanel::Mailman::DiskUsage::get_mailman_list_dir_disk_usage($list);
+                $MAILMAN_LIST_USAGE_REF->{$listuser}{$list} = $disk_used;
+            }
+            $MAILMAN_DISK_USAGE_REF->{$listuser} += $disk_used;
+        }
+
+        if ( !Cpanel::CachedDataStore::store_ref( $missing_info_yaml_file, $missing_info_mail_list, { mode => 0600 } ) ) {
+            warn "Error: Unable to save yaml file \"$missing_info_yaml_file\". \n";
+        }
+
+    }
+
+    foreach my $user ( $user_to_rebuild ? ($user_to_rebuild) : Cpanel::Config::Users::getcpusers() ) {
+        my $user_datastore_path = Cpanel::UserDatastore::Init::initialize($user);
+
+        if ( my @deleted_lists = map { !$SEEN_LISTS{$_} } keys %{ $MAILMAN_LIST_USAGE_REF->{$user} } ) {
+            delete @SEEN_LISTS{@deleted_lists};
+        }
+        if ( !exists $MAILMAN_LIST_USAGE_REF->{$user} || !scalar keys %{ $MAILMAN_LIST_USAGE_REF->{$user} } ) {
+            delete $MAILMAN_LIST_USAGE_REF->{$user};
+            unlink $user_datastore_path . '/mailman-disk-usage', $user_datastore_path . '/mailman-list-usage';
+            next;
+        }
+
+        if ( open( my $disk_usage_fh, '>', $user_datastore_path . '/mailman-disk-usage' ) ) {
+            print {$disk_usage_fh} int( $MAILMAN_DISK_USAGE_REF->{$user} || 0 );
+            close($disk_usage_fh);
+        }
+        Cpanel::Config::FlushConfig::flushConfig( $user_datastore_path . '/mailman-list-usage', $MAILMAN_LIST_USAGE_REF->{$user}, ': ', undef, { perms => 0644 } );
+    }
+
+    my $umask = umask(0027);
+    Cpanel::Config::FlushConfig::flushConfig( $mailman_disk_usage_file, $MAILMAN_DISK_USAGE_REF, ': ', undef, { perms => 0600 } );
+    Cpanel::CachedDataStore::store_ref( $mailman_list_usage_file, $MAILMAN_LIST_USAGE_REF, { mode => 0600 } );
+    umask($umask);
+
+    return 0;
+}
+
+sub _mailman_list_usage_file {
+    my $datastore_path = Cpanel::DatastoreDir::PATH();
+    return "$datastore_path/mailman-list-usage.yaml";
+}
+
+sub _mailman_disk_usage_file {
+    my $datastore_path = Cpanel::DatastoreDir::PATH();
+    return "$datastore_path/mailman-disk-usage";
+}
+
+sub clear_db_caches {
+    my $datastore_path = Cpanel::DatastoreDir::PATH();
+
+    return if !-d $datastore_path;
+
+    foreach my $db ( _mailman_list_usage_file(), _mailman_disk_usage_file() ) {
+        unlink($db) if -e $db;
+    }
+
+    foreach my $user ( Cpanel::Config::Users::getcpusers() ) {
+        my $user_datastore_path = Cpanel::UserDatastore::get_path($user);
+        unlink grep { -e $_ } map { $user_datastore_path . '/' . $_ } ( 'mailman-list-usage', 'mailman-disk-usage' );
+        rmdir $user_datastore_path;    # This should be safe, rmdir will fail if anything is left in the directory
+    }
+
+    return;
+}
+
+# stubbed out in tests to avoid spurious warnings
+sub _warn_about_list_owner {
+    my ($message) = @_;
+    warn $message;
+    return;
+}

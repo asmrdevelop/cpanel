@@ -1,0 +1,79 @@
+[%#
+Variables passed in:
+
+origin                  - the system component from which the request originated
+ip_address              - the IP address from which the request originated
+ip_address_is_public    - whether the “ip_address” is public (i.e., not a loopback, private, &c.)
+reverse_dns_hostnames   - arrayref of whatever a reverse DNS lookup returned, if successful
+country_name            - the name of the country that GeoIP reports is where the IP address’s computer is
+country_code            - the two-letter country code of the “country_name”
+country_lookup_error    - whatever error may have prevented getting a “country_name”
+
+user                    - username for account updated
+user_domain             - domain for the account updated
+ip                      - ip for the updated account
+new_plan                - new plan for the account specified
+old_plan                - previous plan for the account specified
+host                    - host server the domain resides on
+env_remote_user         - the account that updated this one.
+env_user                - user roll action was performed as(ex: root if has root priviliges )
+sent_to_root            - A default boolean flag sent to all templates that indicates if the message was sent to 'root'
+
+For more information about how to customize notification templates, read our documentation at https://go.cpanel.net/notificationtemplates
+
+-%]
+
+[%
+    PROCESS "include/colors.tmpl";
+    PROCESS "include/styles.tmpl";
+
+    WRAPPER 'wrapper/main.html.tmpl';
+
+    NOTICE.email_reason = CPANEL.locale.maketext('Account updated.');
+%]
+
+<table>
+    <tbody>
+        <tr>
+            <th align="right">
+                [% CPANEL.locale.maketext('Domain'); %]:
+            </th>
+            <td align="left">
+                [% NOTICE.user_domain %]
+            </td>
+        </tr>
+        <tr>
+            <th align="right">
+                [% CPANEL.locale.maketext('[output,abbr,IP,Internet Protocol] Address'); %]:
+            </th>
+            <td align="left">
+                [% NOTICE.ip %]
+            </td>
+        </tr>
+        <tr>
+            <th align="right">
+                [% CPANEL.locale.maketext('New Plan'); %]:
+            </th>
+            <td align="left">
+                [% NOTICE.new_plan %]
+            </td>
+        </tr>
+        <tr>
+            <th align="right">
+                [% CPANEL.locale.maketext('Old Plan'); %]:
+            </th>
+            <td align="left">
+                [% NOTICE.old_plan %]
+            </td>
+        </tr>
+    </tbody>
+</table>
+<p>
+    [% CPANEL.locale.maketext('“[_1]” updated the account.', NOTICE.env_remote_user.html() ); %]
+</p>
+
+<p>
+[% CPANEL.locale.maketext('You can manage account settings in [asis,WHM]’s [_1] interface at: [output,url,_2,_2,target,_3]', CPANEL.locale.maketext('Modify an Account'), CPANEL.assemble_whm_url("scripts/edituser"),'_blank') %]
+</p>
+
+[% END %]

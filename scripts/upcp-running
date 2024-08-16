@@ -1,0 +1,122 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/upcp-running                    Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+use warnings;
+
+use Cpanel::Unix::PID::Tiny ();
+use Cpanel::Usage           ();
+
+my $invert_exit;
+my $logfile;
+my $pid;
+my $quiet;
+
+Cpanel::Usage::wrap_options(
+    \@ARGV,
+    \&print_usage_and_exit,
+    {
+        'invert-exit' => \$invert_exit,
+        'logfile'     => \$logfile,
+        'pid'         => \$pid,
+        'quiet'       => \$quiet,
+    },
+);
+
+$invert_exit = $invert_exit ? 1 : 0;
+$quiet       = $quiet       ? 1 : 0;
+
+my $found_process;
+my $pid_matched;
+my $is_newest_logfile;
+
+my $pidfile = '/var/run/upcp.pid';
+my $upid    = Cpanel::Unix::PID::Tiny->new();
+my $curpid  = $upid->get_pid_from_pidfile($pidfile);
+
+if ($curpid) {
+    if ( $upid->is_pid_running($curpid) ) {
+        $found_process = 1;
+        if ( $curpid eq $pid ) {
+            $pid_matched = 1;
+        }
+    }
+}
+
+if ( $logfile && opendir my $dh, '/var/cpanel/updatelogs' ) {
+    while ( my $entry = readdir $dh ) {
+        next if $entry !~ m/^update\.\d+\.log$/;
+        if ( $entry gt $logfile ) {
+            undef $is_newest_logfile;
+            last;
+        }
+        $is_newest_logfile = 1;
+    }
+    closedir $dh;
+}
+
+my $upcp_running = 0;
+if ( $pid && $logfile ) {
+    if ( $pid_matched && $is_newest_logfile ) {
+        $upcp_running = 1;
+    }
+}
+elsif ($pid) {
+    if ($pid_matched) {
+        $upcp_running = 1;
+    }
+}
+elsif ($logfile) {
+    if ($is_newest_logfile) {
+        $upcp_running = 1;
+    }
+}
+elsif ($found_process) {
+    $upcp_running = 1;
+}
+
+if ( !$quiet ) {
+    if ($upcp_running) {
+        print "upcp is running.\n";
+    }
+    else {
+        print "upcp is not running.\n";
+    }
+}
+
+exit( !$upcp_running ^ $invert_exit );
+
+sub print_usage_and_exit {
+    my ($error) = @_;
+
+    my %options = (
+        'help'        => 'Brief help message',
+        'invert-exit' => 'Exit with an error value if upcp is running',
+
+        ## internal usage parameters
+        #'logfile'     => 'Log file that target upcp is writing/wrote to',
+        #'pid'         => 'PID of the target upcp',
+    );
+
+    if ( defined $error ) {
+        print $error, "\n\n";
+    }
+
+    print "Usage: $0 ";
+    print "[options]\n\n";
+    print "    Options:\n";
+
+    while ( my ( $opt, $desc ) = each %options ) {
+        print "      --$opt";
+        my $space = 12 - length $opt;
+        ( 0 < $space ) ? print ' ' x $space : print '  ';
+        print "$desc\n";
+    }
+
+    exit 1 if defined $error;
+    exit;
+}

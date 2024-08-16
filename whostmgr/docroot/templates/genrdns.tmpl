@@ -1,0 +1,17 @@
+[% USE Whostmgr -%]
+[%
+	WRAPPER 'master_templates/master.tmpl' theme="yui";
+
+	FOR as = data.asn.keys.sort;
+		SET asn = data.asn.$as.replace('^\,','');
+		IF ( asn.match('\,') );
+			asn = Whostmgr.hostname();
+		END;
+		asn = asn.replace('^www\.','');
+
+		SET ipsplit = as.split('\.');
+		"${ipsplit.2}.${ipsplit.1}.${ipsplit.0}.in-addr.arpa + ${ipsplit.4} IN PTR ${asn}.<br />";
+	END;
+
+    END;
+-%]

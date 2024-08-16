@@ -1,0 +1,368 @@
+[% USE CPSort -%]
+[% USE JSON -%]
+[% USE cycle = Cycle( 'tdshade1', 'tdshade2' ) %]
+
+<script type="text/javascript">
+<!--
+
+function toggle_monitoring_available( control_checkbox ) {
+    var inputs = document.getElementsByTagName( 'input' );
+    var enable_monitoring = false;
+    if ( control_checkbox.checked ) {
+        enable_monitoring = true;
+    }
+    var chkservd_checkbox = null;
+    var tailwatchd_checkbox = null;
+    for ( var i = 0; i < inputs.length; ++i ) {
+        if ( 'Cpanel::TailWatch::ChkServd' == inputs[i].value ) {
+            chkservd_checkbox = inputs[i];
+        }
+        if ( 'tailwatchd' == inputs[i].name ) {
+            tailwatchd_checkbox = inputs[i];
+        }
+    }
+    if ( !tailwatchd_checkbox.checked && !chkservd_checkbox.checked ) {
+        return;
+    }
+    if ( !enable_monitoring && !confirm( "[% locale.maketext('This action will disable [asis,chkservd] and will disable monitoring for any monitored services. Is that what you want to do?') %]" ) ) {
+        control_checkbox.checked = true;
+        return;
+    }
+    var pattern = /monitor$/;
+    for ( var i = 0; i < inputs.length; ++i ) {
+        if ( pattern.test( inputs[i].name ) ) {
+            inputs[i].checked &= enable_monitoring;
+        }
+    }
+}
+
+function enable_chkservd_if_necessary( control_checkbox ) {
+    var inputs = document.getElementsByTagName( 'input' );
+    var chkservd_checkbox = null;
+    var tailwatchd_checkbox = null;
+    for ( var i = 0; i < inputs.length; ++i ) {
+        if ( 'Cpanel::TailWatch::ChkServd' == inputs[i].value ) {
+            chkservd_checkbox = inputs[i];
+        }
+        if ( 'tailwatchd' == inputs[i].name ) {
+            tailwatchd_checkbox = inputs[i];
+        }
+    }
+    if ( tailwatchd_checkbox.checked
+         && chkservd_checkbox.checked
+         || null == chkservd_checkbox
+         || null == tailwatchd_checkbox ) {
+        return;
+    }
+    if ( control_checkbox.checked && confirm( "[% locale.maketext('This action will enable [asis,chkservd]. Is that what you want to do?') %]" ) ) {
+        tailwatchd_checkbox.checked = true;
+        chkservd_checkbox.checked = true;
+    }
+    else {
+        control_checkbox.checked = false;
+    }
+}
+
+var service_groups = [% services.json() -%];
+
+function disable_others_in_group( self_checkbox, group ) {
+    if ( !self_checkbox.checked ) {
+        return;
+    }
+
+    var group_members = service_groups.filter( function(s) { return s.group === group } );
+    var inputs = document.getElementsByTagName( 'input' );
+    for ( var i = 0; i < inputs.length; ++i ) {
+        if ( inputs[i].name == self_checkbox.name ) {
+            continue;
+        }
+        for ( var j=0; j<group_members.length; j++ ) {
+            if ( group_members[j] == inputs[i].name ) {
+                inputs[i].checked = false;
+            }
+        }
+    }
+}
+
+
+function show_disable_warnings (element) {
+    if ((element.name == "named") && (element.getAttribute("data-altname") == "powerdns")) {
+        var div = document.getElementById('dnssec_alert_container');
+        if (div) {div.style.display=element.checked ? 'none' : 'block';}
+    }
+}
+
+
+-->
+</script>
+<style type="text/css">
+td {
+    padding: 10px;
+}
+</style>
+
+<form action="[% cp_security_token %]/scripts/dosrvmng">
+
+[%- FOREACH s IN services;
+    NEXT IF !s.suboptions;
+
+    SET checked_state = 'checked';
+    IF s.disabled == 0;
+        SET checked_state = '';
+    END;
+
+    SET enabled_onclick = '';
+    IF s.name == 'tailwatchd';
+        SET enabled_onclick = 'onclick="toggle_monitoring_available( this )"';
+    END;
+-%]
+<br />
+<table
+
+ id="brick1"
+ class="datatable"
+ border="0"
+ width="98%">
+    <tr>
+        <th align="left">
+            <input
+             type="checkbox"
+             name="[% s.name FILTER html %]"
+             value="1"
+             [% checked_state %]
+             [% enabled_onclick %] />
+                [% s.name FILTER html %]
+            <input type="hidden"
+             name="[% s.name FILTER html %]monitor"
+             value="[% s.monitored FILTER html %]" />
+        </th>
+    </tr>
+    <tr>
+        <td align="left" class="cell">
+            <table cellspacing="0" width="100%">
+                <tr class="tdshade2">
+                    <td width="50px"> <b>[% locale.maketext('Enabled') %]</b></td>
+                    <td width="50px"> &nbsp;</td>
+                    <td>
+                        <b>[% s.subopt_heading FILTER html %]</b>
+                    </td>
+                </tr>
+
+                [%- FOREACH suboption IN s.suboptions -%]
+                    [%- SET sub_disabled_state = '' -%]
+                    [%- SET sub_checked_state = 'checked' -%]
+                    [%- IF !suboption.managed -%]
+                        [%- SET sub_disabled_state = 'disabled="disabled"' -%]
+                    [%- END -%]
+                    [%- IF suboption.disabled -%]
+                        [%- SET sub_checked_state = '' -%]
+                    [%- END -%]
+                    [%- SET sub_onclick = '' -%]
+                    [%- IF suboption.name == 'ChkServd' -%]
+                        [%- SET sub_onclick = 'onclick="toggle_monitoring_available( this )"' -%]
+                    [%- END -%]
+
+                <tr class="[% cycle %]">
+                    <td>
+                        <input
+                         type="checkbox"
+                         name="[% s.name FILTER html %]-subopt"
+                         value="[% suboption.value FILTER html %]"
+                         [% sub_checked_state %]
+                         [% sub_disabled_state %]
+                         [% sub_onclick %] />
+                         [% IF !suboption.managed && !sub_disabled_state %]
+                           <input
+                           type="hidden"
+                           name="[% s.name FILTER html %]-subopt"
+                           value="[% suboption.value FILTER html %]"
+                           />
+                         [% END %]
+                    </td>
+                    <td>&nbsp;</td>
+                    <td>
+                        [%- suboption.name FILTER html -%]
+                        <blockquote>[%- suboption.description FILTER html -%]</blockquote>
+                    </td>
+                [%- END -%]
+            </table>
+        </td>
+    </tr>
+</table>
+[%- END -%]
+
+<br />
+<table
+
+ id="brick1"
+ class="datatable"
+ border="0"
+ width="98%">
+    <tr><th align="left">[% locale.maketext("Deselect a service to disable it.") %]</th></tr>
+    <tr>
+        <td align="left" class="cell">
+            <table cellspacing="0" width="100%">
+                <tr class="tdshade2">
+                    <td width="50px"> <b>[% locale.maketext('Enabled') %]</b></td>
+                    <td width="50px"> <b>[% locale.maketext('Monitor[comment,to observe]') %]</b></td>
+                    <td><b>[% locale.maketext('Service Information') %]</b></td>
+                </tr>
+
+                [%- FOREACH s IN services.cpsort('group','name') -%]
+                    [%- NEXT IF s.suboptions -%]
+
+                    [%- SET monitored_state = '' %]
+                    [%- IF s.monitored == 1 && !s.always_unmonitored -%]
+                        [%- SET monitored_state = 'checked' -%]
+                    [%- END -%]
+
+                    [%- SET checked_state = 'checked' -%]
+                    [%- IF s.disabled == 0 && !s.always_enabled || s.always_disabled -%]
+                        [%- SET checked_state = '' -%]
+                    [%- END -%]
+
+                    [%- SET disabled_state = '' -%]
+                    [%- SET tooltip = locale.maketext('Service “[_1]” may be disabled.', s.name.html()) -%]
+                    [%- IF s.always_enabled -%]
+                        [%- SET disabled_state = 'disabled' -%]
+                        [%- SET tooltip = locale.maketext('Normal operation requires “[_1]” and it cannot be disabled.', s.name.html()) -%]
+                    [%- ELSIF s.always_disabled -%]
+                        [%- SET disabled_state = 'disabled' -%]
+                        [%- SET tooltip = locale.maketext('This service is enabled and disabled elsewhere.') -%]
+                    [%- END -%]
+
+                <tr class="[% cycle %]">
+                    <td>
+                        <input
+                         type="checkbox"
+                         name="[% s.name FILTER html %]"
+                         value="1"
+                         title="[%- tooltip -%]"
+                         data-altname="[% s.altname FILTER html %]"
+                         [% checked_state %]
+                         [% disabled_state %]
+                         onclick="show_disable_warnings(this);  disable_others_in_group( this, [% s.group.json() FILTER html %] );" />
+                    </td>
+                    <td>
+                        [% IF s.monitored == -1 %]
+                        &nbsp;
+                        <input
+                         type="hidden"
+                         name="[% s.name FILTER html %]monitor"
+                         value="-1" />
+                        [% ELSIF s.always_unmonitored == 1 %]
+                        <input
+                         type="checkbox"
+                         name="[% s.name FILTER html %]monitor"
+                         value="0"
+                         disabled
+                        [% ELSE %]
+                        <input
+                         type="checkbox"
+                         name="[% s.name FILTER html %]monitor"
+                         value="1"
+                         [% monitored_state %]
+                         onclick="if (this.checked) this.form['[% s.name FILTER html %]'].checked = true; enable_chkservd_if_necessary( this )" />
+                        [% END %]
+                    </td>
+                    <td>
+                        <b>[% s.display_name # prefiltered %]</b>
+                        <blockquote>
+                            [%- SET desc_key = s.exists("description_" _  s.altname) ? "description_" _  s.altname : "description" -%]
+                            [%- s.$desc_key %]
+                            [%- IF s.setting %]
+                            <input
+                             value="[% s.setting.value %]"
+                             name="[% s.setting.name %]"
+                             type="text"
+                             size="[% s.setting.size || 5 %]" /><br />
+                            <i>[% s.note FILTER html %]</i>
+                            [%- END -%]
+                        </blockquote>
+
+                        [% IF s.$desc_key == "PowerDNS" %]
+                        <div id="dnssec_alert_container" style="display: [% s.disabled ? 'none' : 'block'  %]">
+                            <div id="dnssec-alert" class="alert alert-warning" role="alert">
+                                <span class="glyphicon glyphicon-exclamation-sign" aria-hidden="true"></span>
+                                <div class="alert-message">
+                                    <p class="alert-body">
+                                        <strong>[% locale.maketext('Warning:') %]</strong>
+                                        [% locale.maketext('If the service for [asis,PowerDNS] is disabled, this server will no longer be able to create new or manage existing [asis,DNSSEC] records in a DNS cluster.') %]
+                                    </p>
+                                </div>
+                            </div>
+                        </div>
+                        [% END %]
+                    </td>
+                </tr>
+                [%- END -%]
+
+            </table>
+        </td>
+    </tr>
+</table>
+
+[%- IF extraservices.size() -%]
+<br />
+<table
+
+ id="brick1"
+ width="98%"
+ class="datatable"
+ border="0">
+    <tr><th align="left">[% locale.maketext("Additional Services") %]</th></tr>
+    <tr>
+        <td align="left" class="cell">
+            <form action="[% cp_security_token %]/scripts/dosrvmng">
+            <table cellspacing="0" width="100%">
+                <tr class="tdshade2">
+                    <td width="50px"> <b>[% locale.maketext('Enabled') %]</b></td>
+                    <td width="50px"> <b>[% locale.maketext('Monitor[comment,to observe]') %]</b></td>
+                    <td><b>[% locale.maketext('Service Information') %]</b></td>
+                </tr>
+
+                [%- FOREACH s IN extraservices -%]
+
+                    [%- SET monitored_state = '' %]
+                    [%- IF s.monitored == 1 -%]
+                        [%- SET monitored_state = 'checked' -%]
+                    [%- END -%]
+
+                    [%- SET checked_state = 'checked' -%]
+                    [%- IF s.disabled == 0 -%]
+                        [%- SET checked_state = '' -%]
+                    [%- END -%]
+
+                <tr class="[% cycle %]">
+                    <td>
+                        <input
+                         type="checkbox"
+                         name="[% s.name FILTER html %]"
+                         value="1"
+                         [% checked_state %] />
+                    </td>
+                    <td>
+                        <input
+                         type="checkbox"
+                         name="[% s.name FILTER html %]monitor"
+                         value="1"
+                         [% monitored_state %]
+                         onclick="enable_chkservd_if_necessary( this )" />
+                    </td>
+                    <td><b>[% s.name FILTER html %]</b></td>
+                </tr>
+
+                [%- END -%]
+
+            </table>
+        </td>
+    </tr>
+</table>
+[%- END -%]
+
+<br/>
+<div>
+    <input type="submit" class="btn-primary" value="Save">
+</div>
+</form>
+<br />

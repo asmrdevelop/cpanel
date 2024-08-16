@@ -1,0 +1,87 @@
+
+# cpanel - Cpanel/Validate/EmailCpanel.pod         Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+=head1 NAME
+
+Cpanel::Validate::EmailCpanel - Utilities for validating email addresses on cPanel accounts.
+
+=head1 SYNOPSIS
+
+    use Cpanel::Validate::EmailCpanel;
+
+    if ( !Cpanel::Validate::EmailCpanel::is_valid( $user ) ) {
+        die "Not a valid username!\n";
+    }
+
+
+=head1 DESCRIPTION
+
+Consolidate the code for validating and cleaning user names.
+
+=head1 INTERFACE
+
+=head2 is_valid( $user )
+
+Return true if C<$user> is a valid email address as used in cPanel. This
+definition is somewhat different than the definition from the relevant RFCs.
+
+The local part and domain of an email username can only be separated by '@'.
+The local part of the email address must follow the same rules as the module
+C<Cpanel::Validate::EmailLocalPart>. We do not support the quoted string
+format, however. The domain part of the email address is as described in RFC
+1035 and 5321, except the parts of the domain name can begin and end with
+digits. This matches actual usage.
+
+=head2 normalize( $user )
+
+Trims spaces from either end of a potentially valid email username and
+lowercases any letters in the domain portion. Also removes '\0' characters.
+Does not try to force a given string to be valid. Returns the normalized
+string.
+
+=head2 scrub( $user )
+
+Tries to convert supplied user string into a valid user name by scrubbing it of
+all invalid characters and normalizing it. Returns either a valid user name, or
+C<undef> if there were no legal characters or if the domain or local part were
+missing.
+
+=head2 get_name_and_domain( $address )
+
+Takes a (potentially valid) email address and separates it unto local part and
+domain in a consistent fashion. The string is split on the last '@' character.
+
+The return is a list of the local part and the domain. If the local part is
+undefined, the C<$address> cannot be split into the requisite parts.
+
+=head2 has_email_separator( $address )
+
+Tests the supplied string to see if it contains the email separator '@'.
+This function serves to put the knowledge of the separator strings in one place.
+
+=head1 CONFIGURATION AND ENVIRONMENT
+
+C<Cpanel::Validate::EmailCpanel> requires no configuration.
+
+=head1 DEPENDENCIES
+
+L<Cpanel::StringFunc::Case>, L<Cpanel::StringFunc::Trim>, and L<Cpanel::Validate::EmailLocalPart>.
+
+=head1 INCOMPATIBILITIES
+
+None reported.
+
+=head1 BUGS AND LIMITATIONS
+
+No bugs have been reported.
+
+=head1 AUTHOR
+
+G. Wade Johnson  C<< wade@cpanel.net >>
+
+=head1 LICENSE AND COPYRIGHT
+
+Copyright (c) 2009, cPanel, Inc. All rights reserved.

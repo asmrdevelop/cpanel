@@ -1,0 +1,491 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/fixquotas                       Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package Scripts::FixQuotas;
+
+use cPstrict;
+
+use Cwd                        ();
+use IO::File                   ();
+use Scalar::Util               ();
+use Cpanel::Binaries           ();
+use Cpanel::FindBin            ();
+use Cpanel::Filesys::FindParse ();
+use Cpanel::Filesys::Info      ();
+use Cpanel::SafeRun::Errors    ();
+use Cpanel::OS                 ();
+use Cpanel::Filesys::Root      ();
+use Cpanel::LoadFile           ();
+use Cpanel::Fcntl::Constants   ();
+use Cpanel::SafeRun::Object    ();
+use Cpanel::SetEnvLocale       ();
+
+use Cpanel::ServerTasks            ();
+use Cpanel::Transaction::File::Raw ();
+use Cpanel::SafeDir::MK            ();
+
+use Cpanel::Notify           ();
+use Cpanel::FileUtils::Touch ();
+use Cpanel::Kernel::Status   ();
+use Cpanel::Pkgr             ();
+use Cpanel::SysPkgs          ();
+
+# For testing purposes
+our $PROC_MOUNTS = Cwd::realpath('/proc/mounts');
+
+our $UDEV_RULES_DIR       = "/etc/udev/rules.d";
+our $UDEV_LINK_RULES_FILE = "$UDEV_RULES_DIR/99-root-link.rules";
+our $REBOOT_TOUCH_FILE    = "/var/cpanel/reboot_required_for_quota";
+our $BROKEN_TOUCH_FILE    = "/var/cpanel/quota_broken";
+our $DEFAULT_GRUB_CONFIG  = '/etc/default/grub';
+
+our %cmd = (
+    'quotaon'  => undef,
+    'quotaoff' => undef,
+);
+
+use constant { CONTINUED_SUCCESS => 1, NEW_SUCCESS => 2 };
+
+exit run(@ARGV) unless caller();
+
+sub run (@args) {
+
+    my $onboot = grep { $_ eq '--onboot' } @args;
+
+    return 0 if !verify_quota_binaries();
+
+    if ($onboot) {
+        if ( enable_quotas() == NEW_SUCCESS ) {    # dies on failures
+            Cpanel::Notify::notification_class( 'class' => 'Quota::SetupComplete', 'application' => 'Quota::SetupComplete', 'constructor_args' => [] );
+        }
+
+        return 0;
+    }
+
+    Cpanel::SafeRun::Errors::saferunnoerror( $cmd{'quotaoff'}, '-a' );
+
+    fix_broken_dev_root_links();
+
+    initialize_quotas();
+    enable_quotas();
+
+    return 0;
+}
+
+sub get_xfs_mount_points_without_quota {
+    my @lines = grep { /\bxfs\b.*\bnoquota\b/ } Cpanel::SafeRun::Errors::saferunnoerror('/bin/mount');
+    my @partitions;
+    foreach my $line (@lines) {
+        push @partitions, $1 if $line =~ /^\S+\s+on\s+(\S+)/;
+    }
+    return @partitions;
+}
+
+# Find the XFS partitions with uquota (but not noquota) set in fstab.
+sub get_xfs_mount_points_fstab_quota {
+    my @xfs = grep { $_->{'fstype'} eq 'xfs' } Cpanel::Filesys::FindParse::parse_fstab();
+    return map { $_->{mountpoint} } grep {
+        my $obj  = $_;
+        my $opts = { map { $_ => 1 } @{ $obj->{'options'} } };
+        $opts->{'uquota'} && !$opts->{'noquota'};
+    } @xfs;
+}
+
+sub fix_broken_dev_root_links {
+
+    if ( !-e $PROC_MOUNTS || !-r $PROC_MOUNTS ) {
+        return 0;
+    }
+
+    my @lines = split qq{\n}, Cpanel::LoadFile::load($PROC_MOUNTS) or die "Unable to open $PROC_MOUNTS: $!";
+
+    #
+    # Danger: This code is targeted to fix systems that have
+    # /dev/root (AKA Cpanel::Filesys::Root::DEV_ROOT) in /proc/mounts
+    #
+    # If it is refactored to fix other system additional coverage will
+    # be needed esp for handling roots like /dev/mapper/Vol....
+    #
+
+    foreach my $line (@lines) {
+        my ( $device, $mount, $type, undef ) = split( /\s+/, $line, 4 );
+
+        if ( defined $device && $device eq $Cpanel::Filesys::Root::DEV_ROOT && !-e $Cpanel::Filesys::Root::DEV_ROOT ) {
+            my $actual_root_device_path = Cpanel::Filesys::Root::get_root_device_path();
+
+            #If $DEV_ROOT is a symlink that doesn’t resolve,
+            #whether it’s a dangling symlink,
+            #a symlink to a dangling symlink, or part of a symlink loop,
+            #then get rid of it.
+            if ( -l $Cpanel::Filesys::Root::DEV_ROOT && !-e $Cpanel::Filesys::Root::DEV_ROOT ) {
+                unlink $Cpanel::Filesys::Root::DEV_ROOT or warn "unlink($Cpanel::Filesys::Root::DEV_ROOT): $!";
+            }
+
+            symlink( $actual_root_device_path, $Cpanel::Filesys::Root::DEV_ROOT ) or warn "symlink($actual_root_device_path, $Cpanel::Filesys::Root::DEV_ROOT): $!";
+
+            Cpanel::SafeDir::MK::safemkdir( $UDEV_RULES_DIR, 0755 );
+            my ($device_name) = $actual_root_device_path =~ m{^/[^/]+/(.*)$};                                                  # /dev/(XXXXX......)
+            my $trans_obj     = Cpanel::Transaction::File::Raw->new( path => $UDEV_LINK_RULES_FILE, 'permissions' => 0644 );
+            my $contents_ref  = $trans_obj->get_data();
+            my $new_line      = qq{KERNEL == "$device_name", SUBSYSTEM == "block", SYMLINK += "root"};
+
+            # In the event /dev/root was a symlink to /dev/root we need to make sure
+            # we remove any circular lines
+            my $circular_bad_line               = qq{echo ' KERNEL == "root", SUBSYSTEM == "block", SYMLINK += "root"'};
+            my $circular_bad_line_without_space = qq{echo 'KERNEL == "root", SUBSYSTEM == "block", SYMLINK += "root"'};
+
+            my @lines = grep {
+                $_ ne $new_line    # Trying to be narrow to remove only things we have added
+
+                  && $_ ne $circular_bad_line                  # Trying to be narrow to remove only things we have added
+                  && $_ ne $circular_bad_line_without_space    # Trying to be narrow to remove only things we have added
+
+            } split( m{\n}, $$contents_ref );
+            push @lines, $new_line;
+            my $new_contents = join( "\n", @lines ) . "\n";
+            $trans_obj->set_data( \$new_contents );
+            $trans_obj->save_and_close_or_die();
+            last;
+        }
+    }
+
+    return 1;
+}
+
+sub initialize_quotas {    ##no critic (Subroutines::ProhibitExcessComplexity)
+
+    # need to init quotas before a boot on xfs, to avoid to reboot for each partitions
+    Cpanel::SafeRun::Object->new_or_die(
+        program => '/usr/local/cpanel/scripts/initquotas',
+        stdout  => \*STDOUT,
+        stderr  => \*STDERR,
+    );
+
+    # XXX Should probably be a 'public' naming scheme for _all_filesystem_info?
+    my $filesys_ref  = Cpanel::Filesys::Info::_all_filesystem_info();
+    my $slash_is_xfs = index( $filesys_ref->{'/'}{'fstype'}, 'xfs' ) > -1 ? 1 : 0;
+
+    if ( Cpanel::OS::has_quota_support_for_xfs() ) {
+
+        my %xfs_without_quota           = map { $_ => 1 } get_xfs_mount_points_without_quota();
+        my $xfs_partition_without_quota = %xfs_without_quota ? 1 : 0;
+
+        my $grub2_cfg = find_grub2_cfg_file();
+
+        # do kernel mod? #
+        if ( $slash_is_xfs && $xfs_partition_without_quota && $grub2_cfg ) {
+
+            # at least one file system is XFS, so we'll need to enable quotas on the root file system before it's remounted by initrd and have the #
+            # user reboot to activate this change. it's not enough to remount the root filesystem, or any other, it must be completely remounted! #
+            my $grub_conf;
+            {
+                local $/ = undef;
+                open my $grub_fh, '<', $DEFAULT_GRUB_CONFIG
+                  or die "The system failed to open the $DEFAULT_GRUB_CONFIG file: $!";
+                $grub_conf = <$grub_fh>;
+                close $grub_fh;
+            }
+
+            my $grub_conf_has_quota            = $grub_conf =~ m/GRUB_CMDLINE_LINUX.+?rootflags.+?u(sr)?quota/ ? 1 : 0;
+            my $has_cloudlinux_enhanced_quotas = Cpanel::OS::has_cloudlinux_enhanced_quotas();
+            my $grub_cloudlinux_has_quota      = 1;
+
+            # running /usr/sbin/grub2-mkconfig to update /boot/grub2/grub.cfg
+            #   will not preserve the linux kernel, let's patch it manually
+            #   we need to adjust the flags each time cloudlinux update the menuentry
+            my $found_cl_entry;
+            if ($has_cloudlinux_enhanced_quotas) {
+                print "CloudLinux system detected: adding/checking 'rootflags=uquota' to $grub2_cfg\n";
+
+                # Don't use safelock or transactions here, as those use link(2),
+                # and we may be on a vfat filesystem (for EFI) which doesn't
+                # support link(2).
+                my $fh = IO::File->new( $grub2_cfg, '+<' );
+                die "Could not open '$grub2_cfg' file: $!" unless flock( $fh, $Cpanel::Fcntl::Constants::LOCK_EX );
+                my @lines;
+                my $in_cl_entry;
+
+                # add rootflags=uquota to cloudlinux entries
+                while ( my $line = readline $fh ) {
+
+                    # begin of cloudlinux menuentry
+                    if ( !$in_cl_entry && $line =~ qr{^\s*menuentry 'CloudLinux\b}i ) {
+                        $in_cl_entry    = 1;
+                        $found_cl_entry = 1;
+                    }
+
+                    # end of cloudlinux menuentry
+                    if ( $in_cl_entry && $line !~ qr{^#} && $line =~ qr/}/ ) {
+                        $in_cl_entry = 0;
+                    }
+
+                    # manually add the rootflags to the cloudlinux entries
+                    #   we can consider to also add them to other entries
+                    if (   $in_cl_entry
+                        && $line =~ qr{^\s*linux([0-9]+|efi) (/boot)?/vmlinuz}i
+                        && $line !~ qr{rootflags.+?u(sr)?quota}i ) {
+                        chomp $line;
+                        $line .= qq{ rootflags=uquota\n};
+                        $grub_cloudlinux_has_quota = 0;
+                    }
+                    push @lines, $line;
+                }
+                if ( $grub_cloudlinux_has_quota == 0 ) {
+                    seek $fh, 0, 0;
+                    print {$fh} join( '', @lines );
+                    truncate( $fh, tell $fh );
+                }
+                flock( $fh, $Cpanel::Fcntl::Constants::LOCK_UN );
+                undef $fh;
+            }
+
+            # only need to adjust the grub2 configuration file if / is an xfs partition
+            #   we need to reboot in all cases when enabling quota on xfs
+            if ( !$grub_conf_has_quota || ( $has_cloudlinux_enhanced_quotas && !$grub_cloudlinux_has_quota || ( $has_cloudlinux_enhanced_quotas && !$found_cl_entry ) ) ) {
+
+                if ( !$grub_conf_has_quota || ( $has_cloudlinux_enhanced_quotas && !$found_cl_entry ) ) {
+
+                    # we need to modify /etc/default/grub to add user quotas, then re-generate the grub.cfg in /boot and finally reboot the system #
+                    print qq{Modifying the $DEFAULT_GRUB_CONFIG file to enable user quotas...\n};
+                    $grub_conf =~ s/GRUB_CMDLINE_LINUX="(.+?)"/GRUB_CMDLINE_LINUX="$1 rootflags=uquota"/m;
+                    die qq{You must manually add or update "rootflags=uquota" to "GRUB_CMDLINE_LINUX" in the $DEFAULT_GRUB_CONFIG file, and re-run this tool.\n}
+                      if $grub_conf !~ m/GRUB_CMDLINE_LINUX.+?rootflags.+?u(sr)?quota/;
+                    open my $grubw_fh, '>', $DEFAULT_GRUB_CONFIG
+                      or die "failed to open $DEFAULT_GRUB_CONFIG for writing: $!";
+                    print {$grubw_fh} $grub_conf;
+                    close $grubw_fh;
+
+                    my $method = Cpanel::OS::program_to_apply_kernel_args();
+                    if ( !$method ) {
+                        die "Current OS does not have a value set for Cpanel::OS::program_to_apply_kernel_args";
+                    }
+                    elsif ( $method ne 'none' ) {
+                        $method =~ tr/-/_/;
+                        if ( my $cr = Scripts::FixQuotas->can("handle_$method") ) {
+                            $cr->(
+                                'config_file' => $grub2_cfg,
+                            );
+                        }
+                        else {
+                            die "I don't know how to handle_$method!";
+                        }
+                    }
+                }
+
+                _touch_reboot_and_notify();
+
+                # the script must quit at this time and ask the user to reboot to enable quotas #
+                die "\nThe '/' partition uses the XFS® filesystem. You must reboot the server to enable quotas.\n";
+            }
+
+        }
+
+        # If we have entries with quota enabled in fstab that aren't currently using
+        # quota, then we need to reboot.
+        if ( grep { $xfs_without_quota{$_} } get_xfs_mount_points_fstab_quota() ) {
+            _touch_reboot_and_notify();
+            die "\nYou must reboot the server to enable XFS® filesystem quotas.\n";
+
+        }
+    }
+
+    system '/usr/local/cpanel/scripts/resetquotas';
+    return;
+}
+
+sub handle_grub_mkconfig {
+    my %args = @_;
+    die "needs config_file argument" unless exists $args{config_file};
+
+    my $program = Cpanel::OS::program_to_apply_kernel_args();
+    print qq{Running the "$program" command to regenerate the system's boot configuration...\n};
+    die "/boot is not mounted. Mount /boot and then re-run this tool.\n"
+      if !-f $args{config_file};
+
+    Cpanel::SafeRun::Object->new_or_die(
+        program => Cpanel::OS::bin_grub_mkconfig(),
+        args    => [ '-o', $args{config_file} ],
+        stdout  => \*STDOUT,
+        stderr  => \*STDERR,
+    );
+
+    return;
+}
+
+# alias
+sub handle_grub2_mkconfig { goto &handle_grub_mkconfig }
+
+sub handle_grubby {
+    my %args = @_;
+
+    print qq{Adding arguments to every kernel's boot entry using the "grubby" command...\n};
+    die "/boot/loader/entries does not exist. Ensure /boot is mounted and then re-run this tool.\n"
+      if !-d '/boot/loader/entries';
+
+    Cpanel::SafeRun::Object->new_or_die(
+        program => Cpanel::Binaries::path('grubby'),
+        args    => [qw(--update-kernel=ALL --args=rootflags=uquota)],
+        stdout  => \*STDOUT,
+        stderr  => \*STDERR,
+    );
+
+    return;
+}
+
+sub _touch_reboot_and_notify {
+    Cpanel::FileUtils::Touch::touch_if_not_exists($REBOOT_TOUCH_FILE);
+
+    Cpanel::Notify::notification_class(
+        'class'            => 'Quota::RebootRequired',
+        'application'      => 'Quota::RebootRequired',
+        'constructor_args' => []
+    );
+    Cpanel::ServerTasks::schedule_task( ['SystemTasks'], 5, "recache_system_reboot_data" );
+
+    return;
+}
+
+sub _touch_broken_and_notify {
+    Cpanel::FileUtils::Touch::touch_if_not_exists($BROKEN_TOUCH_FILE);
+
+    Cpanel::Notify::notification_class(
+        'class'            => 'Quota::Broken',
+        'application'      => 'Quota::Broken',
+        'constructor_args' => []
+    );
+
+    # For now, broken notification is live, so no taskqueue stuff.
+
+    return;
+}
+
+sub _attempt_to_enable_quota {
+
+    # Force output to be english so our regular expressions
+    # used on stderr will work
+    my $env_locale = Cpanel::SetEnvLocale->new();
+
+    my $quotaon = Cpanel::SafeRun::Object->new(
+        program => $cmd{'quotaon'},
+        args    => ['-a'],
+    );
+
+    # If there wasn't a problem with quotaon, everything is good.
+    return _quota_are_working() if $quotaon->CHILD_ERROR == 0;
+
+    my $stderr = $quotaon->stderr() // '';
+
+    # addon packages need to be installed
+    return if $stderr =~ m/^quotaon:(?:.*): No such process$/am;
+
+    # quota are already enabled
+    return _quota_are_working() if $stderr =~ m/^quotaon:(?:.*): Device or resource busy$/am;
+
+    $quotaon->die_if_error();
+
+    return;
+}
+
+sub _quota_are_working {
+    my $count = unlink( $REBOOT_TOUCH_FILE, $BROKEN_TOUCH_FILE );
+    Cpanel::ServerTasks::schedule_task( ['SystemTasks'], 5, "recache_system_reboot_data" );
+    return $count > 0 ? NEW_SUCCESS : CONTINUED_SUCCESS;
+}
+
+sub enable_quotas {
+    my $result;
+    return $result if $result = _attempt_to_enable_quota();
+
+    # Otherwise, it is clear that quotaon is receiving ESRCH when trying to turn quotas on, meaning that it doesn't recognize the file format.
+    # Try installing packages containing needed kernel modules if that hasn't been done and then starting over.
+
+    _install_quota_packages_conditional_if_needed();
+
+    return $result if $result = _attempt_to_enable_quota();
+
+    # Even after installing modules, quotaon is stil encountering ESRCH. Time to give up.
+    # However, it still must be determined what further steps to recommend.
+
+    # TODO: Replace kernel_status() with reboot_status() once CPANEL-39706 is fixed.
+
+    if ( Cpanel::Kernel::Status::kernel_status()->{'reboot_required'} ) {
+
+        _touch_reboot_and_notify();
+
+        die <<~'EOS';
+        The system is missing kernel modules needed to support quotas.
+        The system installed packages to try to address this, but a system reboot may be required.
+        For more information, see https://go.cpanel.net/fixquotas
+        EOS
+    }
+
+    else {
+
+        _touch_broken_and_notify();
+
+        die <<~'EOS';
+        The system is missing kernel modules needed to support quotas.
+        The system could not resolve this issue automatically.
+        For more information, see https://go.cpanel.net/fixquotas
+        EOS
+    }
+}
+
+sub _install_quota_packages_conditional_if_needed {
+    my %pkg_map = Cpanel::OS::quota_packages_conditional()->%*;
+    my @pkgs_to_install;
+    foreach my $pkg ( keys %pkg_map ) {
+
+        # install the extra if the main one is installed
+        next unless Cpanel::Pkgr::is_installed($pkg);
+        foreach my $extra ( $pkg_map{$pkg}->@* ) {
+            push @pkgs_to_install, $extra unless Cpanel::Pkgr::is_installed($extra);
+        }
+    }
+
+    return 0 unless scalar @pkgs_to_install;
+
+    # Use the custom error handler to get back the saferun object on failure:
+    my $syspkgs_obj = Cpanel::SysPkgs->new( exclude_options => { kernel => 0 } );
+
+    my $saferun_obj = $syspkgs_obj->install_packages( packages => \@pkgs_to_install, handle_child_error => sub { return $_[0] } );
+    if ( Scalar::Util::blessed($saferun_obj) && $saferun_obj->CHILD_ERROR() ) {
+        print "Packages failed to install. Retrying...\n";
+        sleep 5;
+        $syspkgs_obj->install_packages( packages => \@pkgs_to_install );
+    }
+
+    return;
+}
+
+sub verify_quota_binaries {
+    my @missing_cmds;
+    foreach my $cmd_name ( keys %cmd ) {
+        $cmd{$cmd_name} = Cpanel::FindBin::findbin($cmd_name);
+        if ( !defined $cmd{$cmd_name} || !-e $cmd{$cmd_name} || !-x $cmd{$cmd_name} ) {
+            push @missing_cmds, $cmd_name;
+        }
+    }
+    if ( scalar @missing_cmds ) {
+        print "Incomplete quota kit: unable to fix quotas.\n";
+        print 'Missing commands: ', join( ', ', @missing_cmds ), "\n";
+        return 0;
+    }
+
+    return 1;
+}
+
+sub find_grub2_cfg_file {
+    my @files = map { ( "$_/grub.cfg", "$_/grub2.cfg", "$_/grub2-efi.cfg" ) } (qw{/boot/efi/EFI/centos /boot/grub2 /etc});
+    foreach my $file (@files) {
+        return $file if -f $file;
+    }
+    return $files[-1];
+
+}
+
+1;

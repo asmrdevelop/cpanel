@@ -1,0 +1,55 @@
+#!/bin/bash
+#
+# proftpd - System V init script for CentOS
+#
+# chkconfig: 2345 49 49
+# description: proftpd
+
+# Source function library.
+. /etc/init.d/cpfunctions
+
+NAME="proftpd"
+PROG="/usr/sbin/$NAME"
+PIDFILE="/var/run/$NAME.pid"
+
+if [ -e '/etc/ftpserverdisable' ]; then
+	exit "1"
+fi
+
+if [ -e '/etc/ftpddisable' ]; then
+	exit "1"
+fi
+
+if [ -e "/etc/"$NAME"disable" ]; then
+	exit "1"
+fi
+
+start()
+{
+    action "Starting $NAME:" $PROG
+}
+
+stop()
+{
+    echo "Shutting down $NAME: "
+    killproc $PROG
+}
+
+case "$1" in
+     start)
+         start
+         ;;
+     stop)
+         stop
+         ;;
+     restart)
+         stop
+         start
+         ;;
+     status)
+         status $PROG
+         ;;
+	 *)
+		 echo "Usage: $NAME {start|stop|restart|status}"
+		 ;;
+esac

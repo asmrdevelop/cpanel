@@ -1,0 +1,34 @@
+[%
+    USE Whostmgr;
+    USE JSON;
+
+    SET PAGE_BASE = '/scripts2/selectbuyssl/';
+    SET PAGE_NAME = Whostmgr.get_page_name_by_url(PAGE_BASE);
+
+    WRAPPER 'master_templates/master.tmpl'
+        app_key       = 'purchase_and_install_an_ssl_certificate'
+        header        = locale.maketext('Purchase and Install an SSL Certificate'),
+        breadcrumburl = PAGE_BASE,
+        base          = PAGE_BASE,
+        theme         = 'bootstrap',
+        CJT2_EXCLUSIVE = 1;
+%]
+    <div id="content"
+        ng-controller="BaseController as base"
+        class="ng-cloak"
+        ng-cloak>
+        <div class="callout callout-warning">
+            [% locale.maketext('If the account does not currently have the necessary features to order [asis,SSL] certificates, the system will automatically enable those features.') %]
+        </div>
+        <div ng-class="{'view-disabled':loading}" ng-view>
+        </div>
+    </div>
+
+[% PROCESS 'master_templates/cjt2_header_include.tt' %]
+
+<script type="text/javascript">
+    var PAGE = PAGE || {};
+    PAGE.data = [% data.json() %]
+</script>
+
+[% END %]

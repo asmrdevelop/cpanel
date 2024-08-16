@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html>
+    <head>
+    <meta http-equiv="Content-type" content="text/html; charset=utf-8">
+    <meta http-equiv="Cache-control" content="no-cache">
+    <meta http-equiv="Pragma" content="no-cache">
+    <meta http-equiv="Expires" content="0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=1">
+    <title>[% locale.maketext('[asis,cPanel] License Activation') %]</title>
+    <link rel="stylesheet" href="/unprotected/lisc/error.css" type="text/css" media="screen,projection" title="Main Style" />
+    <script type="text/javascript">
+        function reloadthis() {
+            if (window.location.reload) {
+                window.location.reload();
+            }
+            else if (window.refresh) {
+                window.refresh();
+            }
+            else {
+                try {
+                    window.location.reload();
+                } catch(e) { }
+            }
+            return false;
+        }
+    </script>
+    </head>
+    <body>
+        <div class="container">
+            <section class="response-info">
+                <span class="status-reason">[% data.liscerror %]</span>
+            </section>
+
+            <section class="reason-text">
+                [% locale.maketext('To access the interface, you must install the license and ensure that the license is active.') %]
+            </section>
+
+            [% SET purchase_url = cp_security_token _ "/scripts12/license_purchase_status/" %]
+            [% SET store_url = "https://www.cpanel.net/store/?utm_source=cpanelwhm&utm_medium=licenseerror&utm_content=licenseerror&utm_campaign=cpanelwhmreferral" %]
+
+            <section class="reason-text">[% locale.maketext('You can purchase or lease a license directly from [output,url,_1,cPanel,target,_2,id,_3], or from one of our [output,url,_4,Partners,target,_2,id,_5].',purchase_url,'_blank','lnkPricing','https://partnernoc.cpanel.net/','lnkPartners') %]</section>
+
+            <section class="reason-text">[% locale.maketext('If you do not currently own a license, register at the [output,url,_1,cPanel Store,target,_2,id,_3] and [output,url,_4,request a trial license,target,_5].',store_url,'_blank','lnkStorePurchaseLicense', 'https://go.cpanel.net/trial#trial', 'blank') %]</section>
+
+
+        [% IF data.licservermessage %]
+            <p class="reason-text">[% data.licservermessage %]</p>
+        [% END %]
+        </div>
+        <section class="additional-info">
+            <div class="container">
+                <div class="additional-info-items">
+                    <ul>
+                        <li>
+                            <img src="/img-sys/IP_changed.png" class="info-image" />
+                            <div class="info-message">[% locale.maketext('To ensure that the server is licensed, navigate to [output,url,_1,_1,target,_2,id,_3], and enter the server’s public IP address.','https://verify.cpanel.net','_blank','lnkVerfiyLicense') %]</div>
+                        </li>
+                        <li>
+                            <img src="/img-sys/server_misconfigured.png" class="info-image" />
+                            <div class="info-message">[% locale.maketext('If the server is licensed, run the [output,strong,/usr/local/cpanel/cpkeyclt] command as the [output,strong,root] user.') %]</div>
+                        </li>
+                        <li>
+                            <img src="/img-sys/server_moved.png" class="info-image" />
+                            <div class="info-message">[% locale.maketext('Make certain that port [output,strong,2089] is open to contact our license server and that your server’s hostname is a [output,url,_1,FQDN,target,_2,id,_3].','https://en.wikipedia.org/wiki/FQDN','_blank','lnkWikipediaFQDN') %]</div>
+                        </li>
+                    </ul>
+                </div>
+            </div>
+        </section>
+        <div class="container">
+            <p class="reason-text">
+                [% locale.maketext('After you successfully activate the license, wait a few minutes. Then, [output,url,_1,log in again]. This error page and this message will no longer display.','/') %]
+            </p>
+        </div>
+        <footer>
+            <div class="container">
+                <a href="https://cpanel.net/?utm_source=cpanelwhm&utm_medium=cplogo&utm_content=logolink&utm_campaign=cpanelwhmreferral" target="cpanel" title="cPanel, L.L.C.">
+                    <img src="/img-sys/powered_by_cpanel.svg" height="20" alt="cPanel, L.L.C." />
+                </a>
+                    <div class="copyright">
+                        <a href="https://cpanel.net/?utm_source=cpanelwhm&utm_medium=cplogo&utm_content=logolink&utm_campaign=cpanelwhmreferral" target="cpanel" title="cPanel, L.L.C.">[% locale.maketext('Copyright©[output,nbsp][current_year] cPanel, L.L.C.') %]</a>
+                        <br />
+                        <a href="https://go.cpanel.net/privacy" target="_blank">[% locale.maketext('Privacy Policy') %]</a>
+                    </div>
+            </div>
+        </footer>
+
+        [%
+            USE Whostmgr;
+            USE VarCache;
+
+            # NOTE: Analytics UI includes are disabled by default and are strictly opt-in only.
+            IF template_exists('/var/cpanel/customizations/whm/includes/cp_analytics_whm.html.tt');
+
+                # The package updates setting check is required to avoid regressions during cPanel&WHM upgrade to v112.
+                # This regression may occur only for users who have package updates disabled. (Details available in PH-19613)
+                IF varcache.is_package_update_enabled;
+                    TRY;
+                        '<div id="cp-analytics-unprotected">';
+                        SET license_expired_page = 1;
+                        INCLUDE '/var/cpanel/customizations/whm/includes/cp_analytics_whm.html.tt';
+                        '</div>';
+                    CATCH;
+                        "";
+                    END;
+                ELSIF CPANEL.analytics_ui_includes_are_enabled() &&
+                    Whostmgr.ENV.DNT.substr(0, 1) != '1';
+                    TRY;
+                        '<div id="cp-analytics-unprotected">';
+                        SET license_expired_page = 1;
+                        INCLUDE '/var/cpanel/customizations/whm/includes/cp_analytics_whm.html.tt';
+                        '</div>';
+                    CATCH;
+                        "";
+                    END;
+                END;
+            END;
+        %]
+    </body>
+</html>

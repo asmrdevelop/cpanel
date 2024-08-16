@@ -1,0 +1,79 @@
+#!/usr/local/cpanel/3rdparty/bin/python2
+# -*- coding: utf-8 -*-
+
+# cpanel - bin/manage_mailman_list_owner           Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+import sys
+
+sys.path.insert(0, '/usr/local/cpanel/lib/python2')
+
+import cPanel
+
+valid_actions = {'add': 1, 'delete': 2}
+
+
+def add_email_to_list(email, listid):
+
+    def update(thedict):
+        if email not in thedict['owner']:
+            thedict['owner'].append(email)
+
+    cPanel.update_mailman(listid, update)
+
+
+def delete_email_from_list(email, listid):
+
+    def update(thedict):
+        if email in thedict['owner']:
+            thedict['owner'].remove(email)
+
+    cPanel.update_mailman(listid, update)
+
+
+def main(argv):
+
+  #   ----------------------------------------------------------------------
+
+    try:
+        if len(argv) < 3:
+            raise ValueError('Not enough arguments!')
+
+        listid = argv[1]
+        action = argv[2]
+        emails = argv[3:]
+
+        if action not in valid_actions:
+            raise ValueError('Invalid action: %s' % action)
+
+        if len(emails) < 1:
+            raise ValueError('Specify one or more email addresses')
+    except StandardError, e:
+        import errno
+
+        valid_keys = '|'.join(valid_actions.keys())
+        print '''%s
+
+usage: %s <list ID> <%s> <email1> <email2> ..''' % (e, argv[0], valid_keys)
+
+        return errno.EINVAL
+
+    # ----------------------------------------------------------------------
+
+    listid = listid.replace(r'@', '_')
+
+    if action == 'add':
+        todo = add_email_to_list
+    elif action == 'delete':
+        todo = delete_email_from_list
+
+    for email in emails:
+        todo(email, listid)
+
+
+# ----------------------------------------------------------------------
+
+if __name__ == '__main__':
+    sys.exit(main(sys.argv))

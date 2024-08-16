@@ -1,0 +1,169 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - bin/servers_queue                       Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+use warnings;
+
+use Cpanel::SafeFile::FileLocker ();
+use Cpanel::LoggerAdapter        ();
+
+my $logger;
+my $logfile;
+my $filelocker;
+
+BEGIN {
+    $logfile    = '/usr/local/cpanel/logs/queueprocd.log';
+    $logger     = Cpanel::LoggerAdapter->new( { alternate_logfile => $logfile } );
+    $filelocker = Cpanel::SafeFile::FileLocker->new( { 'logger' => $logger } );
+
+    unshift @INC, '/var/cpanel/perl';
+    $INC{'POSIX.pm'}      = '__DISABLED__';      ## no critic qw(Variables::RequireLocalizedPunctuationVars)
+    $INC{'attributes.pm'} = '__DISABLED__';      ## no critic qw(Variables::RequireLocalizedPunctuationVars)
+    *POSIX::WNOHANG       = sub { return 1; };
+}
+
+use Cpanel::TaskQueue::Serializer ();            # PPI USE OK - serializer used for TaskQueue
+use Cpanel::StateFile ( '-filelock' => $filelocker, '-logger' => $logger );
+use Cpanel::TaskQueue;
+use Cpanel::TaskQueue::Scheduler;
+use Cpanel::TaskQueue::PluginManager          ();
+use Cpanel::TaskQueue::Scheduler::DupeSupport ();
+
+my %commands = (
+    queue      => \&queue_tasks,
+    unqueue    => \&unqueue_tasks,
+    schedule   => \&schedule_tasks,
+    unschedule => \&unschedule_tasks,
+    run        => \&run_tasks,
+);
+
+# Extract plugins from the beginning of the list.
+my @plugins;
+while (@ARGV) {
+    if ( $ARGV[0] =~ /^--plugin=(\S+)/ ) {
+        push @plugins, $1;
+        shift;
+    }
+    elsif ( $ARGV[0] eq '--plugin' ) {
+        shift;
+        push @plugins, shift;
+    }
+    else {
+        last;
+    }
+}
+
+my $cmd = shift;
+if ( !defined $cmd || !exists $commands{$cmd} ) {
+    die <<"EOU";
+Usage:
+      $0 queue 'cmd string' ...
+      $0 unqueue taskid ...
+      $0 schedule seconds 'cmd string'
+      $0 unschedule taskid
+      $0 run
+EOU
+}
+
+my $queue_dir = '/var/cpanel/taskqueue';
+my $qname     = 'servers';
+
+my @plugindirs = ( '/var/cpanel/perl', '/usr/local/cpanel', );
+my @namespaces = ( 'Cpanel::TaskProcessors', );
+
+if (@plugins) {
+    foreach my $p (@plugins) {
+        my $mod = $p =~ /::/ ? $p : 'Cpanel::TaskProcessors::' . $p;
+        unless ( Cpanel::TaskQueue::PluginManager::load_plugin_by_name($mod) ) {
+            print "ERROR: Unable to load plugin: $p\n";
+            exit 1;
+        }
+    }
+}
+else {
+    Cpanel::TaskQueue::PluginManager::load_all_plugins(
+        directories => \@plugindirs,
+        namespaces  => \@namespaces,
+    );
+}
+
+$commands{$cmd}->(@ARGV);
+
+exit;
+
+sub queue_tasks {    ## no critic qw(Subroutines::RequireArgUnpacking)
+    die "No command to queue.\n" unless @_;
+    $logger ||= Cpanel::LoggerAdapter->new();
+
+    my $queue = Cpanel::TaskQueue->new( { name => $qname, cache_dir => $queue_dir, logger => $logger } );
+
+    foreach my $cmdstring (@_) {
+        my $id;
+        eval { $id = $queue->queue_task($cmdstring); };
+        print "ERROR: $@\n" and next if $@;
+        next                         if !$id;
+        print "Id: ", $id, "\n";
+    }
+
+    return;
+}
+
+sub unqueue_tasks {    ## no critic qw(Subroutines::RequireArgUnpacking)
+    die "No task ids to unqueue.\n" unless @_;
+    $logger ||= Cpanel::LoggerAdapter->new();
+
+    my $queue = Cpanel::TaskQueue->new( { name => $qname, cache_dir => $queue_dir, logger => $logger } );
+
+    my $count = 0;
+    foreach my $ids (@_) {
+        eval { ++$count if $queue->unqueue_task($ids); };
+        print "ERROR: $@\n" if $@;
+    }
+    print "$count tasks unqueued\n";
+    return;
+}
+
+sub schedule_tasks {    ## no critic qw(Subroutines::RequireArgUnpacking)
+    my $delay = shift;
+    die "Parameter '$delay' is not a number of seconds to delay scheduling task.\n"
+      unless $delay and $delay =~ /^\d+/;
+    die "No command to schedule.\n" unless @_;
+
+    $logger ||= Cpanel::LoggerAdapter->new();
+    my $sched = Cpanel::TaskQueue::Scheduler::DupeSupport->new( { name => $qname, cache_dir => $queue_dir, logger => $logger } );
+    foreach my $cmdstring (@_) {
+        eval {
+            my $task_id = $sched->schedule_task( $cmdstring, { 'delay_seconds' => $delay } );
+            print "Id: $task_id\n" if defined $task_id;
+        };
+        print "ERROR: $@\n" if $@;
+    }
+    return;
+}
+
+sub unschedule_tasks {    ## no critic qw(Subroutines::RequireArgUnpacking)
+    die "No task ids to unschedule.\n" unless @_;
+    $logger ||= Cpanel::LoggerAdapter->new();
+
+    my $queue = Cpanel::TaskQueue::Scheduler->new( { name => $qname, cache_dir => $queue_dir, logger => $logger } );
+
+    my $count = 0;
+    foreach my $ids (@_) {
+        eval { ++$count if $queue->unschedule_task($ids); };
+        print "ERROR: $@\n" if $@;
+    }
+    print "$count tasks unscheduled\n";
+    return;
+}
+
+sub run_tasks {
+    $logger ||= Cpanel::LoggerAdapter->new();
+    require Cpanel::TaskQueue::Manager;
+    Cpanel::TaskQueue::Manager::set_logger_object($logger);
+    Cpanel::TaskQueue::Manager::run_all_tasks();
+    return;
+}

@@ -1,0 +1,100 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/ensure_cpuser_file_ip           Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::ensure_cpuser_file_ip;
+
+use strict;
+use warnings;
+
+=encoding utf-8
+
+=head1 USAGE
+
+    ensure_cpuser_file_ip [--help]
+
+=head1 DESCRIPTION
+
+This script examines each cPanel user and ensures that the
+user’s IP address is recorded properly. If not, the script will examine
+try to copy the IP address from the user’s web vhost configuration.
+
+This script runs automatically on upgrade to v76 and should not normally
+need to be called manually.
+
+=cut
+
+use parent qw( Cpanel::HelpfulScript );
+
+use Try::Tiny;
+
+use Cpanel::Config::CpUserGuard    ();
+use Cpanel::Config::Users          ();
+use Cpanel::Config::userdata::Load ();
+
+use constant _OPTIONS => ();
+
+*_get_all_cpusers = \*Cpanel::Config::Users::getcpusers;
+
+__PACKAGE__->new(@ARGV)->run() if !caller;
+
+sub run {
+    my ($self) = @_;
+
+    for my $username ( sort( _get_all_cpusers() ) ) {
+        $self->say("$username …");
+
+        try {
+            my $cpuser = Cpanel::Config::CpUserGuard->new($username);
+
+            if ( $cpuser->{'data'}{'IP'} && ( '127.0.0.1' ne $cpuser->{'data'}{'IP'} ) ) {
+                $cpuser->abort();
+            }
+            else {
+                $self->say("\tDeducing “IP” …");
+
+                $cpuser->{'data'}{'IP'} = _deduce_user_ip( $username, $cpuser );
+                $self->say("\tDeduced: $cpuser->{'data'}{'IP'}");
+
+                $cpuser->save();
+                $self->say("\tSaved!");
+            }
+        }
+        catch {
+            warn $_;
+        };
+    }
+
+    return;
+}
+
+sub _deduce_user_ip {
+    my ( $username, $cpuser_obj ) = @_;
+
+    my @domains = (
+        $cpuser_obj->{'data'}{'DOMAIN'},
+        @{ $cpuser_obj->{'data'}{'DOMAINS'} },
+    );
+
+    for my $d (@domains) {
+        next if !Cpanel::Config::userdata::Load::user_has_domain( $username, $d );
+
+        my $ref = Cpanel::Config::userdata::Load::load_userdata_domain( $username, $d );
+
+        if ( $ref && %$ref ) {
+            return $ref->{'ip'} if $ref->{'ip'};
+
+            warn "“$username”’s vhost “$d” file lacks “ip”!\n";
+        }
+        else {
+            warn "“$username”’s web vhost “$d” failed to load??\n";
+        }
+    }
+
+    die "Found no IP address among “$username”’s web vhosts!";
+}
+
+1;

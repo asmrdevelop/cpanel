@@ -1,0 +1,142 @@
+#!/bin/bash
+#
+# named           This shell script takes care of starting and stopping
+#                 named (BIND DNS server).
+#
+# chkconfig: 2345 43 43
+# description: named (BIND) is a Domain Name Server (DNS) \
+# that is used to resolve host names to IP addresses.
+# probe: true
+
+# Source function library.
+. /etc/init.d/cpfunctions
+
+# Source networking configuration.
+[ -r /etc/sysconfig/network ] && . /etc/sysconfig/network
+
+RETVAL=0
+prog="named"
+
+# Check that networking is up.
+[ "${NETWORKING}" = "no" ] && exit 0
+
+[ -r /etc/sysconfig/named ] && . /etc/sysconfig/named
+
+[ -x /usr/sbin/named ] || exit 0
+
+[ -r ${ROOTDIR}/etc/named.conf ] || exit 0
+
+
+start() {
+        [ -x /sbin/portrelease ] && /sbin/portrelease named &>/dev/null || :
+        # Start daemons.
+        if [ -n "`/sbin/pidof named`" ]; then
+                echo -n $"$prog: already running"
+                return 1
+        fi
+        echo -n $"Starting $prog: "
+        ckcf_options='';
+        if [ -n "${ROOTDIR}" -a "x${ROOTDIR}" != "x/" ]; then
+                OPTIONS="${OPTIONS} -t ${ROOTDIR}"
+                ckcf_options="-t ${ROOTDIR}";
+                if [ -s /etc/localtime ]; then
+                    cp -fp /etc/localtime ${ROOTDIR}/etc/localtime
+                fi;
+        fi
+        conf_ok=0;
+        if [ -x /usr/sbin/named-checkconf ] && /usr/sbin/named-checkconf $ckcf_options; then
+           conf_ok=1;
+        else
+           RETVAL=$?;
+        fi
+        if [ $conf_ok -eq 1 ]; then
+           daemon /usr/sbin/named -u named ${OPTIONS};
+           RETVAL=$?;
+        else
+           named_err=`/usr/sbin/named -g 2>&1 | sed s/\n/\\n/g`;
+           if [ `tty` != "/dev/console" ]; then
+               echo -e "\n$named_err";
+               echo -n  "Error in configuration file /etc/named.conf : ";
+           fi;
+           failure $"Error in configuration file /etc/named.conf : $named_err";
+           echo
+           return $RETVAL;
+        fi;
+         [ $RETVAL -eq 0 ] && touch /var/lock/subsys/named
+        echo
+        return $RETVAL
+}
+stop() {
+        # Stop daemons.
+        echo -n $"Stopping $prog: "
+        /usr/sbin/rndc stop >/dev/null 2>&1
+        RETVAL=$?
+        [ $RETVAL -eq 0 ] && rm -f /var/lock/subsys/named || {
+                killproc named
+                RETVAL=$?
+                [ $RETVAL -eq 0 ] && rm -f /var/lock/subsys/named
+                echo
+                return $RETVAL
+        }
+        success
+        echo
+        return $RETVAL
+}
+rhstatus() {
+        /usr/sbin/rndc status
+        return $?
+}
+restart() {
+        stop
+# wait a couple of seconds for the named to finish closing down
+        sleep 2
+        start
+}
+reload() {
+        echo -n $"Reloading $prog: "
+        p=`/sbin/pidof -o %PPID named`
+        RETVAL=$?
+        if [ "$RETVAL" -eq 0 ]; then
+            /usr/sbin/rndc reload >/dev/null 2>&1 || /usr/bin/kill -HUP $p;
+            RETVAL=$?
+        fi
+        [ "$RETVAL" -eq 0 ] && success $"$prog reload" || failure $"$prog reload"
+        echo
+        return $?
+}
+probe() {
+        # named knows how to reload intelligently; we don't want linuxconf
+        # to offer to restart every time
+        /usr/sbin/rndc reload >/dev/null 2>&1 || echo start
+        return $?
+}
+
+# See how we were called.
+case "$1" in
+        start)
+                start
+                ;;
+        stop)
+                stop
+                ;;
+        status)
+                rhstatus
+                ;;
+        restart)
+                restart
+                ;;
+        condrestart)
+                if [ -e /var/lock/subsys/named ]; then restart; fi
+                ;;
+        reload)
+                reload
+                ;;
+        probe)
+                probe
+                ;;
+        *)
+                echo $"Usage: $0 {start|stop|status|restart|condrestart|reload|probe}"
+                exit 1
+esac
+
+exit $?

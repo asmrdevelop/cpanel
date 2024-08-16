@@ -1,0 +1,51 @@
+
+[% displayorder=['FAILED', 'ABORTING', 'PAUSING', 'ABORTED', 'PAUSED', 'RUNNING', 'COMPLETED' ];  %]
+
+<div id="content">
+[% IF !data.total_sessions %]
+    [% locale.maketext('This interface displays account transfer and restoration sessions.') %]
+    [% locale.maketext('There are no pending or completed transfers or restoration sessions to display.') %]
+[% ELSE %]
+    [% FOREACH session_type IN displayorder %]
+    [% IF data.sessions.$session_type.size %]
+
+        <h3>[% session_type %] Sessions</h3>
+        <table border="1" class="sortable"> <tr>
+            <th>Session</th>
+            <th>Initiator</th>
+            <th>Source Host</th>
+            <th>Start Time</th>
+            <th>End Time</th>
+            <th>Actions</th>
+        </tr>
+        [% FOREACH session IN data.sessions.$session_type %]
+            <tr class="tdshade[% loop.count % 2 ? 1 : 2 %]">
+            <td>[% session.sessionid %]</td>
+            <td>[% session.initiator %]</td>
+            <td>[% session.source_host %]</td>
+            <td>[% session.starttime %]</td>
+            <td>[% session.endtime %]</td>
+            <td>[% IF session_type == 'PAUSED' %]
+                <a href="transfer_session?transfer_session_id=[% session.sessionid %]" target="_blank">[% locale.maketext('View') %]</a>
+                <br /><!-- FIXME: remove br -->
+                <a href="transfer_session?transfer_session_id=[% session.sessionid %]&action=resume" target="_blank">[% locale.maketext('Resume') %]</a>
+                <br /><!-- FIXME: remove br -->
+                <a href="transfer_session?transfer_session_id=[% session.sessionid %]&action=abort" target="_blank">[% locale.maketext('Abort') %]</a>
+                [% ELSIF session_type == 'RUNNING' || session_type == 'PAUSING' %]
+                <a href="transfer_session?transfer_session_id=[% session.sessionid %]" target="_blank">[% locale.maketext('View') %]</a>
+                <br /><!-- FIXME: remove br -->
+                <a href="transfer_session?transfer_session_id=[% session.sessionid %]&action=abort" target="_blank">[% locale.maketext('Abort') %]</a>
+                [% ELSIF session_type == 'COMPLETED' || session_type == 'FAILED' %]
+                <a href="transfer_session?transfer_session_id=[% session.sessionid %]" target="_blank">[% locale.maketext('Review') %]</a>
+                [% ELSE %]
+                <a href="transfer_session?transfer_session_id=[% session.sessionid %]" target="_blank">[% locale.maketext('View') %]</a>
+                [% END %]</td>
+            </tr>
+        [% END %]
+        </table>
+    [% END %]
+    [% END %]
+[% END %]
+</div>
+
+

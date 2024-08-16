@@ -1,0 +1,157 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/backups_list_user_files         Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+################################################################################
+
+package scripts::backups_list_user_files;
+
+use strict;
+use warnings;
+
+use Cpanel::Backup::Metadata ();
+use Cpanel::DBI::SQLite      ();
+use Getopt::Long             ();
+
+################################################################################
+
+Cpanel::Backup::Metadata::metadata_disabled_check(1);
+
+################################################################################
+
+sub _help {
+    my ($msg) = @_;
+    $msg //= '';
+
+    print qq{$msg
+
+Usage:
+
+$0 --user=user [--regexp=regexp]
+
+user - is the name of the user files to list
+regexp - is an optional regex to refine your file list
+};
+
+    exit 0;
+}
+
+sub _invalid_parms {
+    _help();
+    die "Invalid Command Line Parameters\n";
+}
+
+our $user;
+our $regexp;
+
+sub generate_output {
+    my ( $user, $regexp ) = @_;
+    $regexp //= '';
+
+    my $meta_path = Cpanel::Backup::Metadata::get_metadata_filename($user);
+    my $dbh       = Cpanel::DBI::SQLite->connect( { 'database' => $meta_path } );
+
+    # Get all the backup IDs and their paths
+    my $sth     = $dbh->prepare(qq{SELECT backup_id,backup_path FROM backup_paths});
+    my $results = $sth->execute();
+
+    my @backups;
+    while ( my $row = $sth->fetchrow_arrayref() ) {
+        push @backups, { 'id' => $row->[0], 'path' => $row->[1] };
+    }
+
+    # type == 0 uncompressed
+    # type == 1 compressed
+    # type == 2 incremental
+    # type == 3 other
+
+    foreach my $backup (@backups) {
+
+        # Get basedir with date by stripping /accounts/
+        $backup->{'path'} =~ s/\/accounts$//;
+
+        my $ref = Cpanel::Backup::Metadata::load_master_meta( $backup->{'path'} );
+
+        if ( defined( $ref->{'backup_type'} ) and $ref->{'backup_type'} eq 'ERROR' ) {
+
+            # print "Could not load .master.meta from " . $backup->{'path'} . "/accounts/\n"; # This would be a good case for adding a debugging/verbose flag to this script
+            next;
+        }
+        my $backup_type_text = Cpanel::Backup::Metadata::get_backup_type_text( $ref->{'users'}{$user}{'backup_type'} );
+        my $full_path_to_backup;
+        if ( $ref->{'users'}{$user}{'backup_type'} == 0 ) {
+            $full_path_to_backup = $backup->{'path'} . '/accounts/' . $user . '.tar';
+        }
+        elsif ( $ref->{'users'}{$user}{'backup_type'} == 1 ) {
+            $full_path_to_backup = $backup->{'path'} . '/accounts/' . $user . '.tar.gz';
+        }
+        elsif ( $ref->{'users'}{$user}{'backup_type'} == 2 ) {
+            $full_path_to_backup = $backup->{'path'} . '/accounts/' . $user;
+        }
+        else {
+            $full_path_to_backup = '';
+        }
+
+        my $resolution_query = <<END;
+SELECT
+    b.backup_path,
+    f.size,
+    s.path,
+    f.mtime,
+    f.operation,
+    f.type
+FROM file_changes AS f
+JOIN seen_files AS s ON f.seen_files_id = s.file_id
+JOIN backup_paths AS b ON f.backup_id = b.backup_id
+WHERE f.backup_id <= ?
+GROUP BY path
+HAVING operation != ?
+ORDER BY s.path ASC
+END
+
+        my $sth = $dbh->prepare($resolution_query);
+        $sth->execute( $backup->{'id'}, $Cpanel::Backup::Metadata::REMOVE_OPERATION );
+        while ( my $row = $sth->fetchrow_arrayref() ) {
+            my ( $bu_path, $size, $path, $mtime, $operation, $file_type ) = @{$row};
+            my $full_path_to_backup_file;
+            if ($regexp) {
+                next if $path !~ m/$regexp/;
+            }
+
+            if ( $ref->{'users'}{$user}{'backup_type'} == 2 ) {
+                $full_path_to_backup_file = $full_path_to_backup . '/homedir' . $path;
+            }
+            else {
+                $full_path_to_backup_file = $full_path_to_backup;
+            }
+
+            my $file_type_text = Cpanel::Backup::Metadata::get_file_type_text($file_type);
+            print '"' . gmtime($mtime) . '",' . $size . ',' . $backup_type_text . ',' . '"' . $path . '"' . ',"' . $full_path_to_backup_file . '",' . $file_type_text . "\n";
+
+        }
+
+    }
+
+    return;
+}
+
+sub script {
+    my (@args) = @_;
+
+    my $opts = Getopt::Long::GetOptionsFromArray(
+        \@args,
+        'user=s'   => \$user,
+        'regexp=s' => \$regexp,
+    ) or _invalid_parms();
+
+    _help("no user provided") if !$user;
+
+    generate_output( $user, $regexp );
+
+    return 1;
+}
+
+exit( script(@ARGV) ? 0 : 1 ) unless caller();

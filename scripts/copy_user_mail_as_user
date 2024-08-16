@@ -1,0 +1,61 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/copy_user_mail_as_user          Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::copy_user_mail_as_user;
+
+use cPstrict;
+
+=encoding utf-8
+
+=head1 NAME
+
+F<scripts/copy_user_mail_as_user>
+
+=head1 USAGE
+
+    copy_user_mail_as_user --mode=<mode> <hostname> <username>
+
+… where C<E<lt>modeE<gt>> is one of:
+
+=over
+
+=item * C<tolocal>
+
+=item * C<toremote>
+
+=back
+
+=head1 DESCRIPTION
+
+This script copies mail for a given user to or from a remote host.
+It prompts for an API token for that user on the remote host.
+
+=cut
+
+#----------------------------------------------------------------------
+
+use parent (
+    'Cpanel::CLI::CopyUserMail',
+);
+
+use Cpanel::Imports;
+
+use constant _APPLICATION => 'cpanel';
+
+__PACKAGE__->new(@ARGV)->run() if !caller;
+
+#----------------------------------------------------------------------
+
+sub _get_remote_username ( $, $mail_username ) {
+    return $mail_username;
+}
+
+sub _get_token_phrase ( $self, $hostname, $username ) {
+    return locale()->maketext( 'Provide an [asis,API] token for “[_1]” on “[_2]”:', $username, $hostname );
+}
+
+1;

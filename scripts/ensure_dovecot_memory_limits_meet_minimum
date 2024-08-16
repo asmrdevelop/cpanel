@@ -1,0 +1,70 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/ensure_dovecot_memory_limits_meet_minimum
+#                                                  Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::ensure_dovecot_memory_limits_meet_minimum;
+
+use strict;
+use warnings;
+
+use Cpanel::CachedDataStore               ();
+use Cpanel::Services::Restart             ();
+use Cpanel::AdvConfig::dovecot::Constants ();
+
+our $MIN_SANE_LOGIN_PROCESS_SIZE  = Cpanel::AdvConfig::dovecot::Constants::MINIMUM_LOGIN_PROCESS_SIZE();
+our $MIN_SANE_MAIL_PROCESS_SIZE   = Cpanel::AdvConfig::dovecot::Constants::MINIMUM_MAIL_PROCESS_SIZE();
+our $RECOMMENDED_CONFIG_VSZ_LIMIT = Cpanel::AdvConfig::dovecot::Constants::RECOMMENDED_CONFIG_VSZ_LIMIT();
+our $DEFAULT_PLUGIN_ACL           = Cpanel::AdvConfig::dovecot::Constants::DEFAULT_PLUGIN_ACL();
+our $DEFAULT_AUTH_CACHE_SIZE      = Cpanel::AdvConfig::dovecot::Constants::DEFAULT_AUTH_CACHE_SIZE();
+
+our $conf_file = '/var/cpanel/conf/dovecot/main';
+exit( __PACKAGE__->script() ) unless caller();
+
+sub script {
+    my $dovecot_conf_obj = Cpanel::CachedDataStore::loaddatastore( $conf_file, 1 );    # lock and load
+    my $modified         = 0;
+    if ( 'HASH' ne ref $dovecot_conf_obj->{'data'} ) {
+        $dovecot_conf_obj->{'data'} = {};
+    }
+    if ( $dovecot_conf_obj->{'data'}{'auth_cache_size'} && $dovecot_conf_obj->{'data'}{'auth_cache_size'} !~ tr{M}{} && $dovecot_conf_obj->{'data'}{'auth_cache_size'} < ( 1024**2 ) ) {
+        $dovecot_conf_obj->{'data'}{'auth_cache_size'} = $DEFAULT_AUTH_CACHE_SIZE;
+        $modified = 1;
+    }
+    if ( $dovecot_conf_obj->{'data'}{'login_process_size'} && $dovecot_conf_obj->{'data'}{'login_process_size'} < $MIN_SANE_LOGIN_PROCESS_SIZE ) {
+        $dovecot_conf_obj->{'data'}{'login_process_size'} = $MIN_SANE_LOGIN_PROCESS_SIZE;
+        $modified = 1;
+    }
+    if ( $dovecot_conf_obj->{'data'}{'mail_process_size'} && $dovecot_conf_obj->{'data'}{'mail_process_size'} < $MIN_SANE_MAIL_PROCESS_SIZE ) {
+        $dovecot_conf_obj->{'data'}{'mail_process_size'} = $MIN_SANE_MAIL_PROCESS_SIZE;
+        $modified = 1;
+    }
+    if ( $dovecot_conf_obj->{'data'}{'config_vsz_limit'} && $dovecot_conf_obj->{'data'}{'config_vsz_limit'} < $RECOMMENDED_CONFIG_VSZ_LIMIT ) {
+        $dovecot_conf_obj->{'data'}{'config_vsz_limit'} = $RECOMMENDED_CONFIG_VSZ_LIMIT;
+        $modified = 1;
+    }
+    if ( $dovecot_conf_obj->{'data'}{'plugin'}{'acl'} && $dovecot_conf_obj->{'data'}{'plugin'}{'acl'} !~ m{cache} ) {
+        $dovecot_conf_obj->{'data'}{'plugin'}{'acl'} = $DEFAULT_PLUGIN_ACL;
+        $modified = 1;
+    }
+
+    if ($modified) {
+        $dovecot_conf_obj->save();
+
+        # Either way we need to get the new settings in
+        rebuild_dovecot_conf();
+        Cpanel::Services::Restart::restartservice( 'dovecot', 1 );
+    }
+    else {
+        $dovecot_conf_obj->abort();
+    }
+    return 0;
+}
+
+sub rebuild_dovecot_conf {
+
+    return system('/usr/local/cpanel/scripts/builddovecotconf');
+}

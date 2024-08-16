@@ -1,0 +1,245 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - bin/update-roundcube-sqlite-db          Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+## cpdev: installs to /usr/local/cpanel/base/3rdparty/roundcube
+
+package bin::update_roundcube_sqlite_db;
+
+use strict;
+use warnings;
+
+use parent qw( Cpanel::HelpfulScript );
+use constant _OPTIONS => (
+    'foreground',
+    'user=s@',
+);
+
+use Cpanel::Config::HasCpUserFile ();
+use Cpanel::Config::LoadCpConf    ();
+use Cpanel::Config::Users         ();
+use Cpanel::Email::RoundCube      ();
+use Cpanel::Email::RoundCube::DBI ();
+use Cpanel::PwCache               ();
+
+use Whostmgr::Email ();
+use Try::Tiny;
+
+use Fcntl      ();
+use IO::Handle ();
+
+unless ( caller() ) {
+    _redirect_to_mysql_script(@ARGV);
+    exit __PACKAGE__->new(@ARGV)->script();
+}
+
+my $cpconf;
+
+sub script {
+    my ($self) = @_;
+
+    my $foreground = $self->getopt('foreground');
+    my $opt_users  = $self->getopt('user');
+
+    my @users;
+    if ( ref $opt_users eq 'ARRAY' && scalar @{$opt_users} ) {
+        for my $user ( @{$opt_users} ) {
+            if ( !Cpanel::Config::HasCpUserFile::has_cpuser_file($user) ) {
+                print "User “$user” does not exist.\n";
+                next;
+            }
+            push @users, $user;
+        }
+        if ( !@users ) {
+            print "No valid users given.\n";
+            return 1;    # script exit code
+        }
+    }
+    else {
+        @users = Cpanel::Config::Users::getcpusers();
+    }
+
+    my $latest_bundled_version = Cpanel::Email::RoundCube::get_active_version() // '';
+    my $version_before_update  = Cpanel::Email::RoundCube::get_stored_version() // 'none';    # This will be undef during initial install
+
+    _daemonize() unless $foreground;
+
+    Cpanel::Email::RoundCube::init_roundcube_data_dir();
+    print "Roundcube update from $version_before_update to $latest_bundled_version in progress.\n";
+    Cpanel::Email::RoundCube::lock_roundcube_for_update();
+
+    my $dest_dir = $Cpanel::Email::RoundCube::ROUNDCUBE_DEST_DIR;
+
+    ##############################
+    ## DATABASE
+    ## return value not used currently, but keep this for now; we do not know
+    ## the extent or type of problems we might encounter
+    my $rv = handle_database( $latest_bundled_version, \@users );
+    ##############################
+
+    # If it is 'mysql_plus_sqlite' we already generated the config in such a
+    # way as to be able to load from either DB.
+    # Default is sqlite for this, so also do it if it's just falsey.
+    if ( !$cpconf->{'roundcube_db'} || ( length $cpconf->{'roundcube_db'} && $cpconf->{'roundcube_db'} eq 'sqlite' ) ) {
+        Cpanel::Email::RoundCube::generate_roundcube_config_sqlite($dest_dir);
+    }
+
+    Cpanel::Email::RoundCube::write_version_file();
+
+    if ( Cpanel::Email::RoundCube::process_custom_roundcube_install_file($dest_dir) ) {
+        Cpanel::Email::RoundCube::unlock_roundcube_after_update();
+        return 0;    # script exit code
+    }
+
+    Cpanel::Email::RoundCube::unlock_roundcube_after_update();
+
+    print "Roundcube updated to $latest_bundled_version\n";
+
+    return 0;    # script exit code
+}
+
+##############################
+
+# Determine whether our config override is in place. If we don't see the include in the primary RC config, return 0
+# so the rest of the script will process the update to eventually call _generate_roundcube_config() in Cpanel/Email/RoundCube.pm
+sub config_override_in_place {
+    if ( open( my $config_fh, '<', '/usr/local/cpanel/base/3rdparty/roundcube/config/config.inc.php' ) ) {
+        my $include_found = 0;
+        while ( my $line = readline($config_fh) ) {
+            if ( $line =~ m/include.+cpanel_config\.php/ ) {
+                $include_found = 1;
+                last;
+            }
+        }
+        close($config_fh);
+        return $include_found;
+    }
+    else {
+        # No config in place, need to run an update to trigger the config build
+        return 0;
+    }
+}
+
+##############################
+
+## case 48029: removed conditional that would have invoked the rcube/sqlite convert
+##   script, if this script were invoked on a MySQL machine
+sub handle_database {
+    my ( $RCUBE_VERSION, $users_ar ) = @_;
+
+    for my $sysuser ( @{$users_ar} ) {
+        my $homedir = Cpanel::PwCache::gethomedir($sysuser);
+
+        my @dbs;
+        my ( $base_dir, $db_fname ) = ( "$homedir/etc", "$sysuser.rcube.db" );
+        if ( -e "$base_dir/$db_fname" ) {
+            push(
+                @dbs,
+                {
+                    sysuser  => $sysuser,
+                    user     => $sysuser,
+                    domain   => undef,
+                    base_dir => $base_dir,
+                    db_fname => $db_fname,
+                }
+            );
+        }
+
+        try {
+            my $email_accts = Whostmgr::Email::list_pops_for($sysuser);
+            for my $email_address (@$email_accts) {
+                my ( $email_user, $domain )   = split( '@', $email_address );
+                my ( $base_dir,   $db_fname ) = ( "$homedir/etc/$domain", "$email_user.rcube.db" );
+                if ( -e "$base_dir/$db_fname" ) {
+                    push(
+                        @dbs,
+                        {
+                            sysuser  => $sysuser,
+                            user     => $email_user,
+                            domain   => $domain,
+                            base_dir => $base_dir,
+                            db_fname => $db_fname,
+                        }
+                    );
+                }
+            }
+        }
+        catch {
+            local $@ = $_;
+            warn;
+        };
+        next unless ( scalar @dbs );
+
+        my $rv = Cpanel::Email::RoundCube::DBI::sqlite_schema_updates_for_user( $sysuser, $RCUBE_VERSION, \@dbs );
+        ## note: can't really do anything with the return value, as we need to determine
+        ##   the types of problems we might encounter
+    }
+
+    return 1;
+}
+
+sub _daemonize {
+    print STDERR "$0: running in the background.\n";
+    require Cpanel::Daemonizer::Simple;
+    Cpanel::Daemonizer::Simple::daemonize();
+    return;
+}
+
+sub _redirect_to_mysql_script {
+    my @argv = @_;
+    $cpconf = Cpanel::Config::LoadCpConf::loadcpconf();
+
+    ## case 48029: Redirect to MySQL script unless Roundcube is configured to use SQLite
+    unless ( exists $cpconf->{'roundcube_db'} && grep { $cpconf->{'roundcube_db'} eq $_ } qw{sqlite mysql_plus_sqlite} ) {
+        ( my $mysql_version = $0 ) =~ s/(.+?)\-sqlite(\-db)?$/$1$2/;
+        $mysql_version .= '-db' if $mysql_version !~ m/\-db$/;
+        print "Roundcube is not configured to use SQLite.\n";
+        print "This update is for Roundcube using SQLite. Running $mysql_version.\n";
+        exec $mysql_version, @argv;
+        die "Failed to exec $mysql_version";
+    }
+    return;
+}
+1;
+
+__END__
+
+=encoding utf-8
+
+=head1 NAME
+
+update-roundcube-sqlite-db
+
+=head1 SYNOPSIS
+
+    update-roundcube-sqlite-db [--foreground] [--user <user1>] ... [--user <userN>]
+    update-roundcube-sqlite-db --help
+
+=head1 OPTIONS
+
+=over 4
+
+=item --foreground
+
+Run the script in the foreground.
+The default behavior is to run in the background.
+
+=item --user C<username>
+
+Run the script for the specified system user.
+Can be used repeatedly to specify multiple system users.
+The user must be a cPanel account.
+The default behavior is to run for all users.
+
+=item --help
+
+Provides this help text.
+
+=back
+
+=head1 DESCRIPTION
+
+This script updates Roundcube SQLite database schema for one or more users.

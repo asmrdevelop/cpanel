@@ -1,0 +1,214 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/setpostgresconfig               Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+#----------------------------------------------------------------------
+# XXX XXX IMPORTANT!! XXX XXX
+#
+# This modulino is loaded and run as a module in at least one place.
+# Do NOT add exit() to this code!
+#----------------------------------------------------------------------
+
+package scripts::setpostgresconfig;
+
+use strict;
+use warnings;
+
+use Whostmgr::Postgres            ();
+use Cpanel::PwCache               ();
+use Cpanel::FileUtils::TouchFile  ();
+use Cpanel::PostgresAdmin         ();
+use Cpanel::PostgresUtils         ();
+use Cpanel::PostgresUtils::PgPass ();
+use Cpanel::Postgres::Connect     ();    # PPI USE OK -- This binary always needs to so ok perlcc ahead of time
+use Cpanel::Config::Users         ();
+use Cpanel::Usage                 ();
+use Cpanel::SafeFile              ();
+
+exit( run(@ARGV) ) unless caller();
+
+my $dryrun  = 0;
+my $force   = 0;
+my $verbose = 0;
+
+sub run {
+    my (@argv) = @_;
+
+    my $dryrun  = 0;
+    my $force   = 0;
+    my $verbose = 0;
+
+    my %opts = (
+        'dryrun'  => \$dryrun,
+        'dry-run' => \$dryrun,
+        'force'   => \$force,
+        'verbose' => \$verbose,
+    );
+
+    # ==== init process options
+    Cpanel::Usage::wrap_options( \@argv, \&usage, \%opts );
+    $verbose = 1 if $dryrun;
+
+    my $setup = scripts::setpostgresconfig->new( dryrun => $dryrun, force => $force, verbose => $verbose );
+
+    return $setup->check() ? 0 : 1;
+}
+
+sub new {
+    my ( $class, %opts ) = @_;
+
+    return bless {%opts}, $class;
+}
+
+sub check {
+    my $self = shift;
+
+    my @actions = qw{check_prerequires};
+    push @actions, 'check_first_upgrade' unless $self->{force};
+    push @actions, qw{update_config fix_users add_lock};
+
+    foreach my $action (@actions) {
+        $self->msg("running action $action") if $self->{dryrun};
+        my $status = $self->$action();
+        return $status unless $status && $status == 1;
+    }
+
+    return 1;
+}
+
+sub check_prerequires {
+    my $self = shift;
+
+    return $self->by("Cannot find postgres version.") unless Whostmgr::Postgres::get_version();
+    return $self->by("Cannot find pgsql_data dir.")   unless Cpanel::PostgresUtils::find_pgsql_data();
+
+    if ( $self->{force} && !-e _pg_hba_file() ) {
+        my $pg_hba = _pg_hba_file();
+        Cpanel::FileUtils::TouchFile::touchfile($pg_hba);
+        my $user = Cpanel::PostgresUtils::PgPass::getpostgresuser();
+        my ( $uid, $gid ) = ( Cpanel::PwCache::getpwnam($user) )[ 2, 3 ];
+
+        # If we change the uid/gid on the file we need to update Whostmgr::Postgres::update_config
+        chown( $uid, $gid, $pg_hba ) or warn "Failed to chown($uid,$gid,$pg_hba): $!";
+
+        # If we change the mode on the file we need to update Whostmgr::Postgres::update_config
+        chmod( 0600, $pg_hba ) or warn "Failed to chmod(0600,$pg_hba): $!";
+
+    }
+
+    return $self->by("Cannot find pg_hba.conf.") unless -e _pg_hba_file();
+
+    return 1;
+}
+
+sub check_first_upgrade {
+    my $self = shift;
+
+    my $cfg;
+    my $lock = Cpanel::SafeFile::safeopen( $cfg, '<', _pg_hba_file() );
+    return $self->by("cannot read config file") unless $lock;
+    my $ok = grep { /^\s*local\s+samerole\s+all/ } (<$cfg>);
+    Cpanel::SafeFile::safeclose( $cfg, $lock );
+    if ($ok) {
+        $self->msg("Nothing todo, configuration looks fine.");
+
+        # solve problem with users having already upgraded to 11.36.1 without the lock file
+        $self->add_lock();
+        return -1;
+    }
+    return $self->by("Warning: pg_hba.conf was secured but entries have been removed ( you can run it with --force ).") if !$self->{force} && -e _version_file();
+
+    return 1;
+}
+
+sub add_lock {
+    return Cpanel::FileUtils::TouchFile::touchfile( _version_file() );
+}
+
+sub _version_file {
+    return '/var/cpanel/version/pg_hba_conf_secured';
+}
+
+sub _pg_hba_file {
+    return join( '/', Cpanel::PostgresUtils::find_pgsql_data(), 'pg_hba.conf' );
+}
+
+sub usage {
+    my $prog = $0;
+    $prog =~ s{^.+/(.+)$}{$1};
+    print <<EOF;
+$prog [options] [ -f FILE ]
+
+This script will improve postgres security :
+    - update pg_hba.conf
+    - create role foreach database
+    - grant users to roles
+
+Modifiers Flags:
+
+    --force     - force to update config.
+    --verbose   - display some friendly verbose messages.
+    --dry-run   - do nothing and display some verbose messages.
+    --help      - dislay this help message and exit.
+EOF
+    exit;
+
+}
+
+sub update_config {
+    my $self = shift;
+
+    my $dryrun = $self->{dryrun};
+
+    $self->msg( "-", $dryrun ? 'will' : '', "update postgres configuration" );
+    $self->msg("\tnothing done [dryrun]") and return if $dryrun;
+    my ( $status, $message ) = Whostmgr::Postgres::update_config();
+    $self->by("Cannot update postgres config") unless $status;
+    $self->msg($message) if $message;
+    return Whostmgr::Postgres::reload();
+}
+
+sub fix_users {
+    my $self = shift;
+
+    my $postgresadmin = Cpanel::PostgresAdmin->new( { 'cpuser' => 'root' } );
+
+    return 0 if !$postgresadmin;
+
+    foreach my $cpuser ( Cpanel::Config::Users::getcpusers() ) {
+        local $postgresadmin->{'cpuser'} = $cpuser;
+
+        $postgresadmin->clear_map();
+        my @dbs = $postgresadmin->listdbs();
+        next unless scalar @dbs;
+        $postgresadmin->setupdbrole( \@dbs );
+
+        my %dbusers = $postgresadmin->listusersindb();
+
+        foreach my $db ( keys %dbusers ) {
+            foreach my $user ( @{ $dbusers{$db} } ) {
+                $self->msg( '-', $dryrun ? 'will' : '', 'repair access to', $db, 'for user', $user );
+                next if $dryrun;
+                $postgresadmin->addusertodb( $db, $user, 1 );
+            }
+        }
+    }
+    return 1;
+}
+
+sub msg {
+    my ( $self, @msg ) = @_;
+    print join( ' ', @msg, "\n" ) if $self->{verbose};
+    return;
+}
+
+sub by {
+    my ( $self, @msg ) = @_;
+    $self->msg(@msg);
+    return;
+}
+
+1;

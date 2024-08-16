@@ -1,0 +1,74 @@
+# Accept authenticated connections when the connection comes from the main
+# account (foo@foo.com, where foo.com's user is foo).  Otherwise, we end up
+# unintentionally rejecting mail if the user is set to :fail:.
+  accept
+          authenticated = *
+          condition = ${if eq{${lookup{$sender_address_domain}lsearch{/etc/userdomains}}}{$sender_address_local_part}}
+          endpass
+          verify = recipient
+
+# deny must be on the same line as hosts so it will get removed by buildeximconf if turned off
+   deny hosts = ! +loopback : ! +senderverifybypass_hosts
+        ! verify = sender/callout=60s
+
+  accept
+          authenticated = *
+          endpass
+          verify = recipient
+
+  # if they used "pop before smtp" and its not bound for a localdomain we remember the recent_authed_mail_ips_domain
+  warn
+        domains = ! +local_domains
+        hosts = ! +loopback
+        hosts = +recent_authed_mail_ips
+        set acl_c_recent_authed_mail_ips_text_entry = ${perl{get_recent_authed_mail_ips_text_entry}{1}}
+        add_header = ${if exists{/etc/eximpopbeforesmtpwarning}{${perl{popbeforesmtpwarn}{$sender_host_address}}}{}}
+
+  # if they used "pop before smtp" then we just accept
+  accept
+    condition = ${if exists{/etc/popbeforesmtp}{1}{0}}
+    hosts = ! +loopback
+    hosts = +recent_authed_mail_ips
+    endpass
+    verify = recipient
+
+  # we need to check alwaysrelay since we don't require recentauthedmailiptracker to be enabled
+  accept
+    hosts = ! +loopback
+    condition = ${if or {{eq{$acl_c_recent_authed_mail_ips_text_entry}{}}{!exists{/etc/popbeforesmtp}}}{${if exists {/etc/alwaysrelay}{${lookup{$sender_host_address}iplsearch{/etc/alwaysrelay}{1}{0}}}{0}}}{0}}
+    set acl_c_recent_authed_mail_ips_text_entry = ${perl{get_recent_authed_mail_ips_text_entry}{1}}
+    set acl_c_alwaysrelay = 1
+    endpass
+    verify = recipient
+
+  #recipient verifications are now done after smtp auth and pop before smtp so the users get back bounces instead of
+  # a clogged outbox in outlook
+
+   # If we skipped identifying the sender in acl_smtp_mail (ie !def:acl_c_authenticated_local_user)
+   # We need to do it here before we can test the two drops
+   warn
+       condition = ${if !def:acl_c_authenticated_local_user}
+       condition = ${if match_ip{$sender_host_address}{+loopback}}
+       condition = ${perl{identify_local_connection}{$sender_host_address}{$sender_host_port}{$received_ip_address}{$received_port}{1}}
+       set acl_c_authenticated_local_user = ${perl{get_identified_local_connection_user}}
+
+  # drop connections to localhost that are from demo accounts (required for manual connections)
+  drop
+       condition = ${if def:acl_c_authenticated_local_user}
+       condition = ${if !eq{$acl_c_authenticated_local_user}{root}}
+       condition = ${if match_ip{$sender_host_address}{+loopback}}
+       condition = ${lookup{$acl_c_authenticated_local_user}lsearch{/etc/demousers}{1}}
+       message   = Demo accounts may not send mail
+
+  # drop connections to localhost that fail auth
+  drop
+       condition = $authentication_failed
+       condition = ${if match_ip{$sender_host_address}{+loopback}}
+       message   = Authentication failed
+
+  # we learned this in the acl_smtp_mail block
+  accept
+    condition = ${if def:acl_c_authenticated_local_user}
+    endpass
+    verify = recipient
+

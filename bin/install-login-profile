@@ -1,0 +1,60 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - bin/install-login-profile               Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+use warnings;
+
+use Cpanel::LoginProfile ();
+use Getopt::Long         ();
+use IO::Handle           ();
+
+exit script(@ARGV) unless caller;
+
+sub script {
+    my (@args) = @_;
+    my %options;
+
+    Getopt::Long::GetOptionsFromArray(
+        \@args,
+        \%options,
+        'help',
+        'install',
+        'uninstall',
+    ) or return usage(1);
+    return usage(0) if $options{'help'};
+    return usage(1) unless $options{'install'} xor $options{'uninstall'};
+    return usage(1) unless $args[0];
+
+    my ( $status, $msg ) = run( $options{'install'}, $args[0] );
+    if ( !$status ) {
+        $msg //= 'Unknown error';
+        print STDERR "Failed to install login profile: $msg\n";
+    }
+
+    return 0;
+}
+
+sub run {
+    my ( $install, $name ) = @_;
+    if ($install) {
+        return Cpanel::LoginProfile::install_profile($name);
+    }
+    return Cpanel::LoginProfile::remove_profile($name);
+}
+
+sub usage {
+    my ($retval) = @_;
+    my $fh = $retval ? \*STDERR : \*STDOUT;
+    $fh->print(<<EOM);
+install-login-profile --install NAME
+install-login-profile --uninstall NAME
+
+Install or uninstall the specified login profile in /etc/profile.d and other
+relevant locations.
+EOM
+    return $retval;
+}

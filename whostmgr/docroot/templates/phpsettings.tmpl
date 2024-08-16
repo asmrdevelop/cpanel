@@ -1,0 +1,111 @@
+[% USE JSON -%]
+[% WRAPPER 'master_templates/master.tmpl' theme="yui"
+    scripts = [ '/js/statusbox.js', '/js/input_transform_3.js' ],
+    extrastyle = '
+#waitpanel .bd {
+    text-align: center;
+}
+'
+-%]
+
+<div style="margin-left:20px">
+
+<p class="intro">[% locale.maketext('You may edit your PHP configuration in Basic Mode or in Advanced Mode.') %]</p>
+<label><input type="radio" name="which_advanced" onclick="change_edit(false,current_php)" value="basic" [% data.advanced ? '' : 'checked="checked"' %] />
+[% locale.maketext('Basic Mode') %]</label>
+&nbsp;&nbsp;
+<label><input type="radio" name="which_advanced" onclick="change_edit(true,current_php)" value="advanced" [% data.advanced ? 'checked="checked"' : '' %] />
+[% locale.maketext('Advanced Mode') %]</label>
+<br />
+
+[% IF data.phps.alternate.version -%]
+<p class="intro">[% locale.maketext('This system has multiple PHP installs. Select which one to edit below.') %]</p>
+<label><input type="radio" name="which_php" onclick="change_edit(current_advanced,'default')" value="default" [% data.checked != 'alternate' ? 'checked="checked"' : '' %] />
+[% locale.maketext('Default PHP ([_1])',data.phps.default.path) FILTER html %]</label>
+&nbsp;&nbsp;
+<label><input type="radio" name="which_php" onclick="change_edit(current_advanced,'alternate')" value="alternate" [% data.checked == 'alternate' ? 'checked="checked"' : '' %] />
+[% locale.maketext('Alternate PHP ([_1])',data.phps.alternate.path) FILTER html %]</label>
+<br />
+[% END -%]
+
+<div id="the_form" style="margin-top:25px">[% data.editor_html %]</div>
+
+<script type="text/javascript">
+function change_edit(advanced,which_php) {
+    if ( advanced !== current_advanced || current_php !== which_php ) {
+        show_loading([% locale.maketext('Loading …').json() %]);
+        var callback = {
+            success: function(o) {
+                DOM.get('the_form').innerHTML = o.responseText;
+                transform_inputs();
+                current_php=which_php;
+                current_advanced=advanced;
+                clear_ui_status();
+            },
+            failure: function(o) {
+                alert('AJAX error');
+                if ( console ) console.log(o);
+                clear_ui_status();
+            }
+        };
+        var url = "?form_only=1&php="+which_php;
+        if (advanced) url += "&advanced=1";
+        YAHOO.util.Connect.asyncRequest( "GET", url, callback, null );
+    }
+}
+
+var current_php = [% data.checked_php.json() -%];
+var current_advanced = [% data.advanced ? 'true' : 'false' -%];
+
+function enablecontainedobj(objConEl) {
+    var spanEls = objConEl.childNodes;
+    var spancount = -1;
+    for(var i=0;i<spanEls.length;i++) {
+        if (spanEls[i].tagName=="SPAN") {
+            spancount++;
+        }
+        if (spancount == 0) {
+            spanEls[i].style.display = '';
+        } else if (spancount == 1) {
+            spanEls[i].style.display='none';
+            break;
+        }
+    }
+    var inputEls = objConEl.getElementsByTagName('input');
+    for(var i=0;i<inputEls.length;i++) {
+        inputEls[i].disabled = false;
+    }
+}
+
+function disable_save_button() {
+    var buttonEl = YAHOO.util.Dom.get('savebutton');
+    buttonEl.disabled=true;
+    YAHOO.util.Dom.get('savebutton_status').innerHTML = CPANEL.icons.ajax;
+    buttonEl.style.display='none';
+    buttonEl.value='Validating Configuration...';
+}
+function enable_save_button() {
+    progressive_validation_in_progress=0;
+    restart_progressive_validation=0;
+
+    var buttonEl = YAHOO.util.Dom.get('savebutton');
+    buttonEl.value='Save';
+    YAHOO.util.Dom.get('savebutton_status').innerHTML = '';
+    buttonEl.style.display='';
+    buttonEl.disabled=false;
+}
+function delayed_submit() {
+    disable_save_button();
+    window.setTimeout(function() {
+        document.forms.phpsettingsform.submit();
+    }, 500);
+    return false;
+
+}
+
+
+YAHOO.util.Event.addListener(window, "load", enable_save_button, false);
+
+</script>
+
+[% END #wrapper -%]

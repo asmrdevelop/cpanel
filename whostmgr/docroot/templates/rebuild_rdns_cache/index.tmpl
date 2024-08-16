@@ -1,0 +1,77 @@
+[%
+    SET APP_KEY = "rebuild_rdns_cache";
+    SET PAGE_BASE = "/scripts7/rebuild_rdns_cache";
+
+    WRAPPER 'master_templates/master.tmpl'
+        inside_frame_or_tab_or_popup = 1,
+        skipheader = 1,
+        stylesheets = [],
+        base           = "$PAGE_BASE/",
+        theme          = 'bootstrap',
+        CJT2_EXCLUSIVE = 1,
+        app_key        = APP_KEY;
+%]
+
+<div id="content">
+
+    <div class="row">
+        <div class="col-md-8">
+
+            <table class="table">
+                <thead>
+                    <tr>
+                        <th></th>
+                        <th class="text-center">[% locale.maketext('Result') %]</th>
+                        <th>[% locale.maketext('Errors') %]</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr class="[% data.dns_cache ? 'success' : 'danger' %]">
+                        <td>[% locale.maketext('Updating the reverse [output,abbr,DNS,Domain Name System] cache …') %]</td>
+                        <td  class="text-center">
+                            [% IF data.dns_cache %]
+                                <i class="fas fa-check" aria="hidden"></i>
+                                <span class="sr-only">[% locale.maketext("Success") %]</span>
+                            [% ELSE %]
+                                <i class="fas fa-times" aria="hidden"></i>
+                                <span class="sr-only">[% locale.maketext("Failed") %]</span>
+                            [% END %]
+                        </td>
+                        <td>[% data.errors.dns_cache | html %]</td>
+                    </tr>
+                    <tr class="[% data.updating_helo ? 'success' : 'danger' %]">
+                        <td>[% locale.maketext('Updating user domains for mail [asis,HELO] …') %]</td>
+                        <td  class="text-center">
+                            [% IF data.updating_helo %]
+                                <i class="fas fa-check" aria="hidden"></i>
+                                <span class="sr-only">[% locale.maketext("Success") %]</span>
+                            [% ELSE %]
+                                <i class="fas fa-times" aria="hidden"></i>
+                                <span class="sr-only">[% locale.maketext("Failed") %]</span>
+                            [% END %]
+                        </td>
+                        <td>[% data.errors.updating_helo | html %]</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+    <div class="row">
+        <div class="col-md-8">
+            <span class="pull-right flip">
+                <a href="[% cp_security_token %]/scripts2/basic_exim_editor?in_tab=1&reload=1#tab_DomainsandIPs" class="btn btn-link">
+                    [% IF locale_is_rtl %]
+                        <i class="fas fa-arrow-right" aria-hidden="true"></i>
+                    [% ELSE %]
+                        <i class="fas fa-arrow-left" aria-hidden="true"></i>
+                    [% END %]
+                    [% locale.maketext('Go Back') %]
+                </a>
+            </span>
+        </div>
+    </div>
+
+
+</div>
+
+[% END %]

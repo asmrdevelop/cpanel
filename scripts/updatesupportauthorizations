@@ -1,0 +1,80 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/updatesupportauthorizations     Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+
+use Cpanel::SSH                        ();
+use Cpanel::Sys::Escalate              ();
+use Whostmgr::ACLS                     ();
+use Whostmgr::TicketSupport::DataStore ();
+
+# verify we're root #
+die 'You must run this script as root!'
+  if $> != 0;
+
+# we need to override these for this to work #
+sub hasfeature { return 1; }
+no warnings 'redefine';
+local *Whostmgr::ACLS::hasroot = sub { return 1; };
+
+# load and seed the storable with a sane list of users #
+my $ds = Whostmgr::TicketSupport::DataStore->new();
+
+print "Enumerating all the su and sudo users on the system...\n";
+
+# figure out all the users to search (THIS IS VERY INEFFECIENT BECAUSE USERS MUST BE IN-ORDER!!!) #
+my @users = ('root');
+{
+    my $sudo_users = Cpanel::Sys::Escalate::get_list_of_sudo_users();
+    push @users, grep {
+        my $sudo_user = $_;
+        !grep { $_ eq $sudo_user } @users
+    } @{$sudo_users};
+}
+{
+    my $su_users = Cpanel::Sys::Escalate::get_list_of_su_users();
+    push @users, grep {
+        my $su_user = $_;
+        !grep { $_ eq $su_user } @users
+    } @{$su_users};
+}
+
+print "Scanning home directories for recognized cPanel Support SSH public keys...\n";
+
+# enumerate and rebuild the cached list of users #
+my ( %checked_homedirs, @users_detected );
+foreach my $user (@users) {
+
+    # prevent checking duplicate users #
+    my $user_homedir = Cpanel::SSH::_getsshdir( $user, { skip_create => 1 } );
+    next if !$user_homedir || defined $checked_homedirs{$user_homedir} || !-d $user_homedir;
+    $checked_homedirs{$user_homedir} = 1;
+
+    # find all relevant keys #
+    my ( $keys, $warnings ) = Cpanel::SSH::_listkeys( 'user' => $user, 'private' => 0, 'public' => 1 );
+    foreach my $key ( @{$keys} ) {
+
+        # make sure we can parse the key text #
+        next if $key->{'text'} !~ m/\s+(\w{3,64})_server_(\w{1,64})\@cpanel.net_\d+/;
+
+        # add to our list... #
+        push @users_detected, $user;
+
+        # we only need one key match #
+        last;
+    }
+}
+
+print "Writing out the support authorizations users cache...\n";
+
+# ONLY update the list of users #
+$ds->set( 'users', \@users_detected );
+
+# write and we're done #
+$ds->cleanup();
+
+print "Done!\n";

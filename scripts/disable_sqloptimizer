@@ -1,0 +1,44 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/disable_sqloptimizer            Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use warnings;
+use strict;
+
+use Cpanel::SafeRun::Errors          ();
+use Cpanel::MysqlUtils::SlowQueryLog ();
+use Cpanel::Config::CpConfGuard      ();
+use Cpanel::TempFile                 ();
+
+unsetupsqloptimizercrontab();
+
+Cpanel::MysqlUtils::SlowQueryLog::disable();
+
+my $cpconf = Cpanel::Config::CpConfGuard->new();
+if ( $cpconf->{'data'}->{'sqloptimizer'} ) {
+    $cpconf->{'data'}->{'sqloptimizer'} = 0;
+    $cpconf->save();
+}
+
+sub unsetupsqloptimizercrontab {
+    my $has_sqloptimizer = 0;
+    my @CT               = grep( !/^#/, split( /\n/, Cpanel::SafeRun::Errors::saferunnoerror( 'crontab', '-l' ) ) );
+    if ( grep( /sqloptimizer/, @CT ) ) { $has_sqloptimizer = 1; }
+    if ($has_sqloptimizer) {
+        @CT = grep( !/sqloptimizer/, @CT );
+        my $tmp_obj      = Cpanel::TempFile->new();
+        my $tmp_filename = $tmp_obj->file();
+        if ( $tmp_filename && open( my $cr_fh, ">", $tmp_filename ) ) {
+            print {$cr_fh} join( "\n", @CT ) . "\n";
+            close($cr_fh);
+            system 'crontab', $tmp_filename;
+        }
+        else {
+            die "Unable to write crontab temporary file";
+        }
+    }
+    return 1;
+}

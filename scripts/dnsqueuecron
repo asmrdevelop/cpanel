@@ -1,0 +1,39 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/dnsqueuecron                    Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+exit unless ( -x '/usr/bin/crontab' );
+
+my $crontab       = `/usr/bin/crontab -l`;
+my $old_cron_line = '*/15 * * * * /usr/local/cpanel/whostmgr/bin/dnsqueue > /dev/null 2>&1';
+
+exit if ( $crontab =~ /dnsqueue/i && $crontab !~ /\Q$old_cron_line\E/ );
+
+my $time          = int( rand(15) );
+my $timespec      = $time . ',' . ( $time + 15 ) . ',' . ( $time + 30 ) . ',' . ( $time + 45 );
+my $new_cron_line = $timespec . ' * * * * /usr/local/cpanel/whostmgr/bin/dnsqueue > /dev/null 2>&1';
+
+my @CRONTAB = split( /\n/, $crontab );
+
+# Case 8514 implies this is still necessary on some systems
+@CRONTAB = grep( !/^#/, @CRONTAB );
+
+open( CRONTAB, "|/usr/bin/crontab -" );
+my $updated = 0;
+
+foreach my $line (@CRONTAB) {
+    if ( $line =~ /\Q$old_cron_line\E/ ) {
+        $line =~ s/\Q$old_cron_line\E/$new_cron_line/;
+        $updated = 1;
+    }
+    print CRONTAB $line . "\n";
+}
+
+unless ($updated) {
+    print CRONTAB $new_cron_line . "\n";
+}
+
+close(CRONTAB);

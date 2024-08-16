@@ -1,0 +1,193 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - bin/clean-datastores                    Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package bin::clean_datastores;
+
+use strict;
+use warnings;
+
+use Cpanel::AccessIds::ReducedPrivileges ();
+use Cpanel::Config::Users                ();
+use Cpanel::Daemonizer                   ();
+use Cpanel::IONice                       ();
+use Cpanel::Logger                       ();
+use Cpanel::PwCache                      ();
+use File::Path                           ();
+use Getopt::Long                         ();
+use IO::Handle                           ();
+
+exit __PACKAGE__->main(@ARGV) unless caller;
+
+sub main {
+    my ( $class, @args ) = @_;
+
+    my %options;
+    Getopt::Long::GetOptionsFromArray(
+        \@args,
+        \%options,
+        'help',
+        'all!',
+        'background!',
+        'days=i',
+        'stop!',
+        'verbose|v',
+    ) or return $class->usage(1);
+    return $class->usage(0) if $options{'help'};
+
+    my @users = @args;
+    if ( $options{'all'} ) {
+        @users = ( 'root', Cpanel::Config::Users::getcpusers() );
+    }
+    return $class->usage(1) if ( !@users && !$options{'stop'} );    # Let stop action pass through without users.
+
+    my $self = $class->new( \%options );
+
+    if ( $options{'stop'} ) {
+        $self->stop_background;
+        return 0;
+    }
+
+    if ( $options{'background'} ) {
+        $self->start_background;
+    }
+
+    $self->purge( \@users );
+    $self->done();
+
+    return 0;
+}
+
+sub new {
+    my ( $class, $options ) = @_;
+    my $time      = $options->{'time'} // time;
+    my $timestamp = $time - ( $options->{'days'} // 30 ) * 86400;
+
+    return bless { %$options, timestamp => $timestamp }, $class;
+}
+
+sub logger {
+    my $self = shift;
+    my $opts = {};
+
+    if ( $self->{'background'} ) {
+        $opts->{'log_pid'} = 1;
+    }
+    else {
+        $opts->{'use_no_files'} = 1;
+    }
+
+    return $self->{'logger'} //= Cpanel::Logger->new($opts);
+}
+
+sub note {
+    my ( $self, $message ) = @_;
+    return unless $self->{'verbose'};
+    if ( $self->{'running_in_background'} ) {
+        $self->daemonizer->set_status_msg($message);
+    }
+    else {
+        $self->logger->info($message);
+    }
+    return;
+}
+
+sub process_path {
+    my ( $self, $path, $user ) = @_;
+
+    opendir( my $dh, $path ) or return;
+    $self->note("Pruning $path for $user");
+
+    while ( my $file = readdir($dh) ) {
+        next if $file eq '.' || $file eq '..';
+        my $fullpath = "$path/$file";
+        my $mtime    = ( lstat($fullpath) )[9];
+
+        # This will clean files and directories and remove (but not traverse)
+        # symlinks, which is what we want.
+        File::Path::rmtree($fullpath) if $mtime <= $self->{'timestamp'};
+    }
+
+    closedir($dh);
+    return 1;
+}
+
+sub purge {
+    my ( $self, $users ) = @_;
+
+    my @dirs = qw{.cpanel/datastore .cpanel/caches};
+
+    foreach my $user (@$users) {
+        my $homedir = Cpanel::PwCache::gethomedir($user);
+        next unless length $homedir;
+
+        my $privs = $user eq 'root' ? undef : Cpanel::AccessIds::ReducedPrivileges->new($user);
+        foreach my $dir (@dirs) {
+            $self->process_path( "$homedir/$dir", $user );
+        }
+    }
+    return 1;
+}
+
+sub daemonizer {
+    my $self = shift;
+    return $self->{'daemonizer'} //= do {
+        my $success;
+        ( $success, $self->{'daemonizer'} ) = Cpanel::Daemonizer->new(
+            'identifier' => $self->{'daemon_identifier'} // 'clean-datastores',
+            'name'       => $self->{'daemon_name'}       // 'cPanel Background Datastore Cleaner',
+            'logger'     => $self->logger,
+        );
+        if ( !$success || !eval { $self->{'daemonizer'}->isa('Cpanel::Daemonizer') } ) {
+            $self->logger->die( 'Could not get new Cpanel::Daemonizer object: ' . $self->{'daemonizer'} );
+        }
+        $self->{'daemonizer'};
+    }
+}
+
+sub stop_background {
+    my $self = shift;
+    my $wait = $self->{'max_stop_wait_time'} // 30;
+    return $self->daemonizer->halt_all_instances($wait);
+}
+
+sub start_background {
+    my $self = shift;
+    $self->daemonizer->start;
+    $self->{'running_in_background'} = 1;
+    Cpanel::IONice::ionice( 'best-effort', 6 );
+    $self->note( 'Setting I/O priority to reduce system load: ' . Cpanel::IONice::get_ionice() );
+    return 1;
+}
+
+sub done {
+    my $self = shift;
+    if ( $self->{'running_in_background'} ) {
+        $self->daemonizer->stop;
+    }
+    return;
+}
+
+sub usage {
+    my ( $class, $retval ) = @_;
+    my $fh = $retval ? \*STDERR : \*STDOUT;
+    $fh->print(<<EOM);
+Usage: clean-datastores [--background] [--days DAYS] [--verbose] USER...
+       clean-datastores [--background] [--days DAYS] [--verbose] --all
+       clean-datastores --stop
+
+Clean the datastores in the specified user's home directory of all files older
+than DAYS days (default 30).
+
+If --all is given, operate on all cPanel users and root.
+
+If --background is given a background process will be created to perform the
+operation. Only one background process can run at a time.
+
+If --stop is given a running background process will be stopped.
+EOM
+    return $retval;
+}

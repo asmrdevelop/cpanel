@@ -1,0 +1,40 @@
+[%#
+Variables passed in:
+
+exit_code         - The numeric exit code the updatenow process returned.
+sent_to_root      - A default boolean flag sent to all templates that indicates if the message was sent to 'root'.
+log_preview       - An arrayref of 10(or less) line preview of attached log file
+
+For more information about how to customize notification templates, read our documentation at https://go.cpanel.net/notificationtemplates
+
+-%]
+
+[%
+    PROCESS "include/colors.tmpl";
+    PROCESS "include/styles.tmpl";
+    PROCESS "include/code_block.tmpl";
+
+    WRAPPER 'wrapper/main.html.tmpl';
+
+    NOTICE.email_reason = CPANEL.locale.maketext('The [asis,cPanel] [output,amp] [asis,WHM] update process failed for the following reason:');
+
+%]
+
+<p>
+    [%
+        CPANEL.locale.maketext('Maintenance ended; however, it did not exit cleanly ([_1]).', NOTICE.exit_code);
+    %]
+    [% IF NOTICE.failed_events && NOTICE.failed_events.0 %]
+    [%
+        CPANEL.locale.maketext('The following events were logged: [list_and_quoted,_1].', NOTICE.failed_events.0);
+    %]
+	[% END %]
+    [%
+        CPANEL.locale.maketext('Review the update logs to determine why the update failed.');
+    %]
+</p>
+<p>
+    [% code_block(formatted_code=NOTICE.log_preview.0, title=CPANEL.locale.maketext('Update log preview:')) %]
+</p>
+
+[% END %]

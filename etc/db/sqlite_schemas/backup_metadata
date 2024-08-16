@@ -1,0 +1,61 @@
+PRAGMA foreign_keys = ON;
+
+/* The purpose of this table is to list the files that exist in at least one of our backups, so that we don't repeat ourselves and waste megs of space */
+
+CREATE TABLE IF NOT EXISTS "seen_files" (
+    `file_id` INTEGER PRIMARY KEY AUTOINCREMENT,
+    `path` TEXT NOT NULL UNIQUE
+);
+
+/* We only track the changes from one backup to another (again, don't repeat yourself). */
+/* Size and Mtime can be null in the event of directories (as this has no meaning in the context of file level restore) */
+/* We want to RESTRICT in the event that a backup_id is deleted, as we *must* move filechanges to a successor backup */
+/* Ideally this would be done with a database trigger (and we would no longer have to restrict), but we don't have the time to execute this */
+
+CREATE TABLE IF NOT EXISTS "file_changes" (
+    `seen_files_id` INTEGER NOT NULL,
+    `backup_id` INTEGER NOT NULL,
+    `size` INTEGER,
+    `mtime` INTEGER,
+    `operation` INTEGER DEFAULT 0,
+    `type` INTEGER NOT NULL,
+    FOREIGN KEY(seen_files_id) REFERENCES seen_files(file_id) ON DELETE CASCADE,
+    FOREIGN KEY(backup_id)     REFERENCES backups(backup_id) ON DELETE RESTRICT
+);
+
+CREATE INDEX IF NOT EXISTS `seen_files_id_index` ON `seen_files` ( `file_id` );
+CREATE INDEX IF NOT EXISTS `seen_files_path_index` ON `seen_files` ( `path` );
+
+CREATE INDEX IF NOT EXISTS `file_changes_operation_index` ON `file_changes` ( `operation` );
+CREATE INDEX IF NOT EXISTS `file_changes_seen_files_id_index` ON `file_changes` ( `seen_files_id` );
+
+/* Used to correlate files to their relevant backup for restoration */
+
+CREATE TABLE IF NOT EXISTS `backups` (
+	`backup_id`	    INTEGER PRIMARY KEY AUTOINCREMENT,
+    `timestamp`     INTEGER NOT NULL,
+	`does_exist`	INTEGER DEFAULT 1
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS `backups_timestamp_id_index` ON `backups` (
+	`backup_id`,
+	`timestamp`
+);
+
+/* Used to correlate the path to a backup.  Not sure why this is in a separate table from backups. */
+
+CREATE TABLE IF NOT EXISTS `backup_paths` (
+	`backup_path`	TEXT PRIMARY KEY NOT NULL,
+	`backup_id`	    INTEGER NOT NULL,
+    FOREIGN KEY(backup_id) REFERENCES backups(backup_id) ON DELETE CASCADE
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS `backup_paths_backup_paths_index` ON `backup_paths` (
+	`backup_path`
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS `backup_paths_backup_and_id_index` ON `backup_paths` (
+	'backup_id',
+    `backup_path`
+);
+

@@ -1,0 +1,98 @@
+[%#
+
+This template is sent when some domain fail DCV and additional coverage is being deferred
+
+
+Notify when [asis,AutoSSL] will not secure new domains because a domain on the current certificate has failed [output,abbr,DCV,Domain Control Validation].
+
+
+Variables passed in:
+
+certificate     - instance of Cpanel::SSL::Objects::Certificate
+
+vhost_name      - the name of the virtual host onto which the SSL cert is installed
+
+vhost_domains   - the (sorted) list of domains that point to the virtual host
+
+ssl_tls_manager_url  - URL to the SSL/TLS manager
+
+ssl_tls_wizard_url  - URL to the SSL/TLS wizard
+
+ssl_tls_status_url  - URL to the SSL/TLS status page
+
+enabled_providers_count - The number of enabled providers in the SSL/TLS wizard
+
+autossl_problems - AutoSSL Problems Entries for the vhost
+
+autossl_provider - The module name of the AutoSSL provider
+
+must_replace_window_days - The number of days before expiry that a certificate will be renewed to avoid expiry
+
+For more information about how to customize notification templates, read our documentation at https://go.cpanel.net/notificationtemplates
+
+-%]
+
+[%
+    PROCESS "include/colors.tmpl";
+    PROCESS "include/styles.tmpl";
+    PROCESS 'include/zebra_table.tmpl';
+    PROCESS 'include/code_block.tmpl';
+    PROCESS "include/certificate_info_extended.tmpl";
+    PROCESS 'AutoSSL/includes/autossl_problems_table.tmpl';
+    PROCESS "SSL/includes/market_upgrade_options.tmpl";
+
+    SET uncovered_domains = [];
+    SET covered_domains = {};
+    FOREACH vhost_domain IN NOTICE.vhost_domains;
+        IF !vhost_domain.covered;
+            uncovered_domains.push(vhost_domain);
+        ELSE;
+            SET this_domain = vhost_domain.name;
+            covered_domains.$this_domain = 1;
+        END;
+    END;
+
+    IF covered_domains.keys.size == 1;
+        NOTICE.email_reason = CPANEL.locale.maketext('[_1]: Normally [asis,AutoSSL] would request a new certificate that would secure any new domains. However, the domain that the certificate currently secures just failed [output,abbr,DCV,Domain Control Validation]. That domain [output,strong,must] pass [asis,DCV] to enable AutoSSL to request a new certificate. This new certificate will secure all domains that pass [asis,DCV].', NOTICE.vhost_name );
+    ELSE;
+        NOTICE.email_reason = CPANEL.locale.maketext('[_1]: Normally [asis,AutoSSL] would replace the current certificate with one that secures any new domains. However, [numf,_2] of the website’s secured domains just failed [output,abbr,DCV,Domain Control Validation]. When all currently secured domains pass [asis,DCV], [asis,AutoSSL] will request a new certificate that includes all domains that pass [asis,DCV].', NOTICE.vhost_name, NOTICE.old_dcv_failures.size, covered_domains.keys.size );
+    END;
+
+    WRAPPER 'wrapper/main.html.tmpl';
+%]
+
+[% autossl_problems_table( autossl_problems=NOTICE.autossl_problems, autossl_provider=NOTICE.autossl_provider, ssl_tls_status_url=NOTICE.ssl_tls_status_url, autossl_filter_domains=covered_domains ) %]
+
+<p>
+    [% CPANEL.locale.maketext('You can fix [numerate,_1,this problem,these problems] within [quant,_2,day,days] of the certificate expiry ([datetime,_3,datetime_format_medium] [asis,UTC]) or take other actions. If you do not, this certificate will automatically renew without [numerate,_4,this domain,these domains].', NOTICE.autossl_problems.size, NOTICE.must_replace_window_days, 1 + NOTICE.certificate.not_after(), uncovered_domains.size ) %]
+</p>
+
+<p>
+    [% CPANEL.locale.maketext('The next time that the “[_1]” [asis,AutoSSL] provider attempts to renew the [asis,SSL] certificate, the system will attempt to add the following [numerate,_2,domain,domains] to that certificate:', NOTICE.autossl_provider, uncovered_domains.size) %]
+</p>
+
+<ul>
+    [% FOR d IN uncovered_domains -%]
+        <li>
+            <a href="https://[% d.name.html() %]">[% d.name.html() %]</a>
+        </li>
+    [% END -%]
+</ul>
+
+[% CPANEL.locale.maketext('The certificate that is installed on this website contains the following properties:');
+
+certificate_info_extended( certificate=NOTICE.certificate );
+
+-%]
+
+
+[%
+    market_upgrade_options(
+        enabled_providers_count=NOTICE.enabled_providers_count,
+        ssl_tls_wizard_url=NOTICE.ssl_tls_wizard_url,
+        certificate=NOTICE.certificate
+    );
+%]
+
+
+[% END #wrapper %]

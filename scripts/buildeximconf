@@ -1,0 +1,175 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/buildeximconf                   Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+use warnings;
+
+use Cpanel::DKIM                 ();
+use Cpanel::Logger               ();
+use Cpanel::Exim::Config         ();
+use Cpanel::Exception            ();
+use Cpanel::FileUtils::Lines     ();
+use Cpanel::Signal               ();
+use Cpanel::StringFunc::Replace  ();
+use Cpanel::Encoder::Tiny        ();
+use Cpanel::FileUtils::Write     ();
+use Cpanel::IP::Neighbors        ();
+use Cpanel::IP::GreyList         ();
+use Cpanel::IP::cPanelMail       ();
+use Cpanel::Email::Perms::System ();
+use Try::Tiny;
+
+local $SIG{'HUP'} = 'IGNORE';
+
+umask(0022);
+
+my $logger = Cpanel::Logger->new();
+
+require '/usr/local/cpanel/scripts/checkexim.pl';
+
+Cpanel::IP::Neighbors::update_neighbor_netblocks_or_log();
+Cpanel::IP::GreyList::update_trusted_netblocks_or_log();
+Cpanel::IP::GreyList::update_common_mail_providers_or_log();
+Cpanel::IP::cPanelMail::update_cpanel_mail_netblocks_or_log();
+Cpanel::DKIM::setup_file_stores();
+Cpanel::Email::Perms::System::ensure_system_perms();
+
+my %OPTS           = ();
+my $use_alt_config = @ARGV && grep( /--local/,          @ARGV ) ? 1 : 0;
+my $acl_dry_run    = @ARGV && grep( /--acl_dry_run/,    @ARGV ) ? 1 : 0;
+my $no_chown_spool = @ARGV && grep( /--no_chown_spool/, @ARGV ) ? 1 : 0;
+my $debug          = @ARGV && grep( /--debug/,          @ARGV ) ? 1 : 0;
+if ($use_alt_config) {
+    foreach my $alt_config ( grep( /--local/, @ARGV ) ) {
+        my ( $filetype, $file ) = $alt_config =~ /--([^=]+)=(.*)$/;
+        $OPTS{$filetype} = $file;
+    }
+}
+$OPTS{'acl_dry_run'} = 1 if $acl_dry_run;
+$OPTS{'debug'}       = $debug;
+
+# CPANEL-36167: Run hulkdsetup to ensure that keys for dovecot are present:
+system '/usr/local/cpanel/bin/hulkdsetup';
+
+my $exim_cfgobj = Cpanel::Exim::Config->new(%OPTS);
+
+$exim_cfgobj->run_script('pre') if !$use_alt_config && !$acl_dry_run;
+
+my %CFDATA = $exim_cfgobj->generate_config_file();
+
+my $rawout = $CFDATA{'rawout'};
+
+if ( $use_alt_config || $acl_dry_run ) {
+    if ( !$CFDATA{'goodconf'} ) {
+        print "Dry Run failed\n";
+        print "Configuration file has an invalid syntax. " . ( $ENV{'WHM50'} ? "<a href='javascript:select_exim_advanced(1);'>" : '' ) . "Please try the edit again." . ( $ENV{'WHM50'} ? "</a>" : '' ) . "\n\n";
+        print $ENV{'WHM50'} ? "<div id='broken_cfg_html' class='brush: plain; highlight: " . $exim_cfgobj->{'error_line'} . "'>" . Cpanel::Encoder::Tiny::safe_html_encode_str( $exim_cfgobj->{'broken_cfg_html'} ) . "</div>" : $exim_cfgobj->{'broken_cfg_text'};
+        print $rawout;
+        exit 1;
+    }
+    else {
+        print "Dry Run ok\n";
+        print $rawout;
+        exit 0;
+    }
+}
+
+if ( !$CFDATA{'goodconf'} ) {
+    print "Configuration file has an invalid syntax. " . ( $ENV{'WHM50'} ? "<a href='javascript:select_exim_advanced(1);'>" : '' ) . "Please try the edit again." . ( $ENV{'WHM50'} ? "</a>" : '' ) . "\n\n";
+    print $rawout;
+
+    #
+    # We go back 12 lines and forward 2 as this is enough
+    # to show almost all transport and router name which
+    # will make it much easier to determine the failure
+    # point.
+    #
+    print "-= BEGIN exim.conf chunk -=\n";
+    my @lines = split( /\n/, $exim_cfgobj->{'broken_cfg_text'} );
+    print join( "\n", @lines[ $exim_cfgobj->{'error_line'} - 12 .. $exim_cfgobj->{'error_line'} + 2 ] ) . "\n";
+    print "-= END exim.conf chunk -=\n";
+
+    $exim_cfgobj->install_virgin_config_if_missing( $CFDATA{'config_template'} );
+    $exim_cfgobj->run_script( 'post', 'fail' );
+
+    exit 1;
+}
+else {
+    if ( Cpanel::FileUtils::Write::overwrite_no_exceptions( '/etc/exim.conf', $CFDATA{'cfg'}, 0644 ) ) {
+        Cpanel::FileUtils::Write::overwrite_no_exceptions( '/usr/local/etc/exim/configure', $CFDATA{'cfg'}, 0644 ) if -e '/usr/local/etc/exim/configure';
+
+        # XXX ugly hack, because changes to files subject to .include or .include_if_exists can't do dry runs
+        # SRS only gets away with it because it doesn't change, and if it does change, it's not the end of the world
+        if ( $CFDATA{'settings'}->{'smarthost_routelist'} && $CFDATA{'settings'}->{'smarthost_auth_required'} ) {
+            if (
+                !Cpanel::FileUtils::Write::overwrite_no_exceptions(
+                    $Cpanel::Exim::Config::SMARTHOST_AUTH_FILE,
+                    <<~EOS,
+                    smarthost_login:
+                      driver = plaintext
+                      public_name = LOGIN
+                      hide client_send = : $CFDATA{'settings'}->{'smarthost_username'} : $CFDATA{'settings'}->{'smarthost_password'}
+                    EOS
+                    0600
+                )
+            ) {
+                die "Unable to write $Cpanel::Exim::Config::SMARTHOST_AUTH_FILE: $!";
+            }
+        }
+    }
+    else {
+        die "Unable to write /etc/exim.conf: $!";
+    }
+
+    print "Configuration file passes test!  New configuration file was installed.\n\n";
+
+    $exim_cfgobj->setup_spamassassin_handling( $CFDATA{'acl_spam_handler'} );
+    $exim_cfgobj->build_and_install_exim_pl();
+
+    print $exim_cfgobj->{'rawout'};
+
+    # SPF is required for KAM and other rulesets so enable by default
+    my $sa_init_pre_file      = '/etc/mail/spamassassin/init.pre';
+    my $sa_match_regex_string = '^\s*#loadplugin Mail::SpamAssassin::Plugin::SPF';
+    if ( Cpanel::FileUtils::Lines::has_txt_in_file( $sa_init_pre_file, $sa_match_regex_string ) ) {
+        Cpanel::StringFunc::Replace::regsrep( $sa_init_pre_file, $sa_match_regex_string, 'loadplugin Mail::SpamAssassin::Plugin::SPF' );
+    }
+
+    $exim_cfgobj->run_script( 'post', 'ok' );
+
+    scripts::checkexim::checkeximperms($no_chown_spool);
+
+    my $err;
+    try {
+        Cpanel::Exim::Config::configure_outgoing_spam_scanning();
+    }
+    catch {
+        $err = $_;
+        if ( -t STDERR ) {
+            require Cpanel::Term::ANSIColor::Solarize;
+            print STDERR Cpanel::Term::ANSIColor::Solarize::colored( ["bold black on_red"], Cpanel::Exception::get_string($err) ) . "\n";
+        }
+        else {
+            print STDERR Cpanel::Exception::get_string($err) . "\n";
+        }
+    };
+
+    system '/usr/local/cpanel/scripts/mailscannerupdate', '--force';
+    system '/usr/local/cpanel/scripts/smtpmailgidonly',   '--refresh';
+    system '/usr/local/cpanel/scripts/update_exim_rejects';
+
+    my $exim_caps                    = $exim_cfgobj->{'exim_caps'};
+    my $needs_mail_gid_shadow        = 0;
+    my $configured_for_external_auth = 1;                             # dovecot always enabled
+
+    # Signal cpsrvd to reload its config. Active page hits will not be killed.
+    # do not restart cpsrvd on a fresh install ( cpsrvd is running but is restarted later )
+    #   this avoids to solve continuously "perl dependencies issues" in the exim rpm
+    Cpanel::Signal::send_hup_cpsrvd() if !$ENV{'CPANEL_BASE_INSTALL'};
+
+    exit 0;
+}

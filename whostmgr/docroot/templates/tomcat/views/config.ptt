@@ -1,0 +1,216 @@
+<div id="tableShowHideContainer" ng-hide="config.loadingError">
+    <div class="view-content row">
+        <div class="col-xs-12 col-md-8">
+            <div class="row">
+                <div class="col-xs-12 col-sm-7 col-md-8">
+                    <h2>[% locale.maketext("Enable/Disable “[_1]” Support", "Tomcat 8.5") %]</h2>
+                </div>
+            </div>
+            <div id="paginationControls" class="row search-page-container">
+                <div class="col-xs-12 col-sm-6 col-md-5">
+                    <search id="filterList"
+                        ng-model="config.meta.searchText"
+                        placeholder="[% locale.maketext('Search by user[comment,hint text]') %]"
+                        autofocus
+                        ng-change="config.searchList()"></search>
+                </div>
+                <div class="col-xs-12 col-md-7">
+                    <div id="paginator" class="pagination-container pull-right flip hidden-xs hidden-sm">
+                        <page-size id="topPageSize"
+                            allowed-sizes="config.meta.pageSizes"
+                            total-items="config.meta.totalItems"
+                            ng-model="config.meta.pageSize"
+                            show-all="true"
+                            ng-change="config.selectPageSize()">
+                        </page-size>
+                        <uib-pagination id="topPager"
+                            ng-change="config.selectPage()"
+                            ng-model="config.meta.pageNumber"
+                            max-size="config.meta.maxPages"
+                            items-per-page="config.meta.pageSize"
+                            total-items="config.meta.totalItems"
+                            direction-links="true"
+                            boundary-links="true"
+                            rotate="false"
+                            first-text="<<"
+                            last-text=">>"
+                            previous-text="<"
+                            next-text=">">
+                        </uib-pagination>
+                    </div>
+                </div>
+            </div>
+            <div id="tableStats" class="row hidden-xs hidden-sm">
+                <div class="col-xs-offset-8 col-xs-4">
+                    <div class="page-stats pull-right flip" ng-bind="config.paginationMessage"></div>
+                </div>
+            </div>
+            <div id="tableContainer" class="row">
+                <div class="col-xs-12">
+                    <table id="userTable" class="table table-striped responsive-table">
+                        <thead>
+                            <tr>
+                                <th id="checkAllHeader" class="checkbox-column">
+                                    <input type="checkbox"
+                                        ng-model="config.allChecked"
+                                        ng-change="config.toggleCheckAll()"
+                                        name="checkAllInList"
+                                        id="checkAllInList"
+                                        indeterminate-state
+                                        check-state="config.getIndeterminateState()"
+                                        ng-hide="config.filteredList.length == 0"
+                                        uib-tooltip="[% locale.maketext('Select or deselect all.') %]"
+                                        tooltip-placement="auto right"
+                                        tooltip-append-to-body="true">
+                                </th>
+                                <th>
+                                    <span toggle-sort id="sortByUser" onsort="config.sortList" sort-meta="config.meta" sort-field="user">
+                                        [% locale.maketext('User') %]
+                                    </span>
+                                </th>
+                                <th class="actions-column-header">
+                                    [% locale.maketext('Tomcat Status') %]
+                                </th>
+                                <th id="gearMenuContainer" class="gear-column">
+                                    <span class="dropdown" uib-dropdown>
+                                        <a href id="gearMenu" title="[% locale.maketext('List Operations.') %]" class="dropdown-toggle" uib-dropdown-toggle>
+                                        <span class="fas fa-cog fa-lg"></span>
+                                        </a>
+                                        <ul uib-dropdown-menu class="dropdown-menu dropdown-menu-right text-left flip gear-menu">
+                                            <li role="menuitem">
+                                                <a id="refreshList" href ng-click="config.refreshList(true)">[% locale.maketext('Refresh List') %]</a>
+                                            </li>
+                                            <li role="separator" class="divider">
+                                            </li>
+                                            <li role="menuitem" class="gear-menu-item" ng-class="{disabled: config.checkedCount == config.filteredList.length}">
+                                                <a id="checkAllUsers"
+                                                    class="gear-menu-item"
+                                                    href
+                                                    ng-click="config.checkAll()">
+                                                    [% locale.maketext('Select All Visible') %]
+                                                </a>
+                                            </li>
+                                            <li role="menuitem" class="gear-menu-item" ng-class="{disabled: config.checkedCount == 0}">
+                                                <a id="clearUserSelection"
+                                                    href
+                                                    ng-click="config.resetCheckAll()">
+                                                    [% locale.maketext('Clear Selection') %]
+                                                </a>
+                                            </li>
+                                            <li role="separator" class="divider">
+                                            </li>
+                                            <li role="menuitem" class="gear-menu-item" ng-class="{disabled: config.checkedCount == 0}">
+                                                <a id="enableSelectedUsers" href ng-click="config.confirmToggleMultiple(config.getSelectedUsers(), true)">[% locale.maketext('Enable Selected') %]</a>
+                                            </li>
+                                            <li role="menuitem" class="gear-menu-item" ng-class="{disabled: config.checkedCount == 0}">
+                                                <a id="disableSelectedUsers" href ng-click="config.confirmToggleMultiple(config.getSelectedUsers(), false)">[% locale.maketext('Disable Selected') %]</a>
+                                            </li>
+                                        </ul>
+                                    </span>
+                                </th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr id="loadingNotice" class="info empty-row ng-hide" ng-show="config.loading">
+                                <td colspan="5" id="loadingMessage">
+                                    <i id="loadingSpinner" class="fas fa-spinner fa-spin"></i>
+                                    [% locale.maketext('Loading …') %]
+                                </td>
+                            </tr>
+                            <tr id="emptyListNotice" class="info empty-row ng-hide" ng-show="config.filteredList.length == 0 && !config.loading">
+                                <td colspan="5" id="emptyMessage">[% locale.maketext('No users found.') %]</td>
+                            </tr>
+                            <tr ng-repeat-start="item in config.filteredList track by item.user">
+                                <td class="checkbox-column">
+                                    <input type="checkbox"
+                                        ng-model="item.checked"
+                                        ng-change="config.syncCheckAll(item)"
+                                        name="checkAllInList_{{ item.user }}"
+                                        id="checkAllInList_{{ item.user }}">
+                                </td>
+                                <td data-title="[% locale.maketext('User') %]"
+                                    id="user_{{ item.user }}"
+                                    ng-bind="item.user"
+                                    style="width: 30%">
+                                </td>
+                                <td class="actions-column" data-title="[% locale.maketext('Tomcat Status') %]">
+                                    <!-- Add toggle here -->
+                                    <toggle-switch id="switch_{{ item.user }}"
+                                        ng-model="item.tomcatEnabled"
+                                        ng-hide="item.showAlert"
+                                        enabled-label ="{{ config.toggleLabel(item) }}"
+                                        disabled-label="{{ config.toggleLabel(item) }}"
+                                        title="{{ config.toggleTitle(item) }}"
+                                        on-toggle="config.confirmToggleSingle(item)">
+                                    </toggle-switch>
+                                </td>
+                                <td class="gear-column">&nbsp;</td>
+                            </tr>
+                            <tr id="alertRow_{{ item.user }}"
+                                ng-repeat-end
+                                ng-show="item.showAlert"
+                                class="warning">
+                                <td id="warning_{{ item.user }}" colspan="5">
+                                    <div class="row">
+                                        <div class="col-xs-12 col-md-8">
+                                            <p ng-bind-html="item.alertMsg"></p>
+                                        </div>
+                                        <div class="col-xs-12 col-md-4">
+
+                                                <button type="button" id="{{item.elId}}"
+                                                    class="btn btn-primary btn-sm"
+                                                    title="{{ item.alertActionTitle }}"
+                                                    spinner-id="spinnerContinueToggle_{{item.user}}"
+                                                    cp-action="config.toggleTomcatStatus(item)">
+                                                    <span ng-bind-html="item.alertActionText"></span>
+                                                </button>
+                                                <button type="button" id="confirmToggle_cancel_{{item.user}}"
+                                                    class="btn btn-link"
+                                                    title="[% locale.maketext('Cancel.') %]"
+                                                    ng-click="config.resetToggleSingle(item)">
+                                                    [% locale.maketext("Cancel") %]
+                                                </button>
+
+                                        </div>
+                                    </div>
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            <div class="row hidden-md hidden-lg">
+                <div class="col-xs-offset-4 col-xs-8">
+                    <div class="page-stats pull-right flip" ng-bind="config.paginationMessage"></div>
+                </div>
+            </div>
+            <div class="row search-page-container visible-sm-block visible-xs-block hidden-lg hidden-md">
+                <div class="col-xs-12 col-sm-12">
+                    <div id="paginatorBottom" class="pagination-container">
+                        <page-size id="bottomPageSize"
+                            allowed-sizes="config.meta.pageSizes"
+                            total-items="config.meta.totalItems"
+                            ng-model="config.meta.pageSize"
+                            show-all="true"
+                            ng-change="config.selectPageSize()">
+                        </page-size>
+                        <uib-pagination id="bottomPager"
+                            ng-change="config.selectPage()"
+                            ng-model="config.meta.pageNumber"
+                            max-size="config.meta.maxPages"
+                            items-per-page="config.meta.pageSize"
+                            total-items="config.meta.totalItems"
+                            direction-links="true"
+                            boundary-links="true"
+                            rotate="false"
+                            first-text="<<"
+                            last-text=">>"
+                            previous-text="<"
+                            next-text=">">
+                        </uib-pagination>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>

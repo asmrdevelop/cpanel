@@ -1,0 +1,49 @@
+[% MACRO distinguished_name BLOCK -%]
+    <table class="distinguished-name" style="margin-bottom: 0">
+        [% FOR part = parts -%]
+            <tr>
+                <td style="padding:3px 3px 3px 0;">[% part.0.html() -%]</td>
+                <td style="padding:3px;">[% part.1.html() -%]</td>
+            </tr>
+        [% END -%]
+    </table>
+[% END -%]
+
+[% MACRO domains_list BLOCK -%]
+    <table class="domains-list" style="margin-bottom: 0">
+        [% FOR d = domains -%]
+            <tr>
+                <td style="padding:3px 3px 3px 0;">[% d.html() -%]</td>
+            </tr>
+        [% END -%]
+    </table>
+[% END -%]
+
+[%
+
+PROCESS 'include/zebra_table.tmpl';
+
+MACRO certificate_info_extended BLOCK;
+    zebra_table(
+        boldfirst => 1,
+        items => [
+            [
+                CPANEL.locale.maketext('Expiration:'),
+                CPANEL.locale.datetime( 1 + certificate.not_after(), 'datetime_format_full' ),
+            ],
+            [
+                CPANEL.locale.maketext('Domain Names:'),
+                domains_list( domains => certificate.domains() ),
+            ],
+            [
+                CPANEL.locale.maketext('Subject:'),
+                distinguished_name( parts => certificate.subject_list() ),
+            ],
+            [
+                CPANEL.locale.maketext('Issuer:'),
+                distinguished_name( parts => certificate.issuer_list() ),
+            ],
+        ],
+    );
+END;
+-%]

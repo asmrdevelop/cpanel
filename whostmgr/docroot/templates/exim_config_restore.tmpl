@@ -1,0 +1,192 @@
+[% USE CPScalar -%]
+[% USE JSON -%]
+[% USE Encoder -%]
+[% USE Whostmgr -%]
+[% WRAPPER 'master_templates/master.tmpl' theme="yui"
+    inside_frame_or_tab_or_popup = in_tab
+    skipheader = in_tab
+    breadcrumburl = '/scripts2/displayeximconfforedit'
+    extrastyle = '
+/* Tab Style */
+#pageContainer {
+  margin: 0;
+  padding: 0;
+}
+
+#contentContainer{
+    max-width: inherit !important;
+}
+/* End Tab Style */
+
+html[dir="rtl"] .sortable .cell,
+html[dir="rtl"] .fixedtable .cell,
+html[dir="rtl"] .datatable .cell{
+    border-left: 1px solid #ccc;
+}
+
+html[dir="rtl"] .yui-panel .container-close{
+    left: 4px;
+    right: auto;
+}
+'
+
+-%]
+
+[% IF run %]
+
+    [% SET tabid = "restore" %]
+
+
+    [% IF restore.status %]
+        <div class="okmsg">[% Encoder.safe_html_encode_str(restore.statusmsg) %]</div>
+    [% ELSE %]
+        <div class="errormsg">[% Encoder.safe_html_encode_str(restore.statusmsg) %]</div>
+    [% END %]
+
+
+    [% IF restore.status == 1 && restore.versionmatch %]
+        <script>
+        var Event = YAHOO.util.Event;
+        Event.on(window, "load", function() {
+                    //install_exim_configuration will reload the tabs and check the config
+                    window.location.href = 'install_exim_configuration?in_tab=[% in_tab %]&tabid=[% tabid %]';
+                });
+        </script>
+
+    [% ELSIF restore.status == 1 %]
+        [% PROCESS notify_displayeximconfforedit.tmpl %]
+
+        <script src="[% MagicRevision('/js/exim_tabs_optimized.js') %]"></script>
+
+        <script>
+        var Event = YAHOO.util.Event;
+        Event.on(window, "load", function() {
+                [% IF in_tab %]
+                    parent.reload_tab('restore');
+                    parent.reload_tab('advanced', { 'skip_dry_run_warning':1  });
+
+                    //A narrowly-scoped hack to ensure that the popup
+                    //is visible.
+                    document.body.style.height = "100%";
+                    document.documentElement.style.height = "100%";
+                    document.getElementById("contentContainer").style.height = "100%";
+                [% END %]
+                notify_restore_config_incompat();
+                });
+
+        function notify_restore_config_incompat() {
+                var  restore_config_incompat_panel = new YAHOO.widget.Dialog("restore_config_incompat_panel", {
+                            width:"320px",
+                            visible:false,
+                            modal:true,
+                            constraintoviewport:true,
+                            close:false,
+                            fixedcenter:true,
+                            buttons : [ { text:"Edit", handler:function() {
+                                    [% IF in_tab %]
+                                         select_exim_advanced();
+                                    [% ELSE %]
+                                         select_exim_advanced(1, { 'skip_dry_run_warning':1 });
+                                    [% END %]
+                                    } , isDefault:true } ]
+                            } );
+                document.getElementById('restore_config_incompat_panel').style.display='';
+                restore_config_incompat_panel.render();
+                restore_config_incompat_panel.show();
+        }
+
+        </script>
+
+
+        <div id="restore_config_incompat_panel" style="display:none;">
+            <div class="hd" id="statushd">Restored Configuration Version Mismatch</div>
+            <div class="bd">
+                <div id="status">The configuration you have attempted to restore is for template version: [% restore.restoredversion %].  This version of cPanel/WHM uses template version: [% data.current_template_version %].  The configuration will be loaded into the "Advanced Editor."   Please make the necessary changes to ensure the configuration will function properly, and save when complete.</div>
+            </div>
+            <div class="ft" id="statusft"></div>
+        </div>
+    [% ELSE %]
+        [% PROCESS notify_displayeximconfforedit.tmpl %]
+    [% END %]
+
+
+[% ELSE %]
+
+    [% WRAPPER '_brick.tmpl' bricktitle='Restore the Exim Configuration'  brickpercent='auto' -%]
+    <p>You can restore the Exim configuration from an existing backup file.</p>
+
+    <p><strong>Note:</strong> If the configuration that you want to restore matches the Exim configuration template that WHM currently utilizes (template version: [% data.current_template_version %]), WHM will restore the backup file. If these versions do not match, WHM will upload the backup file to the <em>Advanced Editor</em> tab. You will be redirected to this tab to edit the uploaded configuration for compatibility with the current Exim version.</p>
+
+    <div>
+        <h2>Upload backup from your computer</h2>
+        <form id="restorebck" method="POST" ENCTYPE="multipart/form-data" [% IF in_tab %]target="tabaction"[% END %] action="exim_config_restore" onSubmit="notify_parent_submit();">
+
+            Backup File to Restore: <input type="file" id="file_upload_id" name="backup">
+            <span id="file_upload_id_error"></span>
+            <input type="hidden" name="run" value="1">
+            <input type="hidden" name="serverfile">
+            <input type="hidden" name="in_tab" value="[% in_tab %]">
+            <div>
+                <input type="submit" value="Upload" class="btn-primary" id="restore_upload_button" />
+            </div>
+        </form>
+    </div>
+
+     [% IF !data.list_status %]
+                <p class="description">[% data.list_statusmsg %]</p>
+     [% END %]
+
+     [% IF data.current_server_side_backups.size > 0 %]
+         <div>
+            <h2>Restore backup from the server</h2>
+            <table>
+             <tr>
+                <th>File</th>
+                <th>Time</th>
+                <th>Version</th>
+                <th>Actions</th>
+                 [% FOR backup IN data.current_server_side_backups %]
+                    <tr>
+                        <td>[% backup.file %]</td>
+                        <td>[% backup.servertime %]</td>
+                        <td>[% backup.version %]</td>
+                        <td><a onclick="restore_server_file('[% backup.file.cpanel_safe_html_encode_str() %]'); return false;" href='#'>Restore</a></td>
+                    </tr>
+                 [% END %]
+              </tr>
+            </table>
+         </div>
+     [% END %]
+
+    [% END #brick %]
+
+    <script>
+    function restore_server_file(file) {
+        var formEl = document.getElementById('restorebck');
+        if ( confirm('Are you sure you want to overwrite the current configuration and restore this backup?') ) { notify_parent_submit();
+            formEl.serverfile.value = file;
+            formEl.submit();
+        }
+    }
+    function notify_parent_submit() {
+        if (parent && parent.notify_submit)  {
+            parent.notify_submit('restore','Restoring Configuration...');
+        }
+    }
+
+    document.getElementById('restorebck').serverfile.value = '';
+
+    var init = function() {
+        var validator = new CPANEL.validate.validator("Backup File to Restore");
+        validator.add("file_upload_id", 'min_length(%input%, 1)', '[% locale.maketext("Sorry, you must select a file to restore.") %]');
+        validator.attach();
+        CPANEL.validate.attach_to_form("restore_upload_button", validator);
+    };
+
+    YAHOO.util.Event.onDOMReady(init);
+
+</script>
+
+[% END %]
+
+[% END #wrapper -%]

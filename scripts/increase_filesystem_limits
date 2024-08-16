@@ -1,0 +1,29 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/increase_filesystem_limits      Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use Cpanel::LoadFile ();
+
+my $file_max = Cpanel::LoadFile::loadfile('/proc/sys/fs/file-max');
+if ( $file_max && $file_max < 131072 ) {
+    set_file_value( '/proc/sys/fs/file-max', 131072 );
+}
+
+$file_max = Cpanel::LoadFile::loadfile('/proc/sys/fs/dquot-max');
+if ( $file_max && $file_max < 16384 ) {
+    set_file_value( '/proc/sys/fs/dquot-max', 16384 );
+}
+
+exit;
+
+sub set_file_value {
+    my $file  = shift;
+    my $value = shift;
+    if ( open( my $fh, '>', $file ) ) {
+        print {$fh} $value;
+        close($fh);
+    }
+}

@@ -1,0 +1,70 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/gemwrapper                      Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+use Cpanel::FileUtils::Path ();
+
+my $hasperlexpect = 0;
+
+eval {
+    require IO::Tty;
+    require Expect;
+    $hasperlexpect = 1;
+};
+
+my $gem = Cpanel::FileUtils::Path::findinpath('gem');
+
+if ( $> != 0 ) {
+    my $homedir = ( getpwuid($>) )[7];
+    $ENV{'HOME'}     = $homedir;                   # restore HOME (cleansed by saferun_r_cleanenv when called from Cpanel::LangMods)
+    $ENV{'GEM_HOME'} = $homedir . '/ruby/gems/';
+}
+
+if ( $ARGV[0] =~ m/noexpect/ ) {
+    shift @ARGV;
+    $hasperlexpect = 0;
+}
+
+if ( !$hasperlexpect ) {
+    exec $gem, @ARGV;
+}
+
+$SIG{'ALRM'} = sub { die "Timeout\n"; };
+alarm( 20 * 60 );
+
+my $exp = Expect->spawn( $gem, @ARGV ) or die "Cannot spawn gem installer: $!";
+my $pid = $exp->pid();
+
+my $number = 0;
+while ( waitpid( $pid, 1 ) != -1 ) {
+    $exp->expect(
+        300,
+        [
+            qr/(.*\(ruby\).*)/,
+            sub {
+                if ( !$number ) {
+                    ($number) = $exp->match =~ /\s*(\d+)/;
+                }
+            }
+        ],
+        [
+            '>',
+            sub {
+                my $temp_number = 1;
+                if ($number) {
+                    $temp_number = $number;
+                    $number      = 0;
+                }
+                $exp->send( $temp_number . "\r" );
+            }
+        ],
+        [ 'eof',     sub { exit; } ],
+        [ 'timeout', sub { $exp->send("\r"); } ],
+    );
+}
+
+$exp->soft_close();

@@ -1,0 +1,88 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/simpleps                        Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+## no critic qw(TestingAndDebugging::RequireUseStrict) -- not yet strict safe
+## no critic qw(TestingAndDebugging::RequireUseWarnings) -- not yet warnings safe
+package scripts::simpleps;
+
+use Cpanel::Encoder::Tiny ();
+
+exit( __PACKAGE__->script( \@ARGV ) ) if not caller();
+
+sub script {
+    my ( $pkg, $argv ) = @_;
+    if ( defined $argv->[0] and $argv->[0] eq q{--html} ) {    # --html doesn't use a FORMAT; in this case get_ps just returns the output; so we print it
+        print $pkg->get_ps($argv);
+    }
+    else {                                                     # writes a FORMAT directly to STDOUT in get_ps when not --html
+        $pkg->get_ps();
+    }
+    return;
+}
+
+sub get_ps {
+    my ( $pkg, $argv ) = @_;
+
+    my $html   = 0;
+    my $output = q{};
+    if ( $argv->[0] =~ /html/i ) { $html = 1; }
+
+    my ( $proc, $name, $exe, $cwd, $cmd );
+
+    if ( !$html ) {
+        print <<EOM;
+Pid     Name            Exe                         Cwd
+--------------------------------------------------------------------------------
+EOM
+        format STDOUT =
+@<<<<<< @<<<<<<<<<<<<<< @<<<<<<<<<<<<<<<<<<<<<<<<<< @<<<<<<<<<<<<<<<<<<<<<<<<<<<
+$proc,  $name,          $exe,                       $cwd
+	^<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+	$cmd
+	^<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+ 	$cmd
+	^<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+	$cmd
+--------------------------------------------------------------------------------
+.
+    }
+
+    opendir my $PROC, "/proc";
+    my @PIDS = readdir $PROC;
+    closedir $PROC;
+
+    foreach $proc (@PIDS) {
+        if ( $proc =~ /^\d*$/ ) {
+            my $ok = open my $PROCC, q{<}, "/proc/$proc/cmdline";
+            chomp( $cmd = <$PROCC> );
+            close $PROCC;
+            $ok = open $PROCC, q{<}, "/proc/$proc/stat";
+            my $procps = <$PROCC>;
+            chomp $procps;
+            close $PROCC;
+            ( undef, $name, undef ) = split( /\s/, $procps );
+
+            if ( -e "/proc/$proc/exe" ) {
+                $exe = readlink("/proc/$proc/exe");
+            }
+            else {
+                $exe = readlink("/proc/$proc/file");
+            }
+            $cwd = readlink("/proc/$proc/cwd");
+            if ( !$html ) {
+                write STDOUT;
+            }
+            else {
+                $cmd =~ s/\0/ /g;
+                $output .= "<tr><td>$proc</td><td>" . Cpanel::Encoder::Tiny::safe_html_encode_str($name) . "</td><td>" . Cpanel::Encoder::Tiny::safe_html_encode_str($exe) . "</td><td>" . Cpanel::Encoder::Tiny::safe_html_encode_str($cwd) . "</td><td>" . Cpanel::Encoder::Tiny::safe_html_encode_str($cmd) . "</td></tr>";
+            }
+        }
+    }
+    return $output;
+}
+
+1;

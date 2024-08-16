@@ -1,0 +1,36 @@
+<div class="row">
+    <div class="col-xs-12 text-right flip">
+        <div class="navigation-controls">
+            <button type="button"
+                id="detailViewAddons"
+                class="btn btn-default"
+                ng-click="detail.viewAddons()">
+                [% locale.maketext('View Addon Domains') %]</button>
+            <button type="button"
+                id="detailViewHistory"
+                class="btn btn-primary"
+                ng-click="detail.viewHistory()">
+                [% locale.maketext('View Conversion History') %]</button>
+        </div>
+    </div>
+</div>
+<div class="row">
+    <div class="col-xs-12">
+        <h2 id="conversionDetailHeadline" class="view-title">[% locale.maketext("Conversion Details for “[_1]”", "{{detail.conversionData.domain}}") -%]</h2>
+    </div>
+</div>
+<div class="row">
+    <div class="col-xs-12">
+        <uib-progressbar ng-class="{'progress-striped active': detail.conversionData.job_status == 'INPROGRESS'}" value="100" max="100" type="{{detail.progressBarType}}">{{detail.currentProgressMessage}}</uib-progressbar>
+    </div>
+</div>
+<ol id="conversionDetailsList" class="steps">
+    <li ng-repeat="step in detail.conversionData.steps">
+        <div>{{step.step_name}} <i class="fa" uib-tooltip="{{ message(step.status) }}" ng-class="{'fa-check text-success': step.status == 'DONE', 'fa-times text-danger': step.status == 'FAILED', 'fa-heartbeat text-info': step.status == 'INPROGRESS'}"></i></div>
+        <div class="callout" ng-class="{'callout-warning': step.status != 'FAILED' || (step.status == 'FAILED' && detail.conversionData.job_status != 'FAILED'), 'callout-danger': step.status == 'FAILED' && detail.conversionData.job_status == 'FAILED'}" ng-show="step.warnings.length > 0">
+            <ul class="ng-hide" ng-show="step.warnings">
+                <li ng-repeat="warning in detail.splitWarnings(step.warnings) track by $index">{{warning}}</li>
+            </ul>
+        </div>
+    </li>
+</ol>

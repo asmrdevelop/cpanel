@@ -1,0 +1,66 @@
+[%
+    USE JSON;
+    USE Whostmgr;
+    WRAPPER 'master_templates/master.tmpl'
+        header = data.initiator_info.name || data.header,
+        breadcrumburl = data.initiator_info.url || '/scripts5/account_copy_input',
+        theme = 'bootstrap'
+        stylesheets = [
+            '/cjt/css/wrapped-select.css',
+            '/css2/newform.css',
+            '/yui/progressbar/assets/progressbar-core.css'
+            '/yui/progressbar/assets/skins/sam/progressbar.css',
+            '/cjt/css/ajaxapp-styles.css',
+            '/css/transfers/TransferLogRender.css'
+        ],
+        scripts = [
+            '/libraries/handlebars/handlebars.min.js',
+            '/js2-min/transfer_session_support.js'
+            '/yui/progressbar/progressbar-min.js'
+        ];
+
+    PROCESS '_ajaxapp.tmpl';
+-%]
+
+[% SET spinner16 = MagicRevision('/images/loading-arrows-16.gif'); %]
+
+<div id="content">
+    <div id="header" class="row"></div>
+    [% PROCESS _transfer_error_messages.tmpl %]
+    <div id="windows" class="row"></div>
+    <div class="row">
+        <div class="col-xs-12">
+            <div id="notes" class="alert alert-info">
+                [% locale.maketext('The transfer process does [output,strong,not] stop when you close this window. To view the transfer, run the following command: [output,strong,_1]', '/usr/local/cpanel/bin/view_transfer '  _ data.transfer_session_id) %]
+            </div>
+        </div>
+    </div>
+    <div class="row">
+        <div class="col-xs-12">
+            <div id="summary" class="panel panel-success">
+                <div class="panel-heading">
+                    <h4 id="summary_header"></h4>
+                </div>
+                <div class="panel-body">
+                    <div id="report"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+[% PROCESS _transfer_error_script.tmpl %]
+
+<script>
+    (function(){
+        CPANEL.namespace("CPANEL.PAGE");
+        CPANEL.PAGE = {
+            action: [% data.action.json() %],
+            state: [% data.state.json() %],
+            transfer_session_id: [% data.transfer_session_id.json() %],
+            spinner16: [% MagicRevision('/images/loading-arrows-16.gif').json() %]
+        };
+    })();
+</script>
+
+[% END #wrapper -%]

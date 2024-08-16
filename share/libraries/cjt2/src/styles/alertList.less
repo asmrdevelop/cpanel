@@ -1,0 +1,336 @@
+/**
+ * share/libraries/cjt2/src/styles/alertList.less     Copyright 2022 cPanel, L.L.C.
+ *                                                           All rights reserved.
+ * copyright@cpanel.net                                         http://cpanel.net
+ * This code is subject to the cPanel license. Unauthorized copying is prohibited
+ */
+
+@import (reference) "libraries/base-styles/variables.less";
+
+/**
+ * These top bar offsets are duplicated in alertList.js, so please update
+ * them in both places if they ever change.
+ */
+
+@whm-top: 120px;
+@cpanel-top: 52px;
+@webmail-top: 52px;
+
+@whm-mobile-top: 70px;
+@cpanel-mobile-top: 30px;
+@webmail-mobile-top: 30px;
+
+@alert-gap-xs: 2px;
+@alert-gap-sm: 10px;
+
+@alert-gap-inline-xs: 5px;
+@alert-gap-inline-sm: @alert-gap-sm;
+
+@whm-menu-open-width: 218px; /* Can this be included from somewhere */
+@cpanel-menu-open-width: 50px; /* Can this be included from somewhere */
+@webmail-mobile-breakpoint: 667px;
+
+/**
+ * Overrides for WHM's outdated styles. We cannot import the base-styles into
+ * whm.less yet because of too many conflicts with manual alert class usage.
+ */
+body.whostmgr .alert-list {
+    [dir="ltr"] & .alert-message,
+    [dir="rtl"] & .alert-message {
+        margin: 0px;
+    }
+
+    [dir="ltr"] & .alert-message > .alert-title,
+    [dir="rtl"] & .alert-message > .alert-title {
+        padding: 0;
+    }
+
+    .alert-message {
+        display: block;
+    }
+
+    @import "libraries/base-styles/alerts.less";
+}
+
+/**
+ * Inline styles
+ */
+.inline() {
+    .alert {
+        margin-top: 0;
+        margin-bottom: @alert-gap-inline-xs;
+
+        @media (min-width: @screen-sm-min) {
+            margin-bottom: @alert-gap-inline-sm;
+        }
+    }
+}
+
+/**
+ * Fixed styles
+ */
+.fixed() {
+    position: fixed;
+    z-index: 900;
+
+    min-width: 25%;
+    max-width: 100%;
+    padding-left: (@alert-gap-xs / 2);
+    padding-right: (@alert-gap-xs / 2);
+
+    @media (max-width: @screen-sm-min) {
+        body.whostmgr:not(.nav-collapsed) & {
+            max-width: calc(100% ~"-" @whm-menu-open-width);
+        }
+    }
+
+    @media (max-width: @screen-sm-min) {
+        body.cpanel:not(.nav-collapsed) & {
+            max-width: calc(100% ~"-" @cpanel-menu-open-width);
+        }
+    }
+
+    &.show-scroll-bar {
+        overflow-y: scroll;
+    }
+
+    /**
+     * Place width restrictions on .alert-list instead of the container so that
+     * scroll bars don't affect the list's width (unless we're at the xs size).
+     */
+    .alert-list {
+        width: 100%;
+
+        @media (min-width: @screen-sm-min) {
+            max-width: 500px; /* Messages should not be wider than the reasonable scan ability of the human eye */
+        }
+    }
+
+    &.show-scroll-bar {
+        overflow-y: scroll;
+    }
+}
+
+/**
+ * Vertical fixed position mixins
+ */
+.top() {
+    .whostmgr & {
+        top: @whm-mobile-top;
+    }
+    .cpanel_body & {
+        top: @cpanel-mobile-top;
+    }
+    .webmail & {
+        top: @webmail-top;
+    }
+
+    @media (min-width: @screen-sm-min) {
+        .whostmgr & {
+            top: @whm-top;
+        }
+        .cpanel_body & {
+            top: @cpanel-top;
+        }
+    }
+
+    @media (max-width: @webmail-mobile-breakpoint) {
+        .webmail & {
+            top: @webmail-mobile-top;
+        }
+    }
+
+    /**
+     * Top margins facilitate smooth height transitions.
+     */
+    .alert {
+        margin-top: @alert-gap-xs;
+        margin-bottom: 0;
+
+        @media (min-width: @screen-sm-min) {
+            margin-top: @alert-gap-sm;
+        }
+    }
+
+    /**
+     * Since we have asymmetric margins on the alerts, we need to add asymmetric
+     * margin to the container when we have scrollbars. We opt for margin on the
+     * container over margin on the alerts so that .alert-list only contains the
+     * vital elements and represents the minimum height required to display the
+     * entire list.
+     */
+    &.show-scroll-bar .alert-list {
+        margin-bottom: @alert-gap-xs;
+
+        @media (min-width: @screen-sm-min) {
+            margin-bottom: @alert-gap-sm;
+        }
+    }
+}
+
+.bottom() {
+    bottom: 0;
+
+    /**
+     * Bottom margins facilitate smooth height transitions.
+     */
+    .alert {
+        margin-top: 0;
+        margin-bottom: @alert-gap-xs;
+
+        @media (min-width: @screen-sm-min) {
+            margin-bottom: @alert-gap-sm;
+        }
+    }
+
+    /**
+     * Since we have asymmetric margins on the alerts, we need to add asymmetric
+     * margin to the container when we have scrollbars. We opt for margin on the
+     * container over margin on the alerts so that .alert-list only contains the
+     * vital elements and represents the minimum height required to display the
+     * entire list.
+     */
+    &.show-scroll-bar .alert-list {
+        margin-top: @alert-gap-xs;
+
+        @media (min-width: @screen-sm-min) {
+            margin-top: @alert-gap-sm;
+        }
+    }
+}
+
+.middle-vertical() {
+    top: 50%;
+    transform: translateY(-50%);
+
+    /**
+     * Equal alert spacing on top and bottom of the list.
+     */
+    .alert {
+        margin-top: (@alert-gap-xs / 2);
+        margin-bottom: (@alert-gap-xs / 2);
+
+        @media (min-width: @screen-sm-min) {
+            margin-bottom: (@alert-gap-sm / 2);
+            margin-top: (@alert-gap-sm / 2);
+        }
+    }
+}
+
+/**
+ * Horizontal fixed position mixins
+ */
+.left() {
+    left: 0;
+
+    @media (min-width: @screen-sm-min) {
+        padding-left: @alert-gap-sm;
+        padding-right: 0;
+    }
+}
+
+.right() {
+    right: 0;
+
+    @media (min-width: @screen-sm-min) {
+        padding-left: 0;
+        padding-right: @alert-gap-sm;
+    }
+}
+
+.middle-horizontal() {
+    left: 50%;
+    transform: translateX(-50%);
+
+    @media (min-width: @screen-sm-min) {
+        padding-left: 0;
+        padding-right: 0;
+    }
+}
+
+/**
+ * The actual positions
+ */
+.alert-list-container.position-inline {
+    .inline();
+}
+.alert-list-container.position-top-left {
+    .fixed();
+    .top();
+    .left();
+}
+
+.alert-list-container.position-top-middle {
+    .fixed();
+    .top();
+    .middle-horizontal();
+}
+
+.alert-list-container.position-top-right {
+    .fixed();
+    .top();
+    .right();
+}
+
+.alert-list-container.position-middle-left {
+    .fixed();
+    .middle-vertical();
+    .left();
+}
+
+.alert-list-backdrop.position-middle-middle {
+    position: fixed;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 899;
+    overflow: hidden;
+    outline: 0;
+    background-color: #000;
+    opacity: 0.5;
+}
+
+.alert-list-container.position-middle-middle {
+    .fixed();
+    .middle-vertical();
+    .middle-horizontal();
+}
+
+.alert-list-container.position-middle-right {
+    .fixed();
+    .middle-vertical();
+    .right();
+}
+
+.alert-list-container.position-bottom-left {
+    .fixed();
+    .bottom();
+    .left();
+}
+
+.alert-list-container.position-bottom-middle {
+    .fixed();
+    .bottom();
+    .middle-horizontal();
+}
+
+.alert-list-container.position-bottom-right {
+    .fixed();
+    .bottom();
+    .right();
+}
+
+/**
+ * Animations (these complement the bits that are done via JS in the directive)
+ */
+
+.alert-container {
+    overflow: hidden;
+    transition: transform 300ms ease-out, opacity 300ms ease-out;
+}
+
+.alert-container.ng-enter {
+    transform: translateX(-50px);
+    opacity: 0;
+}

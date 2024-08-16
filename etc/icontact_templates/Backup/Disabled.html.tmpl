@@ -1,0 +1,70 @@
+[%#
+Variables passed in:
+
+origin          - the system component which generated the email
+
+host_server
+reason          - the reason why transport is disabled
+name            - the name(alias) of the backup destination
+type            - the backup destination type (ftp, sftp, scp, homedir)
+remote_host     - Remote host address that corresponds to name
+
+For more information about how to customize notification templates, read our documentation at https://go.cpanel.net/notificationtemplates
+
+-%]
+
+[%
+    PROCESS "include/colors.tmpl";
+    PROCESS "include/styles.tmpl";
+
+    WRAPPER 'wrapper/main.html.tmpl';
+
+    NOTICE.email_reason = CPANEL.locale.maketext('Backup Transport Disabled.');
+%]
+
+<p>
+    [% CPANEL.locale.maketext('One of the methods that the system uses to transfer a backup is disabled:'); %]
+</p>
+<p>
+    <table style="padding: 10px 0 10px 0;">
+        <tbody>
+            <tr>
+                <th align="right">
+                    [% CPANEL.locale.maketext('Name:') %]
+                </th>
+                <td align="left">
+                    [% NOTICE.name %]
+                </td>
+            </tr>
+            <tr>
+                <th align="right">
+                    [% CPANEL.locale.maketext('Type:') %]
+                </th>
+                <td align="left">
+                    [% NOTICE.type %]
+                </td>
+            </tr>
+            <tr>
+                <th align="right">
+                    [% CPANEL.locale.maketext('Remote Host:') %]
+                </th>
+                <td align="left">
+                    [% NOTICE.remote_host %]
+                </td>
+            </tr>
+            <tr>
+                <th align="right">
+                    [% CPANEL.locale.maketext('Reason:') %]
+                </th>
+                <td align="left">
+                    [% NOTICE.reason %]
+                </td>
+            </tr>
+        </tbody>
+    </table>
+</p>
+<p>
+    [% CPANEL.locale.maketext('To manage your backup transports and to fix this issue, use [asis,WHM]’s [_1] interface at: [output,url,_2,_2,target,_3]', CPANEL.locale.maketext('Backup Configuration'), CPANEL.assemble_whm_url("scripts/backupconfig"),'_blank') %]
+</p>
+
+[% END %]

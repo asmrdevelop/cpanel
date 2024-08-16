@@ -1,0 +1,104 @@
+[%
+    #REQUIRES USING Cpanel::iContact::Utils (); IN THE ASSOCIATED CALL
+%]
+
+[%
+    PROCESS 'include/system_info_views.html.tmpl';
+    PROCESS 'include/code_inline.tmpl';
+-%]
+
+[% MACRO system_info_rows BLOCK %]
+        [% system_info_table_zebra = !system_info_table_zebra %]
+        <tr style="background-color:[% system_info_table_zebra? light_gray : white %]">
+            <th align="left">[% CPANEL.locale.maketext('Memory Information'); %]</th>
+            <td>
+                <table>
+                    <tr>
+                        <td align="left">[% CPANEL.locale.maketext('Used'); %]</td>
+                        <td>[% CPANEL.locale.format_bytes( NOTICE.memory_used ); %]</td>
+                    </tr>
+                    <tr>
+                        <td align="left">[% CPANEL.locale.maketext('Available'); %]</td>
+                        <td>[% CPANEL.locale.format_bytes( NOTICE.memory_available ); %]</td>
+                    </tr>
+                    <tr>
+                        <td align="left">[% CPANEL.locale.maketext('Installed'); %]</td>
+                        <td>[% CPANEL.locale.format_bytes( NOTICE.memory_installed ); %]</td>
+                    </tr>
+                </table>
+            </td>
+        </tr>
+        [% system_info_table_zebra = !system_info_table_zebra %]
+        <tr style="background-color:[% system_info_table_zebra? light_gray : white %]">
+            <th align="left">[% CPANEL.locale.maketext('Load Information'); %]</th>
+            <td>
+                <span>[% NOTICE.load_one %]</span>
+                <span>[% NOTICE.load_five %]</span>
+                <span>[% NOTICE.load_fifteen %]</span>
+            </td>
+        </tr>
+        [% system_info_table_zebra = !system_info_table_zebra %]
+        <tr style="background-color:[% system_info_table_zebra? light_gray : white %]">
+            <th align="left">[% CPANEL.locale.maketext('Uptime'); %]</th>
+            <td>[% split_time_view.print(NOTICE.uptime) %]</td>
+        </tr>
+        [% IF NOTICE.iostat_txt %]
+            [% system_info_table_zebra = !system_info_table_zebra %]
+            <tr style="background-color:[% system_info_table_zebra? light_gray : white %]">
+                <th align="left">[% CPANEL.locale.maketext('[asis,IOStat] Information'); %]</th>
+                <td>[% code_inline(term=NOTICE.iostat_txt) %]</td>
+            </tr>
+        [% END %]
+        [% IF NOTICE.chkservd_version && NOTICE.show_chkservd_version %]
+            [% system_info_table_zebra = !system_info_table_zebra %]
+            <tr style="background-color:[% system_info_table_zebra? light_gray : white %]">
+                <th align="left">[% CPANEL.locale.maketext('[asis,ChkServd] Version') %]</th>
+                <td>[% NOTICE.chkservd_version %]</td>
+            </tr>
+        [% END %]
+        [% FOREACH key IN additional_items.keys %]
+            [% IF additional_items.$key %]
+                [% system_info_table_zebra = !system_info_table_zebra %]
+                <tr style="background-color:[% system_info_table_zebra? light_gray : white %]">
+                    <th align="left">
+                        [% key %]
+                    </th>
+                    <td>
+                        [% additional_items.$key %]
+                    </td>
+                </tr>
+            [% END %]
+        [% END %]
+        [% IF NOTICE.procdata %]
+          [% system_info_table_zebra = !system_info_table_zebra %]
+          <tr style="background-color:[% system_info_table_zebra? light_gray : white %]">
+              <th align="left">[% CPANEL.locale.maketext('Top Processes'); %]</th>
+              <td>
+                <table>
+                  <tr style="background-color:[% med_dark_gray %];">
+                     <th>[% CPANEL.locale.maketext('[output,abbr,PID,process ID]') %]</th>
+                     <th>[% CPANEL.locale.maketext('Owner') %]</th>
+                     <th>[% CPANEL.locale.maketext('[output,abbr,CPU,Central Processing Unit] %') %]</th>
+                     <th>Memory %</th>
+                     <th>[% CPANEL.locale.maketext('Command') %]</th>
+                  </tr>
+                  [% FOR procdata = NOTICE.procdata -%]
+                    <tr style="background-color:[% loop.index % 2 ? light_gray : medium_gray %]">
+                        <td class="pid">[% procdata.pid %]</td>
+                        <td class="owner">[% procdata.user %]</td>
+                        <td class="cpu">[% procdata.cpu %]</td>
+                        <td class="mem">[% procdata.mem %]</td>
+                        <td class="command">[% code_inline(term=procdata.command) %]</td>
+                    </tr>
+                    [%
+                        LAST IF loop.index >= 4
+                        # Five items since this is zero indexed
+                    %]
+                  [% END -%]
+                </table>
+              </td>
+          </tr>
+        [% END %]
+
+[% END %]
+

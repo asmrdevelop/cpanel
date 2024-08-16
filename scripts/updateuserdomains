@@ -1,0 +1,25 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/updateuserdomains               Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+use Cpanel::Userdomains::CORE ();
+
+my $force   = 0;
+my $verbose = 0;
+
+if (@ARGV) {
+    if ( grep( /^--verbose$/, @ARGV ) ) {
+        $verbose = 1;
+        @ARGV    = grep !/^--verbose$/, @ARGV;
+    }
+    if ( grep( /^--force$/, @ARGV ) ) {
+        $force = 1;
+        @ARGV  = grep !/^--force$/, @ARGV;
+    }
+}
+
+Cpanel::Userdomains::CORE->new()->update( 'force' => $force, 'verbose' => $verbose );

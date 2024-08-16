@@ -1,0 +1,114 @@
+
+# cpanel - Cpanel/Time.pod                         Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+=head1 NAME
+
+Cpanel::Time - Utilities for formatting dates and times.
+
+=head1 SYNOPSIS
+
+    use Cpanel::Time;
+
+    print Cpanel::Time::time2http(), "\n";
+    print Cpanel::Time::time2http( time + 24*3600 ), "\n";
+
+=head1 DESCRIPTION
+
+There are a large number of different ways to format a data and time. Many protocols
+on the Internet use slight variations of different formats. Then, there are log
+files...
+
+This module collects together a number of time/date formatting routines that are
+used in the Cpanel code. Each one can be called with a time (in epoch seconds) or
+without a time (which defaults to now) and returns an appropriately formatted
+string.
+
+=head1 INTERFACE
+
+=head2 Cpanel::Time::time2http( $secs )
+
+The HTTP protocol recommended format defined by RFC 822 and updated by RFC 1123.
+The time is always shown in UTC.
+
+    Wed, 08 Jul 2009 06:49:37 GMT
+
+The C<$secs> parameter is optional and defaults to the current time.
+
+=head2 Cpanel::Time::time2clftime( $secs )
+
+Format the time as supplied in the Apache Common Log Format. The time is always
+formatted in UTC.
+
+   08/Jul/2009:06:49:37 -0000
+
+The C<$secs> parameter is optional and defaults to the current time.
+
+=head2 Cpanel::Time::time2dnstime( $secs )
+
+This format gives the date as YYYYMMDD in UTC.
+
+    20090708
+
+The C<$secs> parameter is optional and defaults to the current time.
+
+=head2 Cpanel::Time::time2condensedtime( $secs )
+
+This gives the date and time in a packed format YYYYMMDDHHmmSS in UTC.
+
+    20090708064937
+
+The C<$secs> parameter is optional and defaults to the current time.
+
+=head2 Cpanel::Time::time2datetime( $secs, $delimiter )
+
+This gives the date and time in UTC as formatted in some of our logs.
+
+    2009-Jul-08 06:49:37
+
+The C<$secs> parameter is optional and defaults to the current time.
+The C<$delimiter> parameter specifies the string between the date and the time.
+It is optional and defaults to a single space.
+
+=head2 Cpanel::Time::localtime2timestamp( $secs, $delimiter )
+
+This gives the date and time in the local timezone as formatted in some of our logs.
+
+    2009-Jul-08 06:49:37 CDT
+
+The C<$secs> parameter is optional and defaults to the current time.
+The C<$delimiter> parameter specifies the string between the date and the time.
+It is optional and defaults to a single space.
+
+=head2 Cpanel::Time::time2cookie( $secs )
+
+Used in cookie expiration dates. This is the old UseNet date time format
+specified in RFC 850 and replaced in RFC 1306.
+
+    Wednesday, 08-Jul-09 06:49:37 GMT
+
+The C<$secs> parameter is optional and defaults to the current time.
+
+=head1 CONFIGURATION AND ENVIRONMENT
+
+Cpanel::Time requires no configuration files or environment variables.
+
+=head1 DEPENDENCIES
+
+This module has an optional dependency on the L<POSIX> module that only applies
+if the C<localtime2date> method is used.
+
+=head1 INCOMPATIBILITIES
+
+None reported.
+
+=head1 BUGS AND LIMITATIONS
+
+No bugs have been reported.
+
+=head1 LICENSE AND COPYRIGHT
+
+Copyright (c) 2009, cPanel, Inc. All rights reserved.
+This code is subject to the cPanel license. Unauthorized copying is prohibited

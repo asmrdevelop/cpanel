@@ -1,0 +1,101 @@
+[%#
+Variables passed in:
+
+origin                  - the system component from which the the notification was requested.
+removed                 - array of removed configuration directives.
+renamed                 - array of hashes detailing renamed configuration directives ({ $oldname => $newname}).
+manual                  - array of disabled configuration directives that require manual intervention from the admin.
+
+For more information about how to customize notification templates, read our documentation at https://go.cpanel.net/notificationtemplates
+
+-%]
+
+[%
+    PROCESS "include/colors.tmpl";
+    PROCESS "include/styles.tmpl";
+    PROCESS "include/zebra_table.tmpl";
+
+    WRAPPER 'wrapper/main.html.tmpl';
+          NOTICE.email_reason = "[migrate-pdns-conf] " _ CPANEL.locale.maketext('Updated [asis,PowerDNS] Configuration on “[_1]”.' , NOTICE.host_server);
+%]
+
+[% IF NOTICE.removed.size;
+    removed_table_title = CPANEL.locale.maketext("Disabled configuration directives");
+    removed_table_items = [];
+    FOREACH directive IN NOTICE.removed;
+        removed_table_items.push(directive);
+    END;
+%]
+<p>
+    [% CPANEL.locale.maketext('The system disabled the following invalid configuration directives:') %]
+</p>
+<p style="padding:10px;">
+[% zebra_table(titles=removed_table_title, items=removed_table_items) %]
+</p>
+[% END; %]
+
+[% IF NOTICE.renamed.size; %]
+<p>
+    [% CPANEL.locale.maketext('The system renamed the following configuration directives:') %]
+</p>
+    [%
+        renamed_table_titles = [
+            CPANEL.locale.maketext("Old"),
+            CPANEL.locale.maketext("New"),
+        ];
+        renamed_table_items = [];
+        FOREACH directive_pair IN NOTICE.renamed;
+            table_item = [];
+            FOREACH pair IN directive_pair.pairs;
+                table_item.push(pair.key);
+                table_item.push(pair.value);
+            END;
+            renamed_table_items.push(table_item);
+        END;
+    %]
+<p style="padding:10px;">
+[% zebra_table(titles=renamed_table_titles, items=renamed_table_items) %]
+</p>
+[% END; %]
+
+[% IF NOTICE.manual.size; %]
+<p>
+    [% CPANEL.locale.maketext('The system disabled the following configuration directives and each requires administrator intervention:') %]
+</p>
+    [%
+        manual_table_title = CPANEL.locale.maketext("Configuration directives requiring manual intervention");
+        manual_table_items = [];
+        FOREACH directive IN NOTICE.manual;
+            manual_table_items.push(directive);
+        END;
+    %]
+<p style="padding:10px;">
+[% zebra_table(titles=manual_table_title, items=manual_table_items) %]
+</p>
+[% END; %]
+
+[% IF NOTICE.enabled.size; %]
+<p>
+    [% CPANEL.locale.maketext('The system added the following configuration directives:') %]
+</p>
+    [%
+        enabled_table_titles = [
+            CPANEL.locale.maketext("Directive"),
+            CPANEL.locale.maketext("Value"),
+        ];
+        enabled_table_items = [];
+        FOREACH directive_pair IN NOTICE.enabled;
+            table_item = [];
+            FOREACH pair IN directive_pair.pairs;
+                table_item.push(pair.key);
+                table_item.push(pair.value);
+            END;
+            enabled_table_items.push(table_item);
+        END;
+    %]
+<p style="padding:10px;">
+[% zebra_table(titles=enabled_table_titles, items=enabled_table_items) %]
+</p>
+[% END; %]
+
+[% END %]

@@ -1,0 +1,53 @@
+[%
+    USE Whostmgr;
+    USE JSON;
+
+    SET styleSheets = [
+            Whostmgr.find_file_url('/templates/tomcat/index.min.css')
+        ];
+
+    SET locale_is_rtl = 0;
+
+    WRAPPER 'master_templates/master.tmpl'
+        app_key = 'tomcat_manager',
+        header = locale.maketext('[asis,Tomcat] Manager'),
+        breadcrumburl = '/scripts/tomcatlist',
+        base = '/scripts/tomcatlist/',
+        stylesheets = styleSheets,
+        CJT2_EXCLUSIVE = 0,
+        theme='bootstrap';
+%]
+[% IF tomcat_enabled -%]
+<div id="content" ng-cloak>
+    <p class="description">[% locale.maketext("This interface allows you to manage your users’ access to Tomcat. For more information about Tomcat configuration, read our [output,url,_1,Tomcat documentation,target,blank].", "https://go.cpanel.net/EA4Tomcat") %]</p>
+    <div class="ng-cloak col-xs-12">
+        <cp-alert-list></cp-alert-list>
+    </div>
+    <div ng-view></div>
+</div>
+<div growl></div>
+
+<script type="text/ng-template" id="tomcat/views/config.ptt">
+[% PROCESS 'tomcat/views/config.ptt' %]
+</script>
+
+<script type="text/ng-template" id="confirm_enable_disable.tmpl">
+[% PROCESS 'tomcat/views/confirm_enable_disable.ptt' %]
+</script>
+
+[% ELSE -%]
+<div id="tomcatNotAvailable" class="alert alert-info">
+    <span class="glyphicon glyphicon-info-sign"></span>
+    <div class="alert-message">
+        <strong>[% locale.maketext("Info:") %]</strong>
+        [% locale.maketext("“[_1]” is not installed on your system.", "Tomcat 8.5") %]
+        [% locale.maketext("You must install the “[_1]” package to be able to configure it on the user domains.", "ea-tomcat85") %]
+        [% locale.maketext("For more information, read our [output,url,_1,documentation,_2].", "//go.cpanel.net/tomcat", {"target" => "_blank"}) %]
+    </div>
+</div>
+
+[% END -%]
+
+[% PROCESS 'master_templates/cjt2_header_include.tt' %]
+
+[% END %]

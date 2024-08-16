@@ -1,0 +1,53 @@
+[% WRAPPER 'master_templates/master.tmpl'
+   theme='bootstrap'
+   app_key='traceroute_enable_disable'
+-%]
+
+<p>
+[% locale.maketext('Traceroute displays the packet routing statistics from the server to another network host. It can be used to map the network’s topology and subsequently be used as a tool to focus a hacking attack.') %]</p>
+</p>
+
+<h3>Traceroute Status</h3>
+
+[% IF !data.binaries.keys.size %]
+<section class="callout callout-warning">  [% locale.maketext('No traceroute binaries exist on your system.') %]</section>
+[% ELSE %]
+[% IF !data.funky && !data.disabled && data.enabled %]
+<section class="callout callout-info">  [% locale.maketext('Traceroute is currently enabled.') %]</section>
+[% ELSIF !data.funky && !data.enabled && data.disabled %]
+<section class="callout callout-info">  [% locale.maketext('Traceroute is currently disabled.') %]</section>
+[% ELSE %]
+<section class="callout callout-warning">  [% locale.maketext('Traceroute is currently partially enabled.') %]</section>
+[% END %]
+
+[% IF data.errors.keys %]
+<div class="alert alert-danger">
+    <span class="glyphicon glyphicon-remove-sign"></span>
+    <div class="alert-message">
+      [% locale.maketext('[output,strong,Error]: Some file permissions were set improperly.') %]
+    </div>
+</div>
+[% END %]
+
+[% IF data.binaries.keys %]
+<table class="table">
+<tr><th>Binary</th><th>Permissions</th></tr>
+[% FOREACH binary IN data.binaries.keys %]
+<tr [% IF data.errors.$binary %]class="callout callout-danger"[% END %]>
+  <td>[% binary | html %]</td>
+  <td>[% data.binaries.$binary | html %]</td>
+</tr>
+[% END #FOREACH -%]
+</table>
+[% END -%]
+
+<form action="[% cp_security_token %]/scripts/settrace">
+[% IF data.enabled OR data.funky %]
+<input type="submit" class="btn btn-primary" value="Disable" name="dis" />
+[% END %]
+[% IF data.disabled OR data.funky %]
+<input type="submit" class="btn btn-primary" value="Enable" name="ena" />
+[% END %]
+</form>
+[% END # no traceroute at all%]
+[% END #wrapper -%]

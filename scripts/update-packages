@@ -1,0 +1,148 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/update-packages                           Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+#
+
+package scripts::UpdatePackages;
+
+use cPstrict;
+
+use Cpanel::Imports;
+
+use Cpanel::Config::Httpd::EA4 ();
+use Getopt::Param              ();
+use Cpanel::Update::Config     ();
+use Cpanel::SysPkgs            ();
+use Cpanel::ServerTasks        ();
+
+my @EA4_REQUIRED_RPMS = qw( ea-apache24 ea-apache24-config );
+
+exit( __PACKAGE__->script(@ARGV) // 0 ) unless caller;
+
+sub script {
+    my $param = Getopt::Param->new;
+
+    my $forced = $param->get_param('force') || $ENV{'FORCEDCPUPDATE'};
+
+    my $os_updates_enabled = are_os_updates_enabled( $param->get_param('verbose') // 0 );
+
+    if ( !$os_updates_enabled ) {
+
+        # return 1 will exit 1 if ensure_ea4_is_updated fails
+        return 1 if !update_ea4_only();
+
+        return 0;
+    }
+
+    my $syspkgs = Cpanel::SysPkgs->new();
+    $syspkgs->check_and_set_exclude_rules;    # make sure some packages are blocked
+
+    if ($forced) {
+        say 'Running package manager clean up before update due to force option ...';
+        $syspkgs->clean();
+    }
+
+    # The $syspkgs object will have already notified about the error.
+    # We do not die on failure in case _check_and_set_system_exclude_rules needs to
+    # change the kernel exclude back below
+    my $syspkgs_update_success = $syspkgs->update();
+
+    if ( !$syspkgs_update_success ) {
+        require Cpanel::Notify;
+        Cpanel::Notify::notification_class(
+            'class'            => 'update_packages::UpdateFailed',
+            'application'      => 'update_packages::UpdateFailed',
+            'constructor_args' => []
+        );
+    }
+
+    Cpanel::ServerTasks::schedule_task( ['SystemTasks'], 5, "recache_system_reboot_data" );
+
+    return $syspkgs_update_success ? 0 : 1;
+
+}
+
+sub are_os_updates_enabled ($verbose) {
+    my $update_conf_ref = Cpanel::Update::Config::load();
+
+    return 1 if $update_conf_ref->{'RPMUP'} ne 'never';
+
+    my $updates_setting = $update_conf_ref->{'UPDATES'} || '';
+    my $is_manual       = $ENV{'CPANEL_IS_CRON'} ? 0 : 1;         # see upcp for how this is set
+    my $is_ea4          = Cpanel::Config::Httpd::EA4::is_ea4();
+
+    if ( $updates_setting eq 'never' ) {
+        if ( $is_ea4 && $verbose ) {
+            say locale->maketext(
+                'Because both the “[_1]” and “[_2]” options are set to “[_3]”, the system will not perform any package updates.',
+                'RPMUP',
+                'UPDATES',
+                'never'
+            );
+            say locale->maketext(
+                'Change “[_1]” to a different value to enable all package updates, or change “[_2]” to a different value to enable updates to just [asis,EasyApache 4].',
+                'RPMUP',
+                'UPDATES'
+            );
+        }
+
+    }
+    elsif ( $updates_setting eq 'manual' && !$is_manual ) {
+
+        # Although cPanel updates are enabled, one is not happening
+        # at this time because the ENV variable CPANEL_IS_CRON is set
+        # to 1 which indicates upcp was not called manually so only
+        # maintenance is being run and there is no concern about
+        # EA4 not being in sync with cPanel.  When we are doing
+        # a manually update we will fall into the block below and
+        # and update EA4 if its installed.
+        if ($verbose) {
+            say locale->maketext(
+                "Because the “[_1]” option is set to “[_2]”, the system will not update any packages.",
+                'RPMUP',
+                'never'
+            );
+        }
+        if ( $is_ea4 && $verbose ) {
+            say locale->maketext(
+                "Because the “[_1]” option is set to “[_2]” and this is an automatic update, the system will not update EasyApache 4.",
+                'UPDATES',
+                'manual'
+            );
+        }
+    }
+    else {
+        # In the event OS updates are disabled, we need to manually
+        # request an EA4 update to prevent the system from breaking
+        # because EA4 is out of date and cPanel has a newer
+        # configuration.
+        if ($is_ea4) {
+            if ($verbose) {
+                say locale->maketext(
+                    "Because [asis,cPanel] automatic updates are enabled and the “[_1]” option is set to “[_2]”, the package update will only apply to EasyApache 4. This ensures that [asis,cPanel] and EasyApache 4 remain compatible.",
+                    'RPMUP',
+                    'never'
+                );
+            }
+        }
+        elsif ($verbose) {
+            say locale->maketext(
+                "Because the “[_1]” option is set to “[_2]”, the system will not update any packages.",
+                'RPMUP',
+                'never'
+            );
+        }
+    }
+
+    return 0;
+}
+
+sub update_ea4_only () {
+    return Cpanel::SysPkgs->new->update( 'pkglist' => \@EA4_REQUIRED_RPMS );
+}
+
+1;

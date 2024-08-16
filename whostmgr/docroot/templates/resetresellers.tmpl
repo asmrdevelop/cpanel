@@ -1,0 +1,65 @@
+[% WRAPPER 'master_templates/master.tmpl' theme="yui"
+	breadcrumburl = '/scripts/resetresellers'
+        app_key='reset_resellers'
+-%]
+[% IF data.resellers.empty -%]
+<p>You currently have no resellers. To use this interface, create one or more resellers.</p>
+[% ELSE -%]
+<table width="100%">
+    <tr>
+[% IF !data.acl_list.empty -%]
+        <td valign="top">
+
+<form action="../scripts/doresetresellers" method="POST">
+<input type="hidden" name="action" value="applyacls">
+
+<h2>Apply an ACL list to multiple resellers</h2>
+
+<p>Apply this ACL list:</p>
+<div>
+        <select name="acllist">
+[% FOREACH acl_list IN data.acl_list -%]
+        <option value="[% acl_list.acl_list %]">[% acl_list.acl_list %]</option>
+[% END -%]
+       </select>
+</div>
+<p>To these Resellers:</p>
+<div>
+<table class="sortable">
+<tr><th>&nbsp;</th><th>User</th><th>Domain</th></tr>
+[% FOREACH reseller IN data.resellers -%]
+<tr><td><input type="checkbox" name="reseller-[% reseller.user %]" value="1"></td><td>[% reseller.user %]</td><td>[% reseller.domain %]</td></tr>
+[% END -%]
+</table>
+</div>
+<input type="submit" class="btn-primary" value="Apply">
+</form>
+
+        </td>
+[% END -%]
+        <td valign="top">
+
+        <form action="../scripts/doresetresellers" method="POST">
+<input type="hidden" name="action" value="resetpkgperms">
+
+<h2>Reset package permissions to default</h2>
+
+<p class="description">Here you can force a reseller to only use packages they own<br /> This will override any other packages they current have access<br /> to but will not change any packages that are currently being<br /> used on their accounts.</p>
+<p>Select Reseller(s) to reset:</b></p>
+<div>
+<table class="sortable">
+<tr><th>&nbsp;</th><th>User</th><th>Domain</th></tr>
+[% FOREACH reseller IN data.resellers -%]
+<tr><td><input type="checkbox" name="reseller-[% reseller.user %]" value="1"></td><td>[% reseller.user %]</td><td>[% reseller.domain %]</td></tr>
+[% END -%]
+</table>
+</div>
+
+<input class="btn-primary" type="submit" value="Reset">
+</form>
+
+        </td>
+    </tr>
+</table>
+[% END -%]
+[% END -%]

@@ -1,0 +1,67 @@
+[%
+# ng/whm/apps/initial-setup-wizard/src/index.html.tt
+#                                                  Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+%]
+
+[%
+USE Whostmgr;
+USE JSON;
+
+SET TEMPLATE_PATH = '/templates/initial-setup-wizard/';
+SET PAGE_BASE     = '/scripts3/initial_setup_wizard1';
+SET ROUTER_PATH   = cp_security_token _ PAGE_BASE;
+SET RESOURCE_PATH = cp_security_token _ TEMPLATE_PATH;
+SET style_sheets   = [];
+SET scripts       = []; # Do not change this name unless it is also changed in the partials below.
+
+# The following content is inserted by underscore-template-loader's require macro.
+#
+#----------------------------------------------------
+# ∨∨∨ THIS IS GENERATED CODE, DO NOT MODIFY IT ∨∨∨
+#----------------------------------------------------
+#
+# Build webpack css bundle list
+style_sheets.push(Whostmgr.find_file_url(TEMPLATE_PATH _ "styles.1c5de5be7b71551c.css"));
+
+# Build webpack javascript bundle list
+scripts.push(Whostmgr.find_file_url(TEMPLATE_PATH _ "runtime.6f6a2b9b9caac9bd.js"));
+scripts.push(Whostmgr.find_file_url(TEMPLATE_PATH _ "vendor.64360f1da136e47f.js"));
+scripts.push(Whostmgr.find_file_url(TEMPLATE_PATH _ "polyfills.eadb71f5f2da60bf.js"));
+scripts.push(Whostmgr.find_file_url(TEMPLATE_PATH _ "main.b87944e14be8a09a.js"));
+
+#
+# ^^^ THIS IS GENERATED CODE, DO NOT MODIFY IT ^^^
+#----------------------------------------------------
+
+SET locale_is_rtl = 0;
+
+    WRAPPER 'master_templates/master.tmpl'
+        base                  = PAGE_BASE,
+        skipbreadcrumb        = 1,
+        skipsupport           = 1,
+        skipheader            = 1,
+        skipfooter            = 1,
+        hide_header           = 1,
+        hide_navigation       = 1,
+        hide_license_warnings = 1,
+        CJT2_EXCLUSIVE        = 1,
+        theme                 = 'jupiter'
+        is_ng                 = 1,
+        stylesheets           = style_sheets;
+
+%]
+<isw-root></isw-root>
+<script>
+    var PAGE = [% data.json() %];
+
+    var MagicRevision = [% MagicRevision('/templates/initial-setup-wizard/').json() %];
+    PAGE.pageURL = [% ROUTER_PATH.json() %];
+    PAGE.cp_security_token = "[% cp_security_token %]";
+    PAGE.logo = [% Whostmgr.find_file_and_insert('/images/cpanel_whm_logo.svg').json() %]
+    PAGE.whm_logo = [% Whostmgr.get_whm_logos(['WhmDarkLg']).json() %]
+</script>
+
+[% END %]

@@ -1,0 +1,32 @@
+#!/usr/bin/perl
+
+# cpanel - src/userperl/uninstall                  Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+my $installed = 0;
+my $ver;
+open( PERL, '<', '/usr/bin/perl' );
+while (<PERL>) {
+    if (/cPanel Perl Wrapper ([\d\.]+)/) {
+        $ver       = $1;
+        $installed = 1;
+        last();
+    }
+}
+close(PERL);
+
+if ( !$installed ) {
+    print "Cannot uninstall, /usr/bin/perl is not the wrapper!\n";
+    exit(1);
+}
+
+if ( -e '/usr/bin/perl-bin' ) {
+    unlink '/usr/bin/perl';
+    rename( '/usr/bin/perl-bin', '/usr/bin/perl' );
+    print "Uninstall of cPanel Perl Wrapper Complete\n";
+}
+else {
+    print "Uninstall Failed\n";
+}

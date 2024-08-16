@@ -1,0 +1,259 @@
+[% USE CPList -%]
+[% USE JSON -%]
+[%- SET bgimg = MagicRevision('/yui/slider/assets/bg-fader.gif');
+   WRAPPER 'master_templates/master.tmpl'
+   theme="yui"
+   app_key='configure_security_policies'
+   extrastyle="
+
+.form_action {
+	border:8px solid #ddd;
+	margin:5px 0 20px;
+	width:600px;
+}
+
+.config {
+    margin: 0 0 0 25px;
+}
+
+ul, ol {
+    list-style: none;
+}
+#content fieldset ul, #content fieldset ol, #content fieldset ul li {
+    margin: 0;
+    padding: 0;
+    border: 0;
+    border-top: 0;
+}
+
+/* Security Form
+----------------------------------------------------------------------------------------------------*/
+form#securityform span {
+	border:1px solid #aaa;
+	display: block;
+}
+form#securityform fieldset {
+	border: 0 none;
+	margin:0;
+	padding:10px 15px;
+}
+form#securityform legend {
+	color:#4C5355;
+	font-size:12px;
+	font-weight: bold;
+	margin: 0;
+	padding: 10px 0 0;
+}
+.slider-bg {
+    position: relative;
+    background:url($bgimg) 5px 0 no-repeat;
+    height:28px;
+    width:228px;
+}
+.slider-thumb {
+    cursor:default;
+    position: absolute;
+    top: 4px;
+}
+.warning{color:#ff0000; font-weight:bold;}
+.status { margin-left: 1em; color: #888; }
+.error  { margin-left: 1em; color: #f00; }
+" %]
+<script type="text/javascript" src="[%MagicRevision('/yui-gen/utilities_json/utilities_json.js')%]"></script>
+<script type="text/javascript" src="[%MagicRevision('/yui/slider/slider.js')%]"></script>
+<br />
+<p class="description">[% locale.maketext('This interface provides the configuration settings of the Security Policy that apply to cPanel, cPanel webmail, and WHM on your server.') %]</p>
+[% SET slider_fields = [] -%]
+[% FOREACH err IN data.error -%]
+<div class="error">[% err %]</div>
+[% END -%]
+[% IF data.status %] <div class="status">[% data.status %]</div>[% END -%]
+<div id="content">
+	<form name="securityform" id="securityform">
+
+		<div id="policies" class="form_action">
+			<fieldset>
+				<legend>[% locale.maketext("Security Policy Items") %]</legend>
+				<ul>
+[%- FOREACH p = data.policies %]
+					<li>
+						<input type="checkbox" name="[% p.key %]" value="1" id="[% p.key %]" [% IF p.enabled %]checked="checked" [% END %]/>
+						<label for="[% p.key %]">[% p.label %]</label>
+[%      FOREACH field =  p.fields -%]
+[% SET is_slider = field.type == 'slider' -%]
+[% SET html_style = p.enabled ? '' : is_slider ? ' style="position:absolute;visibility:hidden"' : ' style="display:none"' -%]
+						<div id="[% p.key %]-config" class="config config_container"[%html_style%]>
+[%            SWITCH field.type -%]
+[%            CASE 'slider' -%]
+[%              slider_fields.push(field) -%]
+                            <label for="[% field.id %]">[% field.label %]</label>
+                                <input id="[% field.id %]" name="[% field.id %]" type="text" autofill="off" autocomplete="off" size="5" maxlength="5" value="[% field.value %]" />
+                            <div class="slider-bg" id="[%field.id%]-slider-bg" tabindex="-1" title="Slider">
+                                <div class="slider-thumb" id="[%field.id%]-slider-thumb"><img src="[%MagicRevision('/yui/slider/assets/thumb-n.gif')%]" /></div>
+                            </div>
+[%            CASE 'msg' -%]
+                            <p[% IF field.class %] class="[%field.class%]"[%END%]>[% field.text %]</p>
+[%            CASE -%]
+							<label for="[% field.id %]">[% field.label %]</label>
+							<input type="text" name="[% field.id %]" id="[% field.id %]" maxlength = "4" value="[% field.value %]" size="3" /> <span style="display:inline;border:0" class="no_panel" id="[% field.id%]_error"></span>
+[%            END -%]
+						</div>
+[%      END -%]
+					</li>
+[% END -%]
+			</fieldset>
+			</div>
+		<div id="options" class="form_action">
+			<fieldset>
+				<legend>[% locale.maketext("Security Policy Extensions") %]</legend>
+                <p class="description">[% locale.maketext('In addition to cPanel, cPanel webmail, and WHM interfaces, enable Security Policies for the following request types:') %]</p>
+				<ul>
+					<li>
+						<input type="checkbox" name="secpol_xml" value="1" id="secpol_xml" [% IF data.secpol_xml %]checked="checked" [% END %]/>
+						<label for="secpol_xml">[% locale.maketext("API requests") %]</label>
+					</li>
+					<li>
+						<input type="checkbox" name="secpol_dns" value="1" id="secpol_dns" [% IF data.secpol_dns %]checked="checked" [% END %]/>
+						<label for="secpol_dns">[% locale.maketext("DNS Cluster Requests") %]</label>
+					</li>
+				</ul>
+				<p class="warning">[% locale.maketext('Warning: When you enable the Security Policy Extensions for the remote APIs and DNS cluster requests, incompatibilities will become difficult to diagnose. We recommend you do not enable these extensions unless you have an in-depth understanding of your remote API usage and DNS cluster configuration.') %]</p>
+			</fieldset>
+			</div>
+		<p class="description">[% locale.maketext('You may need to reset your password or provide other information immediately after you click Save.') %]</p>
+
+		<input id="cmd" class="btn-primary" name="cmd" type="submit" value="Save" />
+	</form>
+</div>
+<script type="text/javascript">
+function init_slider(field) {
+    var bg        = field.id+"-slider-bg",
+        thumb     = field.id+"-slider-thumb",
+        valuearea = field.id+"-slider-value",
+        textfield = field.id
+    ;
+
+    var bottomConstraint = 200;
+    var maxval = field.maxval || 100;
+    var minval = field.minval || 0;
+    var scaleFactor = (maxval/bottomConstraint);
+    var topConstraint = 0 - (minval/scaleFactor);
+    var keyIncrement = 5;
+    var tickSize = 10;
+
+    var slider = YAHOO.widget.Slider.getHorizSlider(bg,
+        thumb, topConstraint, bottomConstraint, tickSize);
+
+    slider.getRealValue = function() {
+        var thisVal = this.getValue();
+        return Math.round(thisVal*scaleFactor);
+    }
+
+    var textfieldEl = DOM.get(textfield);
+
+    var fix_text_field = function(e) {
+        var v = parseInt( textfieldEl.value.trim() );
+        if ( isNaN(v) ) {
+            textfieldEl.value = textfieldEl.defaultValue || minval;
+            return false;
+        }
+
+        if (v > maxval) {
+            v = maxval;
+        }
+        else if (v < minval) {
+            v = minval;
+        }
+        else {
+            v = keyIncrement * Math.round(v/keyIncrement);
+        }
+
+        textfieldEl.value = v;
+        return v;
+    };
+
+    EVENT.on(textfield,'keyup', function(e) {
+        var v = fix_text_field();
+        if (v !== false) {
+            slider.setValue(Math.round(v/scaleFactor),true);
+        }
+    });
+
+    var initial_value = Number(textfieldEl.value);
+    var fixed_value = fix_text_field();
+    if (fixed_value != initial_value) {
+        textfieldEl.defaultValue = fixed_value;
+    }
+
+    var containing_div = DOM.getAncestorBy(
+        slider.getEl(),
+        function(el) { return( el.id && /-config$/.test(el.id) ) }
+    );
+    if ( containing_div.style.visibility === "hidden" ) {
+        //Slider defers the initial value setting internally.
+        slider.subscribe("slideEnd", function slide_end() {
+            containing_div.style.display = "none";
+            containing_div.style.position = "";
+            containing_div.style.visibility = "";
+            slider.unsubscribe("slideEnd", slide_end);
+        });
+    }
+
+    var hv = parseFloat(textfieldEl.value, 10);
+    slider.setValue(Math.round(hv/scaleFactor),true);
+
+    slider.subscribe("change", function(offsetFromStart) {
+        var fld = DOM.get(textfield);
+        var actualValue = slider.getRealValue();
+        if (actualValue < minval) {
+            actualValue = minval;
+        }
+        fld.value = actualValue;
+        DOM.get(bg).title = field.label + " = " + actualValue;
+    });
+};
+
+[% slider_fields.json() %].forEach(init_slider);
+
+// Get a list of all the config divs on the page
+var checkbox_ids = [% data.policies.ofeach('key').json() %];
+var cur_id;
+for (var i=0; cur_id = checkbox_ids[i]; i++) {
+
+    // Setup an onclick event that toggles the visibility
+    YAHOO.util.Event.on(cur_id, "click", function(e) {
+        var config_div = DOM.get( this.id+"-config" );
+        if ( !config_div ) return;
+
+        if ( this.checked ) {
+            validation.verify();
+            CPANEL.animate.slide_down( config_div );
+        }
+        else {
+            var slide = CPANEL.animate.slide_up( config_div );
+            slide.onComplete.subscribe( validation.verify, validation, true );
+        }
+    } );
+}
+
+var validate_max_age = function() {
+    // If the Password Age checkbox is unchecked then no validation required.
+    if ( ! document.getElementById('PasswordAge').checked ) return true;
+
+    var field_value = document.getElementById('maxage').value;
+
+    // re= if there's any characters other than 0123456789 return false
+    if ( ! /^[0-9]{1,5}$/.test(field_value) ) return false;
+    if ( ( field_value < 1 ) || ( field_value > 1095 ) ) return false;
+    return true;
+}
+
+// Attach light validation to the maxage input field
+var validation = new CPANEL.validate.validator("Security Policy");
+validation.add("maxage", validate_max_age, "Password age must be a number greater than zero and less than 1095 (3 years)");
+validation.attach();
+validation.verify();
+
+CPANEL.validate.attach_to_form("cmd", validation);
+</script>
+[% END #wrapper -%]

@@ -1,0 +1,67 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/checkalldomainsmxs              Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use Cpanel::Usage                   ();
+use Cpanel::Config::LoadUserDomains ();
+use Whostmgr::DNS::MX               ();
+use Cpanel::Email::MX               ();
+use Cpanel::Userdomains             ();
+
+my $proceed      = 0;
+my $remote_check = 0;
+my %opts         = ( 'yes' => \$proceed );
+
+Cpanel::Usage::wrap_options( \@ARGV, \&usage, \%opts );
+
+if ( !$proceed ) {
+    usage();
+}
+
+my %USER_DOMAINS;
+Cpanel::Config::LoadUserDomains::loaduserdomains( \%USER_DOMAINS, 1 );
+
+foreach my $domain ( sort keys %USER_DOMAINS ) {
+    next if ( $domain =~ m/^\*/ );
+    my %entries = Whostmgr::DNS::MX::fetchmx($domain);
+    print "Checking and setting $domain ....";
+
+    # This syncronizes so we need to update service (formerly proxy) subdomains if a change is made
+    my $checkmx = Whostmgr::DNS::MX::checkmx( $domain, $entries{'entries'}, 0, 1, $Whostmgr::DNS::MX::DO_UPDATE_PROXY_SUBDOMAINS );
+    if ( ref $checkmx eq 'HASH' ) {
+        my ( $set, $status, $method, $warnings ) = Cpanel::Email::MX::get_mxcheck_messages( $domain, $checkmx );
+        print( ( !$set ? join( "\n", @$warnings ) : ( $status . ( $method ? ": $method" : '' ) . ( @$warnings ? ' : ' . join( "\n", @$warnings ) : '' ) ) ) . "<br />" );
+    }
+    print "....Done\n";
+}
+
+# Argument specified to not run updateuserdomains in Whostmgr::DNS::MX::checkmx
+Cpanel::Userdomains::updateuserdomains();
+print "\n";
+
+sub usage {
+
+    print <<"EOM";
+This script will check each MX entry for every domain configured on this machine.
+
+The MX record will be determined from the zone file associated with this server,
+not from a remote query of the DNS record. If you are using and editing the zone
+file on a server not associated with this server through a DNS cluster configuration,
+then this utility will configure your email settings incorrectly.
+
+This utility updates the following files which alter the local delivery and sending
+methods of email:
+
+/etc/localdomains
+/etc/remotedomains
+/etc/secondarymx
+
+As a safety precaution you must run this utility with the argument "--yes" to proceed.
+    example:
+        $0 --yes
+EOM
+    exit;
+}

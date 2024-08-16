@@ -1,0 +1,557 @@
+=head1 NAME
+
+Cpanel::Config::ConfigObj - Class for performing configuration options backed by
+a pluggable driver system
+
+=head1 VERSION
+
+1.0
+
+=head1 SYNOPSIS
+
+use Cpanel::Config::ConfigObj ();
+
+## Get info about drivers, which can be controlled ##
+
+my $co = Cpanel::Config::ConfigObj->new();
+
+foreach my $driver_name ( keys %{$co->_get_drivers()} ) {
+    my $driverObj = $co->get_driver($driver_name);
+    my $driverMetaObj = $driverObj->meta();
+    print "Proper Name: " . $driverMetaObj->name('short') . "\n";
+    print "URL:         " . $driverMetaObj->url() . "\n";
+
+}
+
+## Use as a dispatch ##
+
+my $action = $FORM{'action'};
+my $to_config = $FORM{'item'};
+
+my $driver_return = $co->action($action, $to_config);
+
+if ( scalar $co->errors() ) {
+    my @errors = $co->errors(); # get list of errors
+    # NOTE: flush_errors() will return list and clear error stack
+
+    # do something with errors here
+}
+else {
+    # Fire off any 'background' tasks scheduled by driver(s)
+    $co->do_scheduled_tasks();
+
+    # Get any contextual notes from driver(s)
+    my @notes_to_print = $co->notices();
+}
+
+=head1 DESCRIPTION
+
+=head2 Summary
+
+ConfigObj is designed to be a backend to a user interface, be it a UI, API, or
+likely another Perl module which provides a specifically designed utility that
+provides a refined interface to a UI or API.
+
+ConfigObj uses 'driver' modules, located in L<Cpanel::Config::ConfigObj::Drivers::*>.
+When the ConfigObj is instantiated, it will source those modules and save an
+internal reference to them.  When action is requested against a driver (or the
+driver is accessed by the L</get_driver>), the driver object, itself, is
+instantiated and stored for future reference.
+
+Driver objects are instantiated with a reference to the ConfigObj so that they
+can access methods relevant to the 'controller' aspect of ConfigObj, such as
+L</set_error>, L</set_notice>, L</schedule>, etc.  More details about drivers
+can be found in L<Cpanel::Config::ConfigObj::Interface::Driver> and
+L<Cpanel::Config::ConfigObj::Interface::Meta>.
+
+=head2 About Versioning
+
+ConfigObj can optionally be instantiated against a specific B<version>.  When
+such an ConfigObj is created, it will only be able to act against drivers
+that implement the I<configuration specification> respective of I<the version
+provided to the constructor L</new>>.
+When a version is not specified, it will assume the major version segment of the
+ConfigObj package (i.e. C<our $VERSION>).
+
+=head2 Other Information
+
+An important aspect of ConfigObj, that may not be apparent but only implied by
+the above versioning section, is that ConfigObj is NOT a singleton! B<Please read>
+L</CAVEATS AND FEATURES> for more information concerning this design.
+
+The ConfigObj namespace provides an example driver, however it is excluded
+during normal use of ConfigObj.  To utilized this driver, be it testing
+ConfigObj::* or otherwise, you must turn on I<development mode> by calling
+C<Cpanel::Config::ConfigObj::set_development_mode(1);>.  B<Please read>
+L</CAVEATS AND FEATURES> for more information concerning this design.
+
+=head1 METHODS
+
+=head2 Public Interface
+
+=over
+
+=item C<new>
+
+Constructor method. Optionally takes a hashref with the following elements:
+
+=over
+
+=item I<version>
+
+An integer representing a I<configuration specification>.  Providing this
+will limit the scope of the objects loaded drivers to those that implement said
+specification.  The follow illustrates how to instantiate an object which would
+only have drivers that implement
+L<Cpanel::Config::ConfigObj::Interface::Config::v1>
+
+C<$co = Cpanel::Config::ConfigObj-E<gt>new( {'version' =E<gt> 1} );>
+
+=item I<software>
+
+Inject your own software stack (hashref). I.e., ignore internal aggregation
+of available drivers (ordinarily sourced from the L<get_available_drivers>
+function) and replace with your own.  B<CAVEAT EMPTOR:> The software
+stack is an internal reference and should probably be left alone.  If you really
+feel this is necessary, consider using the L</_set_drivers> method instead.
+
+=item I<actions>
+
+Inject your own action stack (hashref). I.e., ignore internal aggregation of
+available specifications and their actions (ordinarily sourced from the
+L<get_behaviors> function).  Probably should leave this alone.
+
+=item I<error_stack>
+
+Inject your own error stack (arrayref). I.e., prime the error stack
+with an array of error strings.  There's no practical reason to set this when
+constructing the object; consider using the L<set_errors> method.
+
+=item I<notice_stack>
+
+Inject your own notice stack (arrayref). I.e., prime the notice stack
+with an array of notice strings.  There's little practical reason to set when
+constructing the object; consider using the L<set_notice> method.
+
+=item I<scheduler>
+
+Inject your own scheduler stack (hashref). I.e., prime the scheduler with a
+list of background tasks that will be executed by a call to the
+L<do_scheduled_tasks> method.  There's little practical reason to set this when
+constructing the object; consider using the L<schedule> method.
+
+=item I<load_auto_enabled>
+
+By default, drivers that are marked as auto-enabled are removed forcibly from
+memory before being added to the driver list. This option disables that removal
+and allows those auto-enabled drivers to be initialized into available_drivers list.
+
+=back
+
+=item C<get_driver>
+
+Takes a driver name (string). Returns an instance of the named driver, creating
+and storing it for later reference as necessary.
+
+If passed an invalid driver name, will return undef and stash an error in the
+the error stack.
+
+If the driver name is valid, yet an object can not be instantiated, it will
+return undef and stash an error in the error stack.
+
+=item C<action>
+
+Takes an action (string) as its first argument; a driver name (string) as its
+second argument.
+
+Instantiates the driver, as necessary, and dispatches an invocation of the
+requested action.  It will return the result of the driver's action (likely
+a boolean).
+
+If the object cannot be instantiated or the action can not be dispatched to the
+driver object, undef will be returned and the error stashed in the error stack.
+
+=over
+
+I<NOTE:> It's possible for the dispatched action to stash errors in the error
+stack as well, so it's best to follow this method with a check of the error
+stack (be it immediately or where appropriate in the caller's prior to process
+termination)
+
+=back
+
+=item C<call_all>
+
+Takes an action (string) as its first argument.  Returns a hashref whose element
+keys are driver names and values are the result from the driver's action.
+
+This method is for batch operations of a given action against all available
+drivers of the ConfigObj.
+
+=over
+
+I<NOTE:> Unlike the C<action> method, there are no sanity checks (and thus no
+error stashing) as to the validity of the requested action against a given
+driver.  However, errors will continue to be stashed if the driver itself
+cannot be instantiated.
+Driver objects will still stash errors as they deem necessary, like in
+C<action>.  This method is intended for use with known actions that are
+implemented across all version specs (like C<meta>).
+
+=back
+
+=item C<errors>
+
+Returns a list.  If errors were stashed previous in the runtime process, each
+one will be an element in the returned list.  The error stack remains populated.
+
+=item C<flush_errors>
+
+Same as the L</errors> method only the error stack is purged.
+
+=item C<notices>
+
+Returns a list.  If notices were stashed previous in the runtime process, each
+one will be an element in the returned list.  The notice stack remains populated.
+
+=item C<flush_notices>
+
+Same as the L</notices> method only the notice stack is purged.
+
+=item C<do_scheduled_tasks>
+
+Triggers any scheduled task populated in the scheduler stack.  The scheduler
+stack is purged.
+
+Because the tasks are likely background operations, the return value is always
+true (unless there's a fatal error invoking the stored operation).
+
+This method should be invoked once actions have been dispatched.  It is intended
+to be called near the end of the caller's runtime; likely before the ConfigObj
+goes out of scope, but prior to creating any display/view data.
+
+=item C<version_info>
+
+Returns a hashref itemizing the C<version> specification (integer), a hashref of
+C<actions> ( C<$action =E<gt> $description>), and an arrayref of C<software>
+whose elements are driver names.
+
+=back
+
+=head2 For Use by Driver Modules
+
+Naturally, all methods are available to the driver due to dependancy injection,
+but the following are specifically provided so that drivers can communicate with
+the controller layer (e.g., ConfigObj)
+
+=over
+
+
+=item C<set_error>
+
+Store an error string in the error stack.
+
+I<NOTE:> If the caller is non-interactive, then the messages with immediately be
+logged as a warning to the default cPanel log.
+
+=item C<set_notice>
+
+Store a message string in the notice stack.
+
+=item C<get_locale_handle>
+
+Create (as necessary) internal references to the current user and a respective
+L<Cpanel::Locale> object.  Returns the Locale obj.
+
+This is useful to driver meta modules so that content can be translated.
+Additionally, strings passed to L<notice> or L<error> could be translated.
+
+Because cPanel does not have on-the-fly translation, this will have limited
+application to 3rdparty drivers.
+
+=item C<schedule>
+
+Schedule one of the following tasks:
+
+=over
+
+=item I<hupcpsrvd>
+
+Send HUP to I<cpsrvd>, effectively reloading the F<cpanel.config> file.  Uses
+L<Cpanel::ServerTasks>.
+
+=item I<apache_restart>
+
+Restart Apache.  Uses L<Cpanel::ServerTasks>.
+
+=back
+
+=back
+
+=head2 Internal
+
+These methods are not intended to be used publically.  However, classes that use
+the ConfigObj class as a base surely will want consider their operation and
+likely want to use them.  Some OO languages would consider these methods to be
+I<protected>.
+
+=over
+
+=item C<fetch_meta_interface>
+
+Returns an L<Cpanel::Config::ConfigObj::Inteface::Meta> object.  This is for use
+by configuration specification intefaces.  Providing this method allows of a
+single instance of a Meta object (per ConfigObj), which is is available to the
+individual drivers (via inheritance through the configuration specification
+object) and also the caller of the ConfigObj.  I<NOTE:> meta data for an
+individual driver will not be available unless the configuration specification
+class injects it or an class that implements ConfigObj overrides/redefines this
+behavior.
+
+=item C<_set_drivers>
+
+Inject a hashref of drivers information into the internal software stack.
+
+=item C<_set_driver_objects>
+
+Takes a hashref of C<'driver_name' =E<gt> $driver_obj>.
+
+Refine the internal software stack to the provided drivers, removing any drivers
+that are not itemized, and reassigning the 'obj' element of the software stack
+with the provided element value.
+
+This is useful for classes that implement ConfigObj which leverage the
+L<Cpanel::Config::ConfigObj::Filter> object and
+L<Cpanel::Config::ConfigObj::FilterList> functions.
+
+=item C<set_driver>
+
+Assign a manually instantiated driver object to the internal software stack.
+This has limited practicality on it's own since there might be related
+information in the software stack and ConfigObj internals, all of which may not
+jive with the manually crafted driver object. Namely, you need to ensure that
+the driver object has the proper reference to the ConfigObj your working with.
+This method is provided for use by L<_set_driver_objects>, an internal method,
+and for unit tests.
+
+=item C<_valid_software>
+
+Takes an action (string) as its first argument and a driver name (string) as its
+second argument.
+
+Returns true if its a valid driver available for use by the current ConfigObj
+I<AND> the respective driver's spec version supports the requested action.
+
+=item C<_valid_action>
+
+Takes a driver name (string) as its only argument.
+
+Returns true if its a valid driver available for use by the current ConfigObj.
+
+=item C<_get_drivers>
+
+Returns the internal software stack, as hashref whose element keys are driver
+names and values is a hashref.  The value hashref will define the following
+key/values
+
+=over
+
+=item C<obj>
+
+If defined, a driver object.  At minimum, the object will implement
+L<Cpanel::Config::ConfigObj::Interface::Driver>, but more importantly a driver
+configuration specification (such as L<Cpanel::Config::ConfigObj::Interface::Config::v1>
+for the version 1 specification)
+
+=item C<module_name>
+
+The package name,sans full namespace (e.g. C<ExampleDriver>)
+
+=item C<interface_spec>
+
+An integer value respective of the configuration specification that the driver
+implements.
+
+=back
+
+=back
+
+=head1 FUNCTIONS
+
+=over
+
+=item C<get_available_drivers>
+
+Traverse the driver directory (C<Cpanel/Config/ConfigObj/Driver>) and build a
+valid hashref to be used as an internal software stack.
+
+The function can optionally take three arguments
+
+=over
+
+=item $specific_version
+
+By providing a valid version, the returned hashref will only contain drivers
+that implement the respective version interface.
+
+=item $force_read
+
+By default the driver directory is only traversed once; the results are stored
+globally.  This reduces stat overhead.  Providing a true value for
+C<$force_read> will cause force a re-read of the directory.
+
+=item $load_auto_enabled
+
+By default the auto-enabled drivers are forcibly removed from memory after being loaded.
+Passing a true value for C<$load_auto_enabled> will disable that removal and allow auto-enabled
+drivers to be loaded.
+
+=back
+
+When called in scalar context, only the hashref (for use as a software stack) is
+returned.  When called in list context, the hashref is returned along with a
+hashref whose keys are available versions and the values being an arrayref of
+drivers that implement that version. I<NOTE:> if not drivers implement a
+specific version specification, it will not be itemized.  Additionally, if
+C<$specific_version> was provided, that will be the only version itemized in
+this second list element (again, provided there is a driver that implements it)
+
+=item C<get_behaviors>
+
+Returns a hashref containing behavior 'categories', each with their own hashref
+which further refines the exact behaviors (respective of that category) per
+version specification
+
+Current categories are: I<action>.
+
+Ex output
+
+=over
+
+{
+    'actions' =E<gt> {
+        '1' =E<gt> ['enable','disable','info'],
+    },
+}
+
+This function takes one optional argument, $specific_version, which simply
+limits the return hashref values to pertain to only a specific version
+specification.
+
+=back
+
+=item C<version>
+
+Returns a version string.  By default, returns the full, current version of the
+ConfigObj package.  Optional argument is the string 'major', which returns the
+major version string segment for the current version (that can be used by other
+methods and function of this package).
+
+I<NOTE:> this function can be called as a method.
+
+
+=item C<set_development_mode>
+
+B<ONLY FOR INTERNAL DEVELOPMENT AND UNIT TESTING>
+
+By passing true to this method, the 'ExampleDriver' will be include in the
+software stack.
+
+See I<CAVEATS AND FEATURES> for more infomation.
+
+=back
+
+=head1 CONSTANTS
+
+Constants are provided for use with the L<_set_error> method
+
+=over
+
+=item C<E_ACTION>
+
+For internal errors related to a driver (or driver specification) action.
+
+=item C<E_USER_SOFTWARE>
+
+For input errors (likely a user or user interface) related valid driver names.
+Classes which consume ConfigObj should probably use this when setting error
+messages.
+
+=item C<E_USER_ACTION>
+
+For input errors related to a driver (or driver specification) action.  Classes
+which consume ConfigObj should probably use this when setting error messages.
+
+=item C<E_USER_INPUT>
+
+For general user input errors, when implementing a user interface that uses or
+implments ConfigObj
+
+=item C<E_VERSION>
+
+For internal errors related in invalid version strings.
+
+=item C<E_ERROR>
+
+For general internal errors.
+
+=item C<E_ACTION_TASK>
+
+For internal errors related to scheduled tasks or ancillary issues descendent of
+an action request.
+
+=back
+
+=head1 CAVEATS AND FEATURES
+
+=head2 Object Instances
+
+ConfigObj instances are not singletons.  Having multiple ConfigObjs instantiated
+through a given runtime could potential use a significate amount of memory.
+Until there is an effective and unified factory/registry implementation within
+the cPanel architecture, this issue will remain.
+
+The upshot is that you can have multiple ConfigObjs in a single caller, each
+with their own software stack.  One possible use would be to create the
+ConfigObj of one version specification and a second ConfigObj of different
+version; perform 'legacy' behaviors of a driver or step-oriented actions (eg.
+an upgrade path for divergent implmenetations of an action for the same named
+driver).
+
+=head2 Development Mode
+
+C<set_development_state> sets a global state.  It MUST be call before a
+ConfigObj is instantiated. If another ConfigObj was instantiated prior to
+setting this global, the internal call to C<get_available_drivers> will have
+already "disregarded" the 'ExampleDriver'. To deal with this, the caller would
+be required to run C<get_available_drivers()> with a C<$force_read> equal to
+true AND manually assign the software stack.  Naturally, any further ConfigObjs
+instantiated will now contain 'ExampleDriver' since the available driver
+information is also has global state.  This function is designed for use in
+unit testing where these scenarios are not an issue.
+
+=head2 Scheduler
+
+The C<schedule> method allows drivers to specify system operations critical to
+a requested action that would be inappropriate or time consuming in the current
+runtime.  This tasks will fire Cpanel::ServerTasks jobs that are process by
+TaskQueue (i.e., "backgrounded" isolated processes).  Because of this, it's
+possible that an action may affect a service (namely cpsrvd) could cause a
+"hiccup" in a real-time user interaction for the implementing UI.
+
+=head1 SEE ALSO
+
+L<Cpanel::Config::ConfigObj::Interface::Driver>,
+L<Cpanel::Config::ConfigObj::Interface::Meta>,
+L<Cpanel::Config::ConfigObj::Filter>,
+L<Cpanel::Config::ConfigObj::FilterList>
+
+=head1 AUTHOR
+
+David Neimeyer - L<david.neimeyer@cpanel.net>
+
+=head1 COPYRIGHT AND LICENSE
+
+Copyright (c) 2012, cPanel, Inc. All rights reserved.
+This code is subject to the cPanel license. Unauthorized copying is prohibited.
+

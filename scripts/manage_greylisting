@@ -1,0 +1,453 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/manage_greylisting              Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::manage_greylisting;
+
+use strict;
+
+use Try::Tiny;
+use Getopt::Long ();
+
+use Cpanel::JSON                          ();
+use Cpanel::ForkAsync                     ();
+use Cpanel::SafeDir::MK                   ();
+use Cpanel::IP::GreyList                  ();
+use Cpanel::LoadModule                    ();
+use Cpanel::GreyList::DB                  ();
+use Cpanel::GreyList::Client              ();
+use Cpanel::GreyList::Config              ();
+use Cpanel::GreyList::CommonMailProviders ();
+
+exit run(@ARGV) unless caller();
+
+sub run {
+    my @cmdline_args = @_;
+    return usage(1) if !@cmdline_args;
+
+    unless ( $> == 0 && $< == 0 ) {
+        return usage( 1, "[!] This program can only be run by root!\n" );
+    }
+
+    my $opts = {};
+    Getopt::Long::GetOptionsFromArray(
+        \@cmdline_args,
+        'init|initialize'               => \$opts->{'initialize'},
+        'reset'                         => \$opts->{'reset'},
+        'help|h'                        => \$opts->{'help'},
+        'trust|t=s@'                    => \$opts->{'trust_common'},
+        'import|import_trusted_hosts=s' => \$opts->{'import_trusted_hosts'},
+        'export|export_trusted_hosts'   => \$opts->{'export_trusted_hosts'},
+        'export_to=s'                   => \$opts->{'export_to'},
+        'update_common_mail_providers'  => \$opts->{'update_common_mail_providers'},
+        'force'                         => \$opts->{'force'},
+    );
+
+    return usage(0) if $opts->{'help'};
+
+    my $conf_dir = Cpanel::GreyList::Config::get_conf_dir();
+    if ( !-d $conf_dir ) {
+        require File::Path;
+        File::Path::make_path($conf_dir);
+    }
+
+    my ( $opts_passed, $exit_code );
+
+    if ( $opts->{'initialize'} || $opts->{'reset'} ) {
+        $exit_code += initialize_db( $opts->{'reset'} );
+        $opts->{'update_common_mail_providers'} = 1;
+        $opts_passed++;
+    }
+    if ( $opts->{'import_trusted_hosts'} ) {
+        _ensure_db_is_initialized();
+        return import_trusted_hosts( $opts->{'import_trusted_hosts'} );
+    }
+    if ( $opts->{'export_trusted_hosts'} ) {
+        _ensure_db_is_initialized();
+        return export_trusted_hosts( $opts->{'export_to'} );
+    }
+
+    if ( $opts->{'update_common_mail_providers'} ) {
+        _ensure_db_is_initialized();
+        $exit_code += update_common_mail_providers( $opts->{'force'} );
+        $opts_passed++;
+    }
+    if ( ref $opts->{'trust_common'} eq 'ARRAY' && scalar @{ $opts->{'trust_common'} } ) {
+        _ensure_db_is_initialized();
+        $exit_code += trust_common_email_service( $opts->{'trust_common'} );
+        $opts_passed++;
+    }
+
+    return ( $exit_code ? 1 : 0 ) if $opts_passed;
+
+    return usage(1);
+}
+
+sub initialize_db {
+    my $force  = shift;
+    my $action = "Initializing";
+    my $saved_trusted_hosts;
+
+    if ($force) {
+        $action              = "Resetting";
+        $saved_trusted_hosts = _save_trusted_hosts();
+    }
+
+    print "[*] $action database for the cPanel Greylist service.\n";
+    Cpanel::SafeDir::MK::safemkdir( Cpanel::GreyList::Config::get_conf_dir() ) if !-d Cpanel::GreyList::Config::get_conf_dir();
+
+    my $success = 0;
+    try {
+        my $db_obj = Cpanel::GreyList::DB->new( Cpanel::GreyList::Config::get_sqlite_db() );
+        $success = $db_obj->initialize_db($force);
+    }
+    catch {
+        print "[!] $action database failed: $_\n";
+    };
+    return 1 if !$success;
+
+    print "[+] $action database successfully completed.\n";
+    _restore_trusted_hosts($saved_trusted_hosts) if $saved_trusted_hosts;
+
+    if ( Cpanel::GreyList::Config::is_enabled() ) {
+        Cpanel::LoadModule::load_perl_module('Cpanel::ServerTasks');
+        print "[*] Restarting cPGreyListd service …";
+        Cpanel::ServerTasks::queue_task( ['CpServicesTasks'], "restartsrv cpgreylistd" );
+        print " Done.\n";
+    }
+    return;
+}
+
+sub trust_common_email_service {
+    my $trust_email_services = shift;
+
+    print "[*] Updating Trusted Hosts List …\n";
+    my $client = Cpanel::GreyList::Client->new();
+
+    $client->{'disabled'} = 0;
+
+    my $providers_in_db = Cpanel::GreyList::Client->new()->get_common_mail_providers();
+    foreach my $common_service ( @{$trust_email_services} ) {
+        if ( not exists $providers_in_db->{$common_service} ) {
+            print "\t[!] Skipping '$common_service'. This email service is not registered, and cannot be trusted via this script. Add the IP address ranges for this email service manually via the WHM interface.\n";
+            next;
+        }
+
+        try {
+            if ( my $ips_trusted = $client->trust_entries_for_common_mail_provider($common_service) ) {
+                print "\t[+] $ips_trusted IP(s)for '$common_service'\n";
+            }
+        }
+        catch {
+            print "\t[!] Failed to trust IP(s) for '$common_service': $_\n";
+        };
+    }
+    print "[+] Updated Trusted Hosts List.\n";
+
+    return;
+}
+
+sub update_common_mail_providers {
+    my $force = shift;
+
+    if ( !Cpanel::GreyList::Config::is_enabled() && !$force ) {
+
+        print "[!] Greylisting is disabled. Skipping common mail providers update.\n";
+        return;
+    }
+
+    print "[*] Updating Common Mail Providers List …\n";
+    my $return_code = try {
+        my $json_data        = Cpanel::GreyList::CommonMailProviders::fetch_latest_data();
+        my $json_create_time = delete $json_data->{'create_time'};
+
+        my $config = Cpanel::GreyList::Config::load_common_mail_providers_config( { map { $_ => 1 } keys %{$json_data} } );
+        my $client = Cpanel::GreyList::Client->new();
+        $client->{'disabled'} = 0;
+
+        my $providers_in_db = $client->get_common_mail_providers();
+
+        my $renamed = 0;
+        foreach my $new_key ( sort keys %{$json_data} ) {
+
+            # Do not rename an existing provider if the new provider already exists in the DB.
+            next if exists $providers_in_db->{$new_key};
+
+            next unless my $old_keys_ar = $json_data->{$new_key}->{'renamed_from'};
+
+            # Only rename the first existing provider match if there are multiple.
+            next unless my $old_key = ( grep { exists $providers_in_db->{$_} } @{$old_keys_ar} )[0];
+
+            print "[*] Renaming '$old_key' to '$new_key' …\n";
+            $client->rename_mail_provider( $old_key, $new_key );
+            $config->{$new_key} = delete $config->{$old_key} // 1;
+            $renamed = 1;
+            print "[+] Renamed '$old_key' to '$new_key'.\n";
+        }
+        if ($renamed) {
+            $providers_in_db = $client->get_common_mail_providers();
+            Cpanel::GreyList::Config::save_common_mail_providers_config( { map { $_ => 1 } keys %{$config} }, $config );
+        }
+
+        # Remove any/all providers that were removed from the list
+        my @providers_to_remove = grep { not exists $json_data->{$_} } keys %{$providers_in_db};
+        foreach my $provider (@providers_to_remove) {
+            print "[*] Removing '$provider' …\n";
+            my $ips_for_provider = $client->list_entries_for_common_mail_provider($provider);
+            $client->remove_mail_provider($provider);
+            send_removal_notification( $providers_in_db->{$provider}->{'display_name'}, [ map { $_->{'host_ip'} } @{$ips_for_provider} ] );
+            print "[+] Removed '$provider'\n";
+        }
+
+        foreach my $provider ( keys %{$json_data} ) {
+            my $newly_added = 0;
+            if ( !exists $providers_in_db->{$provider} ) {
+                $client->add_mail_provider( $provider, $json_data->{$provider}->{'display_name'}, $json_create_time );
+                $newly_added = 1;
+            }
+            else {
+                # If an existing provider's display_name has changed, then update it.
+                my $latest_display_name   = $json_data->{$provider}->{'display_name'};
+                my $existing_display_name = $providers_in_db->{$provider}->{'display_name'};
+                if ( $existing_display_name ne $latest_display_name ) {
+                    print "[*] Changing name of '$provider' from '$existing_display_name' to '$latest_display_name' …\n";
+                    $client->update_display_name_for_mail_provider( $provider, $latest_display_name );
+                    print "[+] Changed name of '$provider' from '$existing_display_name' to '$latest_display_name'.\n";
+                }
+            }
+
+            # If the provider is not marked for autoupdating, then skip it.
+            if ( exists $config->{$provider} && !$config->{$provider} ) {
+                print "[*] Skipping $provider per configuration …\n";
+                next;
+            }
+            if ( !$force && ( $providers_in_db->{$provider}->{'last_updated'} || 0 ) >= $json_create_time ) {
+                print "[*] No update necessary for '$provider'.\n";
+                next;
+            }
+
+            print "[*] Updating $provider …\n";
+            $client->delete_entries_for_common_mail_provider($provider);
+            $client->add_entries_for_common_mail_provider( $provider, $json_data->{$provider}->{'ips'} );
+            $client->bump_last_updated_for_mail_provider( $provider, $json_create_time );
+            if ( $providers_in_db->{$provider}->{'is_trusted'} || ( $newly_added && $config->{'autotrust_new_common_mail_providers'} ) ) {
+                print "[*] Marking $provider as a trusted Mail Provider …\n";
+                $client->trust_entries_for_common_mail_provider($provider);
+            }
+        }
+
+        Cpanel::ForkAsync::do_in_child(
+            sub {
+                Cpanel::IP::GreyList::update_common_mail_providers_or_log();    # Its ok if this fails, it just means they will get a 20s connect delay if enabled.
+            }
+        );
+
+        print "[+] Updated Common Mail Providers list.\n";
+        return 0;    ## no critic (TryTiny::ProhibitExitingSubroutine)
+    }
+    catch {
+        print "[!] Failed to update Common Mail Providers list: $_\n";
+        return 1;
+    };
+
+    return $return_code;
+}
+
+sub import_trusted_hosts {
+    my $input_file = shift;
+
+    if ( !Cpanel::GreyList::Config::is_enabled() ) {
+
+        print "[!] Greylisting is disabled\n";
+        return;
+    }
+
+    my $input_file_fh;
+    if ( !open( $input_file_fh, '<', $input_file ) ) {
+        print "[!] Failed to read '$input_file': $!\n";
+        return 1;
+    }
+
+    my ( $json, $error );
+    try {
+        $json = Cpanel::JSON::LoadFile( $input_file_fh, $input_file );
+    }
+    catch {
+        $error = $_;
+    };
+    if ( !$json || ref $json ne 'HASH' ) {
+        print "[!] Failed to read '$input_file': Invalid JSON data.\n";
+        print "[!] Error: $error\n" if $error;
+        return 1;
+    }
+
+    print "[*] Importing cPGreylist Trusted Hosts:\n\n";
+    my $client = Cpanel::GreyList::Client->new();
+    foreach my $trusted_host ( keys %{$json} ) {
+        try {
+            $client->create_trusted_host( $trusted_host, $json->{$trusted_host} );
+            print "[+] Added '$trusted_host' to Trusted Hosts List.\n";
+        }
+        catch {
+            print "[!] Failed to add '$trusted_host' to the Trusted Hosts List: $_\n";
+        };
+    }
+
+    return 0;
+}
+
+sub export_trusted_hosts {
+    my $output_file = shift;
+
+    if ( !Cpanel::GreyList::Config::is_enabled() ) {
+
+        print "[!] Greylisting is disabled\n";
+        return;
+    }
+
+    print STDERR "[*] Exporting cPGreylist Trusted Hosts:\n\n";
+    my $output_fh;
+    if ($output_file) {
+        if ( !open( $output_fh, '>', $output_file ) ) {
+            print "[!] Failed to open '$output_file' for writing: $!\n";
+            return 1;
+        }
+        print STDERR "[*] Saving to '$output_file'\n";
+    }
+
+    my $error;
+    try {
+        my $client = Cpanel::GreyList::Client->new();
+        my $output = {};
+
+        foreach my $trusted_host ( @{ $client->read_trusted_hosts() } ) {
+            $output->{ $trusted_host->{'host_ip'} } = $trusted_host->{'comment'};
+        }
+
+        print { $output_fh ? $output_fh : \*STDOUT } Cpanel::JSON::pretty_dump($output);
+    }
+    catch {
+        print "[!] Failed to export Trusted Hosts: $_\n";
+        $error++;
+    };
+    return 1 if $error;
+
+    return 0;
+}
+
+sub _ensure_db_is_initialized {
+    if ( !-s Cpanel::GreyList::Config::get_sqlite_db() ) {
+        print "[!] SQLite Database for the cPanel Greylist service is not initialized...\n";
+        initialize_db();
+    }
+    return 1;
+}
+
+sub _save_trusted_hosts {
+    my $saved_trusted_hosts = [];
+    return if !Cpanel::GreyList::Config::is_enabled();
+
+    print "[*] Saving current Trusted Hosts List …\n";
+
+    my $success = 0;
+    try {
+        my $client = Cpanel::GreyList::Client->new();
+        $saved_trusted_hosts = $client->read_trusted_hosts();
+        die "Failed to read Trusted Hosts List\n" if !( $saved_trusted_hosts && 'ARRAY' eq ref $saved_trusted_hosts );
+        $success = 1;
+    }
+    catch {
+        print "[!] Failed to save current Trusted Hosts List: $_\n";
+    };
+    return if !$success;
+
+    print "[+] Saved " . scalar @{$saved_trusted_hosts} . " entries from the Trusted Host List.\n";
+    return $saved_trusted_hosts;
+}
+
+sub _restore_trusted_hosts {
+    my $saved_trusted_hosts = shift;
+    print "[*] Restoring saved Trusted Hosts List …\n";
+
+    my $success = 0;
+    try {
+        my $client = Cpanel::GreyList::Client->new();
+        foreach my $entry ( @{$saved_trusted_hosts} ) {
+            $client->create_trusted_host( $entry->{'host_ip'}, $entry->{'comment'} );
+        }
+        $success = 1;
+    }
+    catch {
+        print "[!] Failed to restore Trusted Hosts List: $_\n";
+    };
+    return if !$success;
+
+    print "[+] Restored " . scalar @{$saved_trusted_hosts} . " entries to the Trusted Host List.\n";
+    return $saved_trusted_hosts;
+}
+
+sub usage {
+    my ( $retval, $msg ) = @_;
+    my $fh = $retval ? \*STDERR : \*STDOUT;
+
+    if ( !defined $msg ) {
+        $msg = <<USAGE;
+$0
+
+Utility to manage the cPanel Greylist service. Available options:
+
+    --init   => Initialize the SQLite DB with the basic data structure as needed.
+    --reset  => Forceably reset the DB.
+                Note: This will attempt to preserve the Trusted Hosts List, if the greylisting service is enabled on the server.
+
+    --trust  => Trust the IPs for the common email services specified. Specify this switch more than once to trust multiple services at the same time.
+                The following common services are recognized by this script:
+
+COMMON_EMAIL_SERVICES
+
+    --import =>  [/path/to/json/file]
+                 Imports the Trusted Hosts contained in the specified JSON file:
+                 $0 --import import.json
+
+    --export => Export the current Trusted Hosts List.
+                To export the list to a file, specify the 'export_to' switch:
+                    $0 --export --export_to  export.json
+                Or redirect stdout:
+                    $0 --export > export.json
+
+    --update_common_mail_providers => Update the Common Mail Provider data in the database.
+                                      Fetches the latest data from a cPanel update mirror, and updates the database
+                                      based on current Common Mail Provider configuration.
+
+                                      You can specify '--force', in order to forceably update the IP data in the database.
+
+The SQLite file is located at: ${ \Cpanel::GreyList::Config::get_sqlite_db() }.
+USAGE
+        my $providers_in_db           = Cpanel::GreyList::Client->new()->get_common_mail_providers();
+        my $common_email_services_str = join( "\n", map { "\t\t\t$_" } ( sort keys %{$providers_in_db} ) );
+        $msg =~ s/COMMON_EMAIL_SERVICES/$common_email_services_str/;
+    }
+
+    print {$fh} $msg;
+    return $retval;
+}
+
+sub send_removal_notification {
+    my ( $provider, $ips_ar ) = @_;
+
+    require Cpanel::Notify;
+    Cpanel::Notify::notification_class(
+        'class'            => 'Greylist::CommonProviderRemoval',
+        'application'      => 'Greylist::CommonProviderRemoval',
+        'constructor_args' => [
+            'origin'           => 'manage_greylisting',
+            'provider_removed' => $provider,
+            'provider_ips'     => $ips_ar,
+        ]
+    );
+
+    return;
+}

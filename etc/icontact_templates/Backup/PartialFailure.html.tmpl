@@ -1,0 +1,135 @@
+[%#
+
+Variables passed in:
+
+origin              - the system component which generated the email
+
+local_copy_errors   - (optional) errors from copying/moving the backup locally, if any.
+                        format is an array of arrays: [
+                            [
+                                short description
+                                error details (text blob, displayed as code)
+                            ],
+                            ...
+                        ]
+account_errors    - (optional) errors that occurred during creation of account backups.
+                        format is array of arrays: [
+                            [ username, backup type, error ],    (all strings)
+                            ...
+                        ]
+
+transport_errors    - (optional) errors that occurred during transport of the backups.
+                        format is array of arrays: [
+                            [ username, backup type, error ],    (all strings)
+                            ...
+                        ]
+
+
+important_errors    - (optional) errors that occurred during transport of the backups.
+                        format is array of strings: [
+                            short description
+                            ...
+                        ]
+
+major_error         - (optional) string
+                        This is presumed to be a show-stopper, but not necessarily. (?)
+
+start_time              - The epoch time when the backup process started
+
+end_time                - The epoch time when the backup process ended
+
+run_time_localized      - The duration of the backup process execution
+
+
+For more information about how to customize notification templates, read our documentation at https://go.cpanel.net/notificationtemplates
+
+-%]
+
+[%
+    PROCESS "include/colors.tmpl";
+    PROCESS "include/styles.tmpl";
+    PROCESS "include/code_block.tmpl";
+    PROCESS "include/run_time_info.tmpl";
+    WRAPPER 'wrapper/main.html.tmpl';
+
+   NOTICE.email_reason = CPANEL.locale.maketext('The backup process on “[_1]” encountered an error.', NOTICE.host_server);
+%]
+
+    [% IF NOTICE.transport_started %]
+      [% CPANEL.locale.maketext("The system started a separate transport process for remote backup destinations."); %]
+      [% CPANEL.locale.maketext("When the transport completes, the system will send an additional notification with the status of the transport if any errors were encountered."); %]
+    [% END %]
+
+    [% IF NOTICE.major_error.size -%]
+        <p>[% NOTICE.major_error.html() -%]</p>
+    [% END -%]
+
+    [% IF NOTICE.account_errors.size %]
+        <p>[% CPANEL.locale.maketext('The following [numerate,_1,error,errors] occurred during account backups:', NOTICE.account_errors.size ); %]</p>
+        <p>
+            [%-
+                PROCESS "include/zebra_table.tmpl";
+                zebra_table(
+                    items   = NOTICE.account_errors,
+                    titles  = [
+                        CPANEL.locale.maketext('Username'),
+                        CPANEL.locale.maketext('Error'),
+                    ],
+                );
+            -%]
+        </p>
+        <p>[% CPANEL.locale.maketext('You can manage whether to include cPanel user accounts in your scheduled backups with [asis,WHM]’s “[_1]“ interface: [output,url,_2,_2,target,_3]', CPANEL.locale.maketext('Backup User Selection'), CPANEL.assemble_whm_url("scripts/backup_user_selection"),'_blank') %]</p>
+    [% END %]
+
+    [% IF NOTICE.transport_errors.size %]
+        <p>[% CPANEL.locale.maketext('The following [numerate,_1,error,errors] occurred during transport to the remote backup server:', NOTICE.transport_errors.size ); %]</p>
+        <p>
+            [%-
+                PROCESS "include/zebra_table.tmpl";
+                zebra_table(
+                    items   = NOTICE.transport_errors,
+                    titles  = [
+                        CPANEL.locale.maketext('Backup System or User'),
+                        CPANEL.locale.maketext('Backup Type'),
+                        CPANEL.locale.maketext('Error'),
+                    ],
+                );
+            -%]
+        </p>
+        <p>
+        [% IF NOTICE.is_legacy %]
+          [% CPANEL.locale.maketext('You can manage the backup transport settings in [asis,WHM]’s “[_1]“ interface: [output,url,_2,_2,target,_3]', CPANEL.locale.maketext('Legacy Backup Configuration'), CPANEL.assemble_whm_url("scripts/backupset"),'_blank') %]
+        [% ELSE %]
+          [% CPANEL.locale.maketext('You can manage the backup transport settings in [asis,WHM]’s “[_1]“ interface: [output,url,_2,_2,target,_3]', CPANEL.locale.maketext('Backup Configuration'), CPANEL.assemble_whm_url("scripts/backup_configuration"),'_blank') %]
+        [% END %]
+        </p>
+    [% END %]
+
+    [% IF NOTICE.local_copy_errors.size %]
+        <p>[% CPANEL.locale.maketext('The following [numerate,_1,error,errors] occurred as the system moved or copied backup files locally:', NOTICE.local_copy_errors.size ); %]</p>
+        [% FOR err = NOTICE.local_copy_errors; -%]
+            <p>[% code_block(
+                title = err.0.html(),
+                formatted_code = err.1.html(),
+            ) -%]</p>
+        [% END -%]
+    [% END %]
+
+    [% IF NOTICE.important_errors.size %]
+        <p>
+            [%-
+                PROCESS "include/zebra_table.tmpl";
+                SET lead_in_phrase = ( NOTICE.major_error.size || NOTICE.account_errors.size || NOTICE.transport_errors.size || NOTICE.local_copy_errors.size ) ? CPANEL.locale.maketext('Additionally, the backup process encountered the following [numerate,_1,error,errors]:', NOTICE.important_errors.size) : CPANEL.locale.maketext('The backup process encountered the following [numerate,_1,error,errors]:', NOTICE.important_errors.size);
+
+                zebra_table(items=NOTICE.important_errors, titles=[lead_in_phrase]);
+            -%]
+        </p>
+    [% END %]
+
+    [% IF NOTICE.log_preview && NOTICE.log_file_path %]
+        <p>[% code_block(formatted_code=NOTICE.log_preview.shift, title=CPANEL.locale.maketext('Review the attached log “[_1]” for further details.',NOTICE.log_file_path)); %]</p>
+    [% END %]
+
+    [% run_time_info() %]
+
+[% END %]

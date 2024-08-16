@@ -1,0 +1,153 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - bin/ssh-host-keys                       Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package bin::ssh_host_keys;
+
+use strict;
+use warnings;
+
+use Cpanel::SSH::Key               ();
+use Cpanel::Transaction::File::Raw ();
+use Getopt::Long                   ();
+use MIME::Base64                   ();
+
+exit __PACKAGE__->script(@ARGV) unless caller;
+
+sub script {
+    my ( $class, @args ) = @_;
+
+    my %opts;
+    Getopt::Long::GetOptionsFromArray(
+        \@args,
+        \%opts,
+        'help',
+        'add',
+        'host=s@',
+        'port=i',
+        'secure',
+        'verbose',
+    ) or return $class->usage(1);
+
+    return $class->usage(0) if $opts{'help'};
+    return $class->usage(1) unless $opts{'add'};
+    my $self = $class->new(
+        verbose      => $opts{'verbose'},
+        hosts        => $opts{'host'},
+        port         => $opts{'port'} // 22,
+        secure       => $opts{'secure'},
+        fingerprints => \@args,
+        hosts_file   => '/etc/ssh/ssh_known_hosts',
+    );
+    return !$self->add;
+}
+
+sub usage {
+    my ( $class, $status ) = @_;
+    my $fh = $status ? \*STDERR : \*STDOUT;
+    $fh->print(<<EOM);
+usage: ssh-host-keys --add --host=HOST [--port=PORT] [--secure] FINGERPRINT...
+
+Scan the specified host (on PORT, default 22) for SSH host keys and add all
+those matching a specified fingerprint to /etc/ssh/ssh_known_hosts.
+
+Only RSA, ECDSA, and (if supported by OpenSSH) Ed25519 keys are scanned.
+
+--verbose may be specified to get additional output.
+
+HOST may be a hostname or IP address.
+
+FINGERPRINT may be an MD5 or SHA256 hex digest or an SHA256 base64 digest,
+unless --secure is provided, in which case MD5 values are ignored.
+EOM
+    return $status;
+}
+
+sub new {
+    my ( $class, %opts ) = @_;
+    my $self = bless \%opts, $class;
+    $self->{'fingerprints'} = [ $self->clean_fingerprints( $self->{'fingerprints'}->@* ) ];
+    return $self;
+}
+
+sub note {
+    my ( $self, $msg ) = @_;
+    return unless $self->{'verbose'};
+    print "$msg\n";
+    return 1;
+}
+
+# Canonicalize fingerprints into either an MD5 or SHA-256 hex form.
+# Return 2-arrayrefs with algorithm and lowercase hex fingerprint.
+sub clean_fingerprints {
+    my ( $self, @fprs ) = @_;
+    my $lengths = {
+        32 => [ 'md5',    'hex' ],       # no colons
+        43 => [ 'sha256', 'base64' ],    # no trailing =
+        44 => [ 'sha256', 'base64' ],    # trailing =
+        47 => [ 'md5',    'hex' ],       # colons
+        64 => [ 'sha256', 'hex' ]        # hex format
+    };
+
+    return grep { !$self->{'secure'} || $_->[0] ne 'md5' }
+      map {
+        my ( $algo, $enc, $hash ) = $_->@*;
+        (
+            $enc eq 'hex'
+            ? [ $algo, lc( $hash =~ tr{ :}{}dr ) ]
+            : [ $algo, lc( unpack( 'H*', MIME::Base64::decode_base64($hash) ) ) ]
+        )
+      }
+      map {
+        my $len = length;
+        /^(MD5|SHA256):(.*)$/
+          ? [ lc $1, $lengths->{ length($2) }[1], $2 ]
+          : [ $lengths->{$len}[0], $lengths->{$len}[1], $_ ]
+      } @fprs;
+}
+
+sub find_host_keys {
+    my ($self) = @_;
+    return map { Cpanel::SSH::Key::fetch_host_keys_for_machine( $_, $self->{'port'} ); } $self->{'hosts'}->@*;
+}
+
+# Return the keys from $keys which correspond to the fingerprints from
+# $fingerprints, annotated with metadata.
+sub filter_host_keys {
+    my ( $self, $keys, $fingerprints ) = @_;
+
+    my @formatted_fprs = map { join( ':', $_->@* ); } $self->{'fingerprints'}->@*;
+
+    my %fprs_to_keys = map {
+        my $data = { $_->%*, Cpanel::SSH::Key::metadata_from_key( $_->{key} )->%* };
+        ( "md5:$data->{'md5'}" => $data, "sha256:$data->{'sha256'}" => $data )
+    } $keys->@*;
+
+    return grep { defined } @fprs_to_keys{@formatted_fprs};
+}
+
+sub add {
+    my ($self) = @_;
+    $self->note("Scanning for SSH host keys");
+    my @keys = $self->find_host_keys;
+    $self->note("Found @{[scalar @keys]} host keys");
+    my @filtered = $self->filter_host_keys( \@keys, $self->{'fingerprints'} );
+    my %unique   = map { ( $_->{'sha256'} => $_ ) } @filtered;
+    $self->note("Found @{[scalar @filtered]} matching host keys (@{[scalar keys %unique]} unique)");
+
+    my $txn = Cpanel::Transaction::File::Raw->new(
+        path        => $self->{'hosts_file'},
+        permissions => 0644,
+        ownership   => [ 'root', 'root' ]
+    );
+    my $data_sr = $txn->get_data;
+    $$data_sr .= "\n" if length $$data_sr && substr( $$data_sr, -1 ) ne "\n";
+    $$data_sr .= join( '', map { "$_->{'line'}\n" } sort values %unique );
+    $txn->set_data($data_sr);
+    $txn->save_or_die;
+    $self->note("Updated $self->{'hosts_file'}");
+    return scalar keys %unique;
+}

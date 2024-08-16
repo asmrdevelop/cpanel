@@ -1,0 +1,69 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/convert_maildir_to_mdbox        Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::convert_maildir_to_mdbox;
+
+use strict;
+
+=head1 NAME
+
+convert_maildir_to_mbox - Convert a cpanel user and all their accounts
+                              or single email account from maildir to mdbox.
+
+=head1 SYNOPSIS
+
+convert_maildir_to_mdbox [options] ..
+
+Options:
+
+ -help               Brief help
+ -user=<cpuser>      Convert a cPanel user and all of their email account
+ -email=<email>      Convert a single email account
+ -delete-old-format  Remove maildir files after a successful conversion
+
+=head1 OPTIONS
+
+=over 4
+
+=item B<-help>
+
+Print a brief help message and exits.
+
+=item B<-user=>
+
+Convert a cPanel user and all of their email account from
+maildir to mdbox format.
+
+=item B<-email=>
+
+Convert a single email account from maildir to mdbox format
+The email should be in one of the following formats:
+
+  user@domain.tld
+  cpuser
+  _mainaccount@domain.tld
+
+=item B<-delete-old-format>
+
+Remove the maildir files after a successful conversion to mdbox
+
+=back
+
+=head1 DESCRIPTION
+
+B<This program> will convert the email accounts from maildir to
+mdbox format and reconfigure dovecot to access the
+converted account in maildir format.
+
+=cut
+
+use parent 'Cpanel::Email::Convert::CLI';
+
+sub _TARGET_FORMAT { return 'mdbox'; }
+sub _SOURCE_FORMAT { return 'maildir'; }
+
+exit( __PACKAGE__->script(@ARGV) ) unless caller();

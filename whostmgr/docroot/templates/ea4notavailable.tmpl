@@ -1,0 +1,30 @@
+[%
+    USE Whostmgr;
+
+    SET doc_link = (data.cloudlinux_enabled) ? "https://cloudlinux.com/cloudlinux-os-blog/entry/beta-easyapache-4-released-for-cloudlinux" : "https://go.cpanel.net/installEA4";
+-%]
+[% WRAPPER 'master_templates/master.tmpl'
+        # js files are loaded in the footer
+        scripts = [
+            Whostmgr.find_file_url('/libraries/jquery/current/jquery.min.js'),
+            '/templates/setupcluster/page.min.js'
+        ],
+        stylesheets = ['/templates/setupcluster/page.min.css'],
+        theme = 'bootstrap'
+-%]
+<div>
+    [% IF data.os_is_compatible -%]
+        <H3>[% locale.maketext('[asis,EasyApache 4] is not installed.') %]</H3>
+            <p>[% locale.maketext('If you would like to use [asis,EasyApache 4], the following url contains instructions on how to convert to [asis,EasyApache 4].') %]</P>
+            <a href="[% doc_link %]" target="_blank">[% locale.maketext('[asis,EasyApache 4] installation instructions.') %]</a>
+    [% ELSE -%]
+        <div id="incompatibleOSMsg" class="alert alert-info alert-dismissable">
+            <span class="glyphicon glyphicon-info-sign"></span>
+            <div class="alert-message">
+                <strong>[% locale.maketext("Info:") %]</strong>
+                [% locale.maketext("[asis,EasyApache 4] requires [list_or,_1][comment,List of OSs]. You must upgrade your system to a compatible operating system before you can migrate to [asis,EasyApache 4].", ["CentOS 6+", "RHEL 6+", "CloudLinux 6+"]) %]
+            </div>
+        </div>
+    [% END -%]
+</div>
+[% END %]

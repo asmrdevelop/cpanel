@@ -1,0 +1,83 @@
+[%
+    SET CPANEL.CPVAR.dprefix = "../";
+    SET routines = execute("Mysql", "list_routines", {
+        database_user => FORM.user
+    });
+
+    SET errors = [];
+    IF routines.status == 0;
+        error = errors.merge(routines.errors);
+    END;
+%]
+
+[% WRAPPER '_assets/master.html.tt'
+    app_key = 'mysql_databases'
+ -%]
+
+<div class="body-content">
+    <h2 id="hdrDeleteUser">
+        [% locale.maketext("Delete Database Users") %]
+    </h2>
+    <p id="descRoutines">
+        [% IF errors.size() > 0;
+            FOREACH error IN errors %]
+                <div class="alert alert-danger" role="alert">
+                    <span class='glyphicon glyphicon-remove-sign' aria-hidden="true"></span>
+                    <div class='alert-message'>
+                        <strong class="alert-title">
+                            [% locale.maketext('Error:') %]
+                        </strong>
+                        <span class="alert-body">
+                            <span id="error-[% loop.index() %]">
+                                [% error.html() %]
+                            </span>
+                        </span>
+                    </div>
+                </div>
+        [%  END %]
+        [% ELSIF routines.data.size > 0 %]
+            <div class="alert alert-warning" role="alert">
+                <span class='glyphicon glyphicon-exclamation-sign' aria-hidden="true"></span>
+                <div class='alert-message'>
+                    <strong class="alert-title">
+                        [% locale.maketext('Warning:') %]
+                    </strong>
+                    <span class="alert-body">
+                        <span id="warning-private-stored-procedures">
+                            [% locale.maketext('Deleting “[_1]” also makes these procedures inaccessible. Your application may no longer function correctly.', FORM.user) %]
+                        </span>
+                        <p>
+                            <ul>
+                            [% FOREACH routine IN routines.data %]
+                                <li>[% routine.html() %]</li>
+                            [% END %]
+                            </ul>
+                        </p>
+                    </span>
+                </div>
+            </div>
+        [% END %]
+    </p>
+
+    <p id="descDeleteUser">
+        [% locale.maketext('Are you sure you wish to permanently remove user “[_1]”?', FORM.user) %]
+    </p>
+
+    <p>
+        <a id="btnDeleteUser"
+           class="btn btn-primary"
+           href="deluser.html?user=[% RAW_FORM.user | uri | html %]">
+            [% locale.maketext("Delete User") %]
+        </a>
+        <a id="btnCancel"
+           class="btn btn-link"
+           href="index.html">
+           [% locale.maketext("Cancel") %]
+        </a>
+    </p>
+
+    [% INCLUDE _assets/return_link.html.tt return_location='index.html' return_link_text=locale.maketext('Go Back') %]
+
+</div>
+
+[% END #wrapper -%]

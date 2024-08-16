@@ -1,0 +1,167 @@
+[%
+SET dprefix = "../";
+SET CPANEL.CPVAR.dprefix = dprefix.repeat(2);
+SET user_theme = CPANEL.CPDATA.RS;
+SET TEMPLATE_NAME = "authSuccess.html.tt";
+SET HOME_PATH     = cp_security_token _ '/frontend/' _ user_theme;
+SET ROUTER_PATH   = HOME_PATH _ '/koality';
+SET PROTOCOL      = 'http';
+IF CPANEL.ENV.HTTPS == 'on';
+    SET PROTOCOL  = 'https';
+END;
+SET HOME_URL      = PROTOCOL _ '://' _ CPANEL.ENV.SERVER_NAME _  ':' _ CPANEL.ENV.SERVER_PORT _ '/' _ cp_security_token;
+
+SET has_feature = CPANEL.feature("koality");
+
+# See: https://api.docs.cpanel.net/openapi/cpanel/operation/get_site_monitor_app_token/
+SET token_response = execute('SiteQuality', 'get_app_token');
+SET token = token_response.data.app_token;
+
+# See: https://api.docs.cpanel.net/openapi/cpanel/operation/get_site_monitor_environment/
+SET result = execute('SiteQuality', 'get_environment');
+SET environment = result.data.environment;
+
+links_code = PROCESS links_block;
+init_code = PROCESS init_block;
+js_code = PROCESS js_block;
+meta_code = PROCESS meta_block;
+%]
+[% WRAPPER '_assets/master.html.tt'
+    page_title = 'Site Quality Monitoring'
+    app_key = 'cpanel-koality-plugin'
+    page_sub_heading = 'Powered by koality';
+    include_cjt = 0
+    is_jupiter_style = 1
+    include_legacy_stylesheets = 0
+    include_legacy_scripts = 0
+    use_master_bootstrap = 0
+    page_styles = links_code
+    page_js_first = init_code
+    page_js = js_code
+    meta = meta_code
+-%]
+<div class="body-content">
+    [% IF has_feature && token %]
+    <script>
+    /** Use in the template expansion of some linked resources **/
+    const calculateBasePath = (keepSegments) => {
+        const path = window.location.pathname
+        const segments = path.split('/')
+        const keep = segments.slice(0, keepSegments + 1)
+        return keep.join('/') + '/'
+    }
+    </script>
+
+    
+    [% ELSIF has_feature && !token %]
+    <div class="body-content">
+        <div class="alert alert-danger">
+            <span class="glyphicon glyphicon-remove-sign" aria-hidden="true"></span>
+            <div class="alert-message">
+                [% locale.maketext('[output,strong,Error:] Your account has not enrolled in Site Quality Monitoring. Redirecting to the signup form.') %]
+            </div>
+        </div>
+    </div>
+    <meta http-equiv="refresh" content="0;url='./signup/index.html'" />
+    [% ELSE %]
+    <div class="body-content">
+        <div class="alert alert-danger">
+            <span class="glyphicon glyphicon-remove-sign" aria-hidden="true"></span>
+            <div class="alert-message">
+                [% locale.maketext('[output,strong,Error:] This feature, “[_1]”, is not enabled on your account. Please contact your hosting provider for access.', 'Site Quality Monitoring') %]
+            </div>
+        </div>
+    </div>
+    <meta http-equiv="refresh" content="0;url='../../index.html'" />
+    [% END %]
+</div>
+[% END %]
+[% BLOCK links_block %]
+    
+    <style>
+    html, body { height: 100% !important; }
+    .body-content #koalityApp .\!min-h-screen { min-height: unset !important }
+    .body-content #koalityApp .fixed.top-0 { top: 60px !important }
+    @media(min-width: 768px) {
+        html[dir=ltr] .body-content .fixed.left-0 {
+            left: clamp(240px,14.8vw,320px) !important
+        }
+        html[dir=rtl] .body-content .fixed.right-0 {
+            right: clamp(240px,14.8vw,320px) !important
+        }
+        html[dir=ltr] .body-content .fixed.left-0,
+        html[dir=rtl] .body-content .fixed.right-0 {
+            max-width: calc(100vw - 240px);
+        }
+    }
+    .body-content .mobileFullHeight { height: calc(100vh - 6rem) !important}
+
+    /* Correction for the page title that are being overwritten by tailwind    */
+    /* NOTE: This is a very fragil hack that will work until the shared styles */
+    /* change or the tailwind stuff breaks things further. The real solution   */
+    /* is to isolate the tailwind styles to inside the .page-body tag.         */
+    /* The koality team is working on patches for the SPA to do that.          */
+    .page-title {
+        display: block;
+        font-size: 30px;
+        text-transform: capitalize;
+    }
+    .page-title-section {
+        display: inline-block;
+        vertical-align: top;
+        font-size: 20px;
+    }
+    h1.page-header {
+        border-bottom: 0;
+        font-weight: lighter;
+        font-family: "Open Sans",sans-serif;
+        line-height: 1.1;
+        color: inherit;
+        font-size: 2em;
+        margin-bottom: 0.67em;
+    }
+    h1 #pageSubHeading {
+        font-size: 65%;
+        font-weight: 400;
+        line-height: 1;
+        color: #999;
+    }
+    </style>
+[% END %]
+[% BLOCK init_block %]
+    [%
+        SET locale_tag = locale.get_language_tag();  # es_419
+        SET language_tag = locale_tag.split('_').0;  # es
+    %]
+    <script>
+        window.PLUGINS = {
+            koality: {
+                isSandbox: [% IF CPANEL.is_sandbox; 'false'; ELSE; 'false'; END; %],
+                isCpanel:  true,
+                locale:    [% language_tag.json() %],
+                token:     [% token.json() %],
+                environment: [% environment.json() %],
+                basePath: [% ROUTER_PATH.json() %],
+                homeUrl:  [% HOME_URL.json() %],
+                defaultPage: 'index.html#',
+                hasDevConfig: false,                
+            }
+        }
+    </script>
+[% END %]
+[% BLOCK js_block %]
+    <script>
+    const queryDict = {}
+    location.search.substr(1).split("&").forEach(function (item) {
+      queryDict[item.split("=")[0]] = item.split("=")[1]
+    })
+
+    const basePath = [ window.PLUGINS?.koality?.basePath, '/', window.PLUGINS?.koality?.defaultPage ].join('')
+    window.localStorage.setItem('actionToken', queryDict.token)
+    window.location.replace(basePath + "auth-success/?user=" + queryDict.user)
+  </script>
+
+[% END %]
+[% BLOCK meta_block %]
+    
+[% END %]

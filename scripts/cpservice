@@ -1,0 +1,101 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/cpservice                       Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+use warnings;
+use Cpanel::Init;
+
+my $init;
+if ( exists $ENV{'DEBUG'} ) {
+
+    # In debug mode choice of operating systems are:
+    #     centos, redhat, rhel
+    $init = Cpanel::Init->new( { 'os' => $ENV{'DEBUG'} } );
+}
+else {
+    $init = Cpanel::Init->new();    # Have the module figure out if the operating system is supported.
+}
+
+if ( scalar @ARGV >= 2 && ( $ARGV[1] =~ m/\binstall\b|\buninstall\b|\benable\b|\bdisable\b|\badd\b|\bremove\b/i ) ) {
+    my $service   = shift @ARGV;
+    my $command   = shift @ARGV;
+    my $extra_arg = shift @ARGV;
+    my $retval    = $init->run_command_for_one( $command, $service, $extra_arg );
+
+    if ( ref $retval eq 'HASH' ) {
+        print $retval->{'message'} . "\n";
+        exit( !$retval->{'status'} );
+    }
+    elsif ($retval) {
+        print $command . ' was successful' . "\n";
+        exit(0);
+    }
+    else {
+        print $command . ' failed' . "\n";
+        exit(1);
+    }
+}
+elsif ( scalar @ARGV == 2 ) {
+    my $service = shift @ARGV;
+    my $command = shift @ARGV;
+
+    # extend securetmp runtime ( fix several cases related to securetmp #57407, #39252 )
+    $init->maximum_time( 60 * 10 ) if $service eq 'securetmp';
+
+    my $retval = $init->run_command( $service, $command );
+    print "Command failed: " . $command . "\n" unless $retval->{'status'};
+    print $retval->{'message'};
+
+    # need to revert status code to convert into a system code
+    #   0 -> error ; 1 -> success
+    exit( $retval->{'status'} ? 0 : 1 );
+}
+else {
+    usage();
+}
+
+sub usage {
+    print 'Usage: ' . $init->prog_name() . ' [ service_name [ start | stop | status | ... ]] | [ service_name [ install | uninstall ]] | [ service_name [ enable [run_levels] | disable [run_levels]]]' . "\n";
+}
+
+__END__
+
+=pod
+
+=head1 NAME
+
+cpservice - [Interact with initscripts that are cPanel managed]
+
+=head1 USAGE
+
+    cpservice [ service_name [ start | stop | status | ... ]] | [ service_name [ install | uninstall ]] | [ service_name [ enable|disable ]]
+
+=head1 DESCRIPTION
+
+    This script allows for the control of cPanel managed services. Its interface
+    mimics the redhat service command but with more feature specific to cPanel.
+
+=head1 USAGE EXAMPLES
+
+=over 4
+
+=item cpservice install
+
+This command will install initscript in the correct directory
+for the running operating system.
+
+=item cpservice checkinstall
+
+This command will configure the system to startup all cpanel managed services at boot up.
+
+=item cpservice service_name command
+
+This command will send the C<command> to the cpanel managed C<service>.
+
+=back
+
+=cut

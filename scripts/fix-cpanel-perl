@@ -1,0 +1,1013 @@
+#!/usr/bin/perl
+
+# cpanel - scripts/fix-cpanel-perl                 Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::fixcpanelperl;
+
+use strict;
+use warnings;
+
+### Do not add any extra use/require statements here without talking to BC.
+###
+### This code is used by the installer for fresh install
+###     its main goal is to bootstrap & repair cPanel Perl
+###
+### Thus no dependencies should be added to this special script.
+### Because this script uses only system perl code,
+###     the rest of the cPanel code base gets to have nice things!
+###     and rely on cPanel Perl stack.
+
+use IPC::Open3 ();
+use POSIX      ();
+
+use constant COLOR_RED    => 31;
+use constant COLOR_GREEN  => 32;
+use constant COLOR_YELLOW => 33;
+use constant COLOR_GRAY   => 37;
+
+use constant UPDATE_SOURCE_DEFAULT => 'httpupdate.cpanel.net';
+use constant PKG_VERSION_SOURCE    => '11.108';
+use constant PKG_DOWNLOADS_DIR     => '/usr/local/cpanel/tmp/rpm_downloads';
+
+=pod
+
+=head1 NAME
+
+scripts::fixcpanelperl
+
+=head1 SYNOPSIS
+
+    # restore cpanel-perl package when missing
+    /scripts/fix-cpanel-perl
+
+=head1 DESCRIPTION
+
+This script is used during fresh installation to bootstrap cPanel Perl and install a few
+core dependencies packages to run the installation process using cPanel Perl version as early
+as possible.
+
+The script can also be used to recover from a catastrophic loss or coruption of the cpanel-perl
+packages blocking check_cpanel_pkgs or upcp to recover the system.
+
+This script is automatically invoked if needed when check_cpanel_pkgs cannot run.
+
+=head1 NOTE
+
+The list of Perl packages install by this script should be short.
+
+This script should only use default perl packages install with the system,
+no Cpanel packages can be use as part of this script.
+
+=cut
+
+my %shared_install_env = (
+    LANG        => 'C',
+    LANGUAGE    => 'C',
+    LC_ALL      => 'C',
+    LC_MESSAGES => 'C',
+    LC_CTYPE    => 'C',
+);
+
+our %DISTRO_SETUP = (
+    'centos' => {
+        name        => 'centos',
+        install_env => {
+            %shared_install_env,
+        },
+        install_cmd => [ '/bin/rpm', '-Uvh', '--force', '--nodeps' ],
+        template    => {
+            base_url  => 'http://%httpupdate%/RPM/%cpanel_major%/%distro_name%/%distro_major%/x86_64',
+            file_name => '%package%-%version%~el%distro_major%.%arch%.rpm'
+        },
+        package_sha512 => 'rpm.sha512',    # could use later once pushed to prod sha512
+    },
+    'ubuntu' => {
+        name        => 'ubuntu',
+        install_env => {
+            %shared_install_env,
+            DEBIAN_FRONTEND => q[noninteractive],
+            DEBIAN_PRIORITY => q[critical],
+        },
+        install_cmd => [ '/bin/dpkg', '-i', '--force-confnew' ],
+        template    => {
+            base_url      => 'http://%httpupdate%/ubuntu/pool',
+            base_file_uri => '%package%',
+            file_name     => '%package%_%version%~u%distro_major%_%arch%.deb',
+        },
+        package_sha512 => 'sha512',
+    },
+);
+
+our $CPANEL_CONFIG_FILE        = '/var/cpanel/cpanel.config';
+our $SIG_VALIDATION_CPCONF_KEY = 'signature_validation';
+
+sub colorize_bold {
+    my ( $color, $msg ) = @_;
+
+    return $msg
+      if !defined $color || -e '/var/cpanel/disable_cpanel_terminal_colors';
+    $msg ||= '';
+
+    return chr(27) . '[1;' . $color . 'm' . $msg . chr(27) . '[0;m';
+}
+
+sub DEBUG($) { return _MSG( 'DEBUG', "  " . shift ) }
+
+sub ERROR($) {
+    return _MSG(
+        colorize_bold( COLOR_RED,  'ERROR' ),
+        colorize_bold( COLOR_GRAY, shift )
+    );
+}
+
+sub WARN($) {
+    return _MSG(
+        colorize_bold( COLOR_YELLOW, 'WARN' ),
+        colorize_bold( COLOR_YELLOW, shift )
+    );
+}
+
+sub OK($) {
+    return _MSG(
+        colorize_bold( COLOR_GREEN, 'OK' ),
+        colorize_bold( COLOR_GRAY,  shift )
+    );
+}
+sub INFO($) { return _MSG( 'INFO', shift ) }
+
+sub FATAL($) {
+    _MSG(
+        colorize_bold( COLOR_RED, 'FATAL' ),
+        colorize_bold( COLOR_RED, shift )
+    );
+    die "\n";
+}
+
+# Cached and used all over the place.
+our ( $wget_bin, $wget_args, $GPG_BIN );
+our ( $DISTRO_TYPE, $DISTRO_MAJOR );
+our $_distro_instance;
+my %sha;
+
+exit script(@ARGV) unless caller();
+
+# return the instance of the current distro
+sub current_distro {
+    return $_distro_instance if $_distro_instance;
+
+    $DISTRO_TYPE or FATAL("DISTRO_TYPE is not set");
+    $_distro_instance = $DISTRO_SETUP{$DISTRO_TYPE}
+      or FATAL("Unknown distro type $DISTRO_TYPE. Cannot bootstrap cpanel-perl");
+
+    return $_distro_instance;
+}
+
+# init all our global for the scripts
+sub _init {
+    ( $wget_bin, $wget_args ) = get_download_tool_binary();
+    $GPG_BIN = gpg_bin();
+    ( $DISTRO_TYPE, $DISTRO_MAJOR ) = os_info();
+
+    # order matters
+    current_distro() or FATAL("Cannot guess current distro");
+
+    return;
+}
+
+sub script {
+    my (@args) = @_;
+
+    return 0 if cpanel_perl_is_stable();
+
+    loop_protection();
+    ERROR("Core cpanel-perl modules have been found to be corrupt. Attempting to correct this.") unless $ENV{CPANEL_BASE_INSTALL};
+
+    # init globals first, or things will break in a hard to debug way since output is stifled on install
+    _init();
+    fetch_and_install_gpg_keys()
+      unless $ENV{CPANEL_BASE_INSTALL_GPG_KEYS_IMPORTED};
+
+    download_pkg_sha512();
+
+    chdir(PKG_DOWNLOADS_DIR)
+      or FATAL( "Fail to chdir to " . PKG_DOWNLOADS_DIR );
+
+    my $core_perl_pid;
+    if ( $core_perl_pid = fork() ) {
+
+        # handle just after...
+    }
+    elsif ( defined $core_perl_pid ) {
+        wget_and_validate_file( core_perl_pkg() );
+        install_packages( core_perl_pkg() ) and exit 1;
+        exit(0);
+    }
+    else {
+        die "The system failed to fork because of an error: $!";
+    }
+
+    # download package while doing the first transaction
+    my $pkgs = pkgs_to_download();
+    foreach my $package_name ( sort keys %$pkgs ) {
+        wget_and_validate_file( $package_name, $pkgs->{$package_name} );
+    }
+
+    {
+        waitpid( $core_perl_pid, 0 );
+        FATAL "Core perl package transaction failed" unless $? == 0;
+    }
+
+    install_packages(%$pkgs);
+
+    FATAL "package transaction failed" unless $? == 0;
+
+    OK("cpanel-perl is now restored, checking all cpanel packages.");
+
+    my @to_cleanup = (
+        current_distro()->{package_sha512},
+        current_distro()->{package_sha512} . '.asc',
+        @{ get_packages_filename( core_perl_pkg() ) },
+        @{ get_packages_filename(%$pkgs) },
+    );
+    cleanup_files(@to_cleanup);
+
+    # updatenow.static will do the needful during an install.
+    return 0 if $ENV{CPANEL_BASE_INSTALL};
+
+    # This should be changed to check_cpanel_pkgs at some point
+    if ( !-x '/usr/local/cpanel/3rdparty/bin/perl' ) {
+        FATAL "/usr/local/cpanel/3rdparty/bin/perl is missing";
+    }
+
+    if ( !-e '/usr/local/cpanel/scripts/check_cpanel_pkgs' ) {
+        FATAL "Unable to run scripts/check_cpanel_pkgs. You will need to run updatenow.static and then re-run /usr/local/cpanel/scripts/check_cpanel_pkgs --fix";
+    }
+
+    setup_env_for_distro();
+    exec(qw{/usr/local/cpanel/3rdparty/bin/perl /usr/local/cpanel/scripts/check_cpanel_pkgs --fix --long-list --no-digest})
+      or FATAL "Failed to exec /usr/local/cpanel/scripts/check_cpanel_pkgs --fix";
+
+    return 255;
+}
+
+sub loop_protection {
+
+    $ENV{CPANEL_FIX_PERL} = 0 unless defined $ENV{CPANEL_FIX_PERL};
+    ++$ENV{CPANEL_FIX_PERL};
+
+    if ( $ENV{CPANEL_FIX_PERL} > 3 ) {
+        FATAL "$0 was run mulitple times without fixing your system. Aborting. (loop detection)";
+        return 1;
+    }
+    elsif ( $ENV{CPANEL_FIX_PERL} > 1 ) {
+        WARN( "Running $0 an extra time " . $ENV{CPANEL_FIX_PERL} );
+    }
+
+    return;
+}
+
+sub render_filename {
+    my ( $package, $version_arch ) = @_;
+
+    my $filename = current_distro()->{template}->{file_name}
+      or FATAL("Undefined file_name");
+
+    # 3.75-1.cp108.noarch
+    my ( $v, $arch ) = ( $version_arch =~ m{^(.+)\.([^\.]+)$} );
+
+    FATAL("Cannot parse version / arch from $package $version_arch")
+      unless defined $v && defined $arch;
+
+    if ( current_distro()->{name} eq 'ubuntu' ) {
+        $arch = ( $arch =~ m/86/ ) ? 'amd64' : 'all';
+    }
+
+    return tt(
+        $filename,
+        { package => $package, version => $v, arch => $arch }
+    );
+}
+
+sub render_fileuri {
+    my ( $package, $version_arch ) = @_;
+
+    my $filename = render_filename( $package, $version_arch );
+    my $uri      = '';                                           # not for all distro
+    if ( my $base_file_uri = current_distro()->{template}->{base_file_uri} ) {
+        $uri = tt(
+            $base_file_uri,
+            { package => $package, version_arch => $version_arch }
+        );
+    }
+
+    $uri .= '/' if defined $uri && length $uri;
+    $uri .= $filename;
+
+    return $uri;
+}
+
+sub get_packages_filename {
+    my @files;
+    while ( scalar @_ ) {
+        my $package      = shift @_;
+        my $version_arch = shift @_;
+
+        push @files, render_filename( $package, $version_arch );
+    }
+
+    return \@files;
+}
+
+sub install_packages {
+    my (@packages) = @_;
+
+    return unless scalar @packages;
+
+    my $files = get_packages_filename(@packages);
+
+    my @cmd = ( @{ current_distro()->{install_cmd} }, @$files );
+
+    DEBUG( "Installing packages: " . join( ' ', @cmd ) );
+
+    local %ENV = %ENV;
+    setup_env_for_distro();
+
+    return system(@cmd);
+}
+
+sub setup_env_for_distro {
+
+    # setup some special environment variables for running the install command
+    my $env = current_distro()->{install_env};
+
+    return unless defined $env && ref $env;
+
+    foreach my $k ( keys %$env ) {
+        $ENV{$k} = $env->{$k};
+    }
+
+    return;
+}
+
+sub cleanup_files {
+    my (@files) = @_;
+
+    foreach my $f (@files) {
+        unlink( PKG_DOWNLOADS_DIR . '/' . $f );
+    }
+
+    return;
+}
+
+sub os_info {
+    my ( $distro_type, $distro_major );
+
+    # Trust the Cpanel-OS symlink if it is present. This allows Cache locking to function here.
+    my $cpanel_os_cache_file = '/var/cpanel/caches/Cpanel-OS';    # DO NOT use the Cpanel::OS constant here.
+    if ( -l $cpanel_os_cache_file ) {
+        my @sysinfo = split /\|/, readlink($cpanel_os_cache_file);
+        ( $distro_type, $distro_major ) = @sysinfo[ 1, 2 ];
+    }
+
+    if ( $distro_type && $distro_major ) {
+
+        # Got it from cache!
+    }
+    elsif ( open( my $fh, "<", "/etc/os-release" ) ) {            # All distros we support have this file.
+        my $line;                                                 # buffer
+        while ( $line = <$fh> ) {
+
+            if ( index( $line, "ID=" ) == 0 ) {
+                $distro_type = _clean_value( $line => length("ID=") );
+            }
+            elsif ( index( $line, "VERSION_ID=" ) == 0 ) {
+                $distro_major = _clean_value( $line => length("VERSION_ID=") );
+                $distro_major =~ s/\..+//;    # Strip off .04 from 20.04
+            }
+
+            last if $distro_type && $distro_major;
+        }
+    }
+    elsif ( -e "/etc/redhat-release" ) {    # This is a fallback in the unlikely event os-release wasn't found.
+        open( my $cr_fh, "<", "/etc/redhat-release" )
+          or die "Could not open “/etc/redhat-release” for reading: $!\n";
+        my $line = <$cr_fh>;
+        ($distro_major) = $line =~ m/(\d+)/;
+        ($distro_type)  = $line =~ m/^\s*(\w+)/;
+        $distro_type = lc $distro_type;
+    }
+    else {
+        die("Unable to find /etc/redhat-release or /etc/os-release for system info");
+    }
+
+    $distro_type = 'centos' if $distro_type =~ m/cloud|red|alma|rhel|rocky/i;
+    ($distro_major) = $distro_major =~ m/^\s*0*\s*(\d+)/
+      if $distro_type eq 'centos';    # Strip off the minor version for centos RPMs. Alma linux is a special snowflake!
+
+    return ( $distro_type, $distro_major );
+}
+
+sub _clean_value {
+    my ( $str, $strip ) = @_;
+    die "Internal _clean_value() called without a value (did you make changes to this code recently?)\n"
+      if !defined $str;
+
+    chomp $str;
+    $str = substr( $str, $strip );
+
+    if ( substr( $str, 0, 1 ) eq '"' ) {
+        $str = substr( $str, 1, length($str) );
+        $str = substr( $str, 0, length($str) - 1 );
+    }
+
+    return $str;
+}
+
+sub cpanel_perl_is_stable {
+    my ($pkg_info) = @_;
+
+    my $perl_bin = '/usr/local/cpanel/3rdparty/bin/perl';
+    my $command  = $perl_bin;
+
+    $command .= " -M$_" foreach minimum_cpanel_perl_modules();
+
+    my $got = `$command -E'sub foo (\$bar) { ... }; print q{ok}' 2>&1`;    ## no critic qw(Cpanel::ProhibitQxAndBackticks)
+    return 0 unless !$? && $got && $got eq 'ok';
+
+    if ( my $v = _perl_version() ) {
+        my $out = `$perl_bin -E 'say \$]'`;
+        return unless $out =~ m{^\Q$v\E};
+    }
+
+    return 1;
+}
+
+sub _perl_major {
+    my ($perl_pkg) = core_perl_pkg();
+    return $1 if $perl_pkg =~ m{-(\d+)$};
+    return;
+}
+
+sub _perl_version {
+    my $major = _perl_major() or return;
+    if ( $major =~ m{^(\d)(\d+)$} ) {
+        my ( $rev, $version ) = ( $1, $2 );
+        return sprintf( '%d.%03d', $rev, $version );
+    }
+    return;
+}
+
+sub download_pkg_sha512 {
+
+    # Setup the directory as best we can.
+    unlink PKG_DOWNLOADS_DIR;    # Just in case it's a file (that'd be weird)
+    system( '/bin/mkdir', '-p', PKG_DOWNLOADS_DIR )
+      unless -d PKG_DOWNLOADS_DIR;
+    -d PKG_DOWNLOADS_DIR
+      or FATAL( "Can't make directory " . PKG_DOWNLOADS_DIR );
+
+    my $package_sha512 = current_distro()->{package_sha512}
+      or FATAL("no package_sha512 filename set");
+
+    my $sha_file = sprintf( "%s/%s",     PKG_DOWNLOADS_DIR, $package_sha512 );
+    my $sig_file = sprintf( "%s/%s.asc", PKG_DOWNLOADS_DIR, $package_sha512 );
+
+    #
+    my $sha_url = sprintf( "%s/%s",     url_base(), $package_sha512 );
+    my $sig_url = sprintf( "%s/%s.asc", url_base(), $package_sha512 );
+
+    download_file( $sig_url, $sig_file );
+    download_file( $sha_url, $sha_file );
+    verify_file_signature( $sha_file, $sig_file, $sha_url );
+
+    open( my $fh, '<', $sha_file ) or FATAL("Can't read $sha_file");
+    while ( my $line = <$fh> ) {
+        chomp $line;
+        my ( $sha, $file ) = split( qr{\s+}, $line );
+
+        $sha{$file} = $sha;
+    }
+    close $fh;
+
+    return;
+}
+
+my $url_base;    #cached;
+
+sub url_base {
+    return $url_base if defined $url_base;
+
+    return $url_base = tt( current_distro()->{template}->{base_url} );
+}
+
+sub tt {
+    my ( $str, $extra ) = @_;
+
+    return unless defined $str;
+
+    my $httpupdate   = get_update_source();
+    my $cpanel_major = PKG_VERSION_SOURCE;
+
+    $extra = {} unless defined $extra;
+
+    my $tt = {
+        httpupdate   => $httpupdate,
+        cpanel_major => $cpanel_major,
+        distro_name  => $DISTRO_TYPE,
+        distro_major => $DISTRO_MAJOR,
+        ref $extra ? %$extra : (),
+    };
+
+    my $s = sub {
+        my $k = shift or FATAL("Undefined key");
+        my $v = $tt->{$k};
+        FATAL("Unexpected template variables '$k' in base URL ")
+          unless defined $v;
+        return $v;
+    };
+
+    $str =~ s{\%([a-z_]+)\%}{$s->($1)}eg;
+
+    return $str;
+}
+
+sub get_download_tool_binary {
+
+    for my $bin (qw(/bin/wget /usr/bin/wget /usr/local/bin/wget)) {
+
+        # check if the binary exists
+        next unless -e $bin && -x _ && -s _;
+
+        # use it
+        if ( `$bin --version 2>/dev/null` =~ m/GNU\s+Wget\s+[0-9]+\.[0-9]+/ims ) {    ## no critic qw(ProhibitQxAndBackticks)
+            return (
+                $bin,
+                ' -nv --no-dns-cache --tries=20 --timeout=60 --dns-timeout=60 --read-timeout=30 --waitretry=1 --retry-connrefused -O'
+            );
+        }
+    }
+
+    # If $wget_bin is not set, then wget is not installed and
+    # We do not have a fallback for Cpanel::SecureDownload::fetch_url()
+    FATAL("Can't bootstrap cpanel-perl without a working file download method. Try installing the wget package manually.");
+
+    return;
+}
+
+sub gpg_bin {
+
+    for my $bin (qw(/bin/gpg /usr/bin/gpg /usr/local/bin/gpg)) {
+        next unless -e $bin && -x _ && -s _;
+        return $bin;
+    }
+
+    FATAL "Can't bootstrap cpanel-perl without gpg. Try installing the gnupg2 package manually.";
+    return;
+}
+
+sub _MSG {
+    my $level = shift;
+    my $msg   = shift || '';
+    chomp $msg;
+
+    my $message_caller_depth = 1;
+
+    my ( $sec, $min, $hour, $mday, $mon, $year, $wday, $yday, $isdst ) = localtime;
+    my ( $package, $filename, $line ) = caller($message_caller_depth);
+    my $stamp_msg = sprintf(
+        "%04d-%02d-%02d %02d:%02d:%02d %4s (%5s): %s\n",
+        $year + 1900, $mon + 1, $mday,  $hour, $min,
+        $sec,         $line,    $level, $msg
+    );
+
+    print $stamp_msg;
+    return;
+}
+
+{
+
+    my $update_source;
+
+    sub get_update_source {
+
+        return $update_source if defined $update_source;
+
+        my $source_file = '/etc/cpsources.conf';
+
+        # pull in from cpsources.conf if it's set.
+        if ( open( my $fh, "<", $source_file ) ) {
+            while (<$fh>) {
+                next if $_ !~ m/^\s*HTTPUPDATE\s*=\s*(\S+)/;
+                $update_source = "$1";
+                last;
+            }
+        }
+
+        $update_source = UPDATE_SOURCE_DEFAULT unless $update_source;
+
+        INFO("Downloading bootstrap packages from $update_source");
+
+        return $update_source;
+    }
+
+}
+
+sub wget_and_validate_file {
+    my ( $package_name, $version_arch ) = @_;
+
+    my $uri = render_fileuri( $package_name, $version_arch );
+    my $filename;
+    if ( index( $uri, '/' ) == -1 ) {
+        $filename = $uri;
+    }
+    else {
+        ($filename) = ( $uri =~ m{/([^/]+)$} );
+    }
+
+    FATAL("Cannot guess filename for path $uri") unless length $filename;
+
+    my $url = url_base() . '/' . $uri;
+
+    my $expected_sha = $sha{$uri};
+    FATAL("No sha defined for file $uri") unless defined $expected_sha;
+
+    my $pkg_file_path = download_file( $url, PKG_DOWNLOADS_DIR . '/' . $filename );
+
+    my $result = `/usr/bin/sha512sum $pkg_file_path 2>&1`;    ## no critic qw(Cpanel::ProhibitQxAndBackticks)
+    my ($sha) = $result =~ m/^([a-fA-F0-9]+)/;
+
+    if ( $expected_sha ne $sha ) {
+        FATAL("Couldn't verify the expected sha ($sha{$filename}) for $filename. Got $sha");
+    }
+
+    return;
+}
+
+## used by unit tests - this should be the only 'require' statement
+##
+sub _require_securedownload {
+    require Cpanel::SecureDownload;
+    return;
+}
+
+#
+# Cpanel::SecureDownload is the preferred method as it will
+# attempt Cpanel::HTTP::Client, curl, then wget.  And it will
+# attempt to use Mozilla::CA if available.
+# However, depending on the broken state if perl, it might
+# not work.  In that case we can go back to directly invoking
+# wget via backticks as before.
+#
+sub attempt_secure_download_file {
+    my ( $url, $dest_file ) = @_;
+
+    # Add this so that Cpanel::SecureDownload will pick up the
+    # latest version of Mozilla::CA if we have it installed
+    local @INC = (
+        '/usr/local/cpanel',
+        '/usr/local/cpanel/3rdparty/perl/536/cpanel-lib', @INC
+    );
+
+    my ( $success, $msg );
+    eval {
+        _require_securedownload();
+
+        my %options = (
+            'output-file'       => $dest_file,
+            'not-verbose'       => 1,
+            'tries'             => 20,
+            'retry-delay'       => 1,
+            'timeout'           => 60,
+            'dns-timeout'       => 60,
+            'read-timeout'      => 30,
+            'no-dns-cache'      => 1,
+            'retry-connrefused' => 1,
+        );
+
+        ( $success, $msg ) = Cpanel::SecureDownload::fetch_url( $url, %options );
+    };
+
+    if ( !$@ && $success && -e $dest_file && !-z $dest_file ) {
+        return 1;
+    }
+
+    # Warn if an exception had been thrown, that means there was trouble loading
+    # Cpanel::SecureDownload.  However, we do not need to warn on errors returned
+    # from fetch_url as it already warns when each method fails
+    if ($@) {
+        WARN "Could not invoke Cpanel::SecureDownload::fetch_url: $@";
+    }
+
+    return;
+}
+
+sub minimum_cpanel_perl_modules {
+    return qw{
+      common::sense
+      B::COW
+      CDB_File
+      IO::SigGuard
+      JSON::XS
+      Compress::Raw::Lzma
+      Proc::FastSpawn
+      Try::Tiny
+      Types::Serialiser
+      YAML::Syck
+      Net::SSLeay
+      IO::Socket::SSL
+      Guard
+      Promise::ES6
+      Promise::XS
+      Class::XSAccessor
+      Net::Curl::Promiser
+      Net::Curl
+      cPanel::APIClient
+      Call::Context
+      Module::Runtime
+      AnyEvent
+      JSON
+      X::Tiny
+      URI
+      File::Path::Tiny
+      Test::Exception
+      Sub::Uplevel
+      File::Slurper
+      PerlIO::utf8_strict
+      Sereal::Encoder
+      Sereal::Decoder
+      IO::Pty
+    };
+}
+
+sub core_perl_pkg {
+    return ( 'cpanel-perl-536' => '5.36.0-2.cp108.x86_64' );
+}
+
+sub pkgs_to_download {
+    my %packages = qw{
+      cpanel-perl-536-common-sense        3.75-1.cp108.noarch
+      cpanel-perl-536-b-cow               0.004-1.cp108.x86_64
+      cpanel-perl-536-cdb.file            0.99-1.cp108.x86_64
+      cpanel-perl-536-io-sigguard         0.15-1.cp108.noarch
+      cpanel-perl-536-json-xs             4.03-1.cp108.x86_64
+      cpanel-perl-536-compress-raw-lzma   2.201-1.cp108.x86_64
+      cpanel-perl-536-proc-fastspawn      1.2-1.cp108.x86_64
+      cpanel-perl-536-try-tiny            0.31-1.cp108.noarch
+      cpanel-perl-536-types-serialiser    1.01-1.cp108.noarch
+      cpanel-perl-536-yaml-syck           1.34-1.cp108.x86_64
+      cpanel-perl-536-net-ssleay          1.92-1.cp108.x86_64
+      cpanel-perl-536-io-socket-ssl       2.074-1.cp108.noarch
+      cpanel-perl-536-guard               1.023-1.cp108.x86_64
+      cpanel-perl-536-promise-es6         0.25-1.cp108.noarch
+      cpanel-perl-536-promise-xs          0.16-1.cp108.x86_64
+      cpanel-perl-536-class-xsaccessor    1.19-1.cp108.x86_64
+      cpanel-perl-536-net-curl-promiser   0.18-1.cp108.noarch
+      cpanel-perl-536-net-curl            0.50-1.cp108.x86_64
+      cpanel-perl-536-cpanel-apiclient    0.08-1.cp108.noarch
+      cpanel-perl-536-call-context        0.03-1.cp108.noarch
+      cpanel-perl-536-module-runtime      0.016-1.cp108.noarch
+      cpanel-perl-536-anyevent            7.17-1.cp108.noarch
+      cpanel-perl-536-json                4.07-1.cp108.noarch
+      cpanel-perl-536-x-tiny              0.22-1.cp108.noarch
+      cpanel-perl-536-uri                 5.10-1.cp108.noarch
+      cpanel-perl-536-sub-uplevel         0.2800-1.cp108.noarch
+      cpanel-perl-536-test-exception      0.43-1.cp108.noarch
+      cpanel-perl-536-file-path-tiny      1.0-1.cp108.noarch
+      cpanel-perl-536-file-slurper        0.013-1.cp108.noarch
+      cpanel-perl-536-perlio-utf8.strict  0.009-1.cp108.x86_64
+      cpanel-perl-536-sereal-encoder      4.023-1.cp108.x86_64
+      cpanel-perl-536-sereal-decoder      4.023-1.cp108.x86_64
+      cpanel-perl-536-io-tty              1.16-1.cp108.x86_64
+      cpanel-3rdparty-bin                 108.1-1.cp108.noarch
+    };
+
+    return \%packages;
+}
+
+sub download_file {
+    my ( $url, $dest_file ) = @_;
+
+    DEBUG "Retrieving $url";
+
+    # Don't call attempt_secure_download_file on new installs, as Cpanel::SecureDownload will
+    # not be present on the system at the point where fix-cpanel-perl is called.
+    if ( !$ENV{'CPANEL_BASE_INSTALL'}
+        && attempt_secure_download_file( $url, $dest_file ) ) {
+        return $dest_file;
+    }
+
+    my $output = `$wget_bin $wget_args '$dest_file' $url 2>&1`;    ## no critic qw(Cpanel::ProhibitQxAndBackticks)
+
+    if ( !-e $dest_file || -z $dest_file ) {
+        unlink $dest_file;
+        FATAL "The system could not fetch $url to file $dest_file: $output";
+    }
+
+    return $dest_file;
+}
+
+sub signature_validation_enabled {
+
+    my $config = read_config();
+
+    return 1 unless defined $config->{$SIG_VALIDATION_CPCONF_KEY};
+    return 0
+      if $config->{$SIG_VALIDATION_CPCONF_KEY} eq '0'
+      || lc( $config->{$SIG_VALIDATION_CPCONF_KEY} ) eq 'off';
+
+    return 1;
+}
+
+sub verify_file_signature {
+    my ( $file, $sig, $url ) = @_;
+
+    if ( !signature_validation_enabled() ) {
+        INFO "Skipping signature validation [currently disabled in cpanel.config]";
+        return;
+    }
+
+    INFO "FILE - $file";
+    INFO "SIG  - $sig";
+    INFO "URL  - $url";
+
+    my @gpg_args = (
+        '--logger-fd', '1',           '--status-fd', '1',
+        '--homedir',   gpg_homedir(), '--verify',    $sig,
+        $file,
+    );
+
+    # Verify the validity of the GPG signature.
+    # Information on these return values can be found in 'doc/DETAILS' in the GnuPG source.
+
+    my ( %notes, $curnote );
+    my ( $gpg_out, $success, $status );
+    my $gpg_pid = IPC::Open3::open3( undef, $gpg_out, undef, $GPG_BIN, @gpg_args );
+
+    while ( my $line = readline($gpg_out) ) {
+        if ( $line =~ /^\[GNUPG:\] VALIDSIG ([A-F0-9]+) (\d+-\d+-\d+) (\d+) ([A-F0-9]+) ([A-F0-9]+) ([A-F0-9]+) ([A-F0-9]+) ([A-F0-9]+) ([A-F0-9]+) ([A-F0-9]+)$/ ) {
+            $status  = "Valid signature for $file";
+            $success = 1;
+        }
+        elsif ( $line =~ /^\[GNUPG:\] NOTATION_NAME (.+)$/ ) {
+            $curnote = $1;
+            $notes{$curnote} = '';
+        }
+        elsif ( $line =~ /^\[GNUPG:\] NOTATION_DATA (.+)$/ ) {
+            $notes{$curnote} .= $1;
+        }
+        elsif ( $line =~ /^\[GNUPG:\] BADSIG ([A-F0-9]+) (.+)$/ ) {
+            $status = "Invalid signature for $file.";
+        }
+        elsif ( $line =~ /^\[GNUPG:\] NO_PUBKEY ([A-F0-9]+)$/ ) {
+            $status = "Could not find public key in keychain.";
+        }
+        elsif ( $line =~ /^\[GNUPG:\] NODATA ([A-F0-9]+)$/ ) {
+            $status = "Could not find a GnuPG signature in the signature file.";
+        }
+    }
+
+    waitpid( $gpg_pid, 0 );
+
+    $status ||= "Unknown error from gpg.";
+    $status .= " ($file)";
+
+    if ($success) {
+        INFO $status;
+    }
+    else {
+        FATAL $status;
+    }
+
+    # At this point, the signature should be valid.
+    # We now need to check to see if the filename signature notation is correct.
+    my ($url_path) = $url =~ m{^https?://[-.a-zA-Z0-9]+(/.+)};
+    $url_path or FATAL("Can't parse $url");
+
+    if ( defined( $notes{'filename@gpg.notations.cpanel.net'} ) ) {
+        my $file_note = $notes{'filename@gpg.notations.cpanel.net'};
+        if ( $file_note ne $url_path ) {
+            FATAL "Filename notation ($file_note) does not match URL ($url_path).";
+        }
+    }
+    else {
+        FATAL "Signature does not contain a filename notation.";
+    }
+
+    return;
+}
+
+sub fetch_and_install_gpg_keys {
+
+    my $pub_keys = public_keys();
+    _create_gpg_homedir();
+
+    INFO("fetch and install gpg keys");
+
+    FATAL("gpg bin unset") unless defined $GPG_BIN;
+
+    foreach my $key ( @{ keys_to_download() } ) {
+        INFO("Downloading GPG public key, $pub_keys->{$key}");
+        my $target   = secure_downloads() . $pub_keys->{$key};
+        my $dest     = gpg_homedir() . "/" . $pub_keys->{$key};
+        my $wget_out = download_file( $target, $dest, 1, 1 );
+        if ( !-e $dest ) {
+            WARN("Could not download GPG public key at $target : $wget_out");
+            return;
+        }
+        my $gpg_cmd = $GPG_BIN . " -q --homedir " . gpg_homedir() . " --import " . $dest;
+        DEBUG($gpg_cmd);
+        my $out = `$gpg_cmd`;    ## no critic qw(ProhibitQxAndBackticks)
+        ERROR($out) if $? && length $out;
+    }
+    return;
+}
+
+sub _create_gpg_homedir {
+    mkdir( gpg_homedir(), 0700 ) if !-e gpg_homedir();
+    return;
+}
+
+our $CACHE_CONFIG;
+
+sub read_config {
+    my $file = $CPANEL_CONFIG_FILE;
+
+    return $CACHE_CONFIG if $CACHE_CONFIG;
+
+    my $config = {};
+
+    open( my $fh, "<", $file ) or return $config;
+    while ( my $line = readline $fh ) {
+        chomp $line;
+        if ( $line =~ m/^\s*([^=]+?)\s*$/ ) {
+            my $key = $1 or next;    # Skip loading the key if it's undef or 0
+            $config->{$key} = undef;
+        }
+        elsif ( $line =~ m/^\s*([^=]+?)\s*=\s*(.*?)\s*$/ ) {
+            my $key = $1 or next;    # Skip loading the key if it's undef or 0
+            $config->{$key} = $2;
+        }
+    }
+
+    $CACHE_CONFIG = $config;
+
+    return $config;
+}
+
+sub keys_to_download {
+
+    my $config   = read_config();
+    my $keyrings = gpg_keyrings();
+
+    my $use_key = 'release';    # default key
+
+    if ( defined $config->{'signature_validation'}
+        && $config->{'signature_validation'} =~ /^Release and (?:Development|Test) Keyrings$/ ) {
+        $use_key = 'development';
+    }
+
+    my $mirror = get_update_source();
+    if ( $mirror =~ /^(?:.*\.dev|qa-build|next)\.cpanel\.net$/ ) {
+        if ( !defined $config->{'signature_validation'} ) {
+            $use_key = 'development';
+        }
+        elsif ( $use_key ne 'development' ) {
+            WARN("Using cPanel GPG '$use_key' key for mirror $mirror (consider using 'development')");
+        }
+    }
+
+    FATAL("Unknown key for $use_key") unless defined $keyrings->{$use_key};
+    WARN("Using cPanel GPG key '$use_key'") if $use_key ne 'release';
+
+    return $keyrings->{$use_key};
+}
+
+# The installer may set $ENV{'CPANEL_BASE_INSTALL_GPG_KEYS_IMPORTED'}
+# to true in which case the keys will be in /var/cpanel/.gpgtmpdir
+sub gpg_homedir {
+    return '/var/cpanel/.gpgtmpdir';
+}
+
+sub public_keys {
+    return {
+        'release'     => 'cPanelPublicKey.asc',
+        'development' => 'cPanelDevelopmentKey.asc',
+    };
+}
+
+sub secure_downloads {
+    return 'https://securedownloads.cpanel.net/';
+}
+
+sub gpg_keyrings {
+    return {
+        'release'     => ['release'],
+        'development' => [ 'release', 'development' ],
+
+    };
+}
+
+1;

@@ -1,0 +1,176 @@
+[%
+    IF NOTICE.service_status == 'recovered';
+        SET recovered = 1;
+        SET message = CPANEL.locale.maketext('The service “[_1]” is now operational.', NOTICE.service_name);
+    ELSIF NOTICE.service_status == 'failed';
+        SET message = CPANEL.locale.maketext('The service “[_1]” appears to be down.', NOTICE.service_name);
+    ELSE;
+        SET message = CPANEL.locale.maketext('The system failed to determine the status of the service “[_1]”.', NOTICE.service_name);
+    END;
+
+    IF NOTICE.what_failed == 'command';
+        NOTICE.what_failed = CPANEL.locale.maketext('The system’s command to check or to restart this service failed.');
+    ELSIF NOTICE.what_failed == 'socket';
+        NOTICE.what_failed = CPANEL.locale.maketext('The system failed to connect to this service’s [asis,TCP/IP] port.');
+    ELSE;
+        NOTICE.what_failed = NOTICE.what_failed.html();
+    END;
+
+    VIEW error_highlighted_html;
+        BLOCK text;
+            SET lines_to_print = [];
+            SET msg_lines = item.split("\n");
+            FOR msg = msg_lines;
+                IF msg.match('(?i)(?:err(?:or)?[\]\s:]|:\s*bad \S+ name)');
+                    line = '<span style="background-color: #EE0000; color: #000000;">';
+                ELSIF msg.match('(?i)warn(?:ing)?[\]\s:]');
+                    line = '<span style="background-color: #FFFF55; color: #000000;">';
+                ELSE;
+                    lines_to_print.push(msg);
+                    NEXT;
+                END;
+
+                line = line _ msg _ '</span>';
+                lines_to_print.push(line);
+            END;
+
+            lines_to_print.join('<br>');
+        END;
+    END;
+
+-%]
+
+[%
+    PROCESS "include/colors.tmpl";
+    PROCESS "include/icons.tmpl";
+    PROCESS "include/styles.tmpl";
+    PROCESS "include/code_inline.tmpl";
+    PROCESS 'include/system_info_rows.tmpl';
+    WRAPPER 'wrapper/main.html.tmpl';
+
+    NOTICE.email_reason = message;
+
+    SET zebra_stripe = 0;
+%]
+    <p>
+        <table style="
+            margin: 5px 10px;
+            border: 2px solid [% medium_gray %];
+            padding: 0;"
+            cellpadding="5" cellspacing="0"
+            width="[% content_width - 20 %]px">
+            <tbody>
+                <tr style="background-color:[% zebra_stripe? light_gray : white %]">
+                    [% zebra_stripe = !zebra_stripe %]
+                    <th align="left">[% CPANEL.locale.maketext('Server') %]</th>
+                    <td align="left">[% NOTICE.hostname FILTER html %]</td>
+                </tr>
+                <tr style="background-color:[% zebra_stripe? light_gray : white %]">
+                    [% zebra_stripe = !zebra_stripe %]
+                    <th align="left">[% CPANEL.locale.maketext('Primary [output,abbr,IP,Internet Protocol] Address') %]</th>
+                    <td align="left">[% NOTICE.mainip FILTER html %]</td>
+                </tr>
+                <tr style="background-color:[% zebra_stripe? light_gray : white %]">
+                    [% zebra_stripe = !zebra_stripe %]
+                    <th align="left">[% CPANEL.locale.maketext('Service Name') %]</th>
+                    <td align="left">[% NOTICE.service_name FILTER html %]</td>
+                </tr>
+                <tr style="background-color:[% zebra_stripe? light_gray : white %]">
+                    [% zebra_stripe = !zebra_stripe %]
+                    <th align="left">[% CPANEL.locale.maketext('Service Status') %]</th>
+                    <td align="left">[% NOTICE.service_status FILTER html %] [% get_icon(icon=NOTICE.service_status) %]</td>
+                </tr>
+                <tr style="background-color:[% zebra_stripe? light_gray : white %]">
+                    [% zebra_stripe = !zebra_stripe %]
+                    <th align="left">[% CPANEL.locale.maketext('Notification') %]</th>
+                    <td align="left">[% message FILTER html %]</td>
+                </tr>
+                [% IF NOTICE.what_failed %]
+                    <tr style="background-color:[% zebra_stripe? light_gray : white %]">
+                        [% zebra_stripe = !zebra_stripe %]
+                        <th align="left">[% CPANEL.locale.maketext('Service Check Method') %]</th>
+                        <td align="left">
+                            [% NOTICE.what_failed %]
+                        </td>
+                    </tr>
+                [% END %]
+                [% IF NOTICE.socket_error %]
+                    <tr style="background-color:[% zebra_stripe? light_gray : white %]">
+                        [% zebra_stripe = !zebra_stripe %]
+                        <th align="left">[% CPANEL.locale.maketext('Reason') %]</th>
+                        <td align="left">[% code_inline_formatted(term=error_highlighted_html.print(NOTICE.socket_error)) %]</td>
+                    </tr>
+                [% END %]
+                [% IF NOTICE.restart_count %]
+                    <tr style="background-color:[% zebra_stripe? light_gray : white %]">
+                        [% zebra_stripe = !zebra_stripe %]
+                        <th align="left">[% CPANEL.locale.maketext('Number of Restart Attempts') %]</th>
+                        <td align="left">[% CPANEL.locale.numf(NOTICE.restart_count) FILTER html %]</td>
+                    </tr>
+                [% END %]
+                [% IF NOTICE.command_error %]
+                    <tr style="background-color:[% zebra_stripe? light_gray : white %]">
+                        [% zebra_stripe = !zebra_stripe %]
+                        <th align="left">[% CPANEL.locale.maketext('Service Check Raw Output') %]</th>
+                        <td align="left">[% code_inline_formatted(term=error_highlighted_html.print(NOTICE.command_error)) %]</td>
+                    </tr>
+                [% END %]
+                [% IF NOTICE.restart_info %]
+                    <tr style="background-color:[% zebra_stripe? light_gray : white %]">
+                        [% zebra_stripe = !zebra_stripe %]
+                        <th align="left">[% CPANEL.locale.maketext('Restart Message') %]</th>
+                        <td align="left">[% code_inline_formatted(term=error_highlighted_html.print(NOTICE.restart_info)) %]</td>
+                    </tr>
+                [% END %]
+                [% IF NOTICE.startup_log %]
+                    <tr style="background-color:[% zebra_stripe? light_gray : white %]">
+                        [% zebra_stripe = !zebra_stripe %]
+                        <th align="left">[% CPANEL.locale.maketext('Startup Log') %]</th>
+                        <td align="left">[% code_inline_formatted(term=error_highlighted_html.print(NOTICE.startup_log)) %]</td>
+                    </tr>
+                [% END %]
+                [% IF NOTICE.syslog_messages %]
+                    <tr style="background-color:[% zebra_stripe? light_gray : white %]">
+                        [% zebra_stripe = !zebra_stripe %]
+                        <th align="left">[% CPANEL.locale.maketext('Log Messages') %]</th>
+                        <td align="left">[% code_inline_formatted(term=error_highlighted_html.print(NOTICE.syslog_messages)) %]</td>
+                    </tr>
+                [% END %]
+                [% SET system_info_table_zebra = zebra_strip; %]
+                [% system_info_rows() %]
+            </tbody>
+        </table>
+    </p>
+
+    [% IF NOTICE.port && !recovered %]
+        <p>
+            [% CPANEL.locale.maketext('The [asis,chkservd] process attempts to connect to “127.0.0.1:[_1]” in order to validate that this service is functioning. If you blocked connections with [asis,iptables] or the “[_2]” interface in [asis,WHM], this failure may be a false positive.', NOTICE.port, CPANEL.locale.maketext('Host Access Control')); %]
+        </p>
+        <p>
+            [% CPANEL.locale.maketext('To resolve this issue, either open the firewall to allow connections as the [asis,root] user to “127.0.0.1:[_1]” or disable checks for this service in [asis,WHM]’s “[_2]” interface with the “[_3]” link below.', NOTICE.port, CPANEL.locale.maketext('Service Manager'), CPANEL.locale.maketext('Configure Monitor[comment,program that observes] Settings') ); %]
+        </p>
+    [% END %]
+
+    <p>
+        [% CPANEL.locale.maketext('Configure Monitor[comment,program that observes] Settings'); %]:<br>
+        <a href="[% NOTICE.service_manager_url %]">[% NOTICE.service_manager_url %]</a>
+    </p>
+
+    <p>
+        [% CPANEL.locale.maketext('Configure [asis,chkservd]'); %]:<br>
+        <a href="[% NOTICE.tweaksettings_chkservd_url %]">[% NOTICE.tweaksettings_chkservd_url %]</a>
+    </p>
+
+    <p>
+        [% CPANEL.locale.maketext('Disable [output,abbr,HTML,Hypertext Markup Language] notifications'); %]:<br>
+        <a href="[% NOTICE.tweaksettings_chkservd_plaintext_notify_url %]">[% NOTICE.tweaksettings_chkservd_plaintext_notify_url %]</a>
+    </p>
+
+    [% IF recovered %]
+        <p>
+            [% CPANEL.locale.maketext('Disable recovery notifications'); %]:<br>
+            <a href="[% NOTICE.tweaksettings_chkservd_recovery_notify_url %]">[% NOTICE.tweaksettings_chkservd_recovery_notify_url %]</a>
+        </p>
+    [% END -%]
+
+[% END %]

@@ -1,0 +1,89 @@
+[% USE JSON; USE Whostmgr; -%]
+[% WRAPPER 'master_templates/master.tmpl'
+    app_key = 'additional_mysql_access_hosts'
+    theme="bootstrap"
+    include_legacy_stylesheets = 1
+    extrastyle = '
+    .mask {
+        opacity: 0.5;
+        filter: alpha(opacity=50);
+        background-color: #000000;
+    }
+'
+-%]
+[% SET configure_url = cp_security_token _ "/scripts2/mysqlupdateall" %]
+
+[% PROCESS 'warnings/_mysql_version.tmpl' %]
+
+<form method="POST" action="[% cp_security_token %]/scripts2/domysqladdonhosts">
+    <label for="hosts">
+    [% locale.maketext('Enter any additional hosts (one per line) that you would like to be able to access databases on this. You can also enter the remote database server (with the proper user/password):') %]
+    </label>
+    <div class="form-group">
+        <div class="row">
+            <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                <!-- Leave no whitespace in the textarea, or it will show up in the interface. -->
+                <textarea cols="50" rows="10" name="hosts" id="hosts" class="form-control">[%- data.hosts.join("\n") -%]</textarea>
+            </div>
+            <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                <div id="hosts_error"></div>
+            </div>
+        </div>
+    </div>
+    <div class="form-group">
+        <input type="submit" class="btn btn-primary" id="save-button" value="Save" />
+    </div>
+</form>
+<p>
+    [% locale.maketext('[output,strong,Important]: Users must log into cPanel and use the Remote Database Access feature to set up access from these hosts. After you have done this, if you would like to configure access from all users’ accounts [output,url,_1,click here].', configure_url) %]
+</p>
+[% END -%]
+
+<script type="text/javascript">
+    var init_validation = function() {
+
+        var mysql_ip_netmask_regex = new RegExp([% data.mysql_ip_netmask_regex.json() %]);
+        var mysql_ip_regex         = new RegExp([% data.mysql_ip_regex.json() %]);
+        var mysql_host_regex       = new RegExp([% data.mysql_host_regex.json() %]);
+
+        var ip_test = /^(?:[%_\d]{1,3}\.)*[%_\d]{1,3}$/;
+
+        var host_is_valid = function(host) {
+            host = unescape(host);
+
+            if (host.length > 60) {
+                return false;
+            }
+            if (host.indexOf('/') != -1) {
+                return mysql_ip_netmask_regex.test(host);
+            }
+            else if (ip_test.test(host)) {
+                return mysql_ip_regex.test(host);
+            }
+            else if (mysql_host_regex.test(host)) {
+                return true;
+            }
+            else if (CPANEL.inet6.isValid(host)) {
+                // MySQL wants a canonical compressed format host.
+                return CPANEL.inet6.formatForDisplay(host) === host;
+            }
+
+            return false;
+        };
+
+        var check_hosts = function() {
+            return document.getElementById('hosts').value.trim()
+                .split(/[\r\n]+/)
+                .filter( function(host) { return /\S/.test(host) } )
+                .every(host_is_valid);
+        };
+
+        var hosts_validator = new CPANEL.validate.validator( "Database Hosts" );
+        hosts_validator.add( "hosts", check_hosts, "Each entry must be a valid database host." );
+        hosts_validator.attach();
+
+        CPANEL.validate.attach_to_form("save-button", hosts_validator);
+    };
+    YAHOO.util.Event.onDOMReady(init_validation);
+</script>
+

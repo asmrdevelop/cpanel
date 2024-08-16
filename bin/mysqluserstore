@@ -1,0 +1,45 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - bin/mysqluserstore                      Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+use warnings;
+
+use Cpanel::MysqlUtils::Connect ();
+use Try::Tiny;
+
+local $SIG{'ALRM'} = sub { die "$0: Timed out" };
+
+# Timeout after 10 minutes
+alarm(600);
+
+# mysqluserstore used to generate  /var/cpanel/databases/users.db but we stopped
+# using it so its sole remaining function is to ensure we can connect to mysql
+# and reset the password if needed
+try {
+    Cpanel::MysqlUtils::Connect::get_dbi_handle();
+}
+catch {
+    #
+    # We used to do this during restartsrv however that turned out to be
+    # a problem because check_mysql_password_works_or_reset can restart
+    # mysql if the password is wrong.  This script is run every few hours
+    # so we check it here now instead.
+    #
+
+    require Cpanel::MysqlUtils::Check;
+    Cpanel::MysqlUtils::Check::check_mysql_password_works_or_reset() or exit(1);
+};
+
+# This used to happen during a restartsrv check, however this could
+# result in a loop because the mysql connection is closed during
+# the restart which holds up the restart from completing because
+# of a read loop on the socket. The check has been moved here instead
+# in order to work around this race condition.
+require Cpanel::MysqlUtils::MyCnf::Adjust;
+Cpanel::MysqlUtils::MyCnf::Adjust::auto_adjust();
+
+exit(0);

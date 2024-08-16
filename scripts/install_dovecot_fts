@@ -1,0 +1,63 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/install_dovecot_fts             Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::install_dovecot_fts;
+
+use strict;
+use warnings;
+
+use parent qw( Cpanel::HelpfulScript );
+
+use Cpanel::Plugins      ();
+use Cpanel::Server::Type ();
+
+use constant _OPTIONS => ('force');
+
+=encoding utf-8
+
+=head1 NAME
+
+install_dovecot_fts
+
+=head1 SYNOPSIS
+
+install_dovecot_fts [ --help | --force ]
+
+=head1 DESCRIPTION
+
+This command will attempt to install an instance of Apache Solr as the
+full-text search engine for Dovecot.
+
+If the --force flag is passed, the script will also attempt to reinstall the
+package if it already shows up as installed in the system's package database.
+
+=cut
+
+our $DISABLE_FLAG = '/etc/cpanel-dovecot-solrdisable';
+
+if ( !caller() ) {
+    exit( __PACKAGE__->new(@ARGV)->run() ? 0 : 1 );
+}
+
+sub run {
+    my ($self) = @_;
+
+    unlink($DISABLE_FLAG) if -e $DISABLE_FLAG;
+
+    if ( Cpanel::Server::Type::is_dnsonly() ) {
+        print STDERR "cpanel-dovecot-solr service is disabled for dnsonly\n";
+        return 1;
+    }
+    elsif ( $self->getopt('force') && Cpanel::Plugins::is_plugin_installed('cpanel-dovecot-solr') ) {
+        return Cpanel::Plugins::reinstall_plugins('cpanel-dovecot-solr');
+    }
+    else {
+        return Cpanel::Plugins::install_plugins('cpanel-dovecot-solr');
+    }
+}
+
+1;

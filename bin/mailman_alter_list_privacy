@@ -1,0 +1,67 @@
+#!/usr/local/cpanel/3rdparty/bin/python2
+# -*- coding: utf-8 -*-
+
+# cpanel - bin/mailman_alter_list_privacy          Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+import sys
+
+# Can't use "argparse" because we still support CentOS 5,
+# which shipped with Python 2.4 ... :-/
+
+from optparse import OptionParser
+
+sys.path.insert(0, '/usr/local/cpanel/lib/python2')
+
+import cPanel
+
+
+def main(argv):
+    parser = OptionParser('usage: %prog [options] mailing_list')
+
+    parser.add_option('--archive_private', type='choice', choices=['0', '1'], help='Set the "archive_private" flag (0 or 1).')
+    parser.add_option('--subscribe_policy', type='choice', choices=['1', '2', '3'], help='Set the "subscribe_policy" option (1, 2, or 3).')
+    parser.add_option('--advertised', type='choice', choices=['0', '1'], help='Set the "advertised" flag (0 or 1).')
+
+    (options, positional_args) = parser.parse_args()
+
+    if len(positional_args) != 1:
+        parser.print_help(sys.stderr)
+        sys.exit(1)
+
+    argsdict = vars(options)
+
+    to_set = {}
+
+    for (key, value) in argsdict.iteritems():
+        if value != None:
+            value = int(value)
+            if key == 'advertised':
+                value = bool(value)
+            to_set[key] = value
+
+    if len(to_set) == 0:
+        sys.stderr.write('''You must specify at least one privacy flag to update.
+
+''')
+        parser.print_help(sys.stderr)
+        sys.exit(1)
+
+    def update(thedict):
+        thedict.update(to_set)
+
+    # Allow lists to be written with @ or _
+
+    mmlist = positional_args[0].replace(r'@', '_')
+
+    # No try/catch here since we *want* an error from here to spew.
+
+    cPanel.update_mailman(mmlist, update)
+
+
+# ----------------------------------------------------------------------
+
+if __name__ == '__main__':
+    raise SystemExit(main(sys.argv))

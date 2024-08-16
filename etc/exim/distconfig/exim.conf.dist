@@ -1,0 +1,1355 @@
+#!!# cPanel Exim 4 Config
+
+@CONFIG@
+
+#!!# These options specify the Access Control Lists (ACLs) that
+#!!# are used for incoming SMTP messages - after the RCPT and DATA
+#!!# commands, respectively.
+
+acl_smtp_rcpt = check_recipient
+acl_smtp_data = check_message
+
+#!!# This setting defines a named domain list called
+#!!# local_domains, created from the old options that
+#!!# referred to local domains. It will be referenced
+#!!# later on by the syntax "+local_domains".
+#!!# Other domain and host lists may follow.
+
+domainlist local_domains = $primary_hostname : lsearch;/etc/localdomains
+
+domainlist relay_domains = +local_domains : lsearch;/etc/secondarymx
+
+domainlist manualmx_domains = ${if \
+    exists {/etc/manualmx} \
+    {lsearch;/etc/manualmx} \
+    {} \
+}
+
+addresslist secondarymx = *@partial-lsearch;/etc/secondarymx
+
+######################################################################
+#                  Runtime configuration file for Exim               #
+######################################################################
+
+
+# This is a default configuration file which will operate correctly in
+# uncomplicated installations. Please see the manual for a complete list
+# of all the runtime configuration options that can be included in a
+# configuration file. There are many more than are mentioned here. The
+# manual is in the file doc/spec.txt in the Exim distribution as a plain
+# ASCII file. Other formats (PostScript, Texinfo, HTML) are available from
+# the Exim ftp sites. The manual is also online via the Exim web sites.
+
+
+# This file is divided into several parts, all but the last of which are
+# terminated by a line containing the word "end". The parts must appear
+# in the correct order, and all must be present (even if some of them are
+# in fact empty). Blank lines, and lines starting with # are ignored.
+
+
+
+######################################################################
+#                    MAIN CONFIGURATION SETTINGS                     #
+######################################################################
+
+perl_startup = do '/etc/exim.pl'
+
+#dns_retry = 1
+#dns_retrans = 1s
+
+# Specify your host's canonical name here. This should normally be the fully
+# qualified "official" name of your host. If this option is not set, the
+# uname() function is called to obtain the name.
+
+smtp_banner = "${primary_hostname} ESMTP Exim ${version_number} \
+\#${compile_number} ${tod_full} \n\
+    We do not authorize the use of this system to transport unsolicited, \n\
+    and/or bulk e-mail."
+
+
+#nobody as the sender seems to annoy people
+untrusted_set_sender = *
+local_from_check = false
+
+rfc1413_query_timeout = 2s
+
+
+split_spool_directory = yes
+
+smtp_connect_backlog = 50
+smtp_accept_max = 100
+
+# primary_hostname =
+deliver_queue_load_max = 3
+auto_thaw = 6d
+ignore_bounce_errors_after = 7d
+timeout_frozen_after = 8d
+
+# Specify the domain you want to be added to all unqualified addresses
+# here. An unqualified address is one that does not contain an "@" character
+# followed by a domain. For example, "caesar@rome.ex" is a fully qualified
+# address, but the string "caesar" (i.e. just a login name) is an unqualified
+# email address. Unqualified addresses are accepted only from local callers by
+# default. See the receiver_unqualified_{hosts,nets} options if you want
+# to permit unqualified addresses from remote sources. If this option is
+# not set, the primary_hostname value is used for qualification.
+
+# qualify_domain =
+
+
+# If you want unqualified recipient addresses to be qualified with a different
+# domain to unqualified sender addresses, specify the recipient domain here.
+# If this option is not set, the qualify_domain value is used.
+
+# qualify_recipient =
+
+
+# Specify your local domains as a colon-separated list here. If this option
+# is not set (i.e. not mentioned in the configuration file), the
+# qualify_recipient value is used as the only local domain. If you do not want
+# to do any local deliveries, uncomment the following line, but do not supply
+# any data for it. This sets local_domains to an empty string, which is not
+# the same as not mentioning it at all. An empty string specifies that there
+# are no local domains; not setting it at all causes the default value (the
+# setting of qualify_recipient) to be used.
+
+
+
+#!!# message_filter renamed system_filter
+system_filter = /etc/antivirus.exim
+message_body_visible = 5000
+
+
+# Specify a set of options to control the behavior of OpenSSL. The default is to
+# disable SSLv2 and SSLv3 due to weaknesses in these protocols.
+openssl_options = +no_sslv2 +no_sslv3
+
+
+# If you want to accept mail addressed to your host's literal IP address, for
+# example, mail addressed to "user@[111.111.111.111]", then uncomment the
+# following line, or supply the literal domain(s) as part of "local_domains"
+# above.
+
+# local_domains_include_host_literals
+
+
+# No local deliveries will ever be run under the uids of these users (a colon-
+# separated list). An attempt to do so gets changed so that it runs under the
+# uid of "nobody" instead. This is a paranoic safety catch. Note the default
+# setting means you cannot deliver mail addressed to root as if it were a
+# normal user. This isn't usually a problem, as most sites have an alias for
+# root that redirects such mail to a human administrator.
+
+never_users = root
+
+
+# The use of your host as a mail relay by any host, including the local host
+# calling its own SMTP port, is locked out by default. If you want to permit
+# relaying from the local host, you should set
+#
+# host_accept_relay = localhost
+#
+# If you want to permit relaying through your host from certain hosts or IP
+# networks, you need to set the option appropriately, for example
+#
+#
+#
+# If you are an MX backup or gateway of some kind for some domains, you must
+# set relay_domains to match those domains. This will allow any host to
+# relay through your host to those domains.
+#
+# See the section of the manual entitled "Control of relaying" for more
+# information.
+
+# The setting below causes Exim to do a reverse DNS lookup on all incoming
+# IP calls, in order to get the true host name. If you feel this is too
+# expensive, you can specify the networks for which a lookup is done, or
+# remove the setting entirely.
+
+#host_lookup = 0.0.0.0/0
+
+
+# By default, Exim expects all envelope addresses to be fully qualified, that
+# is, they must contain both a local part and a domain. If you want to accept
+# unqualified addresses (just a local part) from certain hosts, you can specify
+# these hosts by setting one or both of
+#
+# receiver_unqualified_hosts =
+# sender_unqualified_hosts =
+#
+# to control sender and receiver addresses, respectively. When this is done,
+# unqualified addresses are qualified using the settings of qualify_domain
+# and/or qualify_recipient (see above).
+
+
+# Exim contains support for the Realtime Blocking List (RBL) that is being
+# maintained as part of the DNS. See http://maps.vix.com/rbl/ for background.
+# Uncommenting the first line below will make Exim reject mail from any
+# host whose IP address is blacklisted in the RBL at maps.vix.com. Some
+# others have followed the RBL lead and have produced other lists: DUL is
+# a list of dial-up addresses, and ORBS is a list of open relay systems. The
+# second line below checks all three lists.
+
+# rbl_domains = rbl.maps.vix.com
+# rbl_domains = rbl.maps.vix.com
+
+
+# If you want Exim to support the "percent hack" for all your local domains,
+# uncomment the following line. This is the feature by which mail addressed
+# to x%y@z (where z is one of your local domains) is locally rerouted to
+# x@y and sent on. Otherwise x%y is treated as an ordinary local part.
+
+# percent_hack_domains = *
+
+#sender_host_accept = +include_unknown:*
+#sender_host_reject = +include_unknown:lsearch*;/etc/spammers
+
+
+
+
+
+tls_certificate = /etc/exim.crt
+tls_privatekey = /etc/exim.key
+tls_advertise_hosts = *
+
+helo_accept_junk_hosts = *
+
+smtp_enforce_sync = false
+
+
+#!!#######################################################!!#
+#!!# This new section of the configuration contains ACLs #!!#
+#!!# (Access Control Lists) derived from the Exim 3      #!!#
+#!!# policy control options.                             #!!#
+#!!#######################################################!!#
+
+#!!# These ACLs are crudely constructed from Exim 3 options.
+#!!# They are almost certainly not optimal. You should study
+#!!# them and rewrite as necessary.
+
+begin acl
+
+@BEGINACL@
+%BEGINACLBLOCK%
+
+# see etc/exim/defacls/universal.dist
+
+%ENDACLBLOCK%
+@ENDACL@
+
+begin authenticators
+
+fixed_plain:
+driver = plaintext
+public_name = PLAIN
+server_prompts = :
+server_condition = "${perl{checkuserpass}{$1}{$2}{$3}}"
+server_set_id = $2
+
+fixed_login:
+driver = plaintext
+public_name = LOGIN
+server_prompts = "Username:: : Password::"
+server_condition = "${perl{checkuserpass}{$1}{$2}}"
+server_set_id = $1
+
+smarthost_login:
+# block replaced by remotecf templates smarthost_login or no_smarthost_login
+driver = plaintext
+public_name = LOGIN
+hide client_send = : user : password
+
+@AUTH@
+
+######################################################################
+#                      REWRITE CONFIGURATION                         #
+######################################################################
+
+# There are no rewriting specifications in this default configuration file.
+
+begin rewrite
+
+@REWRITE@
+
+#!!#######################################################!!#
+#!!# Here follow routers created from the old routers,   #!!#
+#!!# for handling non-local domains.                     #!!#
+#!!#######################################################!!#
+
+begin routers
+
+
+
+
+######################################################################
+#                      ROUTERS CONFIGURATION                         #
+#            Specifies how remote addresses are handled              #
+######################################################################
+#                          ORDER DOES MATTER                         #
+#  A remote address is passed to each in turn until it is accepted.  #
+######################################################################
+
+# Remote addresses are those with a domain that does not match any item
+# in the "local_domains" setting above.
+
+@PREROUTERS@
+
+blackhole_dovenull:
+    driver= redirect
+    local_parts = "@dovenull"
+    allow_fail = true
+    data = :fail: Unrouteable address
+
+deliver_local_outside_jail:
+    driver = manualroute
+    require_files = "+/jail_owner"
+    # users outside the jail will not be in /etc/passwd => We need to check if $local_part is in /jail_owner
+    # we can't just check to see if they exist
+    # because we still want to be able to mail root
+    domains = +local_domains
+    transport = remote_smtp
+    route_list = "* 127.0.0.1"
+    # self = send allows us to send outside the jail
+    # we make sure /home/virtfs does not exist before we get here
+    # to be safe
+    self = send
+
+
+
+suspendedcheck:
+    driver = redirect
+    domains = +local_domains
+    local_parts = ${if eq {$domain} \
+        {$primary_hostname} \
+        {+path_safe_localparts} \
+        {*} \
+    }
+    require_files = \
+        +/etc/exim_suspended_list \
+        : +/var/cpanel/suspended/${if eq {$domain} {$primary_hostname} \
+            {$local_part} \
+            {${lookup \
+                {$domain} \
+                lsearch{/etc/userdomains} \
+                {$value} \
+                {::::invalid::::} \
+            }} \
+        }
+    local_part_suffix = +*
+    local_part_suffix_optional
+    allow_fail
+    allow_defer
+    allow_freeze
+    # Sets r_suspendinfo to the contents of the suspendinfo file,
+    # r_suspended_shell to the original shell of the suspended account,
+    # r_suspended_redirect to the real mapped redirect setting.
+    set = r_suspended_shell=${perl \
+        {get_suspended_shell} \
+        {${if eq {$domain} {$primary_hostname} \
+            {$local_part} \
+            {%CPANEL-domain-owner%} \
+        }} \
+    }
+    # This skips content scanning for the primary account address with
+    # live-transfers and handles the special :queue: setting by pretending
+    # those are :blackhole: deliveries during address verification
+    address_data = \
+        router=$router_name \
+        ${if \
+            !match {${lookup \
+                    {$local_part@$domain} \
+                    wildlsearch{/etc/exim_suspended_list} \
+                    {$value} \
+                    {:unknown:} \
+            }} \
+            {\N^\s*(:unknown:.*)?$\N} \
+            { \
+                suspended=1 \
+                redirect=${quote:${if \
+                    !match{${lookup \
+                            {$local_part@$domain} \
+                            wildlsearch{/etc/exim_suspended_list} \
+                            {$value} \
+                            {:unknown:} \
+                    }} \
+                    {\N^\s*:\N} \
+                    {${if eq \
+                        {$verify_mode} \
+                        {} \
+                        {${lookup{$local_part@$domain} \
+                            wildlsearch{/etc/exim_suspended_list} \
+                            {$value} \
+                            {:unknown:} \
+                        }} \
+                        {:blackhole:} \
+                    }} \
+                    {${sg \
+                        {${lookup {$local_part@$domain} \
+                            wildlsearch{/etc/exim_suspended_list} \
+                            {$value} \
+                            {:unknown:} \
+                        }} \
+                        {\N^\s*:queue:\N} \
+                        {${if eq \
+                            {$verify_mode} \
+                            {} \
+                            {:defer:} \
+                            {:blackhole:} \
+                        }} \
+                    }} \
+                }} \
+            } \
+        }
+    data = %CPANEL-address-redirect%
+
+democheck:
+    driver = redirect
+    require_files = "+/etc/demouids"
+    condition = ${if >= {$originator_uid}{100}{1}{0}}
+    condition = "${extract{size}{${stat:/etc/demouids}}}"
+    condition = "${if eq \
+        {${lookup \
+            {$originator_uid} \
+            lsearch{/etc/demouids} \
+            {$value} \
+        }} \
+        {} \
+        {false} \
+        {true} \
+    }"
+    allow_fail
+    data = :fail: demo accounts are not permitted to relay email
+
+#
+# This is to make sure that cpanel@* always passes sender verification
+# so that the system notifications don't get rejected by spam filters
+# doing a sender verification check.
+#
+blackhole_cpanel_at:
+    driver = redirect
+    local_parts = cpanel
+    domains = !$primary_hostname
+    verify_only
+    data = :blackhole:
+
+cpanel_archiver:
+    driver = redirect
+    condition = 0
+    data = :fail: This router is a placeholder
+
+@ROUTERSTART@
+
+#
+# Handles identification of messages, nobody and webspam and mail trap checks
+# in check_mail_permissions and notifies if we are defering a message
+#
+
+check_mail_permissions:
+    domains = ! +local_domains
+    condition =  ${if eq {$authenticated_id}{root}{0}{1}}
+    ignore_target_hosts = +loopback : 64.94.110.0/24
+    driver = redirect
+    allow_filter
+    reply_transport = address_reply
+    user = mailnull
+    no_verify
+    expn = false
+    condition = "${perl{check_mail_permissions}}"
+    data = "${perl{check_mail_permissions_results}}"
+
+discover_sender_information:
+    driver = redirect
+    condition = 0
+    data = :fail: This router is a placeholder
+
+#
+# If check_mail_permissions needs to defer or fail a message it is done here
+#
+enforce_mail_permissions:
+    domains = ! +local_domains
+    ignore_target_hosts = +loopback : 64.94.110.0/24
+    condition =  ${if eq {$authenticated_id}{root}{0}{1}}
+    driver = redirect
+    allow_fail
+    allow_defer
+    no_verify
+    expn = false
+    condition = "${perl{enforce_mail_permissions}}"
+    data = "${perl{enforce_mail_permissions_results}}"
+
+#
+# Increments max emails per hour if needed
+#
+increment_max_emails_per_hour_if_needed:
+    domains = ! +local_domains
+    ignore_target_hosts = +loopback : 64.94.110.0/24
+    condition =  ${if eq {$authenticated_id}{root}{0}{1}}
+    driver = redirect
+    allow_fail
+    no_verify
+    one_time
+    expn = false
+    condition = "${perl{increment_max_emails_per_hour_if_needed}}"
+    data = ":unknown:"
+
+@POSTMAILCOUNT@
+
+reject_forwarded_mail_marked_as_spam:
+    driver = redirect
+    condition = 0
+    data = :fail: This router is a placeholder
+
+# This router routes to a statically defined host from /etc/manualmx
+# so that any mail received for the domain will skip MX lookups and attempt to
+# deliver the message directly to the specified host.
+manualmx:
+    driver = manualroute
+    domains = +manualmx_domains
+    transport = remote_smtp
+    route_data = ${lookup \
+        {$domain} \
+        lsearch{/etc/manualmx} \
+    }
+
+#
+# lookuphost router
+#
+
+lookuphost:
+    # lookuphost router can be replaced by etc/exim/replacecf/dkim/lookuphost
+    driver = dnslookup
+    ignore_target_hosts = 0.0.0.0 : 127.0.0.0/8 : 64.94.110.0/24
+    domains = ! +local_domains
+#ignore verisign to prevent waste of bandwidth
+    headers_add = "${perl{mailtrapheaders}}"
+.ifdef SRSENABLED
+    # if outbound, and forwarding has been done, use an alternate transport
+    transport = ${if eq {$local_part@$domain} \
+                        {$original_local_part@$original_domain} \
+                     {remote_smtp} {remote_forwarded_smtp}}
+.else
+    transport = remote_smtp
+.endif
+
+# This router routes to remote hosts over SMTP by explicit IP address,
+# given as a "domain literal" in the form [nnn.nnn.nnn.nnn]. The RFCs
+# require this facility, which is why it is enabled by default in Exim.
+# If you want to lock it out, set forbid_domain_literals in the main
+# configuration section above.
+
+
+#
+# Literal Transports .. ignores verisigns sitefinder service
+#
+
+literal:
+    driver = ipliteral
+    domains = ! +local_domains
+    ignore_target_hosts = +loopback : 64.94.110.0/24
+    headers_add = "${perl{mailtrapheaders}}"
+.ifdef SRSENABLED
+    # if outbound, and forwarding has been done, use an alternate transport
+    transport = ${if eq {$local_part@$domain} \
+                        {$original_local_part@$original_domain} \
+                     {remote_smtp} {remote_forwarded_smtp}}
+.else
+    transport = remote_smtp
+.endif
+
+@ROUTERMIDDLE@
+
+#!!# This new router is put here to fail all domains that
+#!!# were not in local_domains in the Exim 3 configuration.
+
+
+#
+# Trap Failures to Remote Domain
+#
+
+fail_remote_domains:
+    driver = redirect
+    domains = ! +local_domains : ! localhost : ! localhost.localdomain
+    allow_fail
+    data = ${if eq {$verify_mode}{S} \
+        {:fail: The mail server does not recognize $local_part@$domain as a valid sender.} \
+        {:fail: The mail server could not deliver mail to $local_part@$domain.  The account or domain may not exist, they may be blacklisted, or missing the proper dns entries.} \
+    }
+
+@ROUTEREND@
+
+
+#!!#######################################################!!#
+#!!# Here follow routers created from the old directors, #!!#
+#!!# for handling local domains.                         #!!#
+#!!#######################################################!!#
+
+######################################################################
+#                      DIRECTORS CONFIGURATION                       #
+#             Specifies how local addresses are handled              #
+######################################################################
+#                          ORDER DOES MATTER                         #
+#   A local address is passed to each in turn until it is accepted.  #
+######################################################################
+
+# Local addresses are those with a domain that matches some item in the
+# "local_domains" setting above, or those which are passed back from the
+# routers because of a "self=local" setting (not used in this configuration).
+
+
+# This director handles aliasing using a traditional /etc/aliases file.
+# If any of your aliases expand to pipes or files, you will need to set
+# up a user and a group for these deliveries to run under. You can do
+# this by uncommenting the "user" option below (changing the user name
+# as appropriate) and adding a "group" option if necessary. Alternatively, you
+# can specify "user" on the transports that are used. Note that those
+# listed below are the same as are used for .forward files; you might want
+# to set up different ones for pipe and file deliveries from aliases.
+
+#spam_filter:
+#  driver = forwardfile
+#  file = /etc/spam.filter
+#  no_check_local_user
+#  no_verify
+#  filter
+#  allow_system_actions
+
+
+@DIRECTORSTART@
+
+
+
+
+@PREFILTER@
+
+
+#
+# Account level filtering for everything but the main account
+#
+
+central_filter:
+    driver = redirect
+    allow_filter
+    allow_fail
+    forbid_filter_run
+    forbid_filter_perl
+    forbid_filter_lookup
+    forbid_filter_readfile
+    forbid_filter_readsocket
+    no_check_local_user
+    domains = !$primary_hostname : dsearch;/etc/vfilters
+    require_files = "+/etc/vfilters/${domain_data}"
+    condition = "${extract \
+        {size} \
+        {${stat:/etc/vfilters/${domain_data}}} \
+    }"
+    file = /etc/vfilters/${domain_data}
+    file_transport = address_file
+    directory_transport = address_directory
+    pipe_transport = ${if forall \
+        {/bin/cagefs_enter:/usr/sbin/cagefsctl} \
+        {exists{$item}} \
+        {cagefs_virtual_address_pipe} \
+        {${if forany \
+            {%CPANEL-user-domain%:$r_suspended_shell} \
+            {match{$item}{\N(jail|no)shell\N}} \
+            {jailed_virtual_address_pipe} \
+            {virtual_address_pipe} \
+        }} \
+    }
+    reply_transport = address_reply
+    router_home_directory = %CPANEL-domain-owner-homedir%
+    user = "%CPANEL-domain-owner%"
+    no_verify
+
+
+
+#
+# Account level filtering for the main account
+#
+# checks /etc/vfilters/maindomain if its a localuser (ie main acct)
+#
+mainacct_central_user_filter:
+    driver = redirect
+    allow_filter
+    allow_fail
+    forbid_filter_run
+    forbid_filter_perl
+    forbid_filter_lookup
+    forbid_filter_readfile
+    forbid_filter_readsocket
+    check_local_user
+    domains = $primary_hostname
+    condition = ${if eq \
+        {${lookup \
+            {$local_part_data} \
+            lsearch{/etc/domainusers} \
+            {$value} \
+        }} \
+        {} \
+        {0} \
+        {${if exists \
+            {/etc/vfilters/${lookup \
+                {$local_part_data} \
+                lsearch{/etc/domainusers} \
+                {$value} \
+            }} \
+            {${extract \
+                {size} \
+                {${stat:/etc/vfilters/${lookup \
+                    {$local_part_data} \
+                    lsearch{/etc/domainusers} \
+                    {$value} \
+                }}} \
+            }} \
+            {0} \
+        }} \
+    }
+    file = "/etc/vfilters/${lookup \
+        {$local_part_data} \
+        lsearch{/etc/domainusers} \
+        {$value} \
+    }"
+    directory_transport = address_directory
+    file_transport = address_file
+    pipe_transport = ${if forall \
+        {/bin/cagefs_enter:/usr/sbin/cagefsctl} \
+        {exists{$item}} \
+        {cagefs_address_pipe} \
+        {${if forany \
+            {%CPANEL-local-username%:$r_suspended_shell} \
+            {match{$item}{\N(jail|no)shell\N}} \
+            {jailed_address_pipe} \
+            {address_pipe} \
+        }} \
+    }
+    reply_transport = address_reply
+    user = $local_part_data
+    group = $local_part_data
+    retry_use_local_part
+    no_verify
+
+#
+# User Level Filtering for the main account
+#
+
+
+central_user_filter:
+    driver = redirect
+    allow_filter
+    allow_fail
+    forbid_filter_run
+    forbid_filter_perl
+    forbid_filter_lookup
+    forbid_filter_readfile
+    forbid_filter_readsocket
+    check_local_user
+    domains = $primary_hostname
+
+    require_files = "+%CPANEL-local-user-homedir%/etc/filter"
+    condition = "${extract \
+        {size} \
+        {${stat:%CPANEL-local-user-homedir%/etc/filter}} \
+    }"
+    file = "%CPANEL-local-user-homedir%/etc/filter"
+    router_home_directory = %CPANEL-local-user-homedir%
+    directory_transport = address_directory
+    file_transport = address_file
+    pipe_transport = ${if forall \
+        {/bin/cagefs_enter:/usr/sbin/cagefsctl} \
+        {exists{$item}} \
+        {cagefs_address_pipe} \
+        {${if forany \
+            {%CPANEL-local-username%:$r_suspended_shell} \
+            {match{$item}{\N(jail|no)shell\N}} \
+            {jailed_address_pipe} \
+            {address_pipe} \
+        }} \
+    }
+    reply_transport = address_reply
+    user = $local_part_data
+    group = $local_part_data
+    local_part_suffix = +*
+    local_part_suffix_optional
+    retry_use_local_part
+    no_verify
+
+#
+# User Level Filtering for virtual users
+#
+
+
+virtual_user_filter:
+    driver = redirect
+    allow_filter
+    allow_fail
+    forbid_filter_run
+    forbid_filter_perl
+    forbid_filter_lookup
+    forbid_filter_readfile
+    forbid_filter_readsocket
+    domains = \
+        !$primary_hostname \
+        : ${lookup \
+            {$domain} \
+            lsearch{/etc/userdomains} \
+            {${perl{untaint}{$domain}}} \
+        }
+    require_files = "+%CPANEL-domain-owner-homedir%/etc/$domain_data/$local_part_data/filter"
+    user = "%CPANEL-domain-owner%"
+    router_home_directory = %CPANEL-domain-owner-homedir%
+    local_parts = ${if exists{%CPANEL-domain-owner-homedir%/etc/$domain_data}{dsearch;%CPANEL-domain-owner-homedir%/etc/$domain_data}}
+    condition = "${extract{size}{${stat:$home/etc/$domain_data/$local_part_data/filter}}}"
+    file = "$home/etc/$domain_data/$local_part_data/filter"
+    directory_transport = address_directory
+    file_transport = address_file
+    pipe_transport = ${if forall \
+        {/bin/cagefs_enter:/usr/sbin/cagefsctl} \
+        {exists{$item}} \
+        {cagefs_virtual_address_pipe} \
+        {${if forany \
+            {%CPANEL-user-domain%:$r_suspended_shell} \
+            {match{$item}{\N(jail|no)shell\N}} \
+            {jailed_virtual_address_pipe} \
+            {virtual_address_pipe} \
+        }} \
+    }
+    reply_transport = address_reply
+    local_part_suffix = +*
+    local_part_suffix_optional
+    retry_use_local_part
+    no_verify
+
+
+@PREVALIASNOSTAR@
+
+
+virtual_aliases_nostar:
+    driver = redirect
+    allow_defer
+    allow_fail
+    domains = !$primary_hostname : dsearch;/etc/valiases
+    user = "%CPANEL-domain-owner%"
+    address_data = \
+        "router=$router_name \
+        redirect=${quote:${lookup \
+            {$local_part@$domain_data} \
+            lsearch{/etc/valiases/$domain_data} \
+    }}"
+    data = %CPANEL-address-redirect%
+    file_transport = address_file
+    pipe_transport = ${if forall \
+        {/bin/cagefs_enter:/usr/sbin/cagefsctl} \
+        {exists{$item}} \
+        {cagefs_virtual_address_pipe} \
+        {${if forany \
+            {%CPANEL-local-username%:$r_suspended_shell} \
+            {match{$item}{\N(jail|no)shell\N}} \
+            {jailed_virtual_address_pipe} \
+            {virtual_address_pipe} \
+        }} \
+    }
+    router_home_directory = %CPANEL-domain-owner-homedir%
+    local_part_suffix = +*
+    local_part_suffix_optional
+    retry_use_local_part
+    unseen
+
+
+virtual_user_overquota:
+    driver = redirect
+    condition = 0
+    data = :fail: This router is a placeholder
+
+
+@PREVIRTUALUSER@
+
+
+#
+# Virtual User Spam Boxes
+#
+
+virtual_user_spam:
+    driver = redirect
+    local_parts = +path_safe_localparts
+    domains = \
+        !$primary_hostname \
+        : ${lookup \
+            {$domain} \
+            lsearch{/etc/userdomains} \
+            {${perl{untaint}{$domain}}} \
+        }
+    condition = ${if match{$h_x-spam-status:}{\N^Yes\N}{true}{false}}
+    require_files = \
+        "+%CPANEL-domain-owner-homedir%/.spamassassinboxenable: \
+            +%CPANEL-domain-owner-homedir%/mail/$domain_data/$local_part"
+    router_home_directory = %CPANEL-domain-owner-homedir%
+    headers_remove="x-uidl"
+    data = "${quote_local_part:$local_part}+spam@$domain_data"
+    redirect_router = virtual_user
+
+
+virtual_user:
+    driver = accept
+    domains = \
+        !$primary_hostname \
+        : ${lookup \
+            {$domain} \
+            lsearch{/etc/userdomains} \
+            {${perl{untaint}{$domain}}} \
+        }
+    local_parts = +path_safe_localparts
+    require_files = "+%CPANEL-domain-owner-homedir%/mail/$domain_data/$local_part"
+    router_home_directory = %CPANEL-domain-owner-homedir%
+    headers_remove="x-uidl"
+    local_part_suffix = +*
+    local_part_suffix_optional
+    user = mailnull
+    group = mail
+    transport = dovecot_virtual_delivery
+    set = r_bcc_addr=${if forany \
+        {${addresses:$h_to:}:${addresses:$h_cc:}} \
+        {or { \
+            {eqi \
+                {${extract{1}{+}{${local_part:$item}}}@${domain:$item}} \
+                {$local_part@$domain_data} \
+            } \
+            {eqi \
+                {${extract{1}{+}{${local_part:$item}}}@${domain:$item}} \
+                {$original_local_part@$original_domain} \
+            } \
+        }} \
+        {} \
+        {$local_part@$domain} \
+    }
+    set = r_cpanel_user=%CPANEL-domain-owner%
+    #
+    # If the delivery address, original address (forwarded),
+    # or address with subaddress is shown on the To: or Cc:
+    # lines or the message has the List-Id: or Precedence:
+    # header we allow the message to be batched to
+    # dovecot LMTP via transport dovecot_virtual_delivery
+    #
+    # If it does match match the above we do not allow the message
+    # to be batched in order to ensure that the Envelope-To: header
+    # does not contain a user that was Bcc:ed so savvy recipients
+    # cannot see that another email was Bcc:ed in the header
+    # via transport dovecot_virtual_delivery_no_batch
+    #
+    # Note: match_address would be nice here but the second string
+    # is not expanded for security reasons
+    #
+
+@PRENOALIASDISCARD@
+
+#
+# has_alias_but_no_mailbox_discarded_to_prevent_loop required either of the following:
+#
+# 1. There is an active alias in the valias file
+# 2. There is an active autoresponder and the * is set to :fail:
+#
+has_alias_but_no_mailbox_discarded_to_prevent_loop:
+    driver = redirect
+    domains = !$primary_hostname : dsearch;/etc/valiases
+    condition = ${lookup \
+        {$local_part@$domain_data} \
+        lsearch{/etc/valiases/$domain_data} \
+        {1} \
+        {0} \
+    }
+    condition = "${if forany{<, \
+        ${lookup \
+            {$local_part@$domain_data} \
+            lsearch{/etc/valiases/$domain_data} \
+            {$value} \
+        }} \
+        {!match{$item}{\N/autorespond\N}} \
+        {1} \
+        {${if match \
+            {${lookup \
+                {\N*\N} \
+                lsearch{/etc/valiases/$domain_data} \
+                {$value} \
+            }} \
+            {:fail:} \
+            {1} \
+            {0} \
+        }} \
+    }"
+    data=":blackhole:"
+    local_part_suffix = +*
+    local_part_suffix_optional
+    disable_logging = true
+
+
+srs_placeholder_pre:
+    driver = redirect
+    condition = 0
+    data = :fail: This router is a placeholder
+
+
+@PREVALIASSTAR@
+
+
+virtual_aliases:
+    driver = redirect
+    allow_defer
+    allow_fail
+    domains = !$primary_hostname : dsearch;/etc/valiases
+    user = "%CPANEL-domain-owner%"
+    router_home_directory = %CPANEL-domain-owner-homedir%
+    address_data = \
+        "router=$router_name \
+        redirect=${quote:${lookup \
+            {*} \
+            lsearch{/etc/valiases/$domain_data} \
+        }}"
+    data = %CPANEL-address-redirect%
+    file_transport = address_file
+    pipe_transport = ${if forall \
+        {/bin/cagefs_enter:/usr/sbin/cagefsctl} \
+        {exists{$item}} \
+        {cagefs_virtual_address_pipe} \
+        {${if forany \
+            {%CPANEL-local-username%:$r_suspended_shell} \
+            {match{$item}{\N(jail|no)shell\N}} \
+            {jailed_virtual_address_pipe} \
+            {virtual_address_pipe} \
+        }} \
+    }
+
+
+
+@DIRECTORMIDDLE@
+
+
+# This director handles forwarding using traditional .forward files.
+# If you want it also to allow mail filtering when a forward file
+# starts with the string "# Exim filter", uncomment the "filter" option.
+# The check_ancestor option means that if the forward file generates an
+# address that is an ancestor of the current one, the current one gets
+# passed on instead. This covers the case where A is aliased to B and B
+# has a .forward file pointing to A. The three transports specified at the
+# end are those that are used when forwarding generates a direct delivery
+# to a file, or to a pipe, or sets up an auto-reply, respectively.
+
+system_aliases:
+    driver = redirect
+    allow_defer
+    allow_fail
+    domains = $primary_hostname : localhost
+    address_data = \
+        "router=$router_name \
+        redirect=${quote: \
+            ${lookup \
+                {$local_part} \
+                lsearch{/etc/aliases} \
+            }}"
+    data = %CPANEL-address-redirect%
+    file_transport = address_file
+    pipe_transport = address_pipe
+    # user = exim
+
+
+local_aliases:
+    driver = redirect
+    allow_defer
+    allow_fail
+    domains = $primary_hostname : localhost
+    address_data = \
+        "router=$router_name \
+        redirect=${quote: \
+            ${lookup \
+                {$local_part} \
+                lsearch{/etc/localaliases} \
+            }}"
+    data = %CPANEL-address-redirect%
+    file_transport = address_file
+    pipe_transport = address_pipe
+    check_local_user
+
+@PREDOTFORWARD@
+
+
+userforward:
+    driver = redirect
+    allow_filter
+    allow_fail
+    forbid_filter_run
+    forbid_filter_perl
+    forbid_filter_lookup
+    forbid_filter_readfile
+    forbid_filter_readsocket
+    check_ancestor
+    check_local_user
+    domains = $primary_hostname
+    no_expn
+    require_files = "+$home/.forward"
+    condition = "${extract{size}{${stat:$home/.forward}}}"
+    file = $home/.forward
+    file_transport = address_file
+    pipe_transport = ${if forall \
+        {/bin/cagefs_enter:/usr/sbin/cagefsctl} \
+        {exists{$item}} \
+        {cagefs_address_pipe} \
+        {${if forany \
+            {%CPANEL-local-username%:$r_suspended_shell} \
+            {match{$item}{\N(jail|no)shell\N}} \
+            {jailed_address_pipe} \
+            {address_pipe} \
+        }} \
+    }
+    reply_transport = address_reply
+    directory_transport = address_directory
+    user = $local_part_data
+    group = $local_part_data
+    no_verify
+
+
+srs_placeholder:
+    driver = redirect
+    condition = 0
+    data = :fail: This router is a placeholder
+
+@PRELOCALUSER@
+
+
+localuser_root:
+    driver = redirect
+    allow_fail
+    domains = $primary_hostname : localhost
+    check_local_user
+    condition = ${if eq {$local_part_data}{root}}
+    data = :fail: root cannot accept local mail deliveries
+
+
+localuser_overquota:
+    driver = redirect
+    condition = 0
+    data = :fail: This router is a placeholder
+
+#
+# Optimized spambox router
+#
+
+localuser_spam:
+    driver = redirect
+    domains = $primary_hostname
+    require_files = "+$home/.spamassassinboxenable"
+    condition = ${if match{$h_x-spam-status:}{\N^Yes\N}{true}{false}}
+# sets home,user,group
+    check_local_user
+    headers_remove="x-uidl"
+    data = "${quote_local_part:$local_part_data}+spam"
+    redirect_router = localuser
+
+
+
+localuser:
+    driver = accept
+# sets home,user,group
+    check_local_user
+    domains = $primary_hostname
+    headers_remove="x-uidl"
+    local_part_suffix = +*
+    local_part_suffix_optional
+    user = mailnull
+    group = mail
+    transport = dovecot_delivery
+    set = r_bcc_addr=${if forany \
+        {${addresses:$h_to:}:${addresses:$h_cc:}} \
+        {or { \
+            { eqi \
+                {${extract \
+                    {1} \
+                    {+} \
+                    {${local_part:$item}} \
+                }@${domain:$item}} \
+                {$local_part@$domain} \
+            } \
+            { eqi \
+                {${extract \
+                    {1} \
+                    {+} \
+                    {${local_part:$item}} \
+                }@${domain:$item}} \
+                {$original_local_part@$original_domain} \
+            } \
+        }} \
+        {} \
+        {$local_part@$domain} \
+    }
+    set = r_cpanel_user=${local_part}
+    #
+    # If the delivery address, original address (forwarded),
+    # or address with subaddress is shown on the To: or Cc:
+    # lines or the message has the List-Id: or Precedence:
+    # header we allow the message to be batched to
+    # dovecot LMTP via transport dovecot_virtual_delivery
+    #
+    # If it does match match the above we do not allow the message
+    # to be batched in order to ensure that the Envelope-To: header
+    # does not contain a user that was Bcc:ed so savvy recipients
+    # cannot see that another email was Bcc:ed in the header
+    # via transport dovecot_virtual_delivery_no_batch
+    #
+    # Note: match_address would be nice here but the second string
+    # is not expanded for security reasons
+    #
+
+# This director matches local user mailboxes.
+
+
+@DIRECTOREND@
+
+
+
+######################################################################
+#                      TRANSPORTS CONFIGURATION                      #
+######################################################################
+#                       ORDER DOES NOT MATTER                        #
+#     Only one appropriate transport is called for each delivery.    #
+######################################################################
+
+# A transport is used only when referenced from a director or a router that
+# successfully handles an address.
+
+
+# This transport is used for delivering messages over SMTP connections.
+
+begin transports
+
+@TRANSPORTSTART@
+
+
+remote_smtp:
+    # placeholder for the contents of replacecf target of the same name
+    driver = smtp
+
+remote_forwarded_smtp:
+    # placeholder for the contents of replacecf target of the same name
+    driver      = smtp
+
+# This transport is used for local delivery to user mailboxes. By default
+# it will be run under the uid and gid of the local user, and requires
+# the sticky bit to be set on the /var/mail directory. Some systems use
+# the alternative approach of running mail deliveries under a particular
+# group instead of using the sticky bit. The commented options below show
+# how this can be done.
+
+
+@TRANSPORTMIDDLE@
+
+
+# This transport is used for handling pipe deliveries generated by alias
+# or .forward files. If the pipe generates any standard output, it is returned
+# to the sender of the message as a delivery error. Set return_fail_output
+# instead of return_output if you want this to happen only when the pipe fails
+# to complete normally. You can set different transports for aliases and
+# forwards if you want to - see the references to address_pipe below.
+
+address_pipe:
+    driver = pipe
+    return_output
+
+virtual_address_pipe:
+    driver = pipe
+    return_output
+
+jailed_address_pipe:
+    driver = pipe
+    force_command
+    command = /usr/local/cpanel/bin/jailexec $address_pipe
+    return_output
+
+jailed_virtual_address_pipe:
+    driver = pipe
+    force_command
+    command = /usr/local/cpanel/bin/jailexec $address_pipe
+    return_output
+
+cagefs_address_pipe:
+    driver = pipe
+    force_command
+    command = /bin/cagefs_enter $address_pipe
+    return_output
+
+cagefs_virtual_address_pipe:
+    driver = pipe
+    force_command
+    command = /bin/cagefs_enter $address_pipe
+    return_output
+
+
+# This transport is used for handling deliveries directly to files that are
+# generated by aliassing or forwarding.
+
+
+address_file:
+    driver = pipe
+    command = /usr/libexec/dovecot/dovecot-lda -e -f $sender_address -d ${perl{convert_address_directory_to_dovecot_lda_destination_username}} -m ${perl{convert_address_directory_to_dovecot_lda_mailbox}}
+    message_prefix =
+    message_suffix =
+    log_output
+    delivery_date_add
+    envelope_to_add
+    return_path_add
+    temp_errors = 64 : 69 : 70: 71 : 72 : 73 : 74 : 75 : 78
+
+
+dovecot_delivery:
+    driver = lmtp
+    socket = /var/run/dovecot/lmtp
+    batch_max = 200
+    batch_id = "$r_cpanel_user ${if def:r_bcc_addr {$r_bcc_addr}}"
+    rcpt_include_affixes
+    delivery_date_add
+    envelope_to_add
+    return_path_add
+
+dovecot_virtual_delivery:
+    driver = lmtp
+    socket = /var/run/dovecot/lmtp
+    batch_max = 200
+    batch_id = "$r_cpanel_user ${if def:r_bcc_addr {$r_bcc_addr}}"
+    rcpt_include_affixes
+    delivery_date_add
+    envelope_to_add
+    return_path_add
+
+address_reply:
+    driver = autoreply
+
+cpanel_archiver_transport:
+    driver = autoreply
+
+
+
+@TRANSPORTEND@
+
+
+
+######################################################################
+#                      RETRY CONFIGURATION                           #
+######################################################################
+
+# This single retry rule applies to all domains and all errors. It specifies
+# retries every 15 minutes for 2 hours, then increasing retry intervals,
+# starting at 1 hour and increasing each time by a factor of 1.5, up to 16
+# hours, then retries every 8 hours until 4 days have passed since the first
+# failed delivery.
+
+# Domain               Error       Retries
+# ------               -----       -------
+
+
+begin retry
+
+@RETRYSTART@
+
++secondarymx           *           F,4h,5m; G,16h,1h,1.5; F,4d,8h
+*                      *           F,2h,15m; G,16h,1h,1.5; F,4d,8h
+
+@RETRYEND@
+
+# End of Exim 4 configuration
+

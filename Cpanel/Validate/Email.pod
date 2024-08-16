@@ -1,0 +1,64 @@
+
+# cpanel - Cpanel/Validate/Email.pod               Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+=head1 NAME
+
+Cpanel::Validate::Email - Consolidate definitions of the Email validations
+
+=head1 DESCRIPTION
+
+Email address validation is, in general, an annoyingly complicated problem. In
+the cPanel software it is somewhat more complicated because email addresses are
+used different ways (with different rules) in different contexts.
+
+This document will describe the contexts and specify which validation code is
+to be used in which context. The actual definition of the validation methods
+is left to the appropriate module.
+
+=head1 EMAIL ADDRESS CONTEXTS
+
+Each different context has a different validation module. The validation
+modules and their contexts are described below.
+
+=head2 Cpanel::Validate::EmailLocalPart
+
+When creating email addresses for a particular domain in cPanel/WHM we validate
+just the local part of the address. The local part supports a subset of the
+characters allowed by RFC 5322. In particular, we disallow characters that might
+be used as separators, that would cause problems when creating directories, or
+that are dangerous when passed to a shell.
+
+See the L<Cpanel::Validate::EmailLocalPart> module for the exact definition.
+
+=head2 Cpanel::Validate::EmailCpanel
+
+When referring to cPanel addresses, we need to validate the full email address
+within the rules we apply for the local part of the address. This email address
+type supports an C<EmailLocalPart> and a legal domain separated by the C<@>
+character.
+
+=head2 Cpanel::Validate::EmailAuth
+
+When using email addresses for login/authentication purposes, we need a full email
+address with the special case that the @ separator may be replaced with other
+separator characters. The local part of the email address, must be a valid
+C<EmailLocalPart>.
+
+=head2 Cpanel::Validate::EmailRFC
+
+When refering to external addresses, we need to support as close to the full
+RFC 5322 email addresses as possible. We support the individual characters that
+the RFC allows for each part. However, we do not support the quoted strings in
+either the local part or the domain.
+
+=head1 AUTHOR
+
+G. Wade Johnson  C<< wade@cpanel.net >>
+
+=head1 LICENSE AND COPYRIGHT
+
+Copyright (c) 2009, cPanel, Inc. All rights reserved.
+This code is subject to the cPanel license. Unauthorized copying is prohibited

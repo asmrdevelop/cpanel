@@ -1,0 +1,221 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/addpop                          Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::addpop;
+
+use strict;
+use warnings;
+
+use Cpanel::SafetyBits                   ();
+use Cpanel::AcctUtils::DomainOwner::Tiny ();
+use Cpanel::Usage                        ();
+use Cpanel::Validate::VirtualUsername    ();
+use Cpanel::Email::Maildir               ();
+use Cpanel::Sys::Setsid::Fast            ();
+use Cpanel::Hooks                        ();
+use Cpanel::Exception                    ();
+
+use constant MAX_QUOTA => Cpanel::Email::Maildir::get_max_email_quota_mib();
+
+my @attributes = qw{ email password quota owner user domain };
+
+run(@ARGV) unless caller();
+
+sub run {
+    my (@args) = @_;
+    if ( $> != 0 ) {
+        die( Cpanel::Exception::create("RootRequired") );
+    }
+    my $debug;
+    my $verbose;
+    my $email;
+    my $password;
+    my $quota;
+
+    my $opts = {
+        email    => \$email,
+        password => \$password,
+        quota    => \$quota,
+        debug    => \$debug,
+        verbose  => \$verbose,
+    };
+
+    Cpanel::Usage::wrap_options( \@args, \&usage, $opts );
+
+    # needed for retro compatibility
+    @args = map { m/^\-/ ? undef : $_ } @args;
+
+    # use args* for retro compatibility with old syntax
+    my %opts = ( email => $email || $args[0], password => $password || $args[1] || q{}, quota => $quota || $args[3] || 0 );
+    my $pop  = scripts::addpop->new(%opts);
+
+    my $interactive_fields = {
+        email => 'Please enter the pop account to add (e.g. bob@sally.com)? ',
+    };
+    foreach my $field ( sort keys %$interactive_fields ) {
+        while ( !$pop->$field() ) {
+            print $interactive_fields->{$field};
+            my $input;
+            chomp( $input = <STDIN> );
+            $pop->$field($input);
+        }
+    }
+
+    Cpanel::Hooks::hook(
+        {
+            'category' => 'scripts',
+            'event'    => 'addpop',
+            'stage'    => 'pre',
+        },
+        \%opts,
+    );
+
+    $pop->create();
+
+    Cpanel::Hooks::hook(
+        {
+            'category' => 'scripts',
+            'event'    => 'addpop',
+            'stage'    => 'post',
+        },
+        \%opts,
+    );
+
+    return;
+}
+
+sub usage {
+    my $prog      = $0;
+    my $max_quota = Cpanel::Email::Maildir::get_max_email_quota_mib();
+    print <<USAGE;
+$0 [--email=]<user\@domain.com> [[--password=]yourpassword] [[--quota=]quota]
+
+Create the specified email account
+    --help  : display this documentation
+    --email : a valid address email ( format: user\@domain.com )
+    --password : password used for this account, if not provided a prompt will ask for it
+    --quota : default quota ( in MB ) is 0 ( unlimited ), any value larger or equal than $max_quota
+    will result in using an unlimited quota
+
+Sample usages
+    Create an email account using only the email ( password will be asked, and default quota will be used )
+    > $0 user\@domain.com
+    > $0 user\@domain.com yourpassword
+    Create an email with password and quota from command line
+    > $0 user\@domain.com yourpassword 1024
+    or
+    > $0 --email=user\@domain.com --password=yourpassword --quota=1024
+USAGE
+    exit 1;
+}
+
+sub new {
+    my ( $package, %opts ) = @_;
+    my $self = bless {}, __PACKAGE__;
+
+    # create accessor and hooks
+    $self->_set_attributes();
+
+    # set values
+    map { $self->$_( $opts{$_} ) } keys %opts;
+
+    return $self;
+}
+
+sub _set_attributes {
+
+    # call once at first init
+    return unless @attributes;
+    foreach my $att (@attributes) {
+        my $accessor = __PACKAGE__ . "::$att";
+
+        # allow symbolic refs to typeglob
+        no strict 'refs';
+        *$accessor = sub {
+            my ( $self, $v ) = @_;
+            if ( defined $v ) {
+                foreach (qw{before validate set after}) {
+                    if ( $_ eq 'set' ) {
+                        $self->{$att} = $v;
+                        next;
+                    }
+                    my $sub = '_' . $_ . '_' . $att;
+                    if ( defined &{ __PACKAGE__ . '::' . $sub } ) {
+                        return unless $self->$sub($v);
+                    }
+                }
+            }
+            return $self->{$att};
+        };
+    }
+    @attributes = undef;
+    return 1;
+}
+
+sub _validate_email {
+    my ( $self, $email ) = @_;
+
+    unless ( Cpanel::Validate::VirtualUsername::is_valid($email) ) {
+        print STDERR "'$email' is not valid for a virtual account username.\n";
+        return;
+    }
+    return 1;
+}
+
+sub _validate_quota {
+    my ( $self, $value ) = @_;
+
+    $value =~ /^[0-9]+$/ or die "Invalid quota format";
+    return 1;
+}
+
+sub _after_quota {
+    my ($self) = @_;
+
+    # update in place
+    $self->{quota} = 0 if $self->quota() >= MAX_QUOTA;
+    return 1;
+}
+
+sub _after_email {
+    my $self = shift;
+
+    my ( $user, $domain ) = split( /\@/, $self->email );
+    my $owner = Cpanel::AcctUtils::DomainOwner::Tiny::getdomainowner( $domain, { 'default' => '' } );
+
+    die "Cannot find the owner of $domain, try rebuilding /etc/userdomains first with /usr/local/cpanel/scripts/updateuserdomains" unless $owner;
+
+    $self->owner($owner);
+    $self->user($user);
+    $self->domain($domain);
+    return 1;
+}
+
+sub _after_owner {
+    my $self = shift;
+
+    my ( $uid, $gid ) = ( getpwnam( $self->owner() ) )[ 2, 3 ];
+    die "cannot find user ", $self->owner() unless defined $uid && defined $gid;
+    Cpanel::Sys::Setsid::Fast::fast_setsid();
+    Cpanel::SafetyBits::setuids( $uid, $gid );
+    $ENV{'REMOTE_USER'} = $self->owner();
+    return 1;
+}
+
+sub create {
+    my $self = shift;
+
+    system '/usr/local/cpanel/cpanel-email', 'addpop', $self->user(), $self->password(), $self->quota(), $self->domain();
+    die "\nEmail account creation failed ($?)\n" if ( $? != 0 );
+
+    my $quota_text = ( $self->quota() > 0 ) ? $self->quota() . " MB" : 'unlimited';
+
+    print "Created " . $self->email() . " with a quota of $quota_text for user " . $self->owner() . "\n";
+    return 1;
+}
+
+1;

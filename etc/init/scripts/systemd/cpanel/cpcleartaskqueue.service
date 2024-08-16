@@ -1,0 +1,14 @@
+[Unit]
+Description=Hook to clear cPanel task queue before shutdown
+
+[Service]
+Type=oneshot
+RemainAfterExit=true
+ExecStop=/usr/bin/touch /var/run/chkservd.suspend
+ExecStop=/usr/bin/systemctl stop queueprocd
+ExecStop=/usr/local/cpanel/bin/servers_queue run
+ExecStop=/usr/bin/unlink /var/run/chkservd.suspend
+ExecStop=/usr/bin/systemctl disable cpcleartaskqueue
+
+# There is no [Install] section because we never “enable” this service;
+# we only “start” it.

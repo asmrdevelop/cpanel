@@ -1,0 +1,127 @@
+[%#
+Variables passed in:
+
+certificate     - instance of Cpanel::SSL::Objects::Certificate
+
+vhost_name      - the name of the vhost onto which the SSL cert is installed
+
+vhost_domains   - the (sorted) list of domains that point to the vhost
+
+key_id          - the ssl key id for the private key
+
+ssl_tls_manager_url  - URL to the SSL/TLS manager
+
+ssl_tls_wizard_url  - URL to the SSL/TLS wizard
+
+enabled_providers_count - The number of enabled providers in the SSL/TLS wizard
+
+added_domains - an array of FQDNs that are newly covered
+
+For more information about how to customize notification templates, read our documentation at https://go.cpanel.net/notificationtemplates
+
+-%]
+
+[%
+    PROCESS "include/colors.tmpl";
+    PROCESS "include/styles.tmpl";
+    PROCESS 'include/zebra_table.tmpl';
+
+    PROCESS 'include/code_block.tmpl';
+
+    WRAPPER 'wrapper/main.html.tmpl';
+
+
+    NOTICE.email_reason =  CPANEL.locale.maketext('[_1]: [asis,AutoSSL] certificate installed!', NOTICE.vhost_name);
+
+%]
+
+<p>
+    [% CPANEL.locale.maketext('Good news, [asis,AutoSSL] has successfully renewed the Domain Validated (DV) certificate for “[_1]”.', NOTICE.vhost_name) %]
+    [% CPANEL.locale.maketext('This does not require any further action by you.') %]
+</p>
+
+
+[% IF NOTICE.enabled_providers_count %]
+<p>
+    [% CPANEL.locale.maketext('To upgrade to an [output,abbr,EV,Extended Validation] or [output,abbr,OV,Organization Validated] certificate, navigate to the “[output,url,_1,SSL/TLS Wizard]” interface.', NOTICE.ssl_tls_wizard_url) %]
+</p>
+[% END %]
+
+<p>
+    [% CPANEL.locale.maketext('The certificate is now active on the website for the following domain names:') %]
+</p>
+
+<ul>
+    [% FOR d = NOTICE.vhost_domains -%]
+        <li>
+            <a href="https://[% d.name.html() %]">[% d.name.html() %]</a>
+            [% IF d.added -%]
+                ([% CPANEL.locale.maketext('new') %])
+            [% ELSIF !d.covered %]
+                [% not_every_domain_is_covered = 1; -%]
+                &#x26d4;
+            [% END %]
+        </li>
+    [% END -%]
+</ul>
+
+[% IF not_every_domain_is_covered -%]
+<p>
+[% CPANEL.locale.maketext('NOTE: “[_1]” marks domains that the newly-installed certificate does not include or secure. Visitors who access these domain names will see web browser security warnings.', '&#x26d4;') -%]
+</p>
+[% END -%]
+
+[% CPANEL.locale.maketext('The certificate has the following properties:') -%]
+
+[% MACRO distinguished_name BLOCK -%]
+    <table class="distinguished-name" style="margin-bottom: 0">
+        [% FOR part = parts -%]
+            <tr>
+                <td style="padding:3px;">[% part.0.html() -%]</td>
+                <td style="padding:3px;">[% part.1.html() -%]</td>
+            </tr>
+        [% END -%]
+    </table>[% END -%]
+
+[% MACRO domains_list BLOCK -%]
+    <table class="domains-list" style="margin-bottom: 0">
+        [% FOR d = domains -%]
+            <tr>
+                <td style="padding:3px;">[% d.html() -%]</td>
+            </tr>
+        [% END -%]
+    </table>[% END -%]
+[%
+zebra_table(
+    boldfirst => 1,
+    items => [
+        [
+            CPANEL.locale.maketext('Expiration:'),
+            CPANEL.locale.datetime( 1 + NOTICE.certificate.not_after(), 'datetime_format_full' ),
+        ],
+        [
+            CPANEL.locale.maketext('Domain Names:'),
+            domains_list( domains => NOTICE.certificate.domains() ),
+        ],
+        [
+            CPANEL.locale.maketext('Subject:'),
+            distinguished_name( parts => NOTICE.certificate.subject_list() ),
+        ],
+        [
+            CPANEL.locale.maketext('Issuer:'),
+            distinguished_name( parts => NOTICE.certificate.issuer_list() ),
+        ],
+    ],
+);
+-%]
+
+<p>
+[% CPANEL.locale.maketext('The certificate’s [output,abbr,PEM,Privacy-Enhanced Mail] representation is attached to this message.') -%]
+</p>
+
+<p>
+    [% CPANEL.locale.maketext('Navigate to the “[output,url,_1,SSL/TLS Manager]” interface if you require the private key for this certificate.', NOTICE.ssl_tls_manager_url) %]
+    [% CPANEL.locale.maketext('The key ID for the private key is “[_1]”.', NOTICE.key_id) %]
+</p>
+
+[% END #wrapper %]

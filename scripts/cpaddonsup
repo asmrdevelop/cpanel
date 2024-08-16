@@ -1,0 +1,90 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/cpaddonsup                      Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+## no critic qw(TestingAndDebugging::RequireUseWarnings)
+
+use Cpanel::Logger          ();
+use Cpanel::Locale          ();
+use Cpanel::SafeRun::Errors ();
+use Whostmgr::Cpaddon       ();
+
+exit if -e '/etc/cpaddonsupdisable';
+
+my $logger = Cpanel::Logger->new();
+my $locale = Cpanel::Locale->get_handle();
+
+my $cpaddons_dir   = '/usr/local/cpanel/cpaddons';
+my $cpanel_log_dir = '/var/cpanel/logs';
+
+if ( !-d $cpaddons_dir ) {
+    mkdir $cpaddons_dir or $logger->die( $locale->maketext( 'Failed to create “[_1]”: [_2]', $cpaddons_dir, $! ) );
+}
+
+require $cpaddons_dir . '/cPAddonsAvailable.pm';
+die $@ if $@;
+
+my @current;
+
+{
+    no warnings 'once';
+    foreach my $namespace ( keys %cPAddonsAvailable::list, keys %{ Whostmgr::Cpaddon::get_installed_addons() } ) {
+        my $dirver = $namespace;
+        $dirver =~ s{[:]{2}}{/}g;
+        push @current, $namespace if -d "$cpaddons_dir/$dirver/";
+    }
+}
+
+my $force = ( grep { $_ eq '--force' } @ARGV )  ? 1 : 0;
+my $html  = ( grep { $_ eq '--nohtml' } @ARGV ) ? 0 : 1;
+
+if ( !-d $cpanel_log_dir ) {
+    mkdir $cpanel_log_dir or $logger->warn( $locale->maketext( 'Failed to create “[_1]”: [_2]', $cpanel_log_dir, $! ) );
+}
+
+# Clear log files older than 30 days
+my $thirty_days = 30 * 24 * 60 * 60;
+if ( opendir my $log_dh, $cpanel_log_dir ) {
+    my $now = time();
+    while ( my $file = readdir $log_dh ) {
+        next if $file !~ m/^cpaddonsup\.(\d+)/;
+        my $age = $1;
+        if ( ( $age + $thirty_days ) < $now ) {
+            unlink $cpanel_log_dir . '/' . $file;
+        }
+    }
+    closedir $log_dh;
+}
+
+if ( @current || $force ) {
+    my $param = !$html ? 'action=update-nohtml' : 'action=update';
+    $param .= '&force=1' if $force;
+
+    foreach my $cpaddon (@current) {
+        $param = join '&', $param, qq{$cpaddon=1};
+    }
+
+    $ENV{'REMOTE_USER'} = "root";
+    my $now       = time();
+    my $old_umask = umask(0077);    # Case 92381: Logs should not be world-readable.
+    if ( open my $out_fh, '>', $cpanel_log_dir . '/cpaddonsup.' . $now . '.txt' ) {
+        umask($old_umask);
+        print {$out_fh} scalar Cpanel::SafeRun::Errors::saferunallerrors( '/usr/local/cpanel/whostmgr/docroot/cgi/cpaddons.pl', qq{$param} );
+        if ($html) {
+            print {$out_fh} '<p>' . $locale->maketext( 'Output from command: [_1] “[_2]”', '/usr/local/cpanel/whostmgr/docroot/cgi/cpaddons.pl', $param ) . "</p></body></html>\n\n";
+        }
+        else {
+            print {$out_fh} $locale->maketext( 'Output from command: [_1] “[_2]”', '/usr/local/cpanel/whostmgr/docroot/cgi/cpaddons.pl', $param ) . "\n\n";
+        }
+        close $out_fh;
+    }
+    else {
+        umask($old_umask);
+        $logger->warn( $locale->maketext( 'Could not write log file “[_1]”: [_2]', "${cpanel_log_dir}/cpaddonsup.${now}.txt", $! ) );
+        print scalar Cpanel::SafeRun::Errors::saferunallerrors( '/usr/local/cpanel/whostmgr/docroot/cgi/cpaddons.pl', qq{$param} );
+    }
+}

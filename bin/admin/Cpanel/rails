@@ -1,0 +1,188 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - bin/admin/Cpanel/rails                  Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+
+use Cpanel::Config::userdata::Constants ();
+use Cpanel::DataStore                   ();
+use Cpanel::Logger                      ();
+use Cpanel::PwCache                     ();
+use Cpanel::PwCache::Helpers            ();
+use Cpanel::PwDiskCache                 ();
+use Cpanel::FileUtils::TouchFile        ();
+use Cpanel::AdminBin::Serializer        ();
+
+#----------------------------------------------------------------------
+# TODO: Refactor this as a modulino that subclasses Cpanel::AdminBin::Script.
+#----------------------------------------------------------------------
+
+my $logger = Cpanel::Logger->new();
+
+my %SECURE_PWCACHE;
+tie %SECURE_PWCACHE, 'Cpanel::PwDiskCache';
+Cpanel::PwCache::Helpers::init( \%SECURE_PWCACHE );
+
+my $uid    = $ARGV[0];
+my $action = <STDIN>;
+
+$action =~ s/^\s*|\s*$//g;
+
+my ( $user, $gid, $homedir ) = ( Cpanel::PwCache::getpwuid_noshadow($uid) )[ 0, 3, 7 ];
+
+if ( !$user || $user eq 'root' ) {
+    print "Invalid user\n";
+    exit 1;
+}
+
+my $old_rordb   = "$homedir/.cpanel/ruby-on-rails.db";
+my $old_rewrite = "$homedir/.cpanel/ruby-on-rails-rewrites.db";
+my $rordb       = "$Cpanel::Config::userdata::Constants::USERDATA_DIR/$user/ruby-on-rails.db";
+my $rewrite     = "$Cpanel::Config::userdata::Constants::USERDATA_DIR/$user/ruby-on-rails-rewrites.db";
+
+if    ( $action eq 'MOVEFILES' )    { movefiles(); }
+elsif ( $action eq 'RAILSDBREAD' )  { railsdb_read() }
+elsif ( $action eq 'REWRITEREAD' )  { rewrite_read() }
+elsif ( $action eq 'RAILSDBWRITE' ) { railsdb_write() }
+elsif ( $action eq 'REWRITEWRITE' ) { rewrite_write() }
+elsif ( $action eq 'NEEDSIMPORT' )  { needsimport() }
+else                                { $logger->warn('Syntax Mismatch'); exit 1 }
+
+sub movefiles {
+
+    # Temporarily drop privs for file access
+    $) = "$gid $gid";
+    $> = $uid;
+
+    unless ( $> == $uid && int($)) == $gid ) {
+        $logger->warn("Fatal error: failed to change UID/GID for reading.\n");
+        exit 1;
+    }
+
+    my $rordb_yaml = '';
+    if ( !-e $rordb && open( my $rordb_fh, '<', $old_rordb ) ) {
+        local $/;
+        $rordb_yaml = <$rordb_fh>;
+        close($rordb_fh);
+    }
+
+    my $rewrite_yaml = '';
+    if ( !-e $rewrite && open( my $rewrite_fh, '<', $old_rewrite ) ) {
+        local $/;
+        $rewrite_yaml = <$rewrite_fh>;
+        close($rewrite_fh);
+    }
+
+    # Restore privs
+    $> = 0;
+    $) = '0 0';
+    unless ( $> == 0 && int($)) == 0 ) {
+        print "Fatal error: failed to restore UID/GID after reading.\n";
+        exit 1;
+    }
+
+    if ( $rordb_yaml && open( my $rordb_fh, '>', $rordb ) ) {
+        print {$rordb_fh} $rordb_yaml;
+        close($rordb_fh);
+    }
+    else {
+        Cpanel::FileUtils::TouchFile::touchfile($rordb);
+    }
+
+    if ( $rewrite_yaml && open( my $rewrite_fh, '>', $rewrite ) ) {
+        print {$rewrite_fh} $rewrite_yaml;
+        close($rewrite_fh);
+    }
+    else {
+        Cpanel::FileUtils::TouchFile::touchfile($rewrite);
+    }
+
+    print ".\n" . Cpanel::AdminBin::Serializer::Dump( { status => 1 } );
+
+    return;
+}
+
+sub railsdb_read {
+
+    my $rorstore = Cpanel::DataStore::fetch_ref( $rordb, 1 );
+    if ( !$rorstore ) {
+        $rorstore = [];
+    }
+
+    print ".\n" . Cpanel::AdminBin::Serializer::Dump($rorstore);
+
+    return;
+}
+
+sub rewrite_read {
+    my $rorstore = Cpanel::DataStore::fetch_ref( $rewrite, 1 );
+    if ( !$rorstore ) {
+        $rorstore = [];
+    }
+
+    print ".\n" . Cpanel::AdminBin::Serializer::Dump($rorstore);
+
+    return;
+}
+
+sub railsdb_write {
+
+    my $check = <STDIN>;
+    chomp($check);
+    if ( $check ne '.' ) { warn "Error parsing input\n"; exit(1); }
+
+    my $data = [];
+    eval { $data = Cpanel::AdminBin::Serializer::SafeLoadFile( \*STDIN ); };
+
+    if ( $@ || ref $data ne 'ARRAY' ) {
+        $logger->warn('Unable to read from STDIN');
+        exit 1;
+    }
+
+    if ( !Cpanel::DataStore::store_ref( $rordb, $data ) ) {
+        $logger->info("Unable to write to file");
+        exit 1;
+    }
+
+    return;
+}
+
+sub rewrite_write {
+
+    my $check = <STDIN>;
+    chomp($check);
+    if ( $check ne '.' ) { warn "Error parsing input\n"; exit(1); }
+
+    my $data = [];
+    eval { $data = Cpanel::AdminBin::Serializer::SafeLoadFile( \*STDIN ); };
+
+    if ( $@ || ref $data ne 'ARRAY' ) {
+        $logger->warn('Unable to read from STDIN');
+        exit 1;
+    }
+
+    if ( !Cpanel::DataStore::store_ref( $rewrite, $data ) ) {
+        $logger->info("Unable to write to file");
+        exit 1;
+    }
+
+    print ".\n";
+
+    return;
+}
+
+sub needsimport {
+
+    print ".\n";
+    if ( -e $rordb ) {
+        print Cpanel::AdminBin::Serializer::Dump( { status => 1 } );
+    }
+    else {
+        print Cpanel::AdminBin::Serializer::Dump( { status => 0 } );
+    }
+
+    return;
+}

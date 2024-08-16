@@ -1,0 +1,67 @@
+[%
+    SET CPANEL.CPVAR.dprefix = "../";
+
+    USE WebmailRedirect;
+    USE HTTP;
+
+    IF RAW_FORM.return_request_uri;
+        SET return_url = HTTP.get_client_url(RAW_FORM.return_request_uri);
+    END;
+
+    IF !CPANEL.CPDATA.item('DEMO');
+        SET redir_data = WebmailRedirect.create_webmail_session( RAW_FORM.user, return_url );
+    END;
+
+    SET url = redir_data.url;
+    SET session_str = redir_data.session;
+-%]
+
+[% js_code = PROCESS js_block %]
+[% WRAPPER '_assets/master.html.tt'
+    app_key = 'webemail'
+    page_js = js_code
+-%]
+<div class="body-content">
+
+    [% IF CPANEL.CPDATA.item('DEMO') -%]
+        <div id="details" class="alert alert-warning">
+            <span class="glyphicon glyphicon-exclamation-sign"></span>
+            [% locale.maketext("This feature is disabled in demo mode.") %]
+        </div>
+    [% ELSE %]
+
+        [% IF redir_data.warning -%]
+            <div class="callout callout-warning">[% redir_data.warning.html() -%]</div>
+        [% END -%]
+
+        <div class="section">
+            <h2 id="hdrWebmailLogin">[% locale.maketext("WebMail Login") %]</h2>
+
+            <div>
+                <img id="imgLoading" src="../images/loader.gif" alt="Loading progress image" /><br/>
+                <form id='wmlinkEl' method='POST' action="[% url.html() %]" >
+                    <input type='hidden' name='session' value="[% session_str.html %]">
+                    <input type='hidden' name='locale' value="[% locale.get_language_tag().html() %]">
+                    <input id='submit-button' type="submit" value="[% locale.maketext("Log in") %]">
+                </form>
+            </div>
+        </div>
+
+        [% INCLUDE _assets/return_link.html.tt return_location='../email_accounts/index.html.tt' return_link_text=locale.maketext('Go Back') %]
+    [% END -%]
+</div>
+[% END #wrapper %]
+
+[% BLOCK js_block %]
+<script type="text/javascript">
+    var navit = function() {
+        document.getElementById('wmlinkEl').submit();
+        document.getElementById('submit-button').value='[% locale.maketext("Logging you in …") %]';
+    }
+
+    [% IF !redir_data.warning -%]
+        YAHOO.util.Event.addListener(window, "load", navit);
+    [% END -%]
+</script>
+[% END %]
+

@@ -1,0 +1,104 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/convert_to_dovecot_delivery     Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::convert_to_dovecot_delivery;
+
+use strict;
+use Cpanel::CachedDataStore               ();
+use Cpanel::Config::LoadCpConf            ();
+use Cpanel::Services::Restart             ();
+use Cpanel::AdvConfig::Setup              ();
+use Cpanel::AdvConfig::dovecot::Constants ();
+use Cpanel::SafeRun::Object               ();
+
+our $MIN_SANE_LOGIN_PROCESS_SIZE  = Cpanel::AdvConfig::dovecot::Constants::MINIMUM_LOGIN_PROCESS_SIZE();
+our $MIN_SANE_MAIL_PROCESS_SIZE   = Cpanel::AdvConfig::dovecot::Constants::MINIMUM_MAIL_PROCESS_SIZE();
+our $RECOMMENDED_CONFIG_VSZ_LIMIT = Cpanel::AdvConfig::dovecot::Constants::RECOMMENDED_CONFIG_VSZ_LIMIT();
+our $DEFAULT_PLUGIN_ACL           = Cpanel::AdvConfig::dovecot::Constants::DEFAULT_PLUGIN_ACL();
+our $DEFAULT_AUTH_CACHE_SIZE      = Cpanel::AdvConfig::dovecot::Constants::DEFAULT_AUTH_CACHE_SIZE();
+
+our $conf_file = '/var/cpanel/conf/dovecot/main';
+exit( __PACKAGE__->script() ) unless caller();
+
+sub script {
+    my $dovecot_is_enabled = Cpanel::Config::LoadCpConf::loadcpconf()->{'mailserver'} =~ m{dovecot} ? 1 : 0;
+    Cpanel::AdvConfig::Setup::ensure_conf_dir_exists('dovecot');
+
+    my $pop_is_enabled  = _pop_is_enabled_via_touchfile();
+    my $imap_is_enabled = _imap_is_enabled_via_touchfile();
+
+    my $dovecot_conf_obj = Cpanel::CachedDataStore::loaddatastore( $conf_file, 1 );    # lock and load
+    if ( 'HASH' ne ref $dovecot_conf_obj->{'data'} ) {
+        $dovecot_conf_obj->{'data'} = {};
+    }
+    if ( !$dovecot_is_enabled || ( !$pop_is_enabled && !$imap_is_enabled ) ) {
+
+        # If they had dovecot disabled
+        # we want to set the protocols to none
+        $dovecot_conf_obj->{'data'}{'protocols'} = 'none';
+    }
+    elsif ( $imap_is_enabled && $pop_is_enabled ) {
+
+        # Do nothing since this is the default
+    }
+    elsif ($imap_is_enabled) {
+        $dovecot_conf_obj->{'data'}{'protocols'} = 'imap';
+    }
+    elsif ($pop_is_enabled) {
+        $dovecot_conf_obj->{'data'}{'protocols'} = 'pop3';
+    }
+    if ( $dovecot_conf_obj->{'data'}{'auth_cache_size'} && $dovecot_conf_obj->{'data'}{'auth_cache_size'} !~ tr{M}{} && $dovecot_conf_obj->{'data'}{'auth_cache_size'} < ( 1024**2 ) ) {
+        $dovecot_conf_obj->{'data'}{'auth_cache_size'} = $DEFAULT_AUTH_CACHE_SIZE;
+    }
+
+    if ( $dovecot_conf_obj->{'data'}{'login_process_size'} && $dovecot_conf_obj->{'data'}{'login_process_size'} < $MIN_SANE_LOGIN_PROCESS_SIZE ) {
+        $dovecot_conf_obj->{'data'}{'login_process_size'} = $MIN_SANE_LOGIN_PROCESS_SIZE;
+    }
+
+    if ( $dovecot_conf_obj->{'data'}{'mail_process_size'} && $dovecot_conf_obj->{'data'}{'mail_process_size'} < $MIN_SANE_MAIL_PROCESS_SIZE ) {
+        $dovecot_conf_obj->{'data'}{'mail_process_size'} = $MIN_SANE_MAIL_PROCESS_SIZE;
+    }
+
+    if ( $dovecot_conf_obj->{'data'}{'config_vsz_limit'} && $dovecot_conf_obj->{'data'}{'config_vsz_limit'} < $RECOMMENDED_CONFIG_VSZ_LIMIT ) {
+        $dovecot_conf_obj->{'data'}{'config_vsz_limit'} = $RECOMMENDED_CONFIG_VSZ_LIMIT;
+    }
+
+    if ( $dovecot_conf_obj->{'data'}{'plugin'}{'acl'} && $dovecot_conf_obj->{'data'}{'plugin'}{'acl'} !~ m{cache} ) {
+        $dovecot_conf_obj->{'data'}{'plugin'}{'acl'} = $DEFAULT_PLUGIN_ACL;
+    }
+
+    $dovecot_conf_obj->save();
+
+    if ( !$dovecot_is_enabled ) {
+        Cpanel::SafeRun::Object->new_or_die( 'program' => '/usr/local/cpanel/scripts/setupmailserver', 'args' => ['disabled'] );
+    }
+
+    # Either way we need to get the new settings in
+    rebuild_dovecot_conf();
+    Cpanel::Services::Restart::restartservice( 'dovecot', 1 );
+
+    return 0;
+}
+
+sub _imap_is_enabled_via_touchfile {
+    foreach my $imap_disable_file (qw{/etc/imapdisable /etc/imapddisable /etc/cpimapdisable}) {
+        if ( -e $imap_disable_file ) { return 0; }
+    }
+    return 1;
+}
+
+sub _pop_is_enabled_via_touchfile {
+    foreach my $pop_disable_file (qw{/etc/popdisable /etc/popddisable /etc/cppopdisable /etc/pop3disable}) {
+        if ( -e $pop_disable_file ) { return 0; }
+    }
+    return 1;
+}
+
+sub rebuild_dovecot_conf {
+
+    return system('/usr/local/cpanel/scripts/builddovecotconf');
+}

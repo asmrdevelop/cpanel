@@ -1,0 +1,61 @@
+[%#
+Variables passed in:
+
+origin                  - the system component from which the request originated
+ip_address              - the IP address from which the request originated
+ip_address_is_public    - whether the “ip_address” is public (i.e., not a loopback, private, &c.)
+reverse_dns_hostnames   - arrayref of whatever a reverse DNS lookup returned, if successful
+country_name            - the name of the country that GeoIP reports is where the IP address’s computer is
+country_code            - the two-letter country code of the “country_name”
+country_lookup_error    - whatever error may have prevented getting a “country_name”
+
+account_owner           - the account that owns the account that has been removed
+user                    - account username to be removed
+user_domain             - users domain that has been removed.  can't use domain as the lookup for it occurs after removal.
+host                    - hostname of server
+env_remote_user         - the account that performed this action
+env_user                - the user role this action was performed as
+sent_to_root            - A default boolean flag sent to all templates that indicates if the message was sent to 'root'
+
+For more information about how to customize notification templates, read our documentation at https://go.cpanel.net/notificationtemplates
+
+
+-%]
+
+[%
+    PROCESS "include/colors.tmpl";
+    PROCESS "include/styles.tmpl";
+
+    WRAPPER 'wrapper/main.html.tmpl';
+
+    NOTICE.email_reason = CPANEL.locale.maketext('Account removed.');
+%]
+
+<table>
+    <tbody>
+        <tr>
+            <th align="right">
+                [% CPANEL.locale.maketext('Domain') %]:
+            </th>
+            <td align="left">
+                [% NOTICE.user_domain %]
+            </td>
+        </tr>
+        <tr>
+            <th align="right">
+                [% CPANEL.locale.maketext('Username') %]:
+            </th>
+            <td align="left">
+                [% NOTICE.user %]
+            </td>
+        </tr>
+    </tbody>
+</table>
+<p>
+    [% CPANEL.locale.maketext('Account was owned by [_1]', NOTICE.account_owner ); %]
+</p>
+<p>
+    [% CPANEL.locale.maketext('“[_1]” removed the account.', NOTICE.env_remote_user.html() ); %]
+</p>
+
+[% END %]

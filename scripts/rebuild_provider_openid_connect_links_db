@@ -1,0 +1,24 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/rebuild_provider_openid_connect_links_db
+#                                                  Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+
+use Cpanel::Security::Authn::LinkDB        ();
+use Cpanel::Security::Authn::OpenIdConnect ();
+use Getopt::Long();
+
+my $provider_name = '';
+my $protocol      = 'openid_connect';
+
+Getopt::Long::GetOptions( 'provider=s' => \$provider_name );
+
+#my $all_providers_ref = Cpanel::Security::Authn::OpenIdConnect::get_enabled_and_configured_openid_connect_providers();
+
+my $provider_obj = Cpanel::Security::Authn::OpenIdConnect::get_openid_provider( 'cpaneld', $provider_name );
+
+Cpanel::Security::Authn::LinkDB->new( 'protocol' => $protocol, 'provider_name' => $provider_obj->get_provider_name() )->rebuild();

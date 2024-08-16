@@ -1,0 +1,41 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/killmysqlwildcard               Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+use warnings;
+
+use Cpanel::Config::Users       ();
+use Cpanel::MysqlUtils::Connect ();
+use Cpanel::MysqlUtils::Quote   ();
+use Cpanel::Logger              ();
+use Cpanel::DB::Utils           ();
+
+my $logger = Cpanel::Logger->new();
+
+my @cpusers = Cpanel::Config::Users::getcpusers();
+my $dbh;
+
+if ( my $obj = eval { Cpanel::MysqlUtils::Connect->new() } ) {
+    $dbh = $obj->db_handle();
+
+}
+else {
+    die "Failed to connect to MySQL: $@";
+}
+
+foreach my $cpuser (@cpusers) {
+    my $dbowner_name = Cpanel::DB::Utils::username_to_dbowner($cpuser);
+
+    my $safe_name = Cpanel::MysqlUtils::Quote::quote("$dbowner_name\\_%");
+
+    $logger->info("Removing mysql wildcard grant from $cpuser");
+
+    $dbh->do("DELETE FROM mysql.db WHERE db = $safe_name;");
+}
+
+$dbh->do('FLUSH PRIVILEGES;');
+$dbh->disconnect();

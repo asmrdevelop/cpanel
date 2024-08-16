@@ -1,0 +1,44 @@
+[%#
+Variables passed in:
+
+origin           - the system component which generated the email
+
+start_time              - The epoch time when the backup process started
+
+end_time                - The epoch time when the backup process ended
+
+run_time_localized      - The duration of the backup process execution
+
+
+For more information about how to customize notification templates, read our documentation at https://go.cpanel.net/notificationtemplates
+
+-%]
+
+[%
+    PROCESS "include/colors.tmpl";
+    PROCESS "include/styles.tmpl";
+    PROCESS "include/code_block.tmpl";
+    PROCESS "include/run_time_info.tmpl";
+
+    WRAPPER 'wrapper/main.html.tmpl';
+
+    NOTICE.email_reason = CPANEL.locale.maketext('The backup process on “[_1]” completed.', NOTICE.host_server);
+%]
+
+[% IF NOTICE.transport_started %]
+  [% CPANEL.locale.maketext("The system started a separate transport process for remote backup destinations."); %]
+  [% CPANEL.locale.maketext("When the transport completes, the system will send an additional notification with the status of the transport if any errors were encountered."); %]
+[% END %]
+
+[% IF NOTICE.log_preview && NOTICE.log_file_path %]
+    <p>
+        [%-
+            PROCESS "include/code_block.tmpl";
+            code_block(formatted_code=NOTICE.log_preview.shift, title=CPANEL.locale.maketext('Review the attached log “[_1]” for further details.', NOTICE.log_file_path));
+        -%]
+    </p>
+[% END %]
+
+[% run_time_info() %]
+
+[% END %]

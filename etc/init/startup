@@ -1,0 +1,211 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+# cpanel - etc/init/startup                         Copyright 2023 cPanel L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+use warnings;
+
+use Cpanel::TimeHiRes          ();
+use Cpanel::Config::LoadCpConf ();
+use Cpanel::Server::Type       ();
+use Cpanel::Env                ();
+use Cpanel::SafeRun::Object    ();
+use Cpanel::Chkservd::Tiny     ();
+use Cpanel::LogCheck           ();
+use Cpanel::Mailman            ();
+use Cpanel::Async::Forker      ();
+
+## Ensure that logs can be written before doing anything else
+Cpanel::LogCheck::logcheck_writable();
+
+Cpanel::Env::set_safe_path();
+
+umask(0022);    #reset umask for startup
+$ENV{'PATH'} .= ':/usr/local/bin';
+$ENV{'LANG'} = 'C';
+my $suspend_time = 600;
+
+my $cpconf_ref = Cpanel::Config::LoadCpConf::loadcpconf_not_copy();
+
+my $skip_queueprocd = ( grep { index( $_, '-skip-queueprocd' ) > -1 } @ARGV ) ? 1 : 0;
+
+## Stop Services except ones that support hot restarts
+## as we do not want the update to get cut off
+## as seen in CPANEL-21861
+_stop_services();
+
+# cpbandwd is run via tailwatchd, but the driver only check for that file
+suspend_service('cpbandwd');
+
+# 11.36, this code can be removed since all instances of cpsrvd it interacts with should support this feature.
+# Also remove the subroutine.
+if ( !$ENV{'CPANEL_IS_CRON'} ) {
+    print "You may be running this update interactively from within WHM.\n";
+    print "It is necessary we restart cpsrvd, but this will kill the session displaying update progress.\n";
+    print "Please see the logs in /var/cpanel/updatelogs/ for further information if the update progress stops\n\n";
+    *STDOUT->flush();
+}
+
+## Start Services
+
+# Switch to DNSONLY startup
+if ( Cpanel::Server::Type::is_dnsonly() ) {
+    exec '/usr/local/cpanel/etc/init/dnsonlystartup', @ARGV;
+    die "Failed to start DNSONLY services";
+}
+
+# Iptables adjustment for Mail tweak
+if ( -e '/var/cpanel/smtpgidonlytweak' ) {
+    print '==> ';
+
+    # this is not really a service and this is fine to run it like this on a systemd server
+    my $run = Cpanel::SafeRun::Object->new(
+        'program' => '/usr/local/cpanel/scripts/smtpmailgidonly',
+        'args'    => ['on'],
+        'stdout'  => \*STDOUT
+    );
+    if ( $run->CHILD_ERROR() ) {
+        warn "`/usr/local/cpanel/scripts/smtpmailgidonly on` failed with an error: " . $run->stderr() . $run->autopsy();
+    }
+
+}
+
+# cpsrvd - disable a HUP restart by passing -HUP if we detect the running binary doesn't support the feature.
+if ( !$ENV{'CPANEL_BASE_INSTALL'} ) {
+
+    # Under systemd this can start queueprocd
+    # from the Wants=
+    _start_service('cpsrvd');
+}
+
+my @parallel_restarts;
+
+# TaskQueue processor
+unless ( $skip_queueprocd || $ENV{'CPANEL_BASE_INSTALL'} ) {
+    push @parallel_restarts, 'queueprocd';
+}
+
+# dnsadmin as service
+if ( !$ENV{'CPANEL_BASE_INSTALL'} ) {
+
+    # We do want dnsadmin running on fresh install, we just
+    # do not want it to restart during upcp
+    push @parallel_restarts, 'dnsadmin';
+}
+
+# Tailwatchd
+if ( !$ENV{'CPANEL_BASE_INSTALL'} ) {
+    push @parallel_restarts, 'tailwatchd';
+}
+
+# Mailman
+if ( $cpconf_ref->{'skipmailman'} ne '1' && Cpanel::Mailman::have_lists() ) {
+    push @parallel_restarts, 'mailman';
+}
+
+if ( !-e '/etc/p0fdisable' ) {
+    push @parallel_restarts, 'p0f';
+}
+
+push @parallel_restarts, 'cpgreylistd', 'cpanel_php_fpm', 'cphulkd', 'cpdavd', 'cpanellogd';
+
+_run_parallel( \@parallel_restarts, \&_start_service );
+
+sub suspend_service {
+    my $service = shift;
+    return if $service =~ /^start/ && $service =~ /-ssl$/;
+    return if grep { $_ eq $service } qw(cpaneld webmaild whostmgrd);
+    Cpanel::Chkservd::Tiny::suspend_service( $service, $suspend_time );
+    return;
+}
+
+sub _fast_system {
+    my ( $prog, @args ) = @_;
+
+    my $start_time = Cpanel::TimeHiRes::time();
+    my $ret        = Cpanel::SafeRun::Object->new(
+        'program' => $prog,
+        'args'    => \@args,
+        'stdout'  => \*STDOUT,
+        'stderr'  => \*STDERR,
+    );
+    my $end_time  = Cpanel::TimeHiRes::time();
+    my $exec_time = sprintf( "%.3f", ( $end_time - $start_time ) );
+    print "Completed Task: “$prog @args” in $exec_time second(s).\n";
+    return $ret;
+
+}
+
+sub _stop_services {
+    _run_parallel( [qw(cpanellogd mailman p0f)], \&_stop_service );
+    return;
+}
+
+sub _stop_service {
+    my ($service) = @_;
+    suspend_service($service);
+
+    return if $ENV{'CPANEL_BASE_INSTALL'};
+    if ( -e '/usr/local/cpanel/etc/init/stop' . $service ) {
+        _fast_system( '/usr/local/cpanel/etc/init/stop' . $service, '--no-verbose' );
+    }
+    else {
+        require Cpanel::Kill;
+        require Cpanel::ProcessInfo;
+        no warnings 'once';
+        Cpanel::Kill::safekill( $service, $Cpanel::Kill::VERBOSE, undef, [ Cpanel::ProcessInfo::get_pid_lineage() ] );
+    }
+
+    return;
+}
+
+sub _start_service {
+    my ($service) = @_;
+
+    if ( $ENV{'CPANEL_BASE_INSTALL'} ) {
+
+        # If the service is already running do not restart it on a base install
+        # as this may cause random failures during the install.  We do not care about
+        # the output from the restartsrv script since we are only looking for an exit
+        # code to tell us we don't need to bother with the restart since
+        # everything is ok.
+        my $run = Cpanel::SafeRun::Object->new(
+            'program' => '/usr/local/cpanel/scripts/restartsrv_' . $service,
+            'args'    => ['--check'],
+        );
+        return if !$run->CHILD_ERROR();
+    }
+    suspend_service($service);
+    _fast_system( '/usr/local/cpanel/etc/init/start' . $service, '--no-verbose' );
+    Cpanel::Chkservd::Tiny::resume_service($service);
+    return;
+}
+
+sub _run_parallel {
+    my ( $service_ref, $code_ref ) = @_;
+
+    my $forker = Cpanel::Async::Forker->new();
+    my @promises;
+
+    for my $service (@$service_ref) {
+        push @promises, $forker->do_in_child(
+            sub {
+                return $code_ref->($service);
+            }
+        )->catch(
+            sub {
+                my ($why) = @_;
+                warn "Failed to run for $service: $why";
+                return 0;
+            }
+        );
+    }
+
+    my $cv = AnyEvent->condvar();
+    Promise::XS::all(@promises)->finally($cv);
+    $cv->recv();
+
+    return;
+}

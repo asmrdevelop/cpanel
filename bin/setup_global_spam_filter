@@ -1,0 +1,142 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - bin/setup_global_spam_filter            Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package Cpanel::InstallSpamFilter;
+
+use strict;
+use warnings;
+
+use Cpanel::Config::Users;
+use Cpanel::Config::LoadCpConf;
+use Cpanel::Config::LoadCpUserFile;
+use Cpanel::PwCache;
+use Cpanel::Email::Filter;
+use Cpanel::DataStore;
+use Cpanel::AccessIds;
+use Cpanel::YAML::Syck  ();
+use Cpanel::SafeDir::MK ();
+
+__PACKAGE__->script(@ARGV) unless caller();
+
+sub script {
+
+    ## get all WHM users
+    my @cpusers = Cpanel::Config::Users::getcpusers();
+
+    my $cpconf = Cpanel::Config::LoadCpConf::loadcpconf();
+
+    foreach my $cpuser (@cpusers) {
+        my @domains;
+
+        # This is safe because the user is coming from getcpusers()
+        my $cpuser_ref = Cpanel::Config::LoadCpUserFile::loadcpuserfile($cpuser);
+        next if ( !scalar keys %{$cpuser_ref} );
+
+        if ( $cpuser_ref->{'DOMAIN'} ) {
+            push @domains, $cpuser_ref->{'DOMAIN'};
+        }
+        if ( $cpuser_ref->{'DOMAINS'} && ref $cpuser_ref->{'DOMAINS'} eq 'ARRAY' ) {
+            push @domains, @{ $cpuser_ref->{'DOMAINS'} };
+        }
+
+        my @pwnam = Cpanel::PwCache::getpwnam($cpuser);
+        my ( $uid, $gid, $homedir ) = @pwnam[ 2, 3, 7 ];
+
+        ## unfortunate assignments to global var required by _fetchfilterstore
+        $Cpanel::homedir = $homedir;
+        $Cpanel::user    = $cpuser;
+        my $coderef = sub {
+
+            ## clause for the system user
+            my $junkdir = "$homedir/mail/.Junk";
+            my $account = $cpuser;
+
+            store_spam_filter_for_user( $account, $junkdir );
+
+            foreach my $domain (@domains) {
+                my $_fname_passwd = "$homedir/etc/$domain/passwd";
+                my $rEmailusers   = parse_local_passwd($_fname_passwd);
+                next unless ( scalar @$rEmailusers );
+
+                for my $emailuser (@$rEmailusers) {
+                    my $junkdir = "$homedir/mail/$domain/$emailuser/.Junk";
+                    my $account = sprintf( "%s@%s", $emailuser, $domain );
+
+                    store_spam_filter_for_user( $account, $junkdir );
+                }
+            }
+        };
+
+        Cpanel::AccessIds::do_as_user_group( $uid, $gid, $coderef );
+    }
+    return;
+}
+
+sub parse_yaml_template {
+    my ($junkdir) = @_;
+    my $yaml_template = '/usr/local/cpanel/src/templates/exim/filter.yaml.default';
+    my $yaml;
+    if ( open my $yaml_in, '<', $yaml_template ) {
+        $yaml = do { local $/; <$yaml_in>; };
+
+        my %TEMPVARS = ( '__JUNKDIR__' => $junkdir );
+        foreach my $key ( keys %TEMPVARS ) {
+            $yaml =~ s/$key/$TEMPVARS{$key}/g;
+        }
+    }
+    return $yaml;
+}
+
+sub parse_local_passwd {
+    my ($fname_passwd) = @_;
+    my @emailusers;
+    if ( -e $fname_passwd && open( my $fh, '<', $fname_passwd ) ) {
+        while ( my $line = scalar(<$fh>) ) {
+            my @tmp       = split( ':', $line );
+            my $emailuser = $tmp[0];
+            push( @emailusers, $emailuser );
+        }
+    }
+    return \@emailusers;
+}
+
+sub install_filter_in_data {
+    my ( $current_filters, $new_filter ) = @_;
+    if ( keys %$current_filters ) {
+        my $rulename = $new_filter->{'filtername'};
+        Cpanel::Email::Filter::_removefilter( $current_filters, $rulename );
+        Cpanel::Email::Filter::_removefilter( $current_filters, '' );
+    }
+    push @{ $current_filters->{'filter'} }, $new_filter;
+    return undef;
+}
+
+sub store_spam_filter_for_user {
+    my ( $account, $junkdir ) = @_;
+    my $yaml = parse_yaml_template($junkdir);
+    if ($yaml) {
+        my $_new_filter = ( YAML::Syck::Load($yaml) )[0];
+        my $new_filter  = $_new_filter->{'filter'}->[0];
+
+        my $fname_filter_yaml = Cpanel::Email::Filter::_fetchfilterstore($account);
+
+        ## returns an empty hash if no filter.yaml file
+        my $current_filters = Cpanel::Email::Filter::_fetchfilter($fname_filter_yaml);
+
+        install_filter_in_data( $current_filters, $new_filter );
+
+        Cpanel::DataStore::store_ref( $fname_filter_yaml, $current_filters );
+        my ( $ok, $result ) = Cpanel::Email::Filter::_store_exim_filter( $account, $current_filters );
+
+        if ( !-d $junkdir ) {
+            Cpanel::SafeDir::MK::safemkdir($junkdir);
+        }
+    }
+    return undef;
+}
+
+1;

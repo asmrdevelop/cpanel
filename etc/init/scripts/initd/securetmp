@@ -1,0 +1,46 @@
+#!/bin/bash
+#
+# securetmp       Start Secure Tmp
+#
+# Author:       cPanel, Inc. <copyright@cpanel.net>
+#
+# chkconfig: 345 05 10
+# description: This is the securetmp service
+
+# Source function library.
+if [ -f /etc/init.d/functions ]; then
+  . /etc/init.d/functions
+else
+  echo "Could not find functions file, your system may be broken"
+  exit 1
+fi
+
+[ -f /usr/local/cpanel/scripts/securetmp ] || exit 0
+
+LANG=C
+RETVAL=0
+
+# See how we were called.
+case "$1" in
+  start)
+	umask 0022
+        echo -n "Starting securetmp: "
+        daemon /usr/local/cpanel/scripts/securetmp --auto
+        echo
+	;;
+  stop)
+	action "securetmp cannot be stopped: " echo
+	;;
+  status)
+	status init
+	;;
+  restart)
+  	$0 stop
+	$0 start
+	;;
+  *)
+	echo "Usage: $0 {start|stop|status|restart}"
+	exit 1
+esac
+
+exit

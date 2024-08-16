@@ -1,0 +1,44 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/rebuild_available_addons_packages_cache
+#                                                  Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+use warnings;
+
+use Cpanel::OS                          ();
+use Whostmgr::Cpaddon                   ();
+use Whostmgr::Cpaddon::CacheFileManager ();
+
+exit run(@ARGV) unless caller;
+
+sub run {
+    my @args = @_;
+    @args = grep { !/--verbose/ } @args;    # compatibility with deleted clear_cpaddon_ui_caches script
+    _die_usage() if @args;
+
+    if ( !Cpanel::OS::supports_cpaddons() ) {
+        die qq[cPAddons are not supported on this distro.\n];
+    }
+
+    if ( -e q[/var/cpanel/cpaddons.disabled] ) {
+        die qq[cPAddons are disabled on this server.\n];
+    }
+
+    my $available_addons = Whostmgr::Cpaddon::get_available_addons();
+
+    Whostmgr::Cpaddon::CacheFileManager->save($available_addons);
+
+    return 0;
+}
+
+sub _die_usage {
+    die <<EOU;
+usage: $0
+
+Rebuild the available cPAddons packages cache at /var/cpanel/available_addons_packages.cache
+EOU
+}

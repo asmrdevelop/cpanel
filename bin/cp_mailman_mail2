@@ -1,0 +1,42 @@
+#!/usr/local/cpanel/3rdparty/bin/python2
+# -*- coding: utf-8 -*-
+
+# cpanel - bin/cp_mailman_mail2                    Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+import re
+import sys
+
+sys.path.insert(0, '/usr/local/cpanel/lib/python2')
+
+import cPanel
+
+
+def main(argv):
+    if len(argv) < 3:
+        print 'usage: cp_mailman_mail2 <domain> <list> [<domain <list>] [<domain <list>] ...'
+        return 1
+
+    for i in range(1, len(argv), 2):
+        domain = argv[i]
+        list = argv[i + 1]
+
+        def update(dict):
+            dict['real_name'] = re.sub('_' + domain, '', dict['real_name'])
+            dict['subject_prefix'] = re.sub('_' + domain, '', dict['subject_prefix'])
+            dict['host_name'] = domain
+
+            # When the usemailformailmanurl tweak setting is on, we always build our own URL instead of
+            # honoring any DEFAULT_URL_PATTERN value from the mailman conf. If you need to use a custom
+            # URL pattern, disable the usemailformailmanurl tweak setting.
+
+            dict['web_page_url'] = 'http://mail.' + domain + '/mailman'
+
+        cPanel.update_mailman('%s_%s' % (list, domain), update)
+        print 'Updated List', list, domain
+
+
+if __name__ == '__main__':
+    raise SystemExit(main(sys.argv))

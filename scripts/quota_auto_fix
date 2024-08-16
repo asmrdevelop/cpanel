@@ -1,0 +1,55 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/quota_auto_fix                  Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+#
+# This script auto repairs quotas when they become severely corrupted.
+
+use strict;
+use Cpanel::Binaries ();
+
+my $repquota_cmd = Cpanel::Binaries::path('repquota');
+if ( !-x $repquota_cmd ) {
+    print "Unable to locate repquota command.\n";
+    exit 1;
+}
+
+my $broken = 0;
+my $signal = 0;
+my $zpid   = open READCHLD, '-|';
+if ($zpid) {
+    while (<READCHLD>) {
+        if (/^quota_auto_fix signal: (\d+)/) {
+            $signal = $1;
+        }
+        elsif (/has wrong format/i) {
+            print;
+            $broken = 1;
+        }
+        elsif (/Quota file not found/i) {
+            print;
+            $broken = 1;
+        }
+    }
+}
+else {
+    open STDERR, ">&STDOUT";
+    system $repquota_cmd, '-a';
+    my $rsignal = ( $? & 127 );
+    print "quota_auto_fix signal: $rsignal\n";
+    exit 0;
+}
+
+if ($broken) {
+    system '/usr/local/cpanel/scripts/fixquotas';
+}
+elsif ( $signal == 11 ) {
+    print "repquota exited with signal 11 ... rebuilding quota databases.\n";
+    system '/usr/local/cpanel/scripts/fixquotas';
+}
+else {
+    print "quota test: check passed\n";
+}

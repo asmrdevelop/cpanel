@@ -1,0 +1,46 @@
+[%#
+
+    Variables passed in:
+    messages                  - the system component from which the request originate
+    starting_version          - the cPanel version currently installed
+    target_version            - the cPanel version the system is updating to
+    sent_to_root              - A default boolean flag sent to all templates that indicates if the message was sent to 'root'
+
+For more information about how to customize notification templates, read our documentation at https://go.cpanel.net/notificationtemplates
+
+-%]
+
+[%
+    PROCESS "include/colors.tmpl";
+    PROCESS "include/icons.tmpl";
+    PROCESS "include/styles.tmpl";
+
+    # fatal, info
+
+    WRAPPER 'wrapper/main.html.tmpl';
+          NOTICE.email_reason = CPANEL.locale.maketext('[asis,cPanel] [output,amp] [asis,WHM] version change from “[_1]” to “[_2]” is blocked', NOTICE.starting_version, NOTICE.target_version);
+
+%]
+
+<table cellpadding="4" cellspacing="0" border="0" width="100%">
+    <tbody>
+        <tr>
+            <th style="width: 32px; border-bottom: 2px solid [% medium_gray %]; padding: 5px; background-color: [% light_gray %]" align="left">[% CPANEL.locale.maketext('Severity'); %]</th>
+            <th style="border-bottom: 2px solid [% medium_gray %]; padding: 5px; background-color: [% light_gray %]" align="left">[% CPANEL.locale.maketext('Message'); %]</th>
+        </tr>
+        [% FOREACH message IN NOTICE.messages; %]
+        <tr style="background-color:[% loop.index % 2 == 1 ? light_gray : white %]">
+            <td width="32" style="width: 32px;">
+              [% get_icon(icon=message.severity) %]
+            </td>
+            <td>[% message.message %]</td>
+        </tr>
+        [% END %]
+    </tbody>
+</table>
+
+<p>
+ [% CPANEL.locale.maketext('See [output,url,_1,_1,_2] for more information.', "https://go.cpanel.net/blockers", { "target" => "_blank" }) %]
+</p>
+
+[% END %]

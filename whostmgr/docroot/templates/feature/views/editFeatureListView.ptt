@@ -1,0 +1,71 @@
+<section class="description">
+    <p id="descEditFeatureList">
+    [% locale.maketext("This interface allows you to enable and disable features and cPAddons in each user’s [asis,cPanel]. For more information, read the [output,url,_1,documentation,id,_2,target,_3].","https://go.cpanel.net/featmgr", "lnkFeatureManagerDocumentation", "featuremanagerdoc") %]
+    </p>
+    <p id="descDefaultFeatureList" ng-if="featureListName === 'default'">[% locale.maketext("Default") %] — [% locale.maketext("The system grants [asis,cPanel] users access to these features by default. If you disable a feature from this list, the system will disable it in every user’s [asis,cPanel] that uses that list.") %]</p>
+    <p id="descDisabledFeatureList" ng-if="featureListName === 'disabled'">[% locale.maketext("Disabled") %] — [% locale.maketext("[asis,cPanel] users cannot access these features, and other lists cannot grant access to them.") %]</p>
+    <p id="descMailOnlyFeatureList" ng-if="featureListName === 'Mail Only'">[% locale.maketext("Mail Only") %] — [% locale.maketext("For [asis,cPanel] users that can only access mail-related features, such as Email Archiving or SpamAssassin.") %]</p>
+</section>
+
+<form id="formFeatureList" name="formFeatureList" novalidate>
+<div class="panel panel-default">
+    <div class="panel-heading">
+        <div class="checkbox">
+            <label>
+                <input  type="checkbox"
+                        id="inputSelectAll"
+                        ng-click="toggleAllFeatures()"
+                        ng-checked="allFeaturesChecked()" />
+                <span ng-bind="featureListHeading"></span>
+            </label>
+        </div>
+    </div>
+    <div class="panel-body">
+        <div class="form-group">
+            <div class="row">
+                <div class="col-lg-6 col-md-6 col-sm-6 col-xs-12">
+                    <search ng-model="search.label" id="featureSearch" autofocus="1"></search>
+                </div>
+            </div>
+        </div>
+        <div class="form-group">
+            <div class="row">
+                <div class="col-lg-12 col-md-12 col-sm-12 col-xs-12">
+                    <ul class="list-unstyled" >
+                        <li class="checkbox-list-item" ng-repeat="feature in featureList | filter: search">
+                            <div class="checkbox">
+                                <label>
+                                    <input  type="checkbox"
+                                            id="chk_{{feature.name}}"
+                                            name="{{feature.name}}"
+                                            ng-model="feature.value"
+                                            ng-disabled="feature.disabled">
+                                    <span ng-bind="feature.label"></span>
+                                    <span class="label label-danger" ng-if="feature.disabled">[% locale.maketext('Disabled') %]</span>
+                                    <span class="label label-default" ng-if="feature.legacy">[% locale.maketext('Legacy') %]</span>
+                                    <span class="label label-info" ng-if="feature.plugin">[% locale.maketext('Plugin') %]</span>
+                                </label>
+                           </div>
+                       </li>
+                   </ul>
+                </div>
+            </div>
+        </div>
+        <span spinner id="featureListSpinner" title="[% locale.maketext('Loading …') %]"></span>
+    </div>
+</div>
+<div class="form-group">
+    <div class="row">
+        <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+        <button id="btnSaveFeatureList"
+                cp-action="save(featureList)">
+            [% locale.maketext('Save') %]
+        </button>
+        <button id="btnCancelEditFeatureList"
+                class="btn btn-secondary"
+                ng-click="loadView('featureList')">
+            [% locale.maketext('Cancel') %]
+        </button>
+    </div>
+</div>
+</form>

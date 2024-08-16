@@ -1,0 +1,161 @@
+<div class="row">
+    <div class="col-xs-12 col-sm-12 col-md-12 col-lg-8">
+        [% locale.maketext('[asis,ModSecurity] vendors group related [asis,ModSecurity] rules into separate configuration files. Select the configuration files you want to enable or disable for your system.') %]
+    </div>
+</div>
+
+<div class="row">
+    <div class="col-xs-12 col-sm-12 col-md-12 col-lg-12">
+        <div class="form-group">
+                <div class="row">
+                    <div class="row">
+                        <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                            <div class="form-group">
+                                <div class="row">
+                                    <div class="col-xs-10">
+                                        <div class="input-group filter-controls">
+                                            <input  id="configFileListFilter"
+                                                    class="form-control"
+                                                    placeholder="[% locale.maketext('Search') %]"
+                                                    title="[% locale.maketext('Type in your search filter.') %]"
+                                                    ng-model="filter"
+                                                    ng-keyup="triggerClearFilter($event)"
+                                                    autocomplete="off"
+                                                    auto-focus="!isEditor">
+                                            <span class="input-group-btn">
+                                                <button id="btnSearch"
+                                                        type="button"
+                                                        class="btn btn-default"
+                                                        title="{{ filter ? '[% locale.maketext('Clear the configuration filter.') %]' : '[% locale.maketext('Apply the configuration filter.') %]'}}"
+                                                        ng-click="toggleFilter()">
+                                                    <span class="glyphicon" ng-class="{ 'glyphicon-search': !filter, 'glyphicon-remove': filter }"></span>
+                                                </button>
+                                            </span>
+                                        </div>
+                                    </div>
+                                    <div class="col-xs-2">
+                                        <span spinner id="loadingSpinner2" class="headerSpinner loadingSpinner" title="[% locale.maketext('Loading …') %]"></span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                            <div class="navigation-controls pull-right">
+                                <button id="enableAll"
+                                        class="btn btn-default"
+                                        ng-click="enableAllConfigs($event)"
+                                        title="[% locale.maketext('Attempt to enable all the configuration files for this vendor.') %]"
+                                        ng-disabled="buttonDisabled('enableAll')">
+                                    [% locale.maketext('Enable All') %]
+                                </button>
+                                <button id="disableAll"
+                                        class="btn btn-default"
+                                        ng-click="disableAllConfigs($event)"
+                                        title="[% locale.maketext('Attempt to disable all the configuration files for this vendor.') %]"
+                                        ng-disabled="buttonDisabled('disableAll')">
+                                    [% locale.maketext('Disable All') %]
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="row">
+                        <div class="col-xs-12 col-sm-12 col-md-12 col-lg-12">
+                            <div class="alert alert-warning" ng-if="force">
+                                <span class="glyphicon glyphicon-warning-sign"></span>
+                                <div class="alert-message" id="noConfigsSelected">
+                                    <strong>[% locale.maketext('Warning:') %]</strong> [% locale.maketext("You have successfully enabled the vendor. However, there are no configuration files enabled. You must select at least one set of rules for an enabled vendor to use the ModSecurity rules. Enable one or more configuration files below:") %]
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <table class="table table-striped table-condensed configs">
+                        <thead>
+                            <tr>
+                                <th class="col-xs-8 modsec-conf">
+                                    <toggle-sort id="sortConfFile"
+                                                 sort-meta="meta"
+                                                 sort-field="config"
+                                                 title="[% locale.maketext('Sort by file path.') %]">
+                                        [% locale.maketext('Config File') %]
+                                    </toggle-sort>
+                                </th>
+                                <th class="col-xs-2 modsec-enabled text-center">
+                                    <toggle-sort id="sortEnabled"
+                                                 sort-meta="meta"
+                                                 sort-field="enabled"
+                                                 title="[% locale.maketext('Sort by status.') %]">
+                                        [% locale.maketext('Status') %]
+                                    </toggle-sort>
+                                </th>
+                                <th class="col-xs-4 modsec-issues" ng-show="hasIssues">
+                                    <toggle-sort id="sortIssues"
+                                                 sort-meta="meta"
+                                                 sort-field="exception"
+                                                 title="[% locale.maketext('Sort by issues.') %]">
+                                        [% locale.maketext('Issues') %]
+                                    </toggle-sort>
+                                </th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr ng-repeat="config in filteredConfigs = (configs | filter: filterConfigs | orderBy: meta.sortBy: meta.sortDirection === 'desc')">
+                                <td class="modsec-conf" ng-if="vendor.cpanel_provided" >
+                                    <span id="confData{{$index}}" ng-bind-html="config.config | replace : '^modsec_vendor_configs/[^/]*/' | wrap : '[/_]'"></span>
+                                </td>
+                                <td class="modsec-conf" ng-if="!vendor.cpanel_provided" >
+                                    <span id="confData{{$index}}"
+                                          ng-bind-html="config.config | replace : '^modsec_vendor_configs/[^/]*/' | wrap : '[/_]'"></span>
+                                </td>
+                                <td class="modsec-enabled text-center" id="enabledData{{$index}}">
+                                    <div class="btn-group btn-group-nowrap">
+                                        <label id="btnConfigEnable{{$index}}"
+                                               class="btn"
+                                               ng-model="config.enabled"
+                                               uib-btn-radio="true"
+                                               title="[% locale.maketext('Enable Configuration') %]"
+                                               ng-class="{ 'btn-primary': config.enabled, 'btn-default btn-none': !config.enabled }"
+                                               ng-change="setConfig(config)"
+                                               ng-disabled="buttonDisabled('configToggle', config.serverRequest)">[% locale.maketext('On') %]</label>
+                                        <label id="btnConfigDisable{{$index}}"
+                                               class="btn"
+                                               ng-model="config.enabled"
+                                               title="[% locale.maketext('Disable Configuration') %]"
+                                               uib-btn-radio="false"
+                                               ng-class="{ 'btn-negative': !config.enabled, 'btn-default btn-none': config.enabled }"
+                                               ng-change="setConfig(config)"
+                                               ng-disabled="buttonDisabled('configToggle', config.serverRequest)">[% locale.maketext('Off') %]</label>
+                                    </div>
+                                </td>
+                                <td class="modsec-issues" ng-show="hasIssues">
+                                    <ul class="validation-container" ng-show="hasIssue(config)">
+                                        <li validation-item>
+                                            <div ng-bind-html="config.exception | wrap:'[/]' | break"></div>
+                                        </li>
+                                    </ul>
+                                </td>
+                            </tr>
+                            <tr class="info emptyrow" ng-show="!filteredConfigs.length"><!-- filteredConfigs is defined in the ng-repeat above -->
+                                <td colspan="6" id="loadingRecords"    ng-show="serverRequest">[% locale.maketext('The system is loading configuration files.') %]</td>
+                                <td colspan="6" id="noRecords"         ng-show="!serverRequest && !configs.length">[% locale.maketext('No configuration files were found.') %]</td>
+                                <td colspan="6" id="noFilteredRecords" ng-show="!serverRequest && configs.length">[% locale.maketext('No configuration files matched your search criteria.') %]</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+        </div>
+    </div>
+</div>
+
+<div class="row">
+    <div class="col-xs-12 col-sm-12 col-md-12 col-lg-12">
+        <div class="form-group action-group">
+            <button id="btnBottomConfig"
+                    class="btn btn-primary"
+                    ng-click="loadView('vendors')">
+                [% locale.maketext('Vendor Manager') %]
+            </button>
+        </div>
+    </div>
+</div>

@@ -1,0 +1,75 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/MirrorSearch_pingtest           Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+use Cpanel::PingTest ();
+
+alarm(1000);
+
+$| = 1;
+my $homedir = ( getpwuid($>) )[7];
+die if !@ARGV;
+
+my ( $key, $days, $mirrorlist, $port ) = @ARGV;
+my $my_mtime = ( stat('/usr/local/cpanel/scripts/MirrorSearch_pingtest') )[9];
+
+$key =~ s/\///g;
+$key =~ s/\.\.//g;
+
+die 'You must provide a key to store the results.'                   if length($key) < 4;
+die 'You must provide a mirror list or fd to read the mirrors from.' if length($mirrorlist) < 1;
+die 'You must provide a ttl in days'                                 if length($days) < 1;
+
+if ( !-e "$homedir/.MirrorSearch" )                  { mkdir( "$homedir/.MirrorSearch",                  0700 ); }
+if ( !-e "$homedir/.MirrorSearch/${key}" )           { mkdir( "$homedir/.MirrorSearch/${key}",           0700 ); }
+if ( !-e "$homedir/.MirrorSearch/${key}/pingtimes" ) { mkdir( "$homedir/.MirrorSearch/${key}/pingtimes", 0700 ); }
+
+my $openok = 0;
+if ( $mirrorlist =~ /^\d+$/ ) {
+    $openok = open( MIRRORS, "<&=$mirrorlist" ) ? 1 : 0;
+}
+else {
+    $openok = open( MIRRORS, '<', $mirrorlist ) ? 1 : 0;
+}
+
+my @HOSTS;
+if ($openok) {
+    while (<MIRRORS>) {
+        if (/^(\S+)/) {
+            $1 =~ /([^\:]+):\/\/([^\/]+)(\S+)/;
+            push @HOSTS, $2;
+        }
+    }
+    close(MIRRORS);
+}
+
+my $now   = time();
+my $child = 0;
+
+my $host_ping_ttl = ( 86400 * $days );
+my @HOST_LIST;
+foreach my $host (@HOSTS) {
+    my $host_mtime = ( stat("$homedir/.MirrorSearch/${key}/pingtimes/${host}") )[9];
+    next if ( $host_mtime > $my_mtime && ( $host_mtime + $host_ping_ttl ) > $now );
+    push @HOST_LIST, $host;
+}
+
+if (@HOST_LIST) {
+    my $rPINGTIMES = Cpanel::PingTest::pinghosts( \@HOST_LIST, $port );
+
+    foreach my $host (@HOSTS) {
+        if ( !exists $rPINGTIMES->{$host} ) { next; }
+
+        if ( open my $pingtime_fh, '>', "$homedir/.MirrorSearch/${key}/pingtimes/${host}" ) {
+            print {$pingtime_fh} $rPINGTIMES->{$host};
+            close $pingtime_fh;
+        }
+        else {
+            warn "Unable to write $homedir/.MirrorSearch/${key}/pingtimes/${host}: $!";
+        }
+    }
+}

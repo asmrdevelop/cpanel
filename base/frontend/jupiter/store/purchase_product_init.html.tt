@@ -1,0 +1,78 @@
+[%
+    USE Uapi;
+    USE Dumper;
+
+    SET CPANEL.CPVAR.dprefix = "../";
+%]
+
+[% WRAPPER '_assets/master.html.tt'
+    app_key = 'store'
+    include_legacy_stylesheets = 0
+    include_legacy_scripts = 0
+    include_cjt = 0
+    use_master_bootstrap = 0
+-%]
+
+    [% IF !CPANEL.FORM.product_name %]
+        <div class="row">
+            <div class="col-xs-12 col-sm-6">
+                <div class="alert alert-danger">
+                    <span class="glyphicon glyphicon-remove-sign"></span>
+                    <div class="alert-message">
+                        <strong>[% locale.maketext('Error:') %]</strong> [% locale.maketext('The system failed to retrieve a product name.') %]
+                    </div>
+                </div>
+            </div>
+        </div>
+    [% ELSE %]
+
+        [%
+            SET url_result = execute(
+                'Market',
+                'get_build_cart_url',
+                {
+                    product_name => CPANEL.FORM.product_name
+                    domain => CPANEL.FORM.domain
+                }
+            );
+            SET cart_creation_trigger = url_result.data.url;
+
+            SET login_result = execute(
+                'Market',
+                'get_login_url',
+                {
+                    provider        => 'cPStore',
+                    url_after_login => cart_creation_trigger,
+                }
+            );
+            SET redirect_url = login_result.data;
+        %]
+        <meta http-equiv="refresh" content="1;url=[% redirect_url -%]">
+
+        <div class="row">
+            <div class="col-xs-12 col-sm-6">
+                <div class="alert alert-info">
+                    <span class="glyphicon glyphicon-info-sign"></span>
+                    <div class="alert-message">
+                        <i id="spinner" class="fas fa-sync fa-spin"></i>
+                        [% locale.maketext('The system is redirecting you.') %]
+                        <span id="redirect-link" style="display:none;">
+                            <br>
+                            [% locale.maketext('If the system does not redirect you, [output,url,_1,click here,target,_parent].',redirect_url) %]
+                        </span>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <script>
+            var redirectLink = document.getElementById("redirect-link");
+            var five_seconds = 5000;
+
+            if (redirectLink) {
+                setTimeout(function() {
+                    redirectLink.style.display = "block";
+                }, five_seconds);
+            }
+        </script>
+    [% END %]
+[% END #wrapper -%]

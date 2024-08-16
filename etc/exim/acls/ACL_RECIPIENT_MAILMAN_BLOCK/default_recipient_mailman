@@ -1,0 +1,10 @@
+
+ # Accept bounces to lists even if callbacks or other checks would fail
+  accept
+           domains    = +local_domains
+           condition  = ${if match{$local_part}{\N^(\.*[^./][^/]*)-bounces(\+.*)?$\N}}
+           condition  = ${if exists{/usr/local/cpanel/3rdparty/mailman/lists/${1}${if !eq{$domain}{$primary_hostname}{_${domain}}{}}/config.pck}}
+           add_header = X-WhitelistedRCPT-nohdrfromcallback: Yes
+
+  #if it gets here it isn't mailman
+

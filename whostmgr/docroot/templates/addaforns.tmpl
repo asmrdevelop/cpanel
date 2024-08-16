@@ -1,0 +1,73 @@
+[%
+    USE Whostmgr;
+    SET stylesheet_includes = [];
+
+    # NOTE: This template is only used inside of a dialog box. That is why
+    # the breadcrumbs and support icon are disabled.
+    WRAPPER 'master_templates/master.tmpl'
+        header = locale.maketext('Configure Address Records for nameserver “[_1]”.', data.nameserver)
+        theme = 'bootstrap'
+        inside_frame_or_tab_or_popup = 1
+        extrastyle = '.container, #add-address-record-btn-group { margin-bottom: 0; } #masterContainer { margin-top: 0px; }'
+        stylesheets = stylesheet_includes
+    ;
+-%]
+
+[% IF data.status %]
+<table class="table table-condensed" id="datatbl1">
+<thead>
+<tr>
+    <th>Nameserver</th>
+    <th colspan="2">IP Addresses</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+    <td rowspan="2">[% data.nameserver.html() %]</td>
+    <td>IPv4</td>
+    <td>[% data.nsips.ipv4 ? data.nsips.ipv4.html() : 'None' %]</td>
+</tr>
+<tr>
+    <td>IPv6</td>
+    <td>[% data.nsips.ipv6 ? data.nsips.ipv6.html() : 'None' %]</td>
+</tr>
+</tbody>
+</table>
+
+<form action="[% cp_security_token %]/scripts2/doaddaforns">
+    <input type="hidden" name="nameserver" value="[% data.nameserver.html() %]">
+    <div class="form-group">
+        <label for="ip">
+        [% IF data.nsips.ipv4 %]
+        Confirm the IPv4 address
+        [% ELSE %]
+        Enter an IPv4 address
+        [% END %]
+        to create an A record
+        </label>
+        <input type="text" class="form-control" name="ip" id="ip" value="[% (data.nsips.ipv4) ? data.nsips.ipv4.html() : '' %]">
+    </div>
+    <div class="form-group">
+        <label for="ip6">
+        [% IF data.nsips.ipv6 %]
+        Confirm the IPv6 address
+        [% ELSE %]
+        Enter an IPv6 address
+        [% END %]
+        to create an AAAA record (optional)
+        </label>
+        <input type="text" class="form-control" name="ip6" id="ip6" value="[% (data.nsips.ipv6) ? data.nsips.ipv6.html() : '' %]">
+    </div>
+    <div class="form-group" id="add-address-record-btn-group">
+        <input type="submit" name="add_a_entry" id="add_a_entry" class="btn btn-primary" value="Configure Address Records" />
+    </div>
+</form>
+[% ELSE %]
+    <div class="alert alert-danger">
+        <span class="glyphicon glyphicon-remove-sign"></span>
+        <div class="alert-message">
+            [% data.statusmsg.html() %]
+        </div>
+    </div>
+[% END %]
+[% END -%]

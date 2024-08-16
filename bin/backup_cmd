@@ -1,0 +1,85 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - bin/backup_cmd                          Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+# The intention of this script is to make all the calls to the various transport modules that are not available to binary WHM builds
+# Currently it handles the validation of remote destinations
+
+use strict;
+use Cpanel::Backup::Transport ();
+
+my ($cli_args) = @ARGV;
+
+if ( !$cli_args ) {
+    print_help();
+}
+
+my $args     = {};
+my $metadata = {};
+
+foreach my $pair ( split /\s+/, $cli_args ) {
+    my ( $key, $value ) = split( /\=/, $pair, 2 );
+    $args->{$key} = $value;
+}
+
+# We require an ID for the destination
+my $id = $args->{'id'};
+
+print_help() unless $id;
+
+my $dof = $args->{'disableonfail'};
+
+my $transport = Cpanel::Backup::Transport->new();
+
+# Get the backup destination config
+my $config = $transport->get($id);
+
+if ( !$config->{'name'} ) {
+    print "metadata:result=0\n";
+    print "metadata:reason='Could not load config file correctly, double check that transport config exists for $id'\n";
+    exit;
+}
+
+foreach my $key ( keys %{$config} ) {
+    $args->{$key} = $config->{$key};
+}
+
+if ( !Cpanel::Backup::Transport::validate_common( $args, $metadata ) ) {
+    print "response:id=$id\n";
+    foreach my $key ( keys %{$metadata} ) {
+        print "metadata:$key=$metadata->{$key}\n";
+    }
+    exit;
+}
+
+if ( !Cpanel::Backup::Transport::validate_transport( $args, $metadata, $transport ) ) {
+    print "response:id=$id\n";
+    foreach my $key ( keys %{$metadata} ) {
+        print "metadata:$key=$metadata->{$key}\n";
+    }
+    exit;
+}
+
+# leaving duplicate code above and below in case this is extended later on
+
+print "response:id=$id\n";
+foreach my $key ( keys %{$metadata} ) {
+    print "metadata:$key=$metadata->{$key}\n";
+}
+
+#===[ subs ]=======================================================================
+
+sub print_help {
+    print <<EOF;
+Usage:
+    $0 id=<transport id> disableonfail=<0|1>
+
+    Args:
+        - id is the transport id of the backup destination you want to validate
+        - disableonfail is a boolean to determine if the transport should be disabled if it fails validation or not
+EOF
+    exit;
+}

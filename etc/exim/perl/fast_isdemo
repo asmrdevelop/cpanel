@@ -1,0 +1,39 @@
+
+my %domain_to_user_cache;
+
+# This must be cached because we call getusersdomain as root in the archive_incoming_email_local_user_method router
+# and then we need to read the user out of the memory cache in archiver_incoming_local_user_method since
+# we no longer have access to read /etc/domainusers at that point.   Note, we need to be able to cache multiple
+# users in case they send a message to multiple system users
+sub getusersdomain {
+    return '' if !$_[0] || $_[0] eq 'root' || $_[0] =~ tr{/}{} || !-e "/var/cpanel/users/$_[0]";
+    return ( $domain_to_user_cache{ $_[0] } || ( $domain_to_user_cache{ $_[0] } = lookup_key_in_file( '/etc/domainusers', $_[0] ) ) );
+}
+
+sub lookup_key_in_file {
+    my ( $file, $key ) = @_;
+    require Cpanel::Encoder::Exim;
+    return Exim::expand_string( '${lookup{' . Cpanel::Encoder::Exim::unquoted_encode_string_literal($key) . '}lsearch{' . $file . '}{$value}}' ) || '';
+}
+
+sub isdemo {
+    my $user = shift;
+    return if ( !$user );
+    return 0 if $user eq '0' || $user eq '8' || $user eq 'mail' || $user eq 'mailnull' || $user eq 'root';
+    if ( $user =~ /^\d+$/ ) {
+        return user_exists_in_db( $user, '/etc/demouids' );
+    }
+    return user_exists_in_db( $user, '/etc/demousers' );
+}
+
+sub user_exists_in_db {
+    my ( $user, $db ) = @_;
+
+    # If the user is empty, '0' or only whitespace
+    # we should return 0 as $lookup will always return
+    # 1 even if it does not exist
+    return 0 if !$user || $user !~ tr{ \t}{}c;
+
+    require Cpanel::Encoder::Exim;
+    return Exim::expand_string( '${lookup{' . Cpanel::Encoder::Exim::unquoted_encode_string_literal($user) . '}lsearch{' . $db . '}{1}{0}}' ) || '0';
+}

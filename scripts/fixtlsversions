@@ -1,0 +1,158 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+# cpanel - scripts/fixtlsversions                    Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::fixtlsversions;
+
+# This script is related to CPANEL-33512 and is expected to be
+# of limited usefulness outside of the one-time task to ensure
+# that TLSv1.2 is active for cpsrvd and other services.
+
+use strict;
+use warnings;
+use Cpanel::LoadModule     ();
+use Cpanel::SSL::Protocols ();
+use Cpanel::ServerTasks    ();
+use Cpanel::Imports;
+
+use Getopt::Long 'GetOptionsFromArray';
+
+exit run(@ARGV) unless caller;
+
+sub run {
+    my @args = @_;
+    my ( $help, $dry_run, $update );
+    GetOptionsFromArray(
+        \@args,
+        'help'    => \$help,
+        'dry-run' => \$dry_run,
+        'update'  => \$update,
+    ) || return _usage(1);
+    return _usage(0) if $help;
+    return _usage(1) unless $dry_run xor $update;
+
+    my $obj = __PACKAGE__->new( update => $update );
+
+    $obj->logmsg('Ensuring that web-accessible services have TLSv1.2 active …');
+
+    for my $try ( 1, 2 ) {
+        $obj->adjust_cpsrvd_and_cpdavd();
+        $obj->adjust_apache();
+
+        if ( $obj->{failed} ) {
+            $obj->logmsg( sprintf( '%d error(s) occurred.', $obj->{failed} ) );
+            if ( $try == 1 ) {
+                $obj->logmsg('Trying again …');
+                delete $obj->{failed};
+                sleep 2;
+            }
+        }
+        else {
+            $obj->logmsg('Done.');
+            last;
+        }
+    }
+
+    return $obj->{failed} ? 1 : 0;
+}
+
+sub new {
+    my ( $package, %opts ) = @_;
+    return bless {%opts}, $package;
+}
+
+sub adjust_cpsrvd_and_cpdavd {
+    my ($self) = @_;
+
+    for my $service (qw(cpsrvd cpdavd)) {
+        my $module = "Cpanel::ServiceConfig::$service";
+        Cpanel::LoadModule::load_perl_module($module);
+
+        my $conf_obj    = $module->new();
+        my $settings_hr = $conf_obj->get_config(1);
+
+        my $old_string = $settings_hr->{SSLVersion};
+        my $new_string = Cpanel::SSL::Protocols::upgrade_version_string_for_tls_1_2( $settings_hr->{SSLVersion}, '_' );
+        $settings_hr->{SSLVersion} = $new_string;
+
+        if ( $new_string ne $old_string ) {
+            if ( $self->{update} ) {
+                eval {
+                    $conf_obj->validate($settings_hr) or die "Failed to validate configuration\n";
+                    my ( $save_ok, $save_msg ) = $conf_obj->save_datastore($settings_hr);
+                    $conf_obj->update_config($settings_hr);
+                    Cpanel::ServerTasks::queue_task( ['CpServicesTasks'], "restartsrv $service" );
+                };
+                if ( my $exception = $@ ) {
+                    $self->logmsg("'$service' failed to update TLS protocols: $exception");
+                    ++$self->{failed};
+                }
+                else {
+                    $self->logmsg("'$service' switched $old_string to $new_string");
+                }
+            }
+        }
+        else {
+            $self->logmsg("'$service' left $old_string unchanged");
+        }
+    }
+    return;
+}
+
+sub adjust_apache {
+    my ($self) = @_;
+
+    require Cpanel::EA4::Conf;
+    my $conf       = Cpanel::EA4::Conf->instance();
+    my $old_string = $conf->sslprotocol;
+    my $new_string = Cpanel::SSL::Protocols::upgrade_version_string_for_tls_1_2_apache($old_string);
+    my $current    = $conf->sslprotocol($new_string);
+    if ( $new_string ne $old_string ) {
+        if ( $self->{update} ) {
+            eval {
+                $conf->save;
+                Cpanel::ServerTasks::queue_task( ['ApacheTasks'], 'build_apache_conf' );
+            };
+            if ( my $exception = $@ ) {
+                $self->logmsg("'httpd' failed to update TLS protocols: $exception");
+                ++$self->{failed};
+
+                # rebuild conf but save restart for the next time it's necessary
+            }
+            else {
+                $self->logmsg("'httpd' switched $old_string to $new_string");
+            }
+        }
+    }
+    else {
+        $self->logmsg("'httpd' left $old_string unchanged");
+    }
+    return;
+}
+
+sub logmsg {
+    my ( $self, $msg ) = @_;
+    return logger()->info( sprintf( '%s%s', $self->{update} ? '' : '(dry run) ', $msg ) );
+}
+
+sub _usage {
+    my ($error) = @_;
+    my $usage = <<EOU;
+usage: $0 --dry-run | --update
+
+You must specify one or the other, and you may not specify both.
+
+--dry-run: Do everything (including log messages) except make the actual changes
+
+--update: Make the changes
+EOU
+
+    if ($error) {
+        print STDERR $usage;
+        return 1;
+    }
+    print $usage;
+    return 0;
+}

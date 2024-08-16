@@ -1,0 +1,58 @@
+[%#
+Variables passed in:
+
+certificate     - instance of Cpanel::SSL::Objects::Certificate
+
+vhost_name      - the name of the vhost onto which the SSL cert is installed
+
+vhost_domains   - the (sorted) list of domains that point to the vhost
+
+For more information about how to customize notification templates, read our documentation at https://go.cpanel.net/notificationtemplates
+
+-%]
+
+[%
+    PROCESS "include/colors.tmpl";
+    PROCESS "include/styles.tmpl";
+    PROCESS 'include/zebra_table.tmpl';
+
+    PROCESS 'include/code_block.tmpl';
+
+    WRAPPER 'wrapper/main.html.tmpl';
+
+
+    NOTICE.email_reason =  CPANEL.locale.maketext('Action required to complete “[_1]” order.', NOTICE.product_name);
+    action_urls = NOTICE.action_urls;
+
+%]
+
+[% IF action_urls.ovCallbackStatus %]
+<p>
+    [% CPANEL.locale.maketext('To complete the Organization Validation, you must verify your identity by phone. Use the following URL to schedule the phone call:') %]
+
+    <a href="[% action_urls.ovCallbackStatus.html() %]">[% action_urls.ovCallbackStatus.html() %]</a>
+</p>
+[% END %]
+
+[% IF action_urls.evClickThroughStatus %]
+<p>
+    [% CPANEL.locale.maketext('To complete the Extended Validation, you must complete the form at the following URL:') %]
+    <a href="[% action_urls.evClickThroughStatus.html() %]">[% action_urls.evClickThroughStatus.html() %]</a>
+</p>
+[% END %]
+
+<p>
+    [% CPANEL.locale.maketext('The certificate order is for the following domain [numerate,_1,name,names]:', NOTICE.csr_domains.size) %]
+</p>
+
+<ul>
+    [% FOR d = NOTICE.csr_domains -%]
+        <li>
+            <a href="https://[% d.html() %]">[% d.html() %]</a>
+        </li>
+    [% END -%]
+</ul>
+
+</p>
+
+[% END #wrapper %]

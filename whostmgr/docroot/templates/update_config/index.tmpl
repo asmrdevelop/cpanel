@@ -1,0 +1,395 @@
+[%
+    USE Whostmgr;
+    USE JSON;
+    USE String;
+
+    SET PAGE_BASE = '/scripts2/updateconf/';
+
+    WRAPPER 'master_templates/master.tmpl'
+        header        = locale.maketext('Update Preferences'),
+        breadcrumburl = PAGE_BASE,
+        base          = PAGE_BASE,
+        stylesheets = [ '/templates/common/revised_notices.min.css',
+            '/templates/upcp/updateconf.min.css',
+            Whostmgr.find_file_url('/templates/update_config/index.min.css') ],
+        theme         = 'bootstrap'
+        app_key = 'update_preferences';
+%]
+<div ng-controller="config" class="layout-medium" ng-cloak>
+
+<cp-loading-panel id="loadingPanel" ng-show="loading">
+[% locale.maketext('Loading …') %]
+</cp-loading-panel>
+
+<section ng-show="!loading">
+    <p class="help-block">[%- locale.maketext("You can use this interface to choose when and how the system updates your server. For more information, read our [output,url,_1,documentation about release tiers and updates,target,_2].", 'https://go.cpanel.net/versionformat', 'cpdocs-version-format') %]</p>
+    <div id="pageNotices">
+        <callout callout-type="warning" callout-heading="[% locale.maketext('Warning') %]" ng-if="!autoUpdateEnabled">
+            <p>[% locale.maketext('Automatic updates are disabled for this server. We strongly recommend enabling automatic updates.') %]</p>
+            <button id="enable-updates-button" type="button" spinner-id="enable-updates-spinner" cp-action="enableAutomaticUpdates()">
+                <i class="fas fa-history fa-flip-horizontal" aria-hidden="true"></i>
+                [% locale.maketext('Enable Automatic Updates') %]
+            </button>
+        </callout>
+
+        [% PROCESS 'warnings/_mysql_version.tmpl' %]
+
+        <div ng-show="saved">
+            <div class="alert alert-success" id="saved_message">
+                [% locale.maketext('The system saved your settings locally and will apply your changes during the next update. To update now, click [output,url,_1,here,id,updateNowBtn].','../scripts2/upcpform') %]
+            </div>
+            [%- IF data.cluster_server_info.server_count > 0 && (data.cluster_server_info.remote_saved > 0 || data.cluster_server_info.remote_save_failed > 0) -%]
+                [%- notice_type = '' -%]
+                [%- notice_content = '' -%]
+                [%- notice_additional_class = '' %]
+                [%- notice_message = locale.maketext('[numf,_1] of [numf,_2] configuration cluster servers received your updated settings.',data.cluster_server_info.remote_saved,data.cluster_server_info.server_count) -%]
+                [%- IF data.cluster_server_info.remote_save_failed > 0 && data.cluster_server_info.remote_saved != 0 -%]
+                    [%- notice_type = ' notice-warning'%]
+                    [%- notice_content = ' warning-notice-content' -%]
+                    [%- notice_additional_class = ' class="warning"'%]
+                [%- ELSIF data.cluster_server_info.remote_save_failed > 0 && data.cluster_server_info.remote_saved == 0 -%]
+                    [%- notice_type = ' notice-error'%]
+                    [%- notice_content = ' error-notice-content' -%]
+                    [%- notice_message = locale.maketext('The system couldn’t update your configuration cluster servers’ settings.') -%]
+                [%- END -%]
+            <div id="clusterServersNotice" class="notice[%- notice_type -%]">
+                <div class="notice-content[%- notice_content -%]">
+                    [%- notice_message -%]
+                    <span id="showHideClusterDetail"[%- notice_additional_class -%]>
+                        (<a href="#" id="showClusterServerResults"[%- notice_additional_class -%] ng-model="showClusterServerResults" ng-click="showClusterServerResults = !showClusterServerResults" ng-init="showClusterServerResults = false"><span id="showClusterDetail" ng-show="showClusterServerResults">[%- locale.maketext('Show Details') -%]</span><span class="clusterDetailHidden" id="hideClusterDetail" ng-show="!showClusterServerResults">[%- locale.maketext('Hide Details') -%]</span></a>)
+                    </span>
+                </div>
+                <div id="clusterServerDetail" ng-show="!showClusterServerResults">
+                    <table class="table">
+                        <thead>
+                            <tr>
+                                <td>Server</td>
+                                <td>Status</td>
+                                <td>Message</td>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            [%- FOREACH server_result IN data.cluster_server_info.results -%]
+                                <tr>
+                                    <td>
+                                        [%- server_result.server -%]
+                                    </td>
+                                    <td class="statusCell">
+                                        [%- IF server_result.status == 'OK' -%]
+                                            <img src="/images/success.png" title="[% locale.maketext('The system successfully updated the server: [_1]', server_result.server) %]">
+                                        [%- ELSE -%]
+                                            <img src="/images/error.png" title="[% locale.maketext('The system failed to update the server: [_1]', server_result.server) %]">
+                                        [%- END -%]
+                                    </td>
+                                    <td class="messageCell">
+                                        [%- IF server_result.exists('message') -%]
+                                            [%- server_result.message -%]
+                                        [%- END -%]
+                                    </td>
+                                </tr>
+                            [%- END -%]
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            [% END -%]
+        </div>
+        <div class="alert alert-danger" ng-if="saveFailed">
+            <div ng-non-bindable>
+                [% IF data.save_fail_reason -%]
+                    [% locale.maketext('The system failed to save your new settings: [_1]', data.save_fail_reason.html()) %]
+                [% ELSE -%]
+                    [% locale.maketext('The system failed to save your new settings.') %]
+                [% END -%]
+            </div>
+        </div>
+    </div>
+
+[% no_downgrades_title = locale.maketext("You can’t select this tier. It requires a downgrade.") %]
+[% tier_doesnt_exist_title = locale.maketext("The selected tier doesn’t exist on the update server.") %]
+[% selected_tier_is_downgrade = locale.maketext("The selected tier requires a downgrade.") %]
+[% remote_tier_not_found = 0 %]
+[% SET staging_dir_placeholder = '.cpanel__' _ data.hostname.replace('[.]', '_') _ '__upcp_staging' %]
+
+[% MACRO extra_status_class(tier) BLOCK %]
+    [%- error_class = '' -%]
+    [%- IF data.checked == tier && data.is_less_than_current_version(data.version.$tier)-%]
+        [%- error_class = 'fas fa-exclamation-circle' -%]
+    [%- ELSIF data.custom_tier == tier %]
+        [%- IF data.is_less_than_current_version(data.non_named_tiers.$tier) -%]
+            [%- error_class = 'fas fa-exclamation-circle' -%]
+        [%- END -%]
+    [%- ELSIF data.is_less_than_current_version(data.version.$tier) -%]
+        [%- error_class = 'fas fa-exclamation-triangle' -%]
+    [%- END -%]
+    [%- error_class -%]
+[% END %]
+
+[% MACRO tier_status_title(tier) BLOCK %]
+    [%- msg_title = '' -%]
+    [%- IF data.checked == tier && data.is_less_than_current_version(data.version.$tier) -%]
+        [%- msg_title = selected_tier_is_downgrade -%]
+    [%- ELSIF data.custom_tier == tier -%]
+        [%- IF data.is_less_than_current_version(data.non_named_tiers.$tier) -%]
+            [%- msg_title = selected_tier_is_downgrade -%]
+        [%- END -%]
+    [%- ELSIF data.is_less_than_current_version(data.version.$tier) -%]
+        [%- msg_title = no_downgrades_title -%]
+    [%- END -%]
+    [%- msg_title -%]
+[% END %]
+
+    <div id="versionDetailsPanel" class="panel panel-primary">
+        <div class="panel-heading">
+            [% locale.maketext('[asis,cPanel] [output,amp] WHM Version') %]
+        </div>
+        <div class="panel-body">
+            <dl id="current_info">
+                <dt>[% locale.maketext("Installed Version:") %]</dt>
+                <dd>
+                    [% data.current_version %]
+                    <div ng-show="isDevVersion" class="font-italic additional-note">
+                    [%- locale.maketext("[output,strong,About Development Releases:] Odd-numbered builds are development builds. [output,strong,Don’t] install them in a production environment. They change often and we may not have fully tested or documented them yet.") %]
+                    </div>
+                </dd>
+            </dl>
+            <a class="showVersionDetails" href="javascript:void(0);" ng-click="toggleVersionDetails()">
+                {{additionalInfoText}} <i class="fas" ng-class="{'fa-chevron-down': !showVersionDetails, 'fa-chevron-up': showVersionDetails}" aria-hidden="true"></i>
+            </a>
+            <dl class="additional-version-details" ng-if="showVersionDetails">
+                <dt>[% locale.maketext("Update From:") %]</dt>
+                <dd>[% data.httpupdate %]
+                    [% IF data.uses_next %]
+                        <div class="font-italic additional-note">
+                        [% locale.maketext("[output,strong,Warning:] The server is configured to receive updates from the beta network.") %]
+                        </div>
+                    [% END %]
+                </dd>
+                <dt>[% locale.maketext("Current Tier:") %]</dt>
+                <dd>[% data.checked FILTER upper %]</dd>
+                <dt id="support_ends_lbl" ng-if="customTierExpiration">
+                    <span ng-if="customTierIsExpired">[% locale.maketext( "Tier Support Ended:" ) %]</span>
+                    <span ng-if="!customTierIsExpired">[% locale.maketext( "Tier Support Ends:" ) %]</span>
+                </dt>
+                <dd ng-if="customTierExpiration">
+                    {{ customTierExpirationLocalized }}
+                </dd>
+            </dl>
+        </div>
+    </div>
+
+    <form id="the_form" method="post" action="" ng-submit="submitForm($event)">
+        <h3>[% locale.maketext('Release Tier') %]</h3>
+        <p>[% locale.maketext("Select the release tier to use for updating [asis,cPanel amp() WHM]. You [output,strong,can’t] downgrade or select tiers that are older than the currently-installed version.") %]</p>
+        <table id="tierTable" class="table table-striped tier-table">
+            <thead>
+                <tr>
+                    <th class="col1"></th>
+                    <th class="col2">[% locale.maketext('Tier') %]</th>
+                    <th class="col3" title="[% locale.maketext("The tier’s current version.") %]">[% locale.maketext('Currently') %]</th>
+                    <th></th>
+                    <th class="col4">[% locale.maketext('Description') %]</th>
+                </tr>
+            </thead>
+            <tbody>
+        <!-- Custom Tier -->
+                <tr ng-if="customTier" class="custom-tier-row">
+                    <td class="col1"><input id="tier_custom" type="radio" name="CPANEL" ng-model="tierSelection" value="{{customTier}}" /></td>
+                    <td class="col2"><label for="tier_custom">[% locale.maketext('Custom') %]</label></td>
+                    <td class="col3">
+                        <label for="tier_custom">
+                            <span ng-if="customTierLatestBuild">
+                                {{ customTierLatestBuild.replace('11\.', '') || '[% locale.maketext('Unknown') %]' }}
+                            </span>
+                            <span ng-if="!customTierLatestBuild" class="text-warning">
+                                <i class="fas fa-exclamation-triangle" aria-hidden="true"></i>
+                                [% locale.maketext('Unknown') %]
+                            </span>
+                        </label>
+                    </td>
+                    <td>
+                        <i id="customTierStatus" class="[% extra_status_class('custom') %]" title="[% tier_status_title('custom') %]"></i>
+                    </td>
+                    <td class="col4"><span class="desc">[% locale.maketext('You configured the server to update to a specific [asis,cPanel amp() WHM] version or build. We [output,strong,strongly] recommend selecting a named release tier.') %]</span></td>
+                </tr>
+                <!-- This dummy row just helps us work around the .table-striped alternating background colors -->
+                <tr ng-if="customTier && hasCustomTierWarning" class="custom-tier-warning-dummy-row"></tr>
+                <tr ng-if="customTier && hasCustomTierWarning" class="custom-tier-warning-row">
+                    <td></td>
+                    <td colspan="4">
+                        <cp-alert type="warning" id="custom-tier-expiration-warning" ng-if="customTierExpiredWarningText">
+                            {{ customTierExpiredWarningText }}
+                        </cp-alert>
+                        <cp-alert type="warning" id="custom-tier-invalid-warning" ng-if="customTierInvalidWarningText">
+                            {{ customTierInvalidWarningText }}
+                        </cp-alert>
+                    </td>
+                </tr>
+        <!-- LTS -->
+                <tr>
+                    <td class="col1"><input id="tier_lts" [% IF data.is_less_than_current_version(data.version.lts) %]disabled="disabled"[% END %]type="radio" name="CPANEL" ng-model="tierSelection" value="lts" /></td>
+                    <td class="col2[% IF data.is_less_than_current_version(data.version.lts) %] grayed[% END %]"><label for="tier_lts">[% locale.maketext('[output,acronym,LTS,Long-Term Support]') %]</label></td>
+                    <td class="col3[% IF data.is_less_than_current_version(data.version.lts) %] grayed[% END %]"><label for="tier_lts">{{ tiers.lts.replace('11\.', '') }}</label></td>
+                    <td>
+                        <i id="ltsTierStatus" class="[% extra_status_class('lts') %]" title="[% tier_status_title('lts') %]"></i>
+                    </td>
+                    <td class="col4"><span class="desc">[% locale.maketext('A well-tested and proven version that [asis,cPanel], L.L.C. supports for one full year.') %]</span></td>
+                </tr>
+        <!-- STABLE -->
+                <tr>
+                    <td class="col1"><input id="tier_stable" [% IF data.is_less_than_current_version(data.version.stable) %]disabled="disabled"[% END %]type="radio" name="CPANEL" ng-model="tierSelection" value="stable" /></td>
+                    <td class="col2[% IF data.is_less_than_current_version(data.version.stable) %] grayed[% END %]"><label for="tier_stable">STABLE</label></td>
+                    <td class="col3[% IF data.is_less_than_current_version(data.version.stable) %] grayed[% END %]"><label for="tier_stable">{{ tiers.stable.replace('11\.', '') }}</label></td>
+                    <td>
+                        <i id="stableTierStatus" class="[% extra_status_class('stable') %]" title="[% tier_status_title('stable') %]"></i>
+                    </td>
+                    <td class="col4"><span class="desc">[% locale.maketext('A version that is feature-complete, fully tested, and is in widespread use.') %]</span></td>
+                </tr>
+        <!-- RELEASE -->
+                <tr>
+                    <td class="col1"><input id="tier_release" title="[% locale.maketext('Recommended for most users.') %]" [% IF data.is_less_than_current_version(data.version.release) %]disabled="disabled"[% END %]type="radio" name="CPANEL" ng-model="tierSelection" value="release" /></td>
+                    <td class="col2[% IF data.is_less_than_current_version(data.version.release) %] grayed[% END %]">
+                        <label for="tier_release" title="[% locale.maketext('Recommended for most users.') %]">
+                            RELEASE
+                        </label>
+                        <div class="label-container">
+                            <span class="label label-info">[% locale.maketext('Recommended') %]</span>
+                        </div>
+                    </td>
+                    <td class="col3[% IF data.is_less_than_current_version(data.version.release) %] grayed[% END %]"><label for="tier_release" title="[% locale.maketext('Recommended for most users.') %]">{{ tiers.release.replace('11\.','') }}</td>
+                    <td>
+                        <i id="releaseTierStatus" class="[% extra_status_class('release') %]" title="[% tier_status_title('release') %]"></i>
+                    </td>
+                    <td class="col4">
+                        <span class="desc">[% locale.maketext('A version that is feature-complete and well tested.') %]</span>
+                    </td>
+                </tr>
+        <!-- CURRENT -->
+                <tr>
+                    <td class="col1"><input id="tier_current" [% IF data.is_less_than_current_version(data.version.current) %]disabled="disabled" [% END %]type="radio" name="CPANEL" ng-model="tierSelection" value="current" title="[% locale.maketext('Release Candidate') %]" /> </td>
+                    <td class="col2[% IF data.is_less_than_current_version(data.version.current) %] grayed[% END %]"><label for="tier_current" title="[% locale.maketext('Release Candidate') %]">CURRENT</label></td>
+                    <td class="col3[% IF data.is_less_than_current_version(data.version.current) %] grayed[% END %]"><label for="tier_current" title="[% locale.maketext('Release Candidate') %]">{{ tiers.current.replace('11\.','') }}</td>
+                    <td>
+                        <i id="currentTierStatus" class="[% extra_status_class('current') %]" title="[% tier_status_title('current') %]"></i>
+                    </td>
+                    <td class="col4"><span class="desc">[% locale.maketext('A “release candidate” version that is tested but may not be feature-complete.') %]</span></td>
+                </tr>
+        <!-- EDGE -->
+                <tr>
+                    <td class="col1"><input id="tier_edge"  title="[%locale.maketext('Not Recommended')%]" type="radio" name="CPANEL" ng-model="tierSelection" value="edge" title="[%locale.maketext('Not Recommended')%]" [% IF data.is_less_than_current_version(data.version.edge) %]disabled="disabled" [% END %]/></td>
+                    <td class="col2[% IF data.is_less_than_current_version(data.version.edge) %] grayed[% END %]"><label for="tier_edge" title="[%locale.maketext('Not Recommended')%]">EDGE</label></td>
+                    <td class="col3[% IF data.is_less_than_current_version(data.version.edge) %] grayed[% END %]"><label for="tier_edge" title="[%locale.maketext('Not Recommended')%]">{{ tiers.edge.replace('11\.','') }}</td>
+                    <td>
+                        <i id="edgeTierStatus" class="[% extra_status_class('edge') %]" title="[% tier_status_title('edge') %]"></i>
+                    </td>
+                    <td class="col4"><span class="desc" title="[%locale.maketext('Not Recommended')%]">[% locale.maketext('A development version for testing [output,strong,only] and [output,strong,not] for production servers.') %]</span></td>
+                </tr>
+            </tbody>
+        </table>
+        <hr>
+        <div class="selection-wrapper">
+            <h3>[%locale.maketext('Staging Directory')%]</h3>
+            <div class="description">
+                [% locale.maketext('The staging directory stores update data before the system applies it. Make sure to select a directory with enough disk space.') %]
+            </div>
+            <div class="form-group">
+                <div class="row">
+                    <div class="col-xs-12 col-sm-8 col-md-8 col-lg-8">
+                        <label id="staging_label" for="staging_dir">[% locale.maketext('Staging Directory') %]:</label>
+                        <span class="info-block">[% locale.maketext('Enter a directory path or select a partition from available partitions. This value defaults to the [asis,/usr/local/cpanel] directory.') %]</span>
+                    </div>
+                    <div class="col-xs-12 col-sm-8 col-md-8 col-lg-8">
+                    </div>
+                </div>
+                <div class="row">
+                    <div class="col-xs-12 col-sm-8 col-md-8 col-lg-8">
+                        <div class="input-group">
+                            <input type="text" class="form-control" id="staging_dir" ng-model="stagingDir" name="staging_dir" ng-change="stagingdirOnChange()"/>
+                            <span id="staging_subdir" ng-show="showStagingSubdir" class="input-group-addon">[% '/' _ staging_dir_placeholder _ '/' %]</span>
+                        </div>
+                    </div>
+                    <div class="col-xs-12 col-sm-8 col-md-8 col-lg-8">
+                    </div>
+                </div>
+                <div class="row">
+                    <div class="col-xs-12 col-sm-8 col-md-8 col-lg-8">
+                        <span class="help-block" ng-show="showStagingSubdir">[% locale.maketext('If you choose a custom location, the system stages updates in a “[_1]” subdirectory within your specified directory.', staging_dir_placeholder ) %]</span>
+                    </div>
+                    <div class="col-xs-12 col-sm-8 col-md-8 col-lg-8">
+                    </div>
+                </div>
+            </div>
+            <div class="form-group">
+                <div>
+                    <label for="partition-table">[% locale.maketext('Available Partitions:') %]</label>
+                    [% IF data.devices.size %]
+                        <table id="partition-table" class="table">
+                            <thead>
+                                <tr>
+                                    <th></th>
+                                    <th>[% locale.maketext('Staging Directory') %]</th>
+                                    <th>[% locale.maketext('Mount Point') %]</th>
+                                    <th>[% locale.maketext('Size') %]</th>
+                                    <th>[% locale.maketext('Used') %]</th>
+                                    <th>[% locale.maketext('Available') %]</th>
+                                    <th>[% locale.maketext('Percent Used') %]</th>
+                                    <th>[% locale.maketext('Device') %]</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                            [% FOREACH device = data.devices.sort('mount') %]
+                                <tr>
+                                    <td>
+                                        <input type="radio"
+                                            name="staging_selection"
+                                            id="selection_[% loop.index() %]"
+                                            value="[% device.path.html() %]"
+                                            ng-model="stagingSelection"
+                                            ng-click="changeStagingDir()" />
+                                    </td>
+                                    <td>[% device.path.html() %]</td>
+                                    <td>[% device.mount.html() %]</td>
+                                    <td>[% locale.format_bytes(device.total).html() %]</td>
+                                    <td>[% locale.format_bytes(device.used).html() %]</td>
+                                    <td>[% locale.format_bytes(device.available).html() %]</td>
+                                    <td>[% device.percentage.html() _ '%' %]</td>
+                                    <td>[% device.filesystem.html() %]</td>
+                                </tr>
+                            [% END %]
+                            </tbody>
+                        </table>
+                    [% ELSE %]
+                        <p class="text-info">[% locale.maketext("No partitions with sufficient space ([format_bytes,_1]) are available.", data.required_free_space) %]</p>
+                    [% END %]
+                </div>
+            </div>
+        </div>
+        <input type="submit" name="saveBtn" id="saveBtn" class="btn btn-primary" value="[%locale.maketext('Save')%]" ng-class="{ disabled: isSaving }" />
+        [% IF data.cluster_server_info.server_count > 0 %]
+        <input type="checkbox" id="cb_clusterservers" ng-model="clusterservers" name="clusterservers" value="1">
+        <label for="cb_clusterservers"> [% locale.maketext('Send my settings to all configuration cluster servers.') %]</label>
+        [% END %]
+    </form>
+</section>
+</div>
+<cp-alert-list></cp-alert-list>
+<script>
+    var PAGE = {
+        preventSumbit: [% (data.custom_tier && data.is_less_than_current_version(data.custom_tier)) ? "true" : "false" %],
+        saved: [% data.saved ? "true" : "false" %],
+        save_failed: [% data.save_failed ? "true" : "false" %],
+        save_fail_reason: [% data.save_fail_reason.json || 'null' %],
+        current_major_version: "[% data.current_major_version %]",
+        checked: "[% data.checked %]",
+        custom_tier: "[% data.custom_tier || '' %]",
+        custom_tier_info: [% data.custom_tier_hr.json || '""' %],
+        current_version: "[% data.current_version %]",
+        required_free_space: [% data.required_free_space %],
+        hostname: "[% data.hostname %]",
+        flat_tiers: [% data.flat_tiers.json || "null" %],
+        upconf: [% upconf.json %],
+        partitions: [% data.devices.json %]
+    };
+</script>
+[% PROCESS 'master_templates/cjt2_header_include.tt' %]
+[% END %]

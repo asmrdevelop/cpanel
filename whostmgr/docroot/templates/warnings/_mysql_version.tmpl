@@ -1,0 +1,25 @@
+[%
+    USE Mysql;
+    USE Whostmgr;
+
+    SET eol_soon = Mysql.is_version_going_eol_soon;
+    SET eol_now = Mysql.is_version_eol_now;
+    SET display_banner = Whostmgr.hasroot() && ( eol_soon || eol_now );
+    SET mysql_version = Mysql.mysqlversion();
+    SET mysql_name = Mysql.mysql_display_name();
+    SET mysql_upgrade_url = cp_security_token _ "/scripts/mysqlupgrade";
+%]
+
+[% IF display_banner %]
+    <div class="callout callout-warning">
+        <div class="callout-heading">[% locale.maketext('Action Needed') %]</div>
+        <span>
+        [% IF eol_soon %]
+            <p>[% locale.maketext('Your [_1] version ([_2]) will reach [output,strong,End of Life] status soon. Upgrade now to prevent security and compatibility problems.', mysql_name, mysql_version) %]</p>
+        [% ELSIF eol_now %]
+            <p>[% locale.maketext('Your [_1] version ([_2]) has reached [output,strong,End of Life] status. Upgrade now to prevent security and compatibility problems.', mysql_name, mysql_version) %]</p>
+        [% END %]
+            <a class="btn btn-primary" href="[% mysql_upgrade_url %]">[% locale.maketext('Upgrade [_1]', mysql_name) %]</a>
+        </span>
+    </div>
+[% END %]

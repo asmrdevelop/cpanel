@@ -1,0 +1,301 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - bin/leechprotect                        Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package bin::leechprotect;
+
+use strict;
+use warnings;
+
+use Try::Tiny;
+
+use Cpanel::SafeFile            ();
+use Cpanel::AccessIds::SetUids  ();
+use Cpanel::HttpUtils::Htaccess ();
+use Cpanel::Hostname            ();
+use Digest::MD5                 ();
+use Cpanel::Rand::Get           ();
+use Cpanel::Exception           ();
+use Cpanel::LeechProtect::DB    ();
+
+exit run() unless caller();
+
+sub run {
+    $| = 1;
+
+    local $SIG{'CHLD'} = 'IGNORE';
+
+    while ( chomp( my $line = readline STDIN // '' ) ) {
+        process_request($line);
+    }
+
+    return 1;
+}
+
+sub process_request {
+    my $request = shift || '';
+
+    my ( $protectdir, $user, $ip, $maxips, $token ) = split( /:/, $request );
+    if ( !$maxips ) { $maxips = 4; }
+    if ( !$protectdir || !$ip || !$user || $protectdir =~ m{(?:^|/)\.\.(?:/|$)} ) {
+        print "safe\n";
+        return 1;
+    }
+
+    if ( !$token ) {
+        print "safe\n";
+        my $pid = fork();
+        if ( defined $pid && $pid == 0 ) {
+            update_rewrite_condition( $protectdir, $maxips );
+            exit;
+        }
+        return 1;
+    }
+
+    # TODO: This makes it so that every process_request() call opens a 'connection'
+    # to the file, instead of keeping one open for the lifetime of the process.
+    #
+    # Evaluate the possible performance downsides to doing this.
+    my $dbobj;
+    try {
+        $dbobj = Cpanel::LeechProtect::DB->new();
+    }
+    catch {
+        print STDERR Cpanel::Exception::get_string($_) . "\n";
+        print "NULL\n";
+    };
+    return 0 if !$dbobj;
+
+    my $ip_args = {
+        'user' => $user,
+        'dir'  => scalar Digest::MD5::md5_hex( $protectdir . $token ),
+        'ip'   => $ip
+    };
+
+    $dbobj->bump_hit_time_for_similar_ips($ip_args);
+    $dbobj->register_hit($ip_args);
+    $dbobj->purge_old_records();
+
+    if ( ( $dbobj->get_hit_count_from_other_ips($ip_args) + 1 ) > $maxips ) {
+        print "leech\n";
+
+        my $pid = fork();
+        if ( defined $pid && $pid == 0 ) {
+            my $hostname = Cpanel::Hostname::gethostname();
+            my ( $safe, $uid, $gid, $email, $kill_account, $passwdfile, $configured_token ) = get_leech_settings_for_docroot($protectdir);
+            exit unless ( $safe && $token eq $configured_token );
+
+            Cpanel::AccessIds::SetUids::setuids( $uid, $gid );
+
+            if ($kill_account) {
+                $kill_account = suspend_user( $passwdfile, $user );
+            }
+
+            # TODO: Rewrite to use iNotify instead
+            if ($email) {
+                open( SENDMAIL, '|/usr/sbin/sendmail -t' );
+                print SENDMAIL "To: $email\n";
+                print SENDMAIL "From: root\@$hostname\n";
+                print SENDMAIL "Subject: Leech Protection Activated for account $user in $protectdir\n\n";
+                if ($kill_account) {
+                    print SENDMAIL "The account $user has been suspended.\n";
+                }
+                else {
+                    print SENDMAIL "The account $user has NOT been suspended.\n";
+                }
+                print SENDMAIL "Ip Address: $ip\n";
+                close(SENDMAIL);
+            }
+
+            exit;
+        }
+    }
+    else {
+        print "safe\n";
+    }
+
+    return 1;
+}
+
+sub update_rewrite_condition {
+    my $docroot = shift;
+    my $maxips  = shift;
+    my ( $safe, $uid, $gid ) = get_leech_settings_for_docroot($docroot);
+    return unless ($safe);
+
+    Cpanel::AccessIds::SetUids::setuids( $uid, $gid );
+
+    my $new_token = Cpanel::Rand::Get::getranddata( 32, [ 'A' .. 'Z', 'a' .. 'z', '0' .. '9' ] );
+
+    my $htaccess_trans = Cpanel::HttpUtils::Htaccess::open_htaccess_rw($docroot);
+    my $htaccess_sr    = $htaccess_trans->get_data();
+
+    my @htaccess = ();
+
+    foreach my $line ( split "\n", $$htaccess_sr ) {
+        if ( $line =~ m/^\s*RewriteCond\s+\$\{LeechProtect:\Q$docroot\E:\%\{REMOTE_USER\}:\%\{REMOTE_ADDR\}[^}]*\}\s*leech\s*$/ ) {
+            push @htaccess, "RewriteCond \${LeechProtect:$docroot:\%{REMOTE_USER}:\%{REMOTE_ADDR}:$maxips:$new_token} leech\n";
+        }
+        else {
+            push @htaccess, "$line\n";
+        }
+    }
+
+    $htaccess_trans->set_data( \join( q<>, @htaccess ) );
+
+    $htaccess_trans->save_and_close_or_die();
+
+    return;
+}
+
+# Verifies that the UID/GID for the leechprotect-conf, .htaccess and passwordfile
+# are all appropriate and that all paths reside inside the UID's home directory.
+sub get_leech_settings_for_docroot {
+    my ($docroot) = @_;
+
+    my ( $uid, $gid, $email, $kill, $passwdfile, $token );
+
+    if ( open( my $leechconf_fh, '<', $docroot . '/.leechprotect-conf' ) ) {
+        ( $uid, $gid ) = ( stat($leechconf_fh) )[ 4, 5 ];
+        while ( my $line = readline($leechconf_fh) ) {
+            chomp $line;
+            my ( $key, $val ) = split( /\s*=\s*/, $line, 2 );
+            if ($val) {
+                if ( $key eq 'email' ) {
+                    $email = $val;
+                }
+                elsif ( $key eq 'kill' ) {
+                    $kill = $val;
+                }
+            }
+        }
+        close $leechconf_fh;
+    }
+    else {
+        return (0);
+    }
+
+    if ( open( my $htaccess_fh, '<', $docroot . '/.htaccess' ) ) {
+        my ( $htaccess_uid, $htaccess_gid ) = ( stat($htaccess_fh) )[ 4, 5 ];
+        return (0) unless ( $htaccess_uid == $uid && $htaccess_gid == $gid );
+
+        while ( my $line = readline $htaccess_fh ) {
+            if ( $line =~ m/^\s*AuthUserFile\s+["']?([^"']+)["']?/ ) {
+                $passwdfile = $1;
+                chomp $passwdfile;
+            }
+            elsif ( $line =~ m/^\s*RewriteCond\s+\$\{LeechProtect:\Q$docroot\E:\%\{REMOTE_USER\}:\%\{REMOTE_ADDR\}:\d+:([A-Za-z0-9]+)\}\s*leech\s*$/ ) {
+                $token = $1;
+            }
+        }
+        close $htaccess_fh;
+    }
+    return 0 unless ( length($passwdfile) && $passwdfile !~ m{(?:^|/)..(?:/|$)} );
+
+    my ( $pwfile_uid, $pwfile_gid ) = ( stat($passwdfile) )[ 4, 5 ];
+    return 0 unless ( $pwfile_uid == $uid && $pwfile_gid == $gid );
+
+    my ( $pw_gid, $pw_homedir ) = ( getpwuid($uid) )[ 3, 7 ];
+
+    if ( $uid > 99 && $gid > 99 && $gid == $pw_gid && $docroot =~ m{^\Q$pw_homedir\E/.*} && $passwdfile =~ m{^\Q$pw_homedir\E/.*} ) {
+        return ( 1, $uid, $gid, $email, $kill, $passwdfile, $token );
+    }
+    else {
+        return 0;
+    }
+}
+
+sub suspend_user {
+    my ( $file, $user ) = @_;
+    my $ret_val = 0;
+    my @htpasswd;
+    my $htlock = Cpanel::SafeFile::safeopen( \*TDP, '+<', $file );
+    if ($htlock) {
+        while ( my $line = <TDP> ) {
+            next if $line =~ m/^\s*$/;
+            if ( $line =~ m/^\Q$user\E:/ ) {
+                my ( $user, $pass ) = split( /:/, $line, 2 );
+                $line    = $user . ':!!' . $pass;
+                $ret_val = 1;
+            }
+            push @htpasswd, $line;
+        }
+        seek( TDP, 0, 0 )                      or warn "[leechprotect]: $!";
+        print TDP join( '', @htpasswd ) . "\n" or warn "[leechprotect]: $!";
+        truncate( TDP, tell(TDP) )             or warn "[leechprotect]: $!";
+        Cpanel::SafeFile::safeclose( \*TDP, $htlock );
+    }
+    else {
+        warn "[leechprotect]: Unable to update $file: $!";
+    }
+    return $ret_val;
+}
+
+sub getpasswdfile {
+    my $dir        = shift;
+    my $passwdfile = '';
+    if ( open my $ht_fh, '<', $dir . '/.htaccess' ) {
+        while ( my $line = readline $ht_fh ) {
+            if ( $line =~ m/^\s*AuthUserFile\s+["']?([^"']+)["']?/ ) {
+                $passwdfile = $1;
+                last;
+            }
+        }
+        close $ht_fh;
+    }
+    return $passwdfile;
+}
+
+1;
+
+__END__
+
+=pod
+
+=head1 DESCRIPTION
+
+This scripts checks to see if a 'Leech Protected' directory has been accessed
+by a htpasswd-configured user more than the allocated number of times in a
+2-hour period.
+
+The motivation being that this prevents users from giving out or
+publicly posting their passwords to restricted areas.
+
+=head1 HOW DOES IT WORK
+
+This program is started once, when Apache is started.
+Apache communicates via STDIN and STDOUT - it expects one argument via STDIN,
+and returns one new-line terminated response string on STDOUT.
+
+A rewrite condition like the following is setup in the directory's F<.htaccess>
+file when Leech Protection is turned on:
+
+    RewriteCond ${LeechProtect:/path/to/directory:%{REMOTE_USER}:%{REMOTE_ADDR}:$MAX_NUMBER_OF_LOGINS_IN_2HRS:$TOKEN} leech
+
+This tells apache to send the following string as the 'query' via STDIN:
+
+    /path/to/directory:%{REMOTE_USER}:%{REMOTE_ADDR}:$MAX_NUMBER_OF_LOGINS_IN_2HRS:$TOKEN
+
+This query is parsed, and the DB is checked to see if the B<REMOTE_USER> has
+logged in from multiple IPs more than the B<MAX_NUMBER_OF_LOGINS_IN_2HRS> times
+in the last 2 hours.
+
+If the user has met that threshold, then the script returns C<leech>,  which
+causes the C<RewriteCond> to be true - and the user will be redirected to the
+configured URL. If no URL is configured, then the user will see an internal
+server error.
+
+If the user has B<NOT> met that threshold, then the script returns C<safe>.
+If there are no hits at all, then the script returns C<NULL>.
+
+Both of these conditions causes the C<RewriteCond> to be false, and allow
+the user to continue as normal.
+
+=head2 REFERENCES
+
+L<Apache Documentation|https://httpd.apache.org/docs/current/rewrite/rewritemap.html#prg>
+
+=cut

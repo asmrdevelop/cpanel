@@ -1,0 +1,193 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/migrate_local_ini_to_php_ini    Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::migrate_local_ini_to_php_ini;
+
+use strict;
+use warnings;
+use Try::Tiny;
+use Getopt::Param::Tiny      ();
+use Cpanel::ProgLang         ();
+use Cpanel::FileUtils::Write ();
+use Cpanel::LoadFile         ();
+
+my %ignore_directives = (
+    "session.bug_compat_42"     => 1,
+    "sybct.allow_persistent"    => 1,
+    "sybct.max_links"           => 1,
+    "sybct.min_client_severity" => 1,
+    "session.bug_compat_warn"   => 1,
+    "sybct.min_server_severity" => 1,
+    "sybct.max_persistent"      => 1,
+    "ifx.default_host"          => 1,
+    "ifx.default_user"          => 1,
+    "ifx.default_password"      => 1,
+    "ifx.allow_persistent"      => 1,
+    "ifx.max_persistent"        => 1,
+    "ifx.max_links"             => 1,
+    "ifx.textasvarchar"         => 1,
+    "ifx.byteasvarchar"         => 1,
+    "ifx.charasvarchar"         => 1,
+    "ifx.blobinfile"            => 1,
+    "ifx.nullformat"            => 1,
+);
+
+exit( run(@ARGV) ? 0 : 1 ) unless caller;
+
+sub run {
+    my @args = @_;
+
+    my $prm = Getopt::Param::Tiny->new( { array_ref => \@args, help_coderef => \&_help, known_only => [ 'run', 'verbose' ], no_args_help => 1, validate => \&_validate } );
+
+    my $php       = eval { Cpanel::ProgLang->new( type => 'php' ) };
+    my @installed = $php ? @{ $php->get_installed_packages() } : ();
+    if ( !$php || !@installed ) {
+        print "Nothing to do, no PHP packages installed.\n";
+        return 1;
+    }
+
+    my $error_count = 0;
+    for my $php_pkg (@installed) {
+        print "Processing $php_pkg …\n";
+        my $ini = $php->get_ini( 'package' => $php_pkg );
+
+        my $localini = $ini->get_system_ini('local.ini');
+        my $phpini   = $ini->get_default_system_ini();
+        if ( !$localini ) {
+            print "\tNo local.ini.\n";
+        }
+        else {
+            my $bad_tries = 0;
+            my %bad_directives;
+
+          TRY_INI:
+            try {
+                _migrate_extension_directives( $localini, $phpini );    # See EA-6768 for why this hack is necessary
+
+                my $valid_directive_info_hr  = $ini->get_valid_directive_info();
+                my $local_directives_meta_hr = $ini->get_basic_php_directives_from_file( path => $localini, all => 1 );
+                my $local_directives_hr      = {
+                    map { $_ !~ m/^\s*;/ && !exists $bad_directives{$_} && !exists $ignore_directives{$_} ? ( $_ => $local_directives_meta_hr->{$_}{value} ) : () }
+                      keys %{$local_directives_meta_hr}
+                };
+
+                for my $k ( keys %{$local_directives_hr} ) {            # Hack to avoid: The PHP directive “…” is not formatted correctly: “O…”.
+                    next if !$valid_directive_info_hr->{$k} || !$valid_directive_info_hr->{$k}{type} || ( $valid_directive_info_hr->{$k}{type} ne 'boolean' && $valid_directive_info_hr->{$k}{type} ne 'integer' );
+
+                    $local_directives_hr->{$k} = 0 if $local_directives_hr->{$k} =~ m/^off$/i;
+                    $local_directives_hr->{$k} = 1 if $local_directives_hr->{$k} =~ m/^on$/i;
+                }
+                if ( keys %{$local_directives_hr} > 0 ) {
+                    $ini->set_directives( path => $phpini, directives => $local_directives_hr );
+                }
+
+                unlink $localini;                                       # TODO/YAGNI? move it to $localini.migrated_to_php.ini_on_$rfc8601_datetimestamp
+                print "\tMigrated $localini to $phpini.\n";
+            }
+            catch {
+                my $err = $_;
+
+                my $try_again = 0;
+                for my $excp (
+                    $err,
+                    ( exists $err->{_metadata}{exceptions} ? @{ $err->{_metadata}{exceptions} } : () )    # internals gross, patches welcome …
+                ) {
+                    my $invalid_param = _get_invalid_param($excp);
+                    if ($invalid_param) {
+                        $bad_tries++;
+                        if ( $bad_tries < 6 ) {
+                            warn "\tIgnoring invalid directive “$invalid_param”\n";
+                            $bad_directives{$invalid_param}++;
+                            $try_again++;
+                        }
+                    }
+                }
+                goto TRY_INI if $try_again;
+
+                $error_count++;
+                warn "\tFailed to migrate $localini to $phpini. This will need done manually.\n";
+                if ( $prm->param('verbose') ) {
+                    my $err_str = ref($err) ? $err->to_string() : $err;
+                    $err_str =~ s/^Error #/\t\tError #/mg;
+                    print "\tError: $err_str\n";
+                }
+            }
+        }
+
+        print " … done!\n";
+    }
+
+    return if $error_count;
+    return 1;
+}
+
+###############
+#### helpers ##
+###############
+
+sub _get_invalid_param {
+    my ($excp) = @_;
+
+    my $excp_rt = ref($excp) || '';
+    if ( $excp_rt eq 'Cpanel::Exception::InvalidParameter' ) {
+        return $excp->{_mt_args}[1];    # internals gross, patches welcome …
+    }
+    return;
+}
+
+sub _validate {
+    my ($prm) = @_;
+    if ( !$prm->param('run') ) {
+        warn "You must pass --run to indicate you want the script to make the changes to your system.\n";
+        return;
+    }
+    return 1;
+}
+
+sub _help {
+    my ($prm) = @_;
+
+    print <<"END_HELP";
+Usage: $0 --run
+
+Migrate each installed PHP’s …/etc/php.d/local.ini to …/etc/php.ini.
+
+This is needed because EasyAapache 4 no longer utilizes local.ini file.
+
+Options:
+   --help     this screen
+   --run      perform the migration
+   --verbose  Enable verbose output
+END_HELP
+    exit( $prm->param('help') ? 0 : 1 );
+}
+
+sub _migrate_extension_directives {    # See EA-6768 for why this hack is necessary
+    my ( $localini, $phpini ) = @_;
+
+    # 1. grab all extension directives from $localini
+    my @localini_cont = @{ Cpanel::LoadFile::loadfileasarrayref($localini) };    # could get undef if the file disappears after the check that then calls this function and here, in that case an unit warning is OK and not worth making what should be a simple slurp any more complicated than our gross file utils are already making it
+    return 1 if !@localini_cont;
+
+    $localini_cont[-1] .= "\n" if substr( $localini_cont[-1], -1, 1 ) ne "\n";    # ensure trailing newline on last line
+
+    my @extensions = grep { m/^\s*extension\s*=/ } @localini_cont;
+
+    if (@extensions) {
+
+        # 2. write them to $phpini
+        my @phpini_cont = @{ Cpanel::LoadFile::loadfileasarrayref($phpini) };                                           # see comment above about why checking for undef is not really needed here
+        Cpanel::FileUtils::Write::overwrite( $phpini, join( "", @extensions, @phpini_cont ), ( stat($phpini) )[2] );    # yes, it takes a string for the content and if we don't pass the current mode it is re-set to a default /facepalm
+
+        # 3. remove them from $localini
+        Cpanel::FileUtils::Write::overwrite( $localini, join( "", grep( !m/\s*extension\s*=/, @localini_cont ) ), ( stat($localini) )[2] );    # yes, it takes a string for the content and if we don't pass the current mode it is re-set to a default /facepalm
+    }
+
+    return 1;
+}
+
+1;

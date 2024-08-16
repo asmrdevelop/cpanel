@@ -1,0 +1,57 @@
+[%#
+
+Variables passed in:
+
+origin                  - the system component which generated the email
+
+reason                  - reason that backup did not complete
+
+signal                  - The signal the backup process terminated with
+
+important_errors        - list of errors that occured during the failure of the backup (optional)
+
+start_time              - The epoch time when the backup process started
+
+end_time                - The epoch time when the backup process ended
+
+run_time_localized      - The duration of the backup process execution
+
+For more information about how to customize notification templates, read our documentation at https://go.cpanel.net/notificationtemplates
+
+-%]
+
+[%
+    PROCESS "include/colors.tmpl";
+    PROCESS "include/styles.tmpl";
+    PROCESS "include/code_block.tmpl";
+    PROCESS "include/run_time_info.tmpl";
+    WRAPPER 'wrapper/main.html.tmpl';
+        NOTICE.email_reason = CPANEL.locale.maketext('The backup process on “[_1]” failed.', NOTICE.host_server );
+%]
+
+    [% IF NOTICE.reason %]
+        <p>[% CPANEL.locale.maketext('The backup failed to complete for the following reason:'); %]</p>
+        <p>[% code_block(formatted_code=CPANEL.format_text_as_html(NOTICE.reason)); %]</p>
+    [% END %]
+
+    [% IF NOTICE.signal %]
+        <p>[% CPANEL.locale.maketext('The backup process terminated prematurely with the “[_1]” signal.', NOTICE.signal); %]</p>
+    [% END %]
+
+    [% IF NOTICE.important_errors.size %]
+        <p>
+            [%-
+                PROCESS "include/zebra_table.tmpl";
+                SET lead_in_phrase = NOTICE.reason ? CPANEL.locale.maketext('Additionally, the backup process encountered the following [numerate,_1,error,errors]:', NOTICE.important_errors.size) : CPANEL.locale.maketext('The backup process encountered the following [numerate,_1,error,errors]:', NOTICE.important_errors.size);
+
+                zebra_table(items=NOTICE.important_errors, titles=[lead_in_phrase]);
+            -%]
+        </p>
+    [% END %]
+    [% IF NOTICE.log_preview && NOTICE.log_file_path %]
+        <p>[% code_block(formatted_code=NOTICE.log_preview.shift, title=CPANEL.locale.maketext('Review the attached log “[_1]” for further details.', NOTICE.log_file_path)); %]</p>
+    [% END %]
+
+    [% run_time_info() %]
+
+[% END %]

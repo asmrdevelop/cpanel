@@ -1,0 +1,25 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/killpvhost                      Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+use warnings;
+
+use Cpanel::FtpUtils::Proftpd::Kill     ();
+use Cpanel::Validate::Domain::Normalize ();
+
+my $servername = $ARGV[0];
+$servername =~ s/\s//g;
+$servername =~ s/\n//g;
+exit if !$servername;
+exit if length($servername) < 3;
+
+my $domain = Cpanel::Validate::Domain::Normalize::normalize($servername);    # included for legacy compatiblity only
+
+Cpanel::FtpUtils::Proftpd::Kill::remove_servername_from_conf($domain);
+
+print "Removed Entry from proftpd.conf\n";
+exit(0);

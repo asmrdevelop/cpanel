@@ -1,0 +1,137 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+package scripts::update_freebusy_data;
+
+# cpanel - scripts/update_freebusy_data            Copyright 2024 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use cPstrict;
+
+use Cpanel::Config::Users      ();
+use Cpanel::DAV::CaldavCarddav ();
+use Cpanel::DAV::Metadata      ();
+use Cpanel::PwCache            ();
+use Cpanel::Slurper            ();
+use Whostmgr::Email            ();
+
+use Try::Tiny;
+
+use parent qw( Cpanel::HelpfulScript );
+
+use constant _OPTIONS => ('user=s');
+
+=encoding utf-8
+
+=head1 NAME
+
+update_freebusy_data
+
+=head1 USAGE
+
+scripts/update_freebusy_data [--user]
+
+=head1 DESCRIPTION
+
+This script updates free-busy information based on what is currently in either:
+* All users' calendar collections
+* The specified user's collections.
+
+=cut
+
+# NOTE: This script is an "error steamroller". In almost every circumstance
+# this tolerates even the most heinous of errors
+
+# We get a list of all cpanel users, if they have a ~/.caldav/ dir, we load the metadata for each email user underneath
+# to get a list of the VCALENDARs, then proceeed to go through all of their event files to extrapolate the event start and end times,
+# convert those to UTC and save them in a hash, which is serialized into a json file under each principal email user.
+
+# Get data back out:
+# my $fb_data_hr = load_freebusy_data("/home/$sysuser/.caldav/$principaluser/.freebusy.json");
+# print Dumper( $fb_data_hr );
+
+# This script can take a single argument which is the username of the system account (as is called by restorepkg via Whostmgr/Transfers/Systems/NativeDAV.pm
+# Otherwise it will process all users on the server.
+
+exit __PACKAGE__->new(@ARGV)->run() unless caller();
+
+sub run ($self) {
+    if ( $< != 0 ) {
+        print STDERR "You must be root to run this script!";
+        return 1;
+    }
+
+    my $user2update  = $self->getopt('user');
+    my @users2update = map { $_, @{ Whostmgr::Email::list_pops_for($_) } } length $user2update ? ($user2update) : Cpanel::Config::Users::getcpusers();
+
+    my $cpuser;
+    my $user_homedir;
+    my %fb_data;
+    foreach my $user (@users2update) {
+        print "Processing Free/Busy data for $user...\n" if $ENV{'CPANEL_DEBUG_LEVEL'};
+
+        my $is_webmail_user = index( $user, '@' ) != -1;
+        if ( !$is_webmail_user ) {
+            $cpuser       = $user;
+            $user_homedir = scalar( ( Cpanel::PwCache::getpwnam($cpuser) )[7] );
+        }
+        next if !$user_homedir || !-d $user_homedir . '/.caldav/';
+
+        my $principal_base_path = $user_homedir . '/.caldav/' . $user . '/';
+        my $fb_full_path        = $principal_base_path . '.freebusy.json';
+
+        # define the hash we will use to store all time slots from all events and all calendar collections under this $user
+        my %fb_data;
+
+        # load metadata and find VCALENDARS
+        my $metadata_hr = Cpanel::DAV::Metadata->new(
+            'homedir' => $user_homedir,
+            'user'    => $user,
+        )->load();
+        foreach my $collection ( keys %{$metadata_hr} ) {
+
+            # Shared collections get updated on the relevant user's pass
+            next if $collection =~ m'///';
+            next if !defined( $metadata_hr->{$collection}{'type'} ) || $metadata_hr->{$collection}{'type'} ne 'VCALENDAR';
+
+            my $col_dh;
+            if ( !opendir( $col_dh, $principal_base_path . $collection ) ) {
+                print STDERR "Could not open collection directory ${principal_base_path}${collection} : $!\n";
+                next;
+            }
+
+            # this assumes .ics extension, and so far 100% have been that,
+            # but something to keep in mind. case agnostic despite 100%
+            # being lc from the caldav clients already
+            my @vcards = grep { $_ !~ m/^\./ && $_ =~ m/\.ics$/i } readdir($col_dh);
+            closedir $col_dh;
+            foreach my $vcard (@vcards) {
+                my $vcard_path = $principal_base_path . $collection . '/' . $vcard;
+                my $raw_ics_data;
+                try {
+                    $raw_ics_data = Cpanel::Slurper::read($vcard_path);
+                    my $events_ar     = Cpanel::DAV::CaldavCarddav::get_events_info( undef, \$raw_ics_data );
+                    my $fbdata_col_hr = Cpanel::DAV::CaldavCarddav::get_freebusy_data_from_parsed_ics($events_ar);
+                    foreach my $uid ( keys %{$fbdata_col_hr} ) {
+                        $fb_data{$collection}{$uid} = $fbdata_col_hr->{$uid};
+                        $fb_data{$collection}{$uid}{'file'} = $vcard;                   # because some clients like to use names other than the UID..
+                    }
+                }
+                catch {
+                    print STDERR $_;
+                };
+            }
+        }
+
+        # Save the freebusy data for the user.
+        if ( keys %fb_data ) {
+            print "Saving updated freebusy data for $user..\n" if $ENV{'CPANEL_DEBUG_LEVEL'};
+            Cpanel::DAV::CaldavCarddav::save_freebusy_data( $fb_full_path, $cpuser, \%fb_data );
+        }
+    }
+
+    print "Done!\n" if $ENV{'CPANEL_DEBUG_LEVEL'};
+    return 0;
+}
+
+1;

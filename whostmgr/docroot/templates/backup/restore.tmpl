@@ -1,0 +1,213 @@
+[%
+    USE JSON;
+    USE Whostmgr;
+    WRAPPER 'master_templates/master.tmpl'
+        header = locale.maketext('Backup Restoration')
+        breadcrumburl = '/scripts5/restoremenu'
+        theme = 'bootstrap'
+        app_key = 'backup_restoration'
+        stylesheets = [
+            Whostmgr.find_file_url('/templates/backup/common.min.css'),
+            Whostmgr.find_file_url('/yui/assets/skins/sam/calendar.css')
+        ]
+        scripts = [
+            Whostmgr.find_file_url('/yui/calendar/calendar-min.js'),
+            Whostmgr.find_file_url('/templates/backup/form.min.js'),
+            Whostmgr.find_file_url('/templates/backup/restore.min.js')
+        ];
+
+    SET spinner16 = MagicRevision('/images/loading-arrows-16.gif');
+    SET activeImage = MagicRevision('/images/24-active.gif');
+    SET pendingImage = MagicRevision('/images/24-pending.png');
+    SET successImage = MagicRevision('/images/24-success.png');
+    SET warningImage = MagicRevision('/images/warning.png');
+    SET errorImage = MagicRevision('/images/24-error.png');
+%]
+<!--[if lt IE 10]>
+<style type="text/css">
+#content .workflow-focus {
+    outline: 3px solid blue;
+}
+</style>
+<![endif]-->
+    <div id="content">
+        <p class="info-block">[% locale.maketext('To queue an account for restoration, select either the [output,strong,Restore by Account] tab or the [output,strong,Restore by Date] tab.') %]</p>
+        <p class="info-block">[% locale.maketext('You [output,strong,must] click the [output,strong,Restore] button at the bottom of the page to activate the Restoration Queue.') %]</p>
+        <ul class="nav nav-tabs">
+            <li id="select-by-account" class="active"><a href="#">[% locale.maketext('Restore by Account') %]</a></li>
+            <li id="select-by-date"><a href="#">[% locale.maketext('Restore by Date') %]</a></li>
+        </ul>
+        <div class="tab-content">
+            <div id="restore_mask" class="hidden">&nbsp;</div>
+            <form name="restore_form" id="restore_point_form" class="complex" autocomplete="off">
+                <div class="float-content row" id="tab_area">
+                    <div id="user_selection" class="workflow-focus col-xs-12 col-sm-6 col-lg-4">
+                        <h5>[% locale.maketext('Select User') %]</h5>
+                        <div title="[% locale.maketext('Clear filter') %]" id="clear_user_filter" class="clear-filter hidden">&nbsp;</div>
+                        <input type="text" placeholder="[% locale.maketext('Filter Accounts') %]" id="user_filter" class="filter form-control" />
+                        <input type="hidden" name="user" id="restore_user" />
+                        <div id="restore_user_list" tabIndex="-1">
+                            [%# XXX You may be wondering why I'm not being
+                                explicit here and using 'pairs()' or 'keys()'
+                                or 'sort()', and instead relying on the
+                                'default' behavior in this case (presuming
+                                'pairs()' in the case of a hash).
+                                The reason why is because if you have any
+                                hash keys that conflict with those vmethods,
+                                the hash key in fact will *overload* the
+                                vmethod, at which point hilarity ensues.
+                                See CPANEL-27963.
+                            %]
+                            [% FOREACH i IN data.users_list %]
+                            <span id="[% i.key %]" class="restore-user-option">[% i.key %]</span> [% SET cache = loop.count + 1 %] [% END %]
+                        </div>
+                    </div>
+                    <div id="restore_selection" class="col-xs-12 col-sm-6 col-lg-4">
+                        <input type="hidden" name="restore_point" id="restore_point" />
+                        <h5>[% locale.maketext('Available Backup Dates') %]</h5>
+                        <div id="restore_calendar" class="pull-left flip"></div>
+                    </div>
+                    <div id="restore_options" class="col-xs-12 col-sm-6 col-lg-4">
+                        <h5>[% locale.maketext('Options') %]</h5>
+                        <div class="checkbox">
+                            <label>
+                                <input type="checkbox" checked="checked" value="1" name="subdomains" />
+                                <span>[% locale.maketext('Restore Subdomains') %]</span>
+                            </label>
+                        </div>
+                        <div class="checkbox">
+                            <label>
+                                <input type="checkbox" checked="checked" value="1" name="mail_config" />
+                                <span>[% locale.maketext('Restore Mail Configuration') %]</span>
+                            </label>
+                        </div>
+                        <div class="checkbox">
+                            <label>
+                                <input type="checkbox" checked="checked" value="1" name="mysql" />
+                                <span>[% locale.maketext('Restore Databases') %]</span>
+                            </label>
+                        </div>
+                        <div id="destination_container">
+                            <label for="destination_select">[% locale.maketext('Restore from') %]</label>
+                            <select id="destination_select" name="destid" disabled class="disabled">
+                                <option value="local">Local</option>
+                            </select>
+                        </div>
+                        <hr/>
+                        <div class="checkbox">
+                            <label>
+                                <input type="checkbox" value="1" name="give_ip" />
+                                <span>[% locale.maketext('Give Dedicated IP Address') %]</span>
+                            </label>
+                        </div>
+                        <button type="button" title="[% locale.maketext('Add Account to Queue') %]" id="queue_add_user" class="btn btn-default float-bottom add-to-queue">
+                            <div class="spinner"><img src="[% spinner16 %]" /></div>
+                            <div class="button-text">[% locale.maketext('Add Account to Queue') %]</div>
+                        </button>
+                    </div>
+                </div>
+                <div class="cjt-notice-container cjt-pagenotice-container" id="notice_area"></div>
+                <div class="section">
+                    <h4 class="section-heading">[% locale.maketext('Restoration Queue') %]</h4>
+                    <div id="table_container" class="section-body table-responsive">
+                        <table id="restore_table" class="table-action table table-striped">
+                            <thead>
+                                <tr>
+                                    <th id="restore_name_header">[% locale.maketext('Account') %]</th>
+                                    <th id="restore_type_header">[% locale.maketext('Original Backup Date') %]</th>
+                                    <th id="restore_source_header">[% locale.maketext('Source') %]</th>
+                                    <th id="restore_status_header">[% locale.maketext('Status') %]</th>
+                                    <th id="restore_actions_header" valign="top">
+                                        <div class="relative-div no-margins">
+                                            <a href="#stop" id="gear" title="[% locale.maketext('Options to clear the queue.') %]" class="gear"><img alt="[% locale.maketext('Options to clear the queue.') %]" src="[% MagicRevision('/images/gear-icon.png') %]" />
+                                                <div class="arrow">&#9660;</div>
+                                            </a>
+                                            <div id="remove_menu" class="floating-menu hidden">
+                                                <a href="#stop" id="remove_queue" class="menu-item">[% locale.maketext('Clear pending accounts') %]</a>
+                                                <a href="#stop" id="remove_completed" class="menu-item">[% locale.maketext('Clear completed accounts') %]</a>
+                                                <a href="#stop" id="remove_errors" class="menu-item">[% locale.maketext('Clear error notices') %]</a>
+                                                <a href="#stop" id="remove_all" class="menu-item">[% locale.maketext('Clear all accounts') %]</a>
+                                            </div>
+                                            <span id="restore_actions_label">[% locale.maketext('Actions') %]</span>
+                                        </div>
+                                    </th>
+                                </tr>
+                            </thead>
+                            <tbody id="table_data">
+                                <tr>
+                                    <td colspan="5" class="table-loading">
+                                        <img src="[% spinner16 %]" /> [% locale.maketext('Please wait while the restoration queue is loaded.') %]
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                    <div class="form-actions-group form-action-button-group">
+                        <button type="button" title="[% locale.maketext('Restore') %]" id="run_restore" class="btn btn-primary">
+                            <div class="spinner"><img src="[% spinner16 %]" /></div>
+                            <div class="button-text">[% locale.maketext('Restore') %]</div>
+                        </button>
+                    </div>
+                </div>
+            </form>
+        </div>
+    </div>
+
+<script type="text/plain" id="row_container_template">
+    <table>
+        <tbody class="row-container">
+            {content}
+        </tbody>
+    </table>
+</script>
+<script type="text/plain" id="row_template">
+    <tr id="queue_table_row_{row_id}" class="{rowClass}">
+        <td id="{statusId}" class="{rowClass}">{user}</td>
+        <td>{date}</td>
+        <td>{source}</td>
+        <td class="row-status">
+            <img src="{statusImage}" /> {status}
+        </td>
+        <td class="row-actions">
+            <img src="[% spinner16 %]" />
+            <button type="button" title="[% locale.maketext('View Log') %]" id="viewlog_{id}" class="{viewButtonClass} btn btn-link">[% locale.maketext('View Log') %]</button>
+            <button type="button" title="[% locale.maketext('Clear') %]" id="remove_{id}" class="{clearButtonClass} btn btn-link">[% locale.maketext('Clear') %]</button>
+        </td>
+    </tr>
+</script>
+<script type="text/plain" id="row_status">
+    <tr>
+        <td colspan="5" class="cjt-notice-container cjt-pagenotice-container">
+            <div class="yui-module cjt-notice cjt-pagenotice cjt-notice-{type}">
+                <div user="{user}" time="{time}" class="close">×</div>
+                <div class="bd">
+                    <div class="cjt-notice-content">{message}</div>
+                </div>
+            </div>
+        </td>
+    </tr>
+</script>
+<script type="text/plain" id="no_records_found_template">
+    <tr>
+        <td colspan="5" class="no_records_found">[% locale.maketext('The queue is currently empty.') %]</td>
+    </tr>
+</script>
+<script type="text/javascript">
+CPANEL.namespace("CPANEL.PAGE");
+CPANEL.PAGE = {
+    activeQueue: "[% data.active_queue %]",
+    activeImage: "[% activeImage %]",
+    pendingImage: "[% pendingImage %]",
+    successImage: "[% successImage %]",
+    warningImage: "[% warningImage %]",
+    errorImage: "[% errorImage %]",
+    users: [% data.users_list.json() || '[]' %],
+    destinations: [% data.destinations.json() || '[]' %],
+    queue: [% data.restore_queue.json() || '[]' %],
+    active: [% data.active_restore.json() || '[]' %],
+    finished: [% data.recently_finished.json() || '[]' %],
+    localBackupsAvailable: [% data.is_local_backup.json() %] === "0" ? false : true
+};
+</script>
+
+[% END #wrapper -%]

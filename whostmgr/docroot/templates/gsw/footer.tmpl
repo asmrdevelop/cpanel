@@ -1,0 +1,32 @@
+        [%
+            USE Whostmgr;
+            USE VarCache;
+
+            # NOTE: Analytics UI includes are disabled by default and are strictly opt-in only.
+
+            IF template_exists('/var/cpanel/customizations/whm/includes/cp_analytics_whm.html.tt');
+
+                # The package updates setting check is required to avoid regressions during cPanel&WHM upgrade to v112.
+                # This regression may occur only for users who have package updates disabled. (Details available in PH-19613)
+                IF varcache.is_package_update_enabled;
+                    TRY;
+                        '<div id="cp-analytics-whm">';
+                        INCLUDE '/var/cpanel/customizations/whm/includes/cp_analytics_whm.html.tt';
+                        '</div>';
+                    CATCH;
+                        "";
+                    END;
+                ELSIF CPANEL.analytics_ui_includes_are_enabled() &&
+                    Whostmgr.ENV.DNT.substr(0, 1) != '1';
+                    TRY;
+                        '<div id="cp-analytics-whm">';
+                        INCLUDE '/var/cpanel/customizations/whm/includes/cp_analytics_whm.html.tt';
+                        '</div>';
+                    CATCH;
+                        "";
+                    END;
+                END;
+            END;
+        %]
+    </body>
+</html>

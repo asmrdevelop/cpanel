@@ -1,0 +1,42 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/checklink                       Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+mkdir( "/usr/local/cpanel/tests", 0700 );
+system( "chown", "cpanel:cpanel", "/usr/local/cpanel/tests" );
+
+setuids("cpanel");
+
+unlink("/usr/local/cpanel/tests/linktest1");
+unlink("/usr/local/cpanel/tests/linktest2");
+open( LINKTEST, ">/usr/local/cpanel/tests/linktest1" ) || die "Unable to create file for link test";
+close(LINKTEST);
+link( "/usr/local/cpanel/tests/linktest1", "/usr/local/cpanel/tests/linktest2" );
+if ( -f "/usr/local/cpanel/tests/linktest2" ) {
+    print "Test Passed!!\n";
+}
+else {
+    print "Test Failed!!   $!\n";
+}
+
+sub setuids {
+    my ($user) = $_[0];
+    my ( $uid, $gid );
+    ( undef, undef, $uid, $gid ) = getpwnam($user);
+    if ( !( $) = "$gid $gid" ) ) {
+        print "error setting gid\n";
+        exit;
+    }
+
+    if ( !( $( = int($gid) ) ) {
+        print "error setting gid\n";
+        exit;
+    }
+    if ( !( ( $> = $uid ) && ( $< = $uid ) ) ) {
+        die "error setting uid ($uid) [$user]\n";
+    }
+    return $uid;
+}

@@ -1,0 +1,135 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/rescan_user_dovecot_fts         Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::rescan_user_dovecot_fts;
+
+use strict;
+use warnings;
+
+use Try::Tiny;
+
+use Cpanel::AcctUtils::Account ();
+use Cpanel::Dovecot::Solr      ();
+use Whostmgr::Email::Action    ();
+
+use Getopt::Long ();
+use Pod::Usage   ();
+
+=encoding utf-8
+
+=head1 NAME
+
+scripts::rescan_user_dovecot_fts
+
+=head1 SYNOPSIS
+
+    rescan_user_dovecot_fts ( --user <username> | --help )
+
+This script will call a dovecot FTS (full text search) rescan for each mailbox on a specified account
+if the 'cpanel-dovecot-solr' RPM is installed. If not, the script informs that the RPM isn't installed
+and returns.
+
+=cut
+
+__PACKAGE__->command_line(@ARGV) unless caller();
+
+sub command_line {
+    my ( $class, @args ) = @_;
+
+    die "This must run as root!\n" if $>;
+
+    my ( $user, $help );
+
+    if (
+        !Getopt::Long::GetOptionsFromArray(
+            \@args,
+            'user=s' => \$user,
+            help     => \$help,
+        )
+        || $help
+    ) {
+        print _help();
+        return;
+    }
+
+    if ( !$user ) {
+        warn "You must specify a username!\n";
+        print _help();
+        return;
+    }
+    elsif ( !Cpanel::AcctUtils::Account::accountexists($user) ) {
+        warn "You do not have a user named '$user'.\n";
+        print _help();
+        return;
+    }
+
+    if ( !Cpanel::Dovecot::Solr::is_installed() ) {
+        warn "The 'cpanel-dovecot-solr' package is not installed. Full text search rescan not possible\n";
+        return;
+    }
+
+    my $script = $class->new();
+
+    if ( $script->process_user($user) ) {
+        local $@;
+        require Cpanel::ServerTasks;
+        eval { Cpanel::ServerTasks::schedule_task( ['DovecotTasks'], 10, 'fts_rescan_mailbox' ); };
+        warn $@ if $@;
+
+    }
+
+    return;
+}
+
+sub _help {
+    my $msg = shift;
+
+    my $val;
+    open my $wfh, '>', \$val or die "Failed to open to a scalar: $!";
+
+    Pod::Usage::pod2usage(
+        -exitval   => 'NOEXIT',
+        -message   => $msg,
+        -verbose   => 1,
+        -noperldoc => 1,
+        -output    => $wfh,
+    );
+
+    return $val;
+
+}
+
+sub process_user {
+    my ( $self, $user ) = @_;
+
+    print "Rescanning mailboxes for full text search indexing for '$user'...";
+
+    my $count           = 0;
+    my $rescanned_count = Whostmgr::Email::Action::do_with_each_mail_account(
+        $user,
+        sub {
+            my ($email_account) = @_;
+            $count++;
+            require Cpanel::Dovecot::FTSRescanQueue::Adder;
+            Cpanel::Dovecot::FTSRescanQueue::Adder->add($email_account);
+        }
+    );
+
+    print "...$rescanned_count rescanned... Done\n";
+
+    return $count;
+}
+
+sub new {
+    my ($class) = @_;
+
+    my $self = bless {}, $class;
+
+    return $self;
+}
+
+1;

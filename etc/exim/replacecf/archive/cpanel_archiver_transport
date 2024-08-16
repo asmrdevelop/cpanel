@@ -1,0 +1,47 @@
+
+archiver_incoming_local_user_method:
+  driver = appendfile
+  delivery_date_add
+  envelope_to_add
+  user = $local_part_data
+  group = ${extract{3}{:}{${lookup passwd{$local_part_data}}}}
+  directory = "${extract{5}{::}{${lookup passwd{$local_part_data}}}}/mail/archive/${perl{get_incoming_domain}}/.incoming.%CPANEL-yyyy-mm-dd%"
+  maildir_quota_directory_regex = ^(?:cur|new|\.(?!Trash$)[^\@]+)$
+  maildir_format
+  maildir_tag = ,S=$message_size
+  maildir_use_size_file
+  quota_size_regex = ,S=(\d+)
+  mode = 0660
+  return_path_add
+
+
+archiver_incoming_domain_method:
+  driver = appendfile
+  delivery_date_add
+  envelope_to_add
+  user = "${lookup{$domain_data}lsearch{/etc/userdomains}}"
+  directory = "$home/mail/archive/$domain_data/.incoming.%CPANEL-yyyy-mm-dd%"
+  maildir_quota_directory_regex = ^(?:cur|new|\.(?!Trash$)[^\@]+)$
+  maildir_format
+  maildir_tag = ,S=$message_size
+  maildir_use_size_file
+  quota_size_regex = ,S=(\d+)
+  mode = 0660
+  return_path_add
+
+
+archiver_outgoing:
+  driver = appendfile
+  delivery_date_add
+  envelope_to_add
+  user = %CPANEL-sender-sysuser%
+  group = ${extract{3}{:}{${lookup passwd{%CPANEL-sender-sysuser%}}}}
+  directory = "${extract{5}{::}{${lookup passwd{%CPANEL-sender-sysuser%}}}}/mail/archive/${extract{sender_domain}{$address_data}}/.${extract{sender_archive_directory}{$address_data}}.%CPANEL-yyyy-mm-dd%"
+  maildir_quota_directory_regex = ^(?:cur|new|\.(?!Trash$)[^\@]+)$
+  maildir_format
+  maildir_tag = ,S=$message_size
+  maildir_use_size_file
+  quota_size_regex = ,S=(\d+)
+  mode = 0660
+  return_path_add
+

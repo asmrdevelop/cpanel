@@ -1,0 +1,94 @@
+[% USE Whostmgr %]
+[% WRAPPER 'master_templates/master.tmpl'
+    header = locale.maketext('Configure [asis,Apache] [asis,RLimits]'),
+    breadcrumburl = '/scripts2/edit_apache_mem_limits',
+    theme = 'bootstrap',
+    include_legacy_stylesheets = 1
+-%]
+
+<div id="content">
+    <p class="description">[% locale.maketext("This tool calculates and sets new [asis,Apache] memory limits. Setting a process memory limit increases the stability of your server, but may reduce performance slightly. This limit applies to each [asis,Apache] process, not to all [asis,Apache] processes combined.") %]</p>
+    [% IF data.is_httpd_present %]
+    <form action="[% data.action %]" name="apacheRLimitsForm" method="post">
+        <h4 class="section-heading">[% locale.maketext("[asis,RLimitMEM] Settings") %]</h4>
+        <div class="section-body">
+
+            <div class="form-group">
+                <div class="row">
+                    <div class="col-xs-12 col-sm-6">
+                        <label class="radio-inline">
+                            [% IF data.current_rlimit == 0 %]
+                            <input type="radio" name="newRLimitMem" id="rLimitMemEnabled" value="enabled" />
+                            [% ELSE %]
+                            <input type="radio" name="newRLimitMem" id="rLimitMemEnabled" value="enabled" checked="checked" />
+                            [% END %]
+                            [% locale.maketext("Enabled")  %]
+                        </label>
+                        <label class="radio-inline">
+                            [% IF data.current_rlimit == 0 %]
+                            <input type="radio" name="newRLimitMem" id="rLimitMemDisabled" value="disabled" checked="checked" />
+                            [% ELSE %]
+                            <input type="radio" name="newRLimitMem" id="rLimitMemDisabled" value="disabled" />
+                            [% END %]
+                            [% locale.maketext("Disabled")  %]
+                        </label>
+                    </div>
+                </div>
+            </div>
+
+            <div class="form-group">
+                <div class="row">
+                    <div class="col-xs-12 col-sm-6">
+                        <div class="row">
+                            <div class="col-xs-6 col-sm-6">
+                                <div class="input-group">
+                                    [% IF data.current_rlimit == 0 %]
+                                    <input type="text" name="newRLimitMemValue" id="newRLimitMemValue" class="form-control" value="[% data.current_rlimit %]" disabled="disabled" />
+                                    [% ELSE %]
+                                    <input type="text" name="newRLimitMemValue" id="newRLimitMemValue" class="form-control" value="[% data.current_rlimit %]" />
+                                    [% END %]
+                                    <span class="input-group-addon">[% locale.maketext("MB") %]</span>
+                                </div>
+                            </div>
+                            <div class="col-xs-12 col-sm-6">
+                                <div id="newRLimitMemValue_error"></div>
+                            </div>
+                        </div>
+                        <p class="help-block">
+                        [% locale.maketext("Current setting is [numf,_1] MB.", data.current_rlimit) %]
+                        [% locale.maketext("We recommend [numf,_1] MB.", data.calculated_rlimit) %]
+                        </p>
+                    </div>
+                </div>
+            </div>
+
+            <div class="form-group">
+                <div class="checkbox">
+                    <label>
+                        <input type="checkbox" name="restart_apache" id="restart_apache" checked="checked" />
+                        [% locale.maketext("Restart [asis,Apache]?") %]
+                    </label>
+                </div>
+            </div>
+
+            <div class="form-group">
+                <button type="submit" class="btn btn-primary" name="btnSave" id="btnSave" value="1">[% locale.maketext('Save') %]</button>
+            </div>
+        </div>
+    </form>
+    <script>
+        window.PAGE = window.PAGE || {};
+        window.PAGE.max_mem = [% data.max_mem.json() %];
+    </script>
+    [% ELSE %]
+        <div class="alert alert-danger">
+            <span class="glyphicon glyphicon-remove-sign"></span>
+            <div class="alert-message">
+                <strong>[% locale.maketext("Error:") %]</strong>
+                [% locale.maketext("The [asis,Apache] configuration file is missing. You must have this file to make changes to the memory limits. You can use the [output,url,_1,_2] to generate a new configuration file.", cp_security_token _ "/scripts2/rebuildhttpdconf", "Rebuild Apache Configuration page") %]
+            </div>
+        </div>
+    [% END %]
+</div>
+
+[% END -%]

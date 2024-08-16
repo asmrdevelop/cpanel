@@ -1,0 +1,130 @@
+
+[%# This file relies on data.key_list being a list of SSH Keys %]
+            <fieldset>
+                <legend>
+                      [% locale.maketext('Remote Server Information') %]
+                </legend>
+                <div class="form-group">
+                    <label for="host">[% locale.maketext('Remote Server Address') %]:</label>
+                    <div class="row">
+                        <div class="col-sm-6">
+                            <input type="text" id="host" name="host" class="form-control">
+                        </div>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label for="server_port">[% locale.maketext('Remote SSH Port') %]:</label>
+                    <div class="row">
+                        <div class="col-sm-2">
+                            <input type="text" value="22" id="server_port" name="server_port" class="form-control">
+                        </div>
+                    </div>
+                </div>
+            </fieldset>
+            <fieldset>
+                <legend>
+                    [% locale.maketext('Authentication') %]
+                </legend>
+                <label>[% locale.maketext('Login:') %]</label>
+                <div class="radio">
+                    <label>
+                        <input type="radio" id="auth_root" value="root" name="auth" checked="checked">
+                        [% locale.maketext('Root (default)') %]
+                    </label>
+                </div>
+                <div class="radio">
+                    <label>
+                        <input type="radio" id="auth_user" value="user" name="auth">
+                        [% locale.maketext('User') %]
+                    </label>
+                </div>
+                <div id="authuser_wrapper" class="form-group">
+                    <label>[% locale.maketext('Username:') %]</label>
+                    <div class="row">
+                        <div class="col-sm-6">
+                            <input type="text" id="authuser" name="authuser" class="form-control">
+                        </div>
+                    </div>
+                </div>
+                <label>[% locale.maketext('Authentication Method:') %]</label>
+                <div class="radio">
+                    <label>
+                        <input type="radio" name="authtype" value="password" id="authtype_password" checked="checked">
+                        [% locale.maketext('Password (default)') %]
+                    </label>
+                </div>
+                <div class="radio">
+                    <label>
+                        <input type="radio" name="authtype" value="publickey" id="authtype_publickey" [% !data.key_list.size && 'disabled' %]>
+                        [% locale.maketext('SSH Public Key') %]
+                    </label>
+
+                    <span class="help-block">
+                        [% IF !data.key_list.size -%]
+                            [% locale.maketext('You have no SSH keys registered on your server.') %]
+                        [% END -%]
+                        [% locale.maketext('Click [output,url,_1,here,target,_blank] if you need to add an SSH key.', '../scripts2/sshkeys') %]
+                    </span>
+                </div>
+                <div id="public_key_options">
+                    <div class="form-group">
+                        <label>[% locale.maketext('SSH Key:') %]</label>
+                        <div class="row">
+                            <div class="col-sm-6">
+                                <select name="sshkey" id="sshkey_selector" class="form-control">
+                                    [% FOREACH key IN data.key_list %]
+                                        [% IF key.selected == 'true' %]
+                                            <option value="[% key.key FILTER html %]" selected="selected">[% key.key FILTER html %]</option>
+                                        [% ELSE %]
+                                            <option value="[% key.key FILTER html %]">[% key.key FILTER html %]</option>
+                                        [% END %]
+                                    [% END %]
+                                </select>
+                            </div>
+                        </div>
+                    </div>
+                    <div id="public_key_password" class="form-group">
+                        <label>[% locale.maketext('SSH Key Passphrase:') %]</label>
+                        <div class="row">
+                            <div class="col-sm-6">
+                                <input id="sshkeypass" name="sshkeypass" type="password" class="form-control" disabled="disabled"/>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div id="user_password" class="form-group">
+                    <label id="user_password_label">[% locale.maketext('Login Password:') %]</label>
+                    <div class="row">
+                        <div class="col-sm-6">
+                            <input type="password" id="authpass" name="authpass" class="form-control">
+                        </div>
+                    </div>
+                </div>
+                <div id="esc_options">
+                    <div>
+                        <div class="form-group">
+                            <label>[% locale.maketext('Root Escalation Method:') %]</label>
+                            <div class="radio">
+                                <label>
+                                    <input type="radio" name="escmeth" id="escmeth_su" value="su" checked="checked">
+                                    [% locale.maketext('[asis,su][comment,run a shell with substitute user and group IDs]') %]
+                                </label>
+                            </div>
+                            <div class="radio">
+                                <label>
+                                    <input type="radio" name="escmeth" id="escmeth_sudo" value="sudo">
+                                    [% locale.maketext('[asis,sudo][comment,execute a command as another user]') %]
+                                </label>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="form-group" id="su_pass">
+                        <label>[% locale.maketext('Root Password:') %]</label>
+                        <div class="row">
+                            <div class="col-sm-6">
+                                <input type="password" id="rootpass" name="rootpass" class="form-control">
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </fieldset>

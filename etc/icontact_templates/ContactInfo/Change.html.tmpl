@@ -1,0 +1,50 @@
+
+[%#
+Variables passed in:
+
+origin                  - the system component from which the request originated
+services                - arrayref, the services that have been updated
+ip_address              - the IP address from which the request originated
+ip_address_is_public    - whether the “ip_address” is public (i.e., not a loopback, private, &c.)
+reverse_dns_hostnames   - arrayref of whatever a reverse DNS lookup returned, if successful
+country_name            - the name of the country that GeoIP reports is where the IP address’s computer is
+country_code            - the two-letter country code of the “country_name”
+country_lookup_error    - whatever error may have prevented getting a “country_name”
+
+For more information about how to customize notification templates, read our documentation at https://go.cpanel.net/notificationtemplates
+
+-%]
+
+[%
+    PROCESS "include/colors.tmpl";
+    PROCESS "include/styles.tmpl";
+
+
+    WRAPPER 'wrapper/main.html.tmpl'
+        NOTICE.email_reason = CPANEL.locale.maketext('Your notification settings have changed.');
+%]
+
+<p>
+    [% CPANEL.locale.maketext('The system saved an update of notification settings for your account:') %]
+</p>
+<ul>
+[% FOR notice = NOTICE.messages_about_disabled_settings -%]
+    <li>
+        [% notice.html() -%]
+    </li>
+[% END -%]
+</ul>
+[% FOR pair = NOTICE.updated_email_addresses -%]
+    <p>
+        [% IF pair.key == 'primary' -%]
+            [% CPANEL.locale.maketext('Your primary email address changed from “[_1]” to “[_2]”.', pair.value.0.html(), pair.value.1.html()) %]
+        [% ELSIF pair.key == 'secondary' -%]
+            [% CPANEL.locale.maketext('Your secondary email address changed from “[_1]” to “[_2]”.', pair.value.0.html(), pair.value.1.html()) %]
+        [% END -%]
+    </p>
+[% END -%]
+<p>
+    [% CPANEL.locale.maketext('If you initiated this change, disregard this email. If you did not initiate this change, contact your system administrator.') %]
+</p>
+
+[% END %]

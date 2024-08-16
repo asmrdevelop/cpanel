@@ -1,0 +1,46 @@
+#!/usr/bin/perl
+
+# cpanel - bin/perlmodules                         Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+BEGIN { unshift @INC, '/usr/local/cpanel'; }
+
+use strict;
+
+use Cpanel::CleanINC ();
+
+use Carp;
+use Cpanel::cPCPAN ();
+
+my $cPCPAN = Cpanel::cPCPAN->new();
+
+my @INSTALLEDMODS = @{ $cPCPAN->list_installed() };
+
+for ( my $i = 0; $i <= $#INSTALLEDMODS; $i += 2 ) {
+    if ( $ARGV[0] eq "-l" ) {
+        print "<tr>";
+        for ( my $j = 0; $j < 2; $j++ ) {
+            my ( $modname, $version, $descp ) = parse_mod( $INSTALLEDMODS[ $i + $j ] );
+            if ( -e "/usr/man/man3/$modname.3" ) {
+                print "<td><a href=\"$ARGV[1]?$modname\">$modname ($version)</a></td>";
+            }
+            else {
+                print "<td>$modname ($version)</td>";
+            }
+        }
+        print "</tr>\n";
+    }
+    else {
+        my ( $modname,  $version,  $descp )  = parse_mod( $INSTALLEDMODS[$i] );
+        my ( $modname1, $version1, $descp1 ) = parse_mod( $INSTALLEDMODS[ $i + 1 ] );
+        print "<tr><td>" . $modname . " ($version)</td><td>" . $modname1 . " ($version1)</td></tr>\n";
+    }
+}
+
+sub parse_mod {
+    return split( /=/, scalar shift, 3 );
+}
+
+1;

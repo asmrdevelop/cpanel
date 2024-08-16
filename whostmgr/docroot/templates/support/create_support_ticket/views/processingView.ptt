@@ -1,0 +1,104 @@
+<div id="processingView">
+    <!-- This alert needs to be outside of the .bootstrap-container so that its width matches other alerts -->
+    <cp-alert type="danger" id="processing-error" ng-if="processingError">
+        <span ng-bind-html="processingError.message"></span>
+        <span class="processing-error-actions">
+            <span class="processing-error-text">[% locale.maketext('We cannot proceed with this automated tool. You must continue the ticket creation process within the [asis,cPanel Customer Portal].') %]</span>
+            <button id="processing-error-bypass-button"
+                    target="tickets"
+                    class="btn btn-primary"
+                    title="[% locale.maketext('Transfer to the [asis,cPanel Customer Portal] to finish your support request …') %]"
+                    ng-click="openTicketWizard()">
+                [% locale.maketext('Complete your support request') %] <span class="fas fa-external-link-alt"></span>
+            </button>
+        </span>
+    </cp-alert>
+
+    <div class="bootstrap-container">
+
+        <div class="row ng-hide" ng-show="ui.showTsa">
+            <div id="tos-verification">
+                <span class="col-xs-1">
+                    <span id="log-tsa-icon"
+                          cp-processing-icon
+                          class="pull-right flip text-center processing-icon"
+                          ng-model="work.states.logTsa"></span>
+                </span>
+                <span class="col-xs-11"
+                      ng-class="{ emphasize: work.states.logTsa > 0 }">[% locale.maketext('Recording that you accepted the Technical Support Agreement …') %]</span>
+            </div>
+        </div>
+        <div class="row">
+            <div id="initialize-request">
+                <span class="col-xs-1">
+                    <span id="init-request-icon"
+                          class="pull-right flip text-center processing-icon"
+                          cp-processing-icon
+                          ng-model="work.states.initializeRequest"></span>
+                </span>
+                <span class="col-xs-11"
+                      ng-class="{ emphasize: work.states.initializeRequest > 0 }">[% locale.maketext('Initializing your support request with [asis,cPanel] …') %]</span>
+            </div>
+        </div>
+        <div class="row ng-hide" ng-show="ui.showAccess">
+            <div id="authorize-support">
+                <span class="col-xs-1">
+                    <span id="log-authorize-support-icon"
+                          cp-processing-icon
+                          class="pull-right flip  text-center processing-icon"
+                          ng-model="work.states.logAuthorizeSupport"></span>
+                </span>
+                <span class="col-xs-11"
+                      ng-class="{ emphasize: work.states.logAuthorizeSupport > 0 }">[% locale.maketext('Authorizing [asis,cPanel] Support to access this server …') %]</span>
+            </div>
+        </div>
+        <div class="row ng-hide" ng-show="ui.showAccess">
+            <div id="start-ssh-test">
+                <span class="col-xs-1">
+                    <span id="start-ssh-test-icon"
+                          cp-processing-icon
+                          class="pull-right flip  text-center processing-icon"
+                          ng-model="work.states.startSshTest"></span>
+                </span>
+                <span class="col-xs-11"
+                      ng-class="{ emphasize: work.states.startSshTest > 0 }">[% locale.maketext('Starting [asis,SSH] connection testing …') %]</span>
+            </div>
+        </div>
+        <div class="row">
+            <div id="transferring">
+                <span class="col-xs-1">
+                    <span id="log-authorize-support-icon"
+                          cp-processing-icon
+                          class="pull-right flip  text-center processing-icon"
+                          ng-model="work.states.transferring"></span>
+                </span>
+                <span class="col-xs-11"
+                      ng-class="{ emphasize: work.states.transferring > 0 }">[% locale.maketext('Transferring you to the [asis,cPanel Customer Portal] …') %]</span>
+            </div>
+        </div>
+        <div class="row ng-hide" ng-show="work.states.transferring == 2 && !isPopupBlocked">
+            <div class="col-xs-12">
+                <div id="transferring-note"
+                     class="alert alert-info">
+                    <span class="glyphicon glyphicon-info-sign"></span>
+                    <div class="alert-message">
+                        <strong>[% locale.maketext('Note:') %]</strong>
+                        [% locale.maketext('Your ticket is not submitted until you enter the ticket information in the [asis,cPanel Customer Portal] window.') %]
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="row ng-hide" ng-show="isPopupBlocked">
+            <div class="col-xs-12">
+                <cp-alert id="popup-blocker-info" type="info">
+                    <p>[% locale.maketext('We have gathered your server’s information for [asis,cPanel] Support. Click the button below to fill out the rest of your ticket.') %]</p>
+                    <button id="bypass-blocker"
+                            target="tickets"
+                            class="btn btn-primary"
+                            title="[% locale.maketext('Transfer to the [asis,cPanel Customer Portal] to finish your support request …') %]"
+                            ng-click="openTicketWizard()">[% locale.maketext('Fill out your support request.') %] <span class="fas fa-external-link-alt"></span></button>
+                </cp-alert>
+            </div>
+        </div>
+    </div>
+</div>

@@ -1,0 +1,201 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+# cpanel - scripts/gather_update_logs_setupcrontab
+#                                               Copyright(c) 2022 cPanel, L.L.C.
+#                                                           All rights Reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+# copying clamav_setupcrontab only because most recent solution is too new:
+# CPANEL-33654. So next cron added should use that instead, and this code should
+# be replaced with it after some time.
+package scripts::gather_update_logs_setupcrontab;
+
+=head1 NAME
+
+gather_update_logs_setupcrontab
+
+=head1 SYNOPSIS
+
+gather_update_logs_setupcrontab [ off --help ]
+
+=head1 DESCRIPTION
+
+This script adds a line to the system cron for the update gatherer script.
+
+The optional argument 'off' will remove the line.
+
+=cut
+
+use lib '/var/cpanel/perl';
+use Cpanel::UpdateGatherer::Std;
+
+use parent 'Cpanel::HelpfulScript';
+
+use constant _OPTIONS          => ();
+use constant CRONTAB_FILE_PATH => '/etc/cron.d/cpanel-analytics';
+use constant { CRONTAB_TYPE_USER => 0, CRONTAB_TYPE_FILE => 1, CRONTAB_TYPE_MAX => 1 };
+
+use Try::Tiny;
+
+use Cpanel::ConfigFiles            ();
+use Cpanel::SafeRun::Object        ();
+use Cpanel::Autodie                ();
+use Cpanel::Transaction::File::Raw ();
+
+__PACKAGE__->new()->run(@ARGV) if !caller;
+
+sub run ( $self, @args ) {
+    my $match   = 'gather_update_log_stats';
+    my $command = "$Cpanel::ConfigFiles::CPANEL_ROOT/scripts/gather_update_log_stats --logfile /var/cpanel/updatelogs/last --upload > /dev/null 2>&1";
+    my $enable  = 1;
+    if ( @args && $args[0] =~ m/^off$/i ) {
+        $enable = 0;
+    }
+
+    # If there is an entry in root's crontab, mark it for deletion.
+    my $has_match_root = 0;
+    my @crontab_root   = get_crontab_root();
+    foreach my $line (@crontab_root) {
+        next if $line =~ m/^#/;
+        if ( $line =~ m/$match/ ) {
+            $has_match_root = 1;
+            last;
+        }
+    }
+
+    # Do the same for the file in /etc/cron.d.
+    # FIXME: This is probaby too DRY, but it's also dead simple.
+    my $has_match_file = 0;
+    my @crontab_file   = get_crontab_file(CRONTAB_FILE_PATH);
+    foreach my $line (@crontab_file) {
+        next if $line =~ m/^#/;
+        if ( $line =~ m/$match/ ) {
+            $has_match_file = 1;
+            last;
+        }
+    }
+
+    umask 077;    # See SEC-408.
+
+    my $ex;
+
+    if ($enable) {
+        if ( !$has_match_file ) {
+            push @crontab_file, generate_crontab_entry( $command, CRONTAB_TYPE_FILE );
+            try {
+                write_crontab_file(@crontab_file);
+            }
+            catch {
+                $ex = $_;
+            };
+        }
+    }
+    else {
+        if ($has_match_file) {
+            @crontab_file = remove_crontab_entry( $match, @crontab_file );
+            try {
+                write_crontab_file(@crontab_file);
+            }
+            catch {
+                $ex = $_;
+            };
+        }
+    }
+
+    # Always clean the root crontab entry if things didn't go badly when writing the file.
+    if ( $has_match_root && !defined $ex ) {
+        @crontab_root = remove_crontab_entry( $match, @crontab_root );
+        try {
+            write_crontab_root(@crontab_root);
+        }
+        catch {
+            $ex = $_;
+        };
+    }
+
+    if ($ex) {
+        return 0;
+    }
+
+    return 1;
+}
+
+sub generate_crontab_entry ( $command, $entry_type = CRONTAB_TYPE_USER ) {
+    die "no command given"        if !$command;
+    die "unrecognized entry type" if ( $entry_type < 0 || $entry_type > CRONTAB_TYPE_MAX );
+
+    my $rt     = int( rand(2.9999999) );
+    my $hour   = int( rand(6) );
+    my $minute = int( rand(60) );
+
+    # With about 1/3rd probability, choose to run between 21:00 and 23:59 instead of 00:00 to 06:59.
+    if ( $rt == 0 ) {
+        $hour = ( 24 - int( rand(4) ) );
+    }
+    if ( $hour == 24 ) {
+        $hour = 0;
+    }
+
+    my $entry = "$minute $hour * * * ";
+
+    # If this is for a crontab file, add the user name before the command.
+    $entry .= "root " if $entry_type == CRONTAB_TYPE_FILE;
+
+    $entry .= $command;
+
+    return $entry;
+}
+
+sub remove_crontab_entry ( $match, @crontab ) { return grep( !/$match/, @crontab ) }
+
+sub get_crontab_root {
+    my $crontab_sro = Cpanel::SafeRun::Object->new_or_die(
+        'program' => '/usr/bin/crontab',
+        'args'    => ['-l'],
+    );
+    my @crontab = split( /\n/, $crontab_sro->stdout() );
+    return @crontab;
+}
+
+sub get_crontab_file ($path) {
+    my @crontab;
+    local $/;
+
+    try {
+        Cpanel::Autodie::open( my $fh, '<', $path );
+        my $contents = <$fh>;
+        @crontab = split( /\n/, $contents ) if defined $contents;
+        close $fh;
+    }
+    catch {
+        my $ex = $_;
+        die $ex unless $ex->error_name() eq 'ENOENT';
+    };
+
+    return @crontab;
+}
+
+sub write_crontab_root (@crontab) {
+    Cpanel::Autodie::open( my $cron_in, '>', '/scripts/.crontab' );
+    foreach my $line (@crontab) {
+        Cpanel::Autodie::print( $cron_in, $line . "\n" );
+    }
+    close $cron_in;
+    system 'crontab', '/scripts/.crontab';
+    unlink '/scripts/.crontab';
+    return 1;
+}
+
+sub write_crontab_file (@crontab) {
+    my $contents = join( "\n", @crontab ) . "\n";
+    my $txn      = Cpanel::Transaction::File::Raw->new(
+        'path'        => CRONTAB_FILE_PATH,
+        'ownership'   => [ 0, 0 ],
+        'permissions' => 0600,
+    );
+    $txn->set_data( \$contents );
+    $txn->save_and_close_or_die();
+    return 1;
+}
+
+1;

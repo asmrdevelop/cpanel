@@ -1,0 +1,45 @@
+[%#
+Variables passed in:
+user        - The user the process is running as
+command     - The command being run
+pid         - The pid of the command being run
+cpu         - The percentage of cpu consumed by the process
+mem         - The percentage of memory consumed by the process
+elapsed     - The number of seconds the process has been running
+-%]
+
+[%
+    PROCESS "include/colors.tmpl";
+    PROCESS "include/styles.tmpl";
+    PROCESS 'include/system_info_views.html.tmpl';
+    PROCESS "include/system_info_table.tmpl";
+
+    SET NOTICE.service_name = 'cpuwatch';
+    SET NOTICE.notification_type = 'stall';
+    SET NOTICE.show_chkservd_version = 0;
+
+    # No 'SET' here as it will cause the variable to not be html encoded see CPANEL-1145
+    html_safe_command = NOTICE.command FILTER html;
+
+    NOTICE.email_reason = CPANEL.locale.maketext('The process “[_1]” stalled while it ran for user “[_2]”.', html_safe_command, NOTICE.user);
+
+    WRAPPER 'wrapper/main.html.tmpl';
+%]
+
+
+<p>
+  [% CPANEL.locale.maketext('The process has run for “[_1]”.', split_time_view.print(NOTICE.elapsed)) %]
+</p>
+
+<p>
+  [% CPANEL.locale.maketext('At the time that the system generated this notification, the process had a [output,abbr,PID,process ID] of “[_1]”, and it consumed [numf,_2]% of the system’s memory and [numf,_3]% of the system’s [output,abbr,CPU,Central Processing Unit] time.', NOTICE.pid, NOTICE.mem, NOTICE.cpu) %]
+</p>
+
+<p>
+    [% CPANEL.locale.maketext('The server’s current health statistics are:') %]
+</p>
+<p>
+[% system_info_table() %]
+</p>
+
+[% END %]

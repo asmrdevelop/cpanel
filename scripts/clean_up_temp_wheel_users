@@ -1,0 +1,89 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/clean_up_temp_wheel_users       Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::clean_up_temp_wheel_users;
+
+use strict;
+use warnings;
+
+use Getopt::Long                           ();
+use Cpanel::Logger                         ();
+use Cpanel::PwCache::PwEnt                 ();
+use Whostmgr::TicketSupport::TempWheelUser ();
+
+my $MAX_AGE_DAYS = 60;
+
+exit run(@ARGV) unless caller;
+
+sub run {
+    my @args = @_;
+
+    my ($opt_help);
+    Getopt::Long::GetOptionsFromArray(
+        \@args,
+        'help' => \$opt_help,
+      )
+      and !@args
+      or do {
+        _print_usage();
+        return 1;
+      };
+
+    if ($opt_help) {
+        _print_usage();
+        return 0;
+    }
+
+    my $logger = Cpanel::Logger->new();
+
+    my ( $number_removed, $errors ) = ( 0, 0 );
+    while ( my @PW = Cpanel::PwCache::PwEnt::getpwent() ) {
+        my ( $username, $homedir ) = @PW[ 0, 7 ];
+        my $ticket_id = 'unknown';
+        eval {
+            $ticket_id = Whostmgr::TicketSupport::TempWheelUser::identify_ticket($username);
+
+            if ( $ticket_id && time() - _mtime($homedir) >= $MAX_AGE_DAYS * 86400 ) {
+
+                if ( Whostmgr::TicketSupport::TempWheelUser::cleanup($ticket_id) ) {
+                    $logger->info( sprintf( 'Removed %d+ day old temporary wheel/sudo user %s (ticket %s).', $MAX_AGE_DAYS, $username, $ticket_id ) );
+                }
+                else {
+                    $logger->info( sprintf( 'Failed to automatically clean up %s (ticket %s). You may remove this user manually.', $username, $ticket_id ) );
+                }
+                ++$number_removed;
+            }
+        };
+        if ( my $exception = $@ ) {
+            $logger->info( sprintf( 'Caught exception while cleaning up %s (ticket %s): %s', $username, $ticket_id, $exception ) );
+        }
+    }
+
+    if ( $number_removed > 0 ) {
+        $logger->info( sprintf( 'Cleaned up a total of %d users. Failures: %s', $number_removed, $errors ? $errors : 'none' ) );
+    }
+    else {
+        $logger->info('Nothing to do.');
+    }
+
+    return 0;
+}
+
+sub _mtime {
+    my ($path) = @_;
+    return ( ( stat $path )[9] );
+}
+
+sub _print_usage {
+    print <<EOF;
+usage: $0 [--help]
+
+EOF
+    return;
+}
+
+1;

@@ -1,0 +1,22 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/pwck                            Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+require Expect;
+
+exit if ( !-x '/usr/sbin/pwck' );
+
+my $exp = Expect->spawn("/usr/sbin/pwck")
+  or die "Cannot spawn pwck $!\n";
+
+while (1) {
+    $exp->expect( 30, [ '\?', sub { $exp->send("yes\r"); } ], [ 'eof', sub { exit(); } ], [ 'timeout', sub { exit(); } ], 'default' );
+}
+
+my $pid = $exp->pid();
+
+$exp->soft_close();
+waitpid( $pid, 0 );

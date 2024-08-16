@@ -1,0 +1,155 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/userdirctl                      Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+use warnings;
+
+use Cpanel::Config::LoadUserDomains ();
+use Cpanel::Config::CpConfGuard     ();
+use Cpanel::Config::LoadConfig      ();
+use Cpanel::ConfigFiles::Apache 'apache_paths_facade';    # see POD for import specifics
+use Cpanel::ConfigFiles::Apache::Config  ();
+use Cpanel::SafeFile                     ();
+use Cpanel::Logger                       ();
+use Cpanel::WildcardDomain               ();
+use Cpanel::HttpUtils::ApRestart::BgSafe ();
+
+my $logger = Cpanel::Logger->new();
+
+my $ctl = lc shift @ARGV;
+if ( $ctl !~ /^o(n|ff)$/ ) {
+    die "$0: usage: $0 <on|off>";
+}
+
+exit if ( !-e apache_paths_facade->bin_httpd() );
+
+my $apache_conf = Cpanel::ConfigFiles::Apache::Config::get_config();
+
+my $bad_mod;
+if ( $apache_conf->{'supported'}{'mpm_itk'} || $apache_conf->{'supported'}{'itk'} ) {
+    $bad_mod = 'Apache MPM-ITK';
+}
+elsif ( $apache_conf->{'supported'}{'mod_ruid2'} ) {
+    $bad_mod = 'mod_ruid2';
+}
+elsif ( $apache_conf->{'supported'}{'mod_passenger'} ) {
+    $bad_mod = 'mod_passenger';
+}
+
+#Do not allow use of mod_userdir if running apache mpm-itk or ruid2 or mod_passenger due to security implications
+if ( $ctl eq 'on' && $bad_mod ) {
+    print "Detected $bad_mod in use.\n";
+    print "Using both mod_userdir and $bad_mod is not a supported configuration.\n";
+    print "Changes were not saved.\n";
+    exit;
+}
+
+my $cpconf_guard = Cpanel::Config::CpConfGuard->new();
+$cpconf_guard->{'data'}->{'userdirprotect'} = $ctl eq 'on' ? 1 : 0;
+$cpconf_guard->save();
+
+my $UDS = Cpanel::Config::LoadConfig::loadConfig( '/var/cpanel/moddirdomains', {}, '\s*[:]\s*', '^\s*[#]' );
+
+my $userdomains = Cpanel::Config::LoadUserDomains::loaduserdomains( {}, 1 );
+
+my $httplock = Cpanel::SafeFile::safeopen( \*HC, "+<", apache_paths_facade->file_conf() );
+if ( !$httplock ) {
+    $logger->die( 'Could not edit ' . apache_paths_facade->file_conf() );
+}
+
+my @CFILE;
+while (<HC>) {
+    push( @CFILE, $_ );
+}
+seek( HC, 0, 0 );
+
+my ( $bh, $ivh, $iuserdir, $userdirl, $killuserdir );
+foreach (@CFILE) {
+    my $line = $_;
+    if ( !( $line =~ /^#/ ) ) {
+        if ( $line =~ /<virtualhost/i ) {
+            $bh  = 1;
+            $ivh = 1;
+        }
+        if ( $line =~ /<ifmodule\s*mod_userdir/i && $ivh ) {
+            $iuserdir    = 1;
+            $userdirl    = '';
+            $killuserdir = 0;
+        }
+        if ( $line =~ /^\s*userdir\s+/i && !$ivh ) {
+            print HC $line;
+            next;
+        }
+        if ( $iuserdir && $line =~ /<\/ifmodule/i && $ivh ) {
+            $iuserdir = 0;
+            if ($killuserdir) {
+                $userdirl = '';
+                next;
+            }
+            else {
+                print HC $userdirl;
+                $userdirl = '';
+            }
+        }
+        if ( $line =~ /<\/virtualhost/i ) {
+            $ivh = 0;
+        }
+        if ( $ivh && $ctl eq "on" ) {
+            if ( $line =~ /^\s*Userdir\s*disabled/i ) {
+                $bh = 0;
+            }
+            if ( $line =~ /ServerName\s*(\S+)/i ) {
+                my $sn = $1;
+                $sn =~ s/^www\.//g;
+
+                # decode servername to match against userdomains
+                $sn = Cpanel::WildcardDomain::decode_wildcard_domain($sn);
+                if ($bh) {
+                    my $owner = $userdomains->{$sn} || '';
+                    if ( $owner ne "" && $owner ne "root" && $owner ne "*" && getpwnam($owner) ) {
+                        if ( $UDS->{$sn} ne "-1" ) {
+                            print HC "    <IfModule mod_userdir.c>\n";
+                            print HC "        UserDir disabled\n";
+                            print HC "        UserDir enabled ${owner} $UDS->{$sn}\n";
+                            print HC "    </IfModule>\n";
+                        }
+                    }
+                    else {
+                        if ( $UDS->{"DefaultHost"} ne "-1" ) {
+                            print HC "    <IfModule mod_userdir.c>\n";
+                            print HC "        UserDir disabled\n";
+                            print HC "        UserDir enabled " . $UDS->{"DefaultHost"} . "\n" if ( $UDS->{'DefaultHost'} );
+                            print HC "    </IfModule>\n";
+                        }
+                    }
+                }
+            }
+        }
+        if ( $ivh && $ctl eq "off" ) {
+            $killuserdir = 1;
+            if ( $line =~ /^\s*Userdir\s*disable/i ) {
+                next;
+            }
+        }
+    }
+    if ($iuserdir) {
+        $userdirl .= $line;
+    }
+    elsif ( $line =~ /^\s*userdir/i ) {
+        next;
+    }
+    else {
+        print HC $line;
+    }
+}
+
+truncate( HC, tell(HC) );
+Cpanel::SafeFile::safeclose( \*HC, $httplock );
+
+Cpanel::HttpUtils::ApRestart::BgSafe::restart();
+
+print "Your changes have been saved.\n";

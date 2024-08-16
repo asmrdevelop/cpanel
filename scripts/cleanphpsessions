@@ -1,0 +1,24 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/cleanphpsessions                Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use Cpanel::AccessIds ();
+use Cpanel::PwCache   ();
+use Cpanel::Binaries  ();
+
+my $php_bin = Cpanel::Binaries::path('php');
+
+opendir my $dir_h, '/var/cpanel/userhomes';
+my @dirs = grep { /^cpanel/ } grep { !/-/ } grep { !/\.\.?/ } readdir $dir_h;
+closedir $dir_h;
+
+foreach my $user (@dirs) {
+    my $homedir = ( Cpanel::PwCache::getpwnam($user) )[7];
+    if ( $homedir && -e $homedir . '/sessions/phpsess.sdb' ) {
+        my $script = '/usr/local/cpanel/scripts/cleanphpsessions.php';
+        Cpanel::AccessIds::run_as_user( $user, $php_bin, $script, $user );
+    }
+}

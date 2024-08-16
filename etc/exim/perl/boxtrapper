@@ -1,0 +1,54 @@
+
+sub checkbx_autowhitelist {
+    my $address = shift;
+    my $phost   = Exim::expand_string('$primary_hostname');
+    my $rp      = Exim::expand_string('$received_protocol');
+    if ( $rp eq 'local' || $rp !~ /^e?smtps?a$/i || !$address || $address eq '' ) { return 'no'; }
+    my ( $localpart, $domain ) = split( /\@/, $address );
+
+    if ( ( !$domain || $domain eq '' || $domain eq $phost ) ) {
+        my $homedir = gethomedir($localpart);
+        unless ( $homedir ne '' ) {
+            return 'no';
+        }
+
+        if ( -e $homedir . '/etc/.boxtrapperenable' && !-e $homedir . '/etc/.boxtrapperautowhitelistdisable' ) {
+            return 'yes';
+        }
+        else {
+            return 'no';
+        }
+    }
+    else {
+        my $owner   = getdomainowner($domain);
+        my $homedir = gethomedir($owner);
+        unless ( $homedir ne '' ) {
+            return 'no';
+        }
+        my $passwd = "${homedir}/etc/${domain}/passwd";
+        my $addressexists = user_exists_in_db( $localpart, $passwd );
+        if ( $addressexists && ( -e $homedir . "/etc/${domain}/${localpart}/.boxtrapperenable" && !-e $homedir . "/etc/${domain}/${localpart}/.boxtrapperautowhitelistdisable" ) ) {
+            return 'yes';
+        }
+        else {
+            return 'no';
+        }
+    }
+}
+
+sub getemailuser {
+    my ( $address, $received_protocol, $sender_ident ) = @_;
+
+    my $primary_hostname = Exim::expand_string('$primary_hostname');
+    my ( $local_part, $domain ) = split( m/[\@\+\%\:]/, ( $address || ( $received_protocol && $received_protocol eq 'local' ? $sender_ident : '' ) ) );
+
+    if ( !$domain || $domain eq '' || $domain eq $primary_hostname ) {
+        return $local_part;
+    }
+    else {
+        my $user = getdomainowner($domain);
+        if ($user) { return $user; }
+    }
+
+    return 'nobody';
+}

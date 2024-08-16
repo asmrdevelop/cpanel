@@ -1,0 +1,32 @@
+[% PROCESS 'master_templates/_defheader.tmpl' theme="yui" -%]
+<noscript><p class="error">Please turn on javascript.</noscript>
+[% IF data.tag %]
+<div id="status"><p>Removing <b>[% tag %]</b></p></div>
+    [% FOREACH thm IN data.proc_themes %]
+<script type="text/javascript" nonce="[% CPANEL.nonce() %]">
+  document.getElementById('status').innerHTML += '<p>Theme [% thm %]</p><ul>';
+</script>
+<noscript><p>Theme [% thm %]</p><ul></noscript>
+           [% FOREACH file IN data.get_file_list(data.tag,thm) %]
+               [% SET rc_ar = data.ensure_file_is_gone(file) %]
+               [% IF rc_ar %]
+               [%# rc_ar.0 == 'f', 'l', 'd' rc_ar.2 == int of errno %]
+<script type="text/javascript" nonce="[% CPANEL.nonce() %]">
+  document.getElementById('status').innerHTML += '    <li> File: [% file %] :[% rc_ar.1 ? 'ok' : 'error' %]</li>';
+</script>
+<noscript>     <li> File: [% file %] :[% rc_ar.1 ? 'ok' : 'error' %]</li></noscript>
+               [% END %]
+           [% END %]
+<script type="text/javascript" nonce="[% CPANEL.nonce() %]">
+  document.getElementById('status').innerHTML += '</ul>';
+</script>
+<noscript></ul></noscript>
+
+    [% END %]
+[% ELSE %]
+   [% IF !data.tag %]<p class="error">Invalid locale.</p>[% END %]
+   [% IF !data.theme %]<p class="error">Invalid theme.</p>[% END %]
+[% END %]
+
+<p><a href="[% cp_security_token %]/scripts9/delete_locale_form">Back</a></p>
+[% PROCESS 'master_templates/_deffooter.tmpl' theme="yui" -%]

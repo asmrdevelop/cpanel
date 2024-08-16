@@ -1,0 +1,42 @@
+<html>
+    <head>
+        <title>cPanel X</title>
+        [% INCLUDE "_assets/charset.html.tt" %]
+        [% INCLUDE "filemanager/files_head.html.tt" %]
+    </head>
+    <body  class="topright">
+        <b>
+            [%
+                USE FilePermissions;
+                SET path = FORM.dir _ FORM.file;
+                SET permission = bits2oct(
+                    user_read      => FORM.ur,
+                    user_write     => FORM.uw,
+                    user_execute   => FORM.ux,
+                    group_read     => FORM.gr,
+                    group_write    => FORM.gw,
+                    group_execute  => FORM.gx,
+                    global_read    => FORM.wr,
+                    global_write   => FORM.ww,
+                    global_execute => FORM.wx,
+                );
+                SET response = Api2.exec('Fileman', 'fileop', {
+                    op           => 'chmod',
+                    metadata     => permission,
+                    sourcefiles  => path,
+                    doubledecode => FORM.doubledecode,
+                });
+            %]
+        </b>
+        <script type="text/javascript">
+            if (parent.dirwindow.window.location.href.indexOf("?") > 0) {
+                    parent.dirwindow.window.location.href = parent.dirwindow.window.location.href + "&refresh=[% ExpVar.expand('$random') %]";
+            }
+
+            if (parent.dirwindow.window.location.href.indexOf("?") == -1) {
+                    parent.dirwindow.window.location.href = parent.dirwindow.window.location.href + "?refresh=[% ExpVar.expand('$random') %]";
+            }
+        </script>
+    </body>
+</html>
+

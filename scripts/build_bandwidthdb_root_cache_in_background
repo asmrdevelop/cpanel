@@ -1,0 +1,51 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/build_bandwidthdb_root_cache_in_background
+#                                                  Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::build_bandwidthdb_root_cache;
+
+use strict;
+use warnings;
+
+use Cpanel::Daemonizer::Tiny ();
+use Cpanel::ConfigFiles      ();
+use Cpanel::FileUtils::Open  ();
+
+my $orig_dollar_zero = $0;
+
+__PACKAGE__->script() if !caller;
+
+sub script {
+    my $pid = Cpanel::Daemonizer::Tiny::run_as_daemon(
+        sub {
+            ####
+            # The next two calls are unchecked because it cannot be captured when running as a daemon
+            Cpanel::FileUtils::Open::sysopen_with_real_perms( \*STDERR, $Cpanel::ConfigFiles::CPANEL_ROOT . '/logs/error_log', 'O_WRONLY|O_APPEND|O_CREAT', 0600 );
+            open( STDOUT, '>&', \*STDERR ) || warn "Failed to redirect STDOUT to STDERR";
+
+            require Cpanel::BandwidthDB::RootCache;
+            Cpanel::BandwidthDB::RootCache->new(
+                'import_options' => {
+                    before_user => \&_before_user,
+                }
+            );
+        }
+    );
+
+    print "Building BandwidthDB RootCache in the background (PID $pid)...\n";
+
+    return;
+}
+
+sub _before_user {
+    my ($user) = @_;
+
+    $0 = "$orig_dollar_zero - import $user";
+    return 1;
+}
+
+1;

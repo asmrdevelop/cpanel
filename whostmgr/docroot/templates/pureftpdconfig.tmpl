@@ -1,0 +1,156 @@
+<script language="javascript" src="[% MagicRevision('/js/validate_optimized.js') %]"></script>
+
+
+
+<script type="text/javascript">
+
+function register_validators() {
+    register_validator('match','nonzero_numeric',[document.mainform.MaxLoad],'The input value for Maximum Load for Anonymous Downloads must be a whole number greater than zero');
+    register_validator('match','whole_nums',[document.mainform.MaxIdleTime],'The input value for Maximum Idle Time (minutes) must be whole numbers');
+    register_validator('match','nonzero_numeric',[document.mainform.MaxClientsNumber],'The input value for Maximum Connections must be a whole number greater than zero');
+    register_validator('match','nonzero_numeric',[document.mainform.MaxClientsPerIP],'The input value for Maximum Connections Per IP Address must be a whole number greater than zero');
+    register_validator('match','ssl_chars',[document.mainform.TLSCipherSuite],'The TLS/SSL Cipher List must be defined using alphanumeric characters with regular expressions ! + _ @ ~ and use a colon (:) for a separator');
+    realtime_validate_init('mainform');
+
+}
+YAHOO.util.Event.addListener(window, "load", register_validators, false);
+
+</script>
+<style type="text/css">
+
+.ftpserversetup {
+margin: 0 20px;
+}
+
+select.narrow {width: 300px;}
+* html select.narrow {width: auto;}
+*+html select.narrow {width: auto;}
+
+#pureftpdsetup {
+	border: 5px solid #ddd;
+	width: 570px;
+}
+
+#pureftpdsetup td {
+	border-bottom: 1px solid #eee;
+	padding: 10px;
+}
+
+#pureftpdsetup .label_title {
+	float: left;
+	font-weight: bold;
+	margin: 0 10px 0 0;
+	width: 200px;
+}
+
+#pureftpdsetup p {
+	color: #444;
+	line-height: 1.5;
+	margin: 5px 0 5px 210px;
+}
+</style>
+
+
+<div class="ftpserversetup">
+<p>Pure-FTPd is a FTP server capable of handling normal and TLS encrypted connections.</p>
+<p>This interface allows you to configure various aspects of Pure-FTPd's behavior.</p>
+
+<form  onSubmit="return do_validate(this.id);" action="[% data.action %]" name="mainform" id="mainform" method="POST">
+<table id="pureftpdsetup" border="0" cellspacing="0" cellpadding="0">
+    <tr>
+        <td>
+			<label class="label_title">TLS Encryption Support</label>
+            <select name="TLS">
+                <option [% IF !data.TLS %]selected [% END %]value="0">Disabled</option>
+                <option [% IF data.TLS == 1 %]selected [% END %]value="1">Optional</option>
+                [%- IF data.HasTLS3Support %]
+                <option [% IF data.TLS == 2 %]selected [% END %]value="2">Required (Command)</option>
+                <option [% IF data.TLS == 3 %]selected [% END %]value="3">Required (Command/Data)</option>
+                [%- ELSE %]
+                <option [% IF data.TLS == 2 %]selected [% END %]value="2">Required</option>
+                [%- END %]
+            </select>
+			<p>This setting controls whether TLS encryption is disabled, optional or required for all connections to the FTP server.  Users should always use encryption if possible, but many older FTP clients are incapable of secure FTP sessions.  The 'Optional' setting is recommended for best compatibility.[%- IF data.HasTLS3Support %]  For the required settings, encryption of the command channel is sufficient to hide passwords and usernames while encryption of the command and data channels will hide all traffic from eavesdroppers.[% END %]</p>
+        </td>
+    </tr>
+    [%- IF data.TLSCipherSuite.defined %]
+    <tr>
+        <td>
+			<label class="label_title">TLS Cipher Suite</label>
+			<input type="text" name="TLSCipherSuite" id="TLSCipherSuite" value="[% data.TLSCipherSuite %]" />
+			<p>This is a standard format list of the SSL/TLS ciphers Pure-FTPd should use.  Typically this will only need to be adjusted for PCI compliance.</p>
+        </td>
+    </tr>
+    [%- END %]
+    <tr>
+        <td>
+			<label class="label_title">Allow Anonymous Logins</label>
+            <select name="NoAnonymous">
+                <option [% IF data.NoAnonymous != 'yes' %]selected [% END %] value="no">Yes</option>
+                <option [% IF data.NoAnonymous == 'yes' %]selected [% END %] value="yes">No</option>
+            </select>
+			<p>Allowing anonymous FTP logins in generally considered to weaken the security of the server.  Setting this option to "No" is recommended.</p>
+        </td>
+    </tr>
+    <tr>
+        <td>
+			<label class="label_title">Allow Anonymous Uploads</label>
+            <select name="AnonymousCantUpload">
+                <option [% IF data.AnonymousCantUpload != 'yes' %]selected [% END %] value="no">Yes</option>
+                <option [% IF data.AnonymousCantUpload == 'yes' %]selected [% END %] value="yes">No</option>
+            </select>
+			<p>Allowing anonymous FTP uploads in generally considered to weaken the security of the server.  Setting this option to "No" is recommended.</p>
+        </td>
+    </tr>
+    <tr>
+        <td>
+			<label class="label_title">Maximum Load for Anonymous Downloads</label>
+			<input type="text" id="MaxLoad"name="MaxLoad" value="[% data.MaxLoad %]" />
+			<p>When the system load average goes above the specified amount, anonymous users will not be allowed to download.</p>
+        </td>
+    </tr>
+    <tr>
+        <td>
+			<label class="label_title">Maximum Idle Time (minutes)</label>
+			<input type="text" name="MaxIdleTime" id="MaxIdleTime" value="[% data.MaxIdleTime %]" />
+			<p>Maximum amount of time in minutes that an FTP connection may spend idle before it is disconnected by the server.</p>
+        </td>
+    </tr>
+    <tr>
+        <td>
+			<label class="label_title">Maximum Connections</label>
+			<input type="text" name="MaxClientsNumber" id="MaxClientsNumber" value="[% data.MaxClientsNumber %]" />
+			<p>Maximum number of FTP connections to accept.</p>
+		</td>
+    </tr>
+    <tr>
+        <td>
+			<label class="label_title">Maximum Connections Per IP Address</label>
+			<input type="text" name="MaxClientsPerIP" id="MaxClientsPerIP" value="[% data.MaxClientsPerIP %]" />
+			<p>Maximum number of FTP connections to accept from a single IP address.</p>
+		</td>
+    </tr>
+    <tr>
+        <td>
+			<label class="label_title">Allow Logins with Root Password</label>
+            <select name="RootPassLogins">
+                <option [% IF data.RootPassLogins != 'no' %]selected [% END %] value="yes">Yes</option>
+                <option [% IF data.RootPassLogins == 'no' %]selected [% END %] value="no">No</option>
+            </select>
+			<p>Allow FTP logins to all accounts using the root password.</p>
+        </td>
+    </tr>
+    <tr>
+        <td>
+			<label class="label_title">Broken Clients Compatibility</label>
+            <select name="BrokenClientsCompatibility">
+                <option [% IF data.BrokenClientsCompatibility != 'no' %]selected [% END %] value="yes">Yes</option>
+                <option [% IF data.BrokenClientsCompatibility == 'no' %]selected [% END %] value="no">No</option>
+            </select>
+			<p>Ignore parts of the FTP protocol standards to improve compatibility with some buggy FTP clients and firewalls.</p>
+        </td>
+    </tr>
+</table>
+<p><input type="submit" value="Save" class="btn-primary" /></p>
+</form>
+</div>

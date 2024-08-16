@@ -1,0 +1,86 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/updatesigningkey                Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package updatesigningkey;
+
+use strict;
+
+use Cpanel::Crypt::GPG::VendorKeys ();
+use Cpanel::Usage                  ();
+
+sub main {
+    my @argv = @_;
+    my ( $force, $noverify, $url, $vendor, $category );
+    my $opts = {
+        noverify => \$noverify,
+        url      => \$url,
+        vendor   => \$vendor,
+        category => \$category,
+        force    => \$force,
+    };
+
+    if ( Cpanel::Usage::wrap_options( \@argv, \&usage, $opts ) ) {
+        return 0;
+    }
+
+    my $key;
+
+    if ( $url || $vendor || $category ) {
+        if ( $url && $vendor && $category ) {
+            $key = [
+                {
+                    url      => $url,
+                    vendor   => $vendor,
+                    category => $category,
+                },
+            ];
+        }
+        else {
+            print "URL, Vendor, and Category must all be specified.";
+            return 1;
+        }
+    }
+
+    my $s = Cpanel::Crypt::GPG::VendorKeys::download_public_keys(
+        noverify => $noverify,
+        keys     => $key,
+        force    => $force,
+    );
+
+    return $s ? 0 : 1;
+}
+
+sub usage {
+    print <<USAGE;
+updatesigningkey <options>
+
+    This script grabs the cPanel signing keys and inserts them into the vendor
+    keychain used to validate assets downloaded from the cPanel mirrors.
+
+Options:
+
+    --help        Brief help message
+
+    --noverify    Disables SSL hostname verification.
+
+    --url         URL to fetch ascii armored keys from.
+
+    --vendor      Key vendor.
+
+    --category    Key category.
+
+    --force       Force Key Refresh
+
+USAGE
+    return;
+}
+
+unless ( caller() ) {
+    exit main(@ARGV);
+}
+
+1;

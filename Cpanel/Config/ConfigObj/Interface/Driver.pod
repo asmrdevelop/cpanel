@@ -1,0 +1,142 @@
+=head1 NAME
+
+Cpanel::Config::ConfigObj::Interface::Driver - Interface class for all driver
+specification classes in the ConfigObj pluggable driver system.
+
+=head1 VERSION
+
+1.0
+
+=head1 SYNOPSIS
+
+package Cpanel::Config::ConfigObj::Interface::Config::v999;
+
+# My custom spec is 999
+
+use Cpanel::Config::ConfigObj::Interface::Driver ();
+our @ISA = qw(Cpanel::Config::ConfigObj::Interface::Driver);
+
+# MUST IMPLEMENT spec_action() function
+sub spec_actions {
+    return {
+        "action1"  => "Do custom action 1.",
+        "action2"  => "Do custom action 2.",
+    };
+}
+
+# MUST IMPLEMENT spec_version() function
+sub spec_version {
+    return 999;
+}
+
+# MUST IMPLEMENT module_name() function
+sub module_name {
+    my ($package) = @_;
+    $package = ( ref $package ) ? ref $package : $package;
+    my @package_pieces = split( '::', $package );
+    return pop @package_pieces;
+}
+
+####### METHODS #######
+
+# MUST IMPLEMENT base() method
+sub base {
+    my $class        = shift;
+    my $software_obj = shift;
+    
+    my $default_settings = {
+        'meta'    => {},
+        'version' => 999,
+    };
+    
+    my $obj = $class->SUPER::new( $default_settings, $software_obj );
+
+    return $obj;
+}
+
+=head1 DESCRIPTION
+
+=head2 Summary
+
+ConfigObj (and others that inherit from it) expect all drivers to implement this
+class, otherwise it will not be considered a valid driver.
+
+=head2 Pattern of Inheritance
+
+All drivers are required to inherit the
+C<Cpanel::Config::ConfigObj::Interface::Driver> class.  It is expected that
+drivers actually inherit from a driver specification class (which implements
+this interface); something like the one above in I<SYNOPSIS>.
+
+By providing this pattern of inheritance, driver developers need only implement
+a driver specification class; maintainers of the ConfigObj system need only
+assert that unit test pass at each layer of abstract, since the purpose of this
+layers is to provide a defined interface for dependency injection and accessors.
+
+=head2 Core Purpose
+
+The Driver class provides the mimimum skeleton from making a driver specification
+pluggable with the ConfigObj system.
+
+=head1 METHODS
+
+=head2 Public Interface
+
+=over
+
+=item C<new>
+
+Constructor method. The method takes two optional arguments
+
+=over
+
+=item I<$class_defaults>
+
+hashref of properties to set
+
+=item I<$software_obj>
+
+A ConfigObj to inject.
+
+I<NOTE:> While this is an optional value, not providing one will likely be an
+issue if the caller neglects to define one (ala C<set_interface>).  That said,
+it is optional such that the caller can inject the ConfigObj when is most
+appropriate.
+
+=back
+
+=item C<set_interface>
+
+=back
+
+
+=head1 SEE ALSO
+
+L<Cpanel::Config::ConfigObj>,
+L<Cpanel::Config::ConfigObj::Interface::Meta>,
+L<Cpanel::Config::ConfigObj::Filter>,
+L<Cpanel::Config::ConfigObj::FilterList>
+
+=head1 COMPATIBILITY
+
+As of cPanel v64, you must include the spec_version in the META module
+as well. The quickiest way to accomplish this is to add:
+
+ use parent qw(Cpanel::Config::ConfigObj::Interface::Config::Version::v1);
+
+If you wish to install your module on versions older than v64 and remain
+compatible with v64 or later, you can temporarily add the following as well:
+
+  sub spec_version { return 1; }
+
+B<NOTE:> You should remove the above once v62 goes end-of-life.
+
+=head1 AUTHOR
+
+David Neimeyer - L<david.neimeyer@cpanel.net>
+
+=head1 COPYRIGHT AND LICENSE
+
+Copyright (c) 2012, cPanel, Inc. All rights reserved.
+This code is subject to the cPanel license. Unauthorized copying is prohibited.
+

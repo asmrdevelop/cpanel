@@ -1,0 +1,114 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - bin/dbindex                             Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+#----------------------------------------------------------------------
+# This is the writer of the datastore that Cpanel::DB::Map::Collection::Index
+# can read.
+#----------------------------------------------------------------------
+
+package bin::dbindex;
+
+use strict;
+use warnings;
+
+use Cpanel::Autodie                 ();
+use Cpanel::Config::Users           ();
+use Cpanel::ConfigFiles             ();
+use Cpanel::DB::Map::Reader         ();
+use Cpanel::DB::Map::Setup          ();
+use Cpanel::Transaction::File::JSON ();
+use Digest::MD5                     ();    #speed up load cpanel.config
+
+*_get_cpusers = \&Cpanel::Config::Users::getcpusers;
+
+my @old_format_files = qw(
+  dbindex.db
+  dbindex.db.cache
+);
+
+run(@ARGV) if !caller;
+
+#----------------------------------------------------------------------
+
+sub run {
+    my @users_to_index = @_;
+
+    Cpanel::DB::Map::Setup::initialize();
+
+    my $xaction = Cpanel::Transaction::File::JSON->new(
+        path => "$Cpanel::ConfigFiles::DATABASES_INFO_DIR/dbindex.db.json",
+    );
+
+    if ( !@users_to_index ) {
+        @users_to_index = _get_cpusers();
+    }
+
+    if ( ref( $xaction->get_data() ) ne 'HASH' ) {
+        $xaction->set_data( {} );
+    }
+
+    my $stash_hr = $xaction->get_data();
+
+    clean_stash( $stash_hr, \@users_to_index );
+
+    foreach my $user (@users_to_index) {
+        next if !Cpanel::DB::Map::Reader::cpuser_exists($user);
+
+        local $@;
+        my $map;
+        eval { $map = Cpanel::DB::Map::Reader->new( 'cpuser' => $user, engine => 'mysql' ); };
+        if ($@) {
+
+            # Skip corrupt dbmap
+            warn;
+            next;
+        }
+
+        foreach my $db ( $map->get_databases() ) {
+            $stash_hr->{'MYSQL'}{$db} = $user;
+        }
+
+        $map->set_engine('postgresql');
+
+        foreach my $db ( $map->get_databases() ) {
+            $stash_hr->{'PGSQL'}{$db} = $user;
+        }
+    }
+
+    $xaction->save_and_close_or_die();
+
+    return;
+}
+
+# Remove any existing entries for the given users to ensure that deleted
+# databases are removed and rebuilt properly.
+sub clean_stash {
+    my ( $stash_hr, $users_ar ) = @_;
+    my %users = map { $_ => 1 } @$users_ar;
+
+    # Do this in one pass per engine, as there may be a large number of
+    # databases.
+    foreach my $engine (qw/MYSQL PGSQL/) {
+        my $engine_hr = $stash_hr->{$engine};
+        foreach my $db ( keys %$engine_hr ) {
+            delete $engine_hr->{$db} if $users{ $engine_hr->{$db} };
+        }
+    }
+
+    return;
+}
+
+sub _kill_old_files {
+    for my $path (@old_format_files) {
+        my $fullpath = "$Cpanel::ConfigFiles::DATABASES_INFO_DIR/$path";
+        Cpanel::Autodie::unlink($fullpath) if -e $fullpath;
+    }
+
+    return;
+}
+
+1;

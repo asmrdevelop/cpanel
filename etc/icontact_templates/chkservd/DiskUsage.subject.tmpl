@@ -1,0 +1,17 @@
+[%-
+
+  PROCESS "include/icons.tmpl";
+
+  IF NOTICE.usage_type == "inodes";
+    SET percentage = 100 * (NOTICE.total_inodes - NOTICE.available_inodes) / NOTICE.total_inodes;
+    SET usage = CPANEL.locale.numf(NOTICE.used_inodes);
+    SET max = CPANEL.locale.numf(NOTICE.total_inodes);
+    SET type_loc = CPANEL.locale.maketext('files');
+  ELSIF NOTICE.usage_type == 'blocks';
+    SET percentage = 100 * (NOTICE.total_bytes - NOTICE.available) / NOTICE.total_bytes;
+    SET usage = CPANEL.locale.format_bytes(NOTICE.used_bytes);
+    SET max = CPANEL.locale.format_bytes(NOTICE.total_bytes);
+    SET type_loc = CPANEL.locale.maketext('blocks');
+  END;
+
+-%]DISK[%- NOTICE.notify_type FILTER upper -%] [% type_loc %] [% get_icon(icon=NOTICE.notify_type) %]: [% CPANEL.locale.maketext('Mount Point “[_1]” ([_2]): [_3]/[_4] - [numf,_5]%', NOTICE.mount, NOTICE.mainip, usage, max, percentage) %]

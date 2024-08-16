@@ -1,0 +1,105 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - bin/guess_file_encoding                 Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+use warnings;
+
+use Encode::Detect::Detector ();
+
+my $buffer;
+my $fh;
+my $file;
+my $no_fallback;
+
+if (@ARGV) {
+    $file = $ARGV[0];
+
+    # The -l test needs to be the first one done or you get 'The stat preceding -l _ wasn't an lstat at ...' errors.
+    # -T/-B "Heuristic guess" can't be trusted - case 38907
+    exit if -l $file || -S _ || -b _ || -c _ || -p _ || -d _ || !-e _ || -z _;    # warn/log - invalid type?
+
+    open( $fh, '<', $file ) or exit;                                              # warn/log - not readable ?
+}
+else {
+    $fh          = \*STDIN;
+    $no_fallback = 1;
+}
+
+binmode $fh;
+read( $fh, $buffer, ( 1024 * 1024 ) );
+close $fh;
+
+my $mozilla_ucd_says = Encode::Detect::Detector::detect($buffer);
+if ( $mozilla_ucd_says && $mozilla_ucd_says ne $buffer ) {
+
+    # CPANEL-35009: iconv doesn't understand `x-euc-tw`, so change this to `EUC-TW`:
+    $mozilla_ucd_says = 'EUC-TW' if $mozilla_ucd_says eq 'x-euc-tw';
+
+    print $mozilla_ucd_says;
+    exit;
+}
+elsif ( !$no_fallback ) {
+
+    # don't wrap this in if (-T $file) { since it can be wrong
+    my $found = 0;
+    if ( $file =~ /\.xml$/i ) {
+        if ( eval { require XML::Parser; 1 } ) {
+            my $enc = '';
+            my $x   = XML::Parser->new(
+                'Handlers' => {
+                    XMLDecl      => sub { $enc = $_[2] },
+                    ExternEnt    => sub { return "" },
+                    ExternEntFin => sub { return "" },
+                }
+            );
+            eval { $x->parsefile($file); };
+            if ($enc) {
+                print $enc;
+                $found++;
+            }
+
+            # else warn/log: not specified in markup
+        }
+
+        # else warn/log - could not figure it out and could not load XML::Parser, using default?
+    }
+    elsif ( $file =~ m/\.x?html?$/i ) {
+        if ( eval { require HTML::Parser; 1 } ) {
+            my $enc = '';
+            my $h   = HTML::Parser->new();
+            $h->handler(
+                'start' => sub {
+                    if ( $_[0] eq 'meta' && exists $_[1]->{'http-equiv'} && $_[1]->{'http-equiv'} =~ m/Content\-Type/i && exists $_[1]->{'content'} ) {
+                        $enc = $_[1]->{'content'};
+                    }
+                },
+                'tagname, attr'
+            );
+            $h->parse_file($file);
+            ($enc) = $enc =~ m/charset\s*=\s*(\S+)/i;
+            if ($enc) {
+                print $enc;
+                $found++;
+            }
+
+            # else warn/log: not specified in markup
+        }
+
+        # else warn/log - could not figure it out and could not load XML::Parser, using default?
+    }
+
+    # else warn/log - could not figure it out, using default?
+
+    # -T is ok here since the -T/-B false positive will already have been avoided and its charset detected above
+    print 'us-ascii' if !$found && -T $file;
+    exit;
+}
+else {
+    # We don't know what the buffer contained so just assume ascii
+    print 'us-ascii';
+    exit;
+}

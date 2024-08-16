@@ -1,0 +1,127 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/updatenow                       Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+#
+# This is the authorative code used to sync /usr/local/cpanel
+# Accept no imitators.
+#
+
+=head1 NAME
+
+updatenow - updates /usr/local/cpanel from update servers
+
+=head1 USAGE
+
+    # Called from upcp like this:
+    # --force tells updatenow to sync even if the version has not changed (similar to --sync). This setting will also bypass cron detection.
+    updatenow --upcp
+
+    # upcp will call this script like this if upcp is called with --force
+    updatenow --upcp --force
+
+    # If files which this script manages somehow get deleted, this will re-sync them but not upgrade.
+    # This is used by other cpanel scripts as a safety measure.
+    updatenow.static --sync
+
+    # Used by cpanel installer prior to vps optimization
+    updatenow --no-check-perl
+
+=head1 DESCRIPTION
+
+NOTE: Under most circumstances, you should never call this script directly. B</usr/local/cpanel/scripts/upcp>, called with an optional [--force]
+should be all you need. --sync is only intended to be called by other cpanel scripts when it appears that cpanel managed files
+have been deleted.
+
+The normal usage of this script is to update cpanel to the latest version of your TIER I<(see /etc/cpupdate.conf)>.
+By default, no update is done by default if you are already on that version. The UPDATES setting in cpupdate.conf
+is also honored when the environment variable CPANEL_IS_CRON is set (usually from upcp).
+
+If an HTTPUPDATE= setting is present in /etc/cpsources.conf with a hostname, this will be the preferred source to sync from.
+
+=cut
+
+use strict;
+use warnings;
+
+BEGIN {
+    # the q{} on the line below was done to prevent perlpkg from stripping the @INC statement from static.
+    @INC = grep { index( $_, '/usr/local/cpanel' ) == 0 } @INC;    ## no critic(RequireLocalizedPunctuationVars)
+
+    # if we are being called with a compile check flag ( perl -c ), skip the begin block
+    # so we don't actually call upcp.static when just checking syntax and such is OK
+    return if $^C;
+
+    # static never gets --use-checked and should pass all the begin block checks
+    return if $0 =~ /\.static$/;
+
+    # let the '--use-check' instance compiled
+    if ( grep { $_ eq '--use-check' } @ARGV ) {
+        no warnings;    ## no critic qw(ProhibitNoWarnings)
+
+        # dynamic definition of the INIT block
+        eval "INIT { exit(0); }";    ## no critic qw(BuiltinFunctions::ProhibitStringyEval)
+        return;
+    }
+
+    system("$0 --use-check >/dev/null 2>&1");
+
+    # compilation is ok with '--use-check', we will continue the non static version
+    return if $? == 0;
+
+    my $static = $0 . ".static";
+    if ( -f $static ) {
+        print STDERR "We determined that $0 had compilation issues..\n";
+        print STDERR "Trying to exec $static " . join( ' ', @ARGV ) . "\n";
+        exec( $^X, $static, @ARGV );
+    }
+}
+
+# Should be just after CleanINC to be sure Cpanel::Exception is not loaded earlier
+use Cpanel::Exception::CORE      ();    # PPI USE OK -- load core exception modules
+use Cpanel::Exception::UpdateNow ();    # PPI USE OK -- load all exceptions for static script
+
+use Cpanel::Update::Now;
+
+use Cpanel::CPAN::Locales::DB::Territory::en ();    # PPI USE OK -- preload for perlstatic
+use Cpanel::CPAN::Locales::DB::Language::en  ();    # PPI USE OK -- preload for perlstatic
+use Cpanel::Crypt::GPG::VendorKeys::Verify   ();    # PPI USE OK -- do not compile into Cpanel::HttpRequest, but require it here for updatenow.static
+use Cpanel::HttpRequest                      ();    # PPI USE OK -- do not compile into Cpanel::RPM::Versions::File, but require it here for updatenow.static
+use Cpanel::Sync::Common                     ();    # PPI USE OK -- do not remove, required for Cpanel::HttpRequest on new installs
+use Cpanel::Sys::Hardware::Memory::Linux     ();    # PPI USE OK -- included for fresh installs so it ends up in .static (see case 184689)
+use Cpanel::Sys::Hardware::Memory::Vzzo      ();    # PPI USE OK -- included for fresh installs so it ends up in .static (see case 184689)
+use Cpanel::iContact::Provider::Email        ();    # PPI USE OK -- CPANEL-25967: ensure we can notify about blockers during install
+use Cpanel::Autodie::UpdateNow               ();    # PPI USE OK -- load all autodie modules for static script
+use Cpanel::HiRes ( preload => 'perl' );
+
+BEGIN {
+    if ( grep { $_ eq '--INC' } @ARGV ) {
+        print join "\n", sort keys %INC;
+        print "\n";
+
+        exit 0;
+    }
+}
+
+my $options = Cpanel::Update::Now::parse_argv(@ARGV);
+
+# Man option is outside C:U:N
+if ( $options->{'man'} ) {
+    exec( 'perldoc', $0 );
+    exit;
+}
+
+# New with options from parse_argv
+my $update_now = Cpanel::Update::Now->new($options);
+
+# Eval and call terminate so testing can happen outside this script.
+eval { $update_now->run(); };
+
+# $update_now->run() will always throw. Now have the object shut down this program based on the throw.
+$update_now->terminate($@);
+
+print "Should never get here\n";
+exit 1;

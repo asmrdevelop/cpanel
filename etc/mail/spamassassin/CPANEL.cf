@@ -1,0 +1,139 @@
+#CPANEL.cf - SpamAssassin Rules
+#
+#Author: cPanel, L.L.C.
+#
+#   Licensed under the Apache License, Version 2.0 (the "License");
+#   you may not use this file except in compliance with the License.
+#   You may obtain a copy of the License at
+#
+#       http://www.apache.org/licenses/LICENSE-2.0
+#
+#   Unless required by applicable law or agreed to in writing, software
+#   distributed under the License is distributed on an "AS IS" BASIS,
+#   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#   See the License for the specific language governing permissions and
+#   limitations under the License.
+
+# NetSol thought it was a great idea to give away tons of
+# .xyz domains.  In practice the primary consumers are spammers
+# http://domaingang.com/domain-news/chinese-registrar-iisp-hk-sends-xyz-spam-harvested-whois-emails/
+header          CPANEL_XYZ             	From =~ /\@.*?\.xyz/i
+describe        CPANEL_XYZ            	.XYZ domain mostly used by spammers
+score           CPANEL_XYZ              2.1
+
+meta     CPANEL_LOTS_OF_EMPTY_LINE !HTML_MESSAGE
+rawbody  CPANEL_LOTS_OF_EMPTY_LINE /(?:[\t ]*[\r\n]){14,}/i
+describe CPANEL_LOTS_OF_EMPTY_LINE Spam that has large block of empty lines
+score    CPANEL_LOTS_OF_EMPTY_LINE 0.8
+
+meta     CPANEL_LOTS_OF_EMPTY_LINE_HTML HTML_MESSAGE
+rawbody  CPANEL_LOTS_OF_EMPTY_LINE_HTML /(?:\s*<+\s*(?:p|br)\s*>+){10,}/i
+describe CPANEL_LOTS_OF_EMPTY_LINE_HTML Spam that has large block of empty html lines
+score    CPANEL_LOTS_OF_EMPTY_LINE_HTML 0.8
+
+#
+# SPF failures and information
+#
+ifplugin Mail::SpamAssassin::Plugin::SPF
+score SPF_NONE 0
+score SPF_HELO_NONE 0
+score SPF_PASS -0.001
+score SPF_HELO_PASS -0.001
+score SPF_FAIL 4.0
+score SPF_HELO_FAIL 4.0
+score SPF_HELO_NEUTRAL 0
+score SPF_HELO_SOFTFAIL 1.5
+score SPF_NEUTRAL 0
+score SPF_SOFTFAIL 1.5
+endif
+
+#
+# SURBL for foreign language content
+#
+ifplugin Mail::SpamAssassin::Plugin::URIDNSBL
+score URIBL_AB_SURBL 4.5
+score URIBL_JP_SURBL 1.9
+score URIBL_WS_SURBL 1.7
+score URIBL_MW_SURBL 1.3
+
+urirhssub       URIBL_BLACK  multi.uribl.com.        A   2
+body            URIBL_BLACK  eval:check_uridnsbl('URIBL_BLACK')
+describe        URIBL_BLACK  Contains an URL listed in the URIBL blacklist
+tflags          URIBL_BLACK  net
+score           URIBL_BLACK  5.0
+
+urirhssub       URIBL_GREY  multi.uribl.com.        A   4
+body            URIBL_GREY  eval:check_uridnsbl('URIBL_GREY')
+describe        URIBL_GREY  Contains an URL listed in the URIBL greylist
+tflags          URIBL_GREY  net
+score           URIBL_GREY  1.0
+
+urirhssub       URIBL_GOLD  multi.uribl.com.        A   4
+body            URIBL_GOLD  eval:check_uridnsbl('URIBL_GOLD')
+describe        URIBL_GOLD  Contains an URL listed in the URIBL GOLDlist
+tflags          URIBL_GOLD  net
+score           URIBL_GOLD  0.5
+endif
+
+# No "Message-Id:" header
+score MISSING_MID 1.6
+
+#
+# Spam coming from dynamic IPs
+#
+ifplugin Mail::SpamAssassin::Plugin::DNSEval
+score RCVD_IN_SORBS_HTTP 0
+score RCVD_IN_SORBS_SOCKS 0
+score RCVD_IN_SORBS_MISC 2.6
+score RCVD_IN_SORBS_SMTP 2.6
+score RCVD_IN_SORBS_WEB 0
+score RCVD_IN_SORBS_BLOCK 0
+score RCVD_IN_SORBS_ZOMBIE 1.0
+score RCVD_IN_SORBS_DUL 4.0
+
+#
+score RCVD_IN_XBL 0 4.724 0 4.375
+score RCVD_IN_CBL 0 4.724 0 4.375
+score RCVD_IN_PSBL 0 2.700 0 2.700
+#
+score RCVD_IN_BRBL_LASTEXT 0 4.644 0 4.449
+score URIBL_DBL_SPAM  0 4.5 0 4.5
+#
+endif
+
+#
+# Mailspike bad reputations
+#
+if (version >= 3.004000)
+score RCVD_IN_MSPIKE_L2                     0.001 1.001 0.001 0.001
+score RCVD_IN_MSPIKE_L3                     0.001 2.498 0.001 2.498
+score RCVD_IN_MSPIKE_L4                     0.001 4.497 0.001 4.497
+score RCVD_IN_MSPIKE_L5                     0.001 6.196 0.001 6.196
+endif
+
+#
+# RDNS problems
+#
+score RDNS_DYNAMIC 2.6
+score RDNS_LOCALHOST 1.0
+score RDNS_NONE 2.0
+
+#
+# Increase Pyzor score
+#
+score PYZOR_CHECK 0 1.985 0 1.792 # n=0 n=2
+
+#   Some shortcircuiting, if the plugin is enabled
+#
+ifplugin Mail::SpamAssassin::Plugin::Shortcircuit
+#   if you have taken the time to correctly specify your "trusted_networks",
+#   this is another good way to save CPU
+#
+# shortcircuit ALL_TRUSTED             on
+
+endif # Mail::SpamAssassin::Plugin::Shortcircuit
+
+# Increase Bayes
+score BAYES_80 4.2
+score BAYES_99 5.0
+score BAYES_999 1.0

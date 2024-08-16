@@ -1,0 +1,130 @@
+
+[%
+    SET CPANEL.CPVAR.dprefix = "../";
+
+    IF (ExpVar.expand('$appname') == "webmail") && !FORM.item('account');
+        SET FORM.item('account') = CPANEL.authuser;
+    END;
+
+    SET configuration = execute('BoxTrapper', 'get_configuration', {'email' => FORM.item('account')});
+%]
+
+[% WRAPPER '_assets/master.html.tt'
+    app_key = 'boxtrapper'
+    embed_scripts = [ 'mail/boxtrapper/conf.js']
+    page_stylesheets = ['mail/boxtrapper.css']
+%]
+
+<div class="body-content">
+
+    [% IF (ExpVar.expand('$appname') == "webmail" && !( FORM.item('account') == CPANEL.authuser)) %]
+    <div id="changeSettingsErrorMsg" class="alert alert-danger">
+        <span class="glyphicon glyphicon-exclamation-sign"></span>
+        <div class="alert-message">
+        [% locale.maketext("You are not allowed to change settings for the user “[output,class,_1,status]”.", FORM.item('account')) %]
+        </div>
+    </div>
+    [% ELSIF configuration.status %]
+
+    <div class="section">
+        <h2 id="descConfigureBoxtrapper">
+            [% locale.maketext("Configure BoxTrapper for: [output,strong,_1]", FORM.item('account')) %]
+        </h2>
+
+    <form id="frmChangeConf" action="saveconf.html" method="post">
+        <div class="form-group">
+            <label id="lblEmailAddressAccount" for="txtShowEmail">
+                [% locale.maketext("Email addresses for this account:") %]
+            </label>
+            <div class="row">
+                <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                    <textarea id="txtShowEmail" name="froms" class="form-control" cols="30" rows="6">[% configuration.data.from_addresses.html() %]</textarea>
+                </div>
+            </div>
+        </div>
+        <div class="form-group">
+            <label id="lblYourName" for="txtFromName">
+                [% locale.maketext("Your Name:") %]
+            </label>
+            <div class="row">
+                <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                    <input id="txtYourName" type="text" class="form-control" name="fromname" value="[% configuration.data.from_name.html() %]">
+                </div>
+                <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                </div>
+            </div>
+        </div>
+        <div class="form-group">
+            <label id="lblNumberofDays" for="boxtrapper_daystokeep">
+                [% locale.maketext("The number of days that you wish to keep logs and messages in the queue:") %]
+            </label>
+            <div class="row">
+                <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                    <input id="boxtrapper_daystokeep" type="text" class="form-control" name="queue"  value="[% configuration.data.queue_days.html() %]">
+                </div>
+                <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                    <div id="boxtrapper_daystokeep_error"></div>
+                </div>
+            </div>
+        </div>
+        <div class="form-group">
+            <label id="lblMimimumSpam" for="boxtrapper_minspamscore">
+                [% locale.maketext('Minimum [asis,Apache] [asis,SpamAssassin] Spam Score required to bypass [asis,BoxTrapper]:') %]
+            </label>
+            <div class="row">
+                <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                    <input id="boxtrapper_minspamscore" type="text" class="form-control" name="min_spam_score_deliver"  value="[% configuration.data.spam_score.html() %]">
+                </div>
+                <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                    <div id="boxtrapper_minspamscore_error"></div>
+                </div>
+            </div>
+        </div>
+        <div class="form-group">
+            <div class="row">
+                <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                    <div class="checkbox">
+                        <label id="lblEnableAutomaticWhiteList">
+                            <input id="chkAutowhitelist" type="checkbox" name="autowhitelist" value="1" [% IF configuration.data.enable_auto_whitelist %] checked="checked" [% END %]>
+                            [% locale.maketext("Enable Automatic Whitelisting") %]
+                        </label>
+                    </div>
+                    <div id="autoWhitelistToFrom" class="checkbox">
+                        <label id="chkWhiteListByAssoc">
+                            <input id="chkAutoWhitelistToandFrom" type="checkbox" name="whitelist_by_assoc" value="1" [% IF configuration.data.whitelist_by_association %] checked="checked" [% END %] >
+                            [% locale.maketext('Automatically whitelist the [output,em,To] and [output,em,From] lines from whitelisted senders (whitelist by association).') %]
+                        </label>
+                    </div>
+                </div>
+                <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                </div>
+            </div>
+        </div>
+
+        <input id="hidAccountName" type="hidden" name="account" value="[% FORM.item('account') %]">
+        <div class="form-group">
+            <input id="submit_boxtrapper_conf" type="submit"  value="[% locale.maketext("Save") %]" class="btn btn-primary" />
+        </div>
+    </form>
+    </div>
+    [% ELSE %]
+        [% FOREACH error IN configuration.errors %]
+            <div class="alert alert-danger" role="alert">
+                <span class='glyphicon glyphicon-remove-sign' aria-hidden="true"></span>
+                <div class='alert-message'>
+                    <strong class="alert-title">
+                        [% locale.maketext('Error:') %]
+                    </strong>
+                    <span class="alert-body">
+                        <span id="error-[% loop.index() %]">
+                            [% error.html() %]
+                        </span>
+                    </span>
+                </div>
+            </div>
+        [% END %]
+    [% END %]
+
+    [% INCLUDE _assets/return_link.html.tt return_location='manage.html' formdata=FORM post='1' return_link_text=locale.maketext("Go Back") %]
+</div>
+[% END %]

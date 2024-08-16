@@ -1,0 +1,136 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/cpbackup_transport_file         Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::cpbackup_transport_file;
+
+use strict;
+use warnings;
+
+use parent qw( Cpanel::HelpfulScript );
+
+use Cpanel::Debug          ();
+use Cpanel::Logger         ();
+use Cpanel::Backup::Config ();
+
+=encoding utf-8
+
+=head1 NAME
+
+scripts::cpbackup_transport_file
+
+=head1 SYNOPSIS
+
+    cpbackup_transport_file [ --transport <transport_id> --upload </full/path/to/file.ext> | --debug ]
+    cpbackup_transport_file [ --transport <transport_id> --download <path/on/remote/file.ext> --download-to </path/on/local/file.ext> | --debug ]
+    cpbackup_transport_file [ --help ]
+
+This script will allow you to upload or download any file via the requested backup transport outside of the normal queued process.
+As such, it uploads things slightly differently. The file you request to upload will go to a subfolder of the 'path' you configured
+for the transport you specify named 'manual_backup'. Example of how it should look uploaded:
+
+myBackups/manual_backup/somefile.ext
+
+Using this script can be useful in debugging transport failures, as there's two benefits here:
+
+* Realtime streaming of all output without having to parse a log file (with option to obtain debugging output)
+
+* No need to wait on backups first -- just provide a path to the file.
+
+Currently, no effort is made in this script to update backup metadata or the transport history DBs.
+This is because this script is provided as a convenience to testing, not as a regular part of the backup process.
+
+*NOTE*: On transports that split files up due to necessity (like BackBlaze B2), the --download arg should represent the remote filename
+as if it *was not* uploaded in parts. The backup transport code itself will know what to do with that to reconstruct the split file.
+
+=head1 DESCRIPTION
+
+See SYNOPSIS.
+
+=cut
+
+sub _OPTIONS {
+    return qw( transport=s upload=s download=s download-to=s debug );
+}
+
+exit __PACKAGE__->new(@ARGV)->script() unless caller();
+
+sub script {
+    my ($self) = @_;
+
+    my $transport_id    = $self->getopt('transport');
+    my $upload_path     = $self->getopt('upload');
+    my $download_remote = $self->getopt('download');
+    if ( !$transport_id ) {
+        print "\n" . $self->help();
+        return 1;
+    }
+    if ( $download_remote && $upload_path ) {
+        print "--download and --upload are mutually exclusive options\n\n" . $self->help();
+        return 1;
+    }
+    $Cpanel::Debug::level = 9999 if ( $self->getopt('debug') );
+
+    # Validate the transport_id
+    require Cpanel::Backup::Transport;
+    my $transports        = Cpanel::Backup::Transport->new();
+    my $transport_configs = $transports->get_enabled_destinations();
+    my $matching_cfg      = $transport_configs->{$transport_id};
+    if ( !$matching_cfg ) {
+        print "\nNo backup transports exist that are enabled and match the supplied transport. Exiting...\n";
+        return 1;
+    }
+
+    if ($upload_path) {
+        print "Attempting transport of '$upload_path' using transport ID '$transport_id''.\n";
+
+        # Note, the 'Cpanel::Backup::Queue::transport_backup' package/namespace is also defined by this package, so thus it is imported.
+        require Cpanel::Backup::Queue;    # PPI USE OK -- Cpanel::Backup::Queue::transport_backup is defined there
+        require Cpanel::Backup::Config;
+        require File::Basename;
+        my $backup_conf = Cpanel::Backup::Config::load();
+        my $args        = {
+            local_path  => $upload_path,
+            remote_path => 'manual_backup/' . File::Basename::basename($upload_path),
+            local_files => $upload_path,
+            keep_local  => 1,
+            session_id  => 'MANUAL_RUN',
+            type        => $backup_conf->{'BACKUPTYPE'},
+            cmd         => 'do_the_dew',
+            transport   => $transport_id,
+        };
+
+        # Log to stdout
+        my $logger = Cpanel::Logger->new( { 'use_no_files' => 1 } );
+        Cpanel::Backup::Queue::transport_backup->new()->process_task( $args, $logger );    # PPI NO PARSE -- See comment below
+                                                                                           # The import of Cpanel::Backup::Queue above via require causes the
+                                                                                           # namespace in question here to exist, as it is the kind of package
+                                                                                           # which defines multiple packages in one file, as perl allows you to
+                                                                                           # do. As this is the "common" design of TaskProcessor modules,
+                                                                                           # this is not only expected but appropriate.
+
+    }
+    elsif ($download_remote) {
+        my $download_local = $self->getopt('download-to');
+
+        require Cpanel::Transport::Files;
+
+        my $transporter = Cpanel::Transport::Files->new( $matching_cfg->{'type'}, $matching_cfg );
+        print "Now attempting download of the requested file...\n";
+        my $transporter_response = $transporter->get( $download_remote, $download_local );
+        if ( !$transporter_response->{'success'} ) {
+            print STDERR "[ERROR] $transporter_response->{'msg'}\n";
+            return 2;
+        }
+    }
+    else {
+        print "\n" . $self->help();
+        return 1;
+    }
+    return 0;
+}
+
+0;

@@ -1,0 +1,216 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - bin/check_exim_config                   Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+use Cpanel::Version                     ();
+use Cpanel::Exim::Reset                 ();
+use Cpanel::Exim::Config::Template      ();
+use Cpanel::Config::LoadCpConf          ();
+use Cpanel::IP::Remote                  ();
+use Cpanel::Output::Formatted::HTML     ();
+use Cpanel::Output::Formatted::Terminal ();
+use Cpanel::SafeRun::Object             ();
+
+my $output_obj = $ENV{'WHM50'} ? Cpanel::Output::Formatted::HTML->new() : Cpanel::Output::Formatted::Terminal->new();
+
+my $time             = time();
+my $template_version = fetch_current_dist_template_version();
+my $previous_installed_version;
+my $current_installed_version;
+$previous_installed_version = $current_installed_version = get_current_installed_template_version();
+my $must_have_at_least_version = ( split( /=/, ( grep( /--must_have_at_least_acl_version=/, @ARGV ) )[0] ) )[1];
+my $newest_allowed_version     = ( split( /=/, ( grep( /--newest_allowed_version=/,         @ARGV ) )[0] ) )[1];
+$newest_allowed_version = $template_version if $newest_allowed_version eq 'dist';
+my $must_be_in_sync_and_functional = grep( /--must_be_in_sync_and_functional/, @ARGV ) ? 1 : 0;
+my $quiet                          = grep( /--quiet/,                          @ARGV ) ? 1 : 0;
+my $verbose                        = grep( /--verbose/,                        @ARGV ) ? 1 : 0;
+my $force                          = grep( /--force/,                          @ARGV ) ? 1 : 0;
+my $no_restart                     = grep( /--no[-_]restart/,                  @ARGV ) ? 1 : 0;
+my $must_update                    = 0;
+my $exim_config_mtime              = ( stat('/etc/exim.conf') )[9];
+
+# If we have a critical update that must be installed we pass this flag
+if ( $must_have_at_least_version || $newest_allowed_version ) {
+    if (
+        $current_installed_version
+        && (
+            ( $must_have_at_least_version && $current_installed_version < $must_have_at_least_version )    #version too old
+            || ( $newest_allowed_version && $current_installed_version > $newest_allowed_version )         #version too new aka downgrade
+        )
+    ) {
+        $must_update = 1;
+    }
+    elsif ( !$force && $template_version == $current_installed_version ) {
+        $output_obj->out("Installed configuration is acceptable and matches the template version ($current_installed_version)\n") if $verbose;
+        exit 0;
+    }
+}
+elsif ($must_be_in_sync_and_functional) {
+    $must_update = 1;
+}
+elsif ( !$force && $template_version == $current_installed_version ) {
+    $output_obj->out("Installed configuration is acceptable and matches the template version ($current_installed_version)\n") if $verbose;
+    exit 0;
+}
+
+my ( $install_ok, $install_msg );
+if ( $ARGV[0] ne '--checkonly' ) {
+    skipoldsetups() unless $must_update;    #if they do not have spamassassin enabled, or they have useoldspam in their exim config
+
+    #they are on there own
+
+    ( $install_ok, $install_msg ) = installnewconfig();
+    if ($install_ok) {
+        exit 0;
+    }
+
+}
+
+require Whostmgr::Config::Backup;
+my $backup = Whostmgr::Config::Backup->new();
+my ( $status, $statusmsg, $file );
+
+if ( !$ENV{'WHM50'} ) {
+    ( $status, $statusmsg, $file ) = $backup->backup( 'modules' => { 'cpanel::smtp::exim' => 1 }, 'parent_dir' => '/var/cpanel/config.backups' );
+}
+
+if ( $must_update || $force ) {
+    ( $install_ok, $install_msg ) = do_forced_update_and_notify( $file, $install_ok, $install_msg );    # will exit if it is able to reset to a working config
+    do_config_update_notification( 'UnableToInstallCritical', $file, $install_msg );
+    exit(1);
+
+}
+
+do_config_update_notification( 'UnableToInstallNotCritical', $file, $install_msg );
+exit(1);
+
+sub do_forced_update_and_notify {
+    my ( $file, $install_ok, $install_msg ) = @_;
+
+    my $previous_install_msg;
+
+    my @reset_methods = (
+
+        # Attempt to reset the replacecf files first
+        { 'method' => 'reset_cf_exim_cfg_to_defaults', 'template' => 'ResetCFReplaceInserts', 'text' => 'Exim CF and ReplaceCF Configuration' },
+
+        # Attempt to reset the acls second
+        { 'method' => 'reset_acl_exim_cfg_to_defaults', 'template' => 'ResetACLBlock', 'text' => 'Exim ACL Configuration' },
+
+        # Attempt to reset the advanced conf (inserts) third
+
+        { 'method' => 'reset_inserts_exim_cfg_to_defaults', 'template' => 'ResetInserts', 'text' => 'Advanced Exim Inserts' },
+
+        # If all else fails disable custom acls and try again
+        { 'method' => 'disable_custom_acls', 'template' => 'ResetCustomACLS', 'text' => 'Custom and Third-Party ACLS' },
+
+    );
+
+    foreach my $reset_method (@reset_methods) {
+        $output_obj->out("Resetting “$reset_method->{'text'}” to defaults...\n");
+
+        Cpanel::Exim::Reset->can( $reset_method->{'method'} )->();
+
+        $previous_install_msg = $install_msg;
+        ( $install_ok, $install_msg ) = installnewconfig();
+        if ($install_ok) {
+            do_config_update_notification( $reset_method->{'template'}, $file, $previous_install_msg );
+            exit(0);
+        }
+    }
+
+    return ( 0, $install_msg );
+
+    # will continue on to do a  do_failed_update_notification();
+}
+
+sub do_config_update_notification {
+    my ( $action, $config_backup_path, $install_msg ) = @_;
+
+    my @files_to_attach = ( $config_backup_path, { 'content' => \$install_msg, 'name' => 'config-install-errors.txt' } );
+    require Cpanel::Notify;
+    my $ic_obj = Cpanel::Notify::notification_class(
+        'class'            => 'Check::EximConfig',
+        'application'      => 'Check::EximConfig',
+        'constructor_args' => [
+            'application'             => 'mailconfigupdate:' . $action,
+            'is_whm'                  => $ENV{'WHM50'} ? 1 : 0,
+            'source_ip_address'       => Cpanel::IP::Remote::get_current_remote_ip(),
+            'origin'                  => 'check_exim_config:' . $action,
+            'cpanel_version'          => Cpanel::Version::get_version_text(),
+            'previous_config_version' => $previous_installed_version,
+            'current_config_version'  => $current_installed_version,
+            'new_config_version'      => $template_version,
+            'skip_send'               => 1,
+            'action'                  => $action,
+            'exim_backup_path'        => $config_backup_path,
+            'attach_files'            => \@files_to_attach,
+        ]
+    );
+
+    _display_template_to_stdout( $ic_obj, $action );
+
+    $ic_obj->send() unless $ENV{'WHM50'};
+    return;
+}
+
+sub _display_template_to_stdout {
+    my ( $ic_obj, $action ) = @_;
+
+    my $function = $ENV{'WHM50'} ? 'render_template_include' : 'render_template_include_as_text';
+
+    print(
+        "\n\n"                                                                                     #
+          . $ic_obj->can($function)->( $ic_obj, 'template' => 'ResetHeader', 'type' => 'html' )    #
+          . $ic_obj->can($function)->( $ic_obj, 'template' => $action, 'type' => 'html' )
+    );
+    return 1;
+}
+
+sub skipoldsetups {
+    my $cpconf = Cpanel::Config::LoadCpConf::loadcpconf();
+    if ( $cpconf->{'skipspamassassin'} ) {
+        exit 0;
+    }
+}
+
+sub version_is_acceptable {
+    $current_installed_version = get_current_installed_template_version();
+    ( ( !$must_have_at_least_version || ( $current_installed_version >= $must_have_at_least_version ) ) && ( !$newest_allowed_version || ( $current_installed_version <= $newest_allowed_version ) ) ) ? 1 : 0;
+}
+
+sub installnewconfig {
+    my $run = Cpanel::SafeRun::Object->new(
+        program => '/usr/local/cpanel/scripts/buildeximconf',
+    );
+    if ( !$run->CHILD_ERROR() ) {
+
+        $output_obj->out("Building Exim Configuration successful\n");
+        if ( version_is_acceptable() ) {
+            $output_obj->out("Installed Exim Configuration version ($current_installed_version) is acceptable!\n");
+            system '/usr/local/cpanel/scripts/restartsrv_exim' unless $no_restart;
+            return 1;
+        }
+        else {
+            $output_obj->out("Installed Exim Configuration version ($current_installed_version) is NOT acceptable!\n");
+        }
+        return ( 1, 'OK' );
+    }
+
+    $output_obj->out( $run->stdout() );
+    $output_obj->error( $run->stderr() );
+
+    return ( 0, $run->stdout() );    #failed
+}
+
+sub get_current_installed_template_version {
+    return Cpanel::Exim::Config::Template::getacltemplateversion('/etc/exim.conf');
+}
+
+sub fetch_current_dist_template_version {
+    return Cpanel::Exim::Config::Template::getacltemplateversion('/usr/local/cpanel/etc/exim/defacls/universal.dist');
+}

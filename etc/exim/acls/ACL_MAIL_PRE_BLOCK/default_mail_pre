@@ -1,0 +1,13 @@
+
+    # ignore authenticated hosts
+    accept
+        authenticated = *
+
+    warn
+        condition = ${if match_ip{$sender_host_address}{+loopback}{${perl{identify_local_connection}{$sender_host_address}{$sender_host_port}{$received_ip_address}{$received_port}{1}}}{0}}
+        set acl_c_authenticated_local_user = ${perl{get_identified_local_connection_user}}
+
+    accept
+        hosts = : +loopback : +recent_authed_mail_ips : +backupmx_hosts
+
+

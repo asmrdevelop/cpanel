@@ -1,0 +1,108 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/jetbackup-check                 Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+use warnings;
+
+use Whostmgr::JetBackup ();
+
+# Make sure we get exactly the args we want, with a little flexibility for calling --help, -h, -HELP, etc.
+exit script() unless caller;
+
+sub script {
+    my $args_ok = 0;
+    foreach my $arg (@ARGV) {
+        if ( $arg =~ m/^-{1,2}h/i ) {
+            show_usage();
+            return 0;
+        }
+        elsif ( $arg eq '--run' ) {
+            $args_ok = 1;
+        }
+        else {
+            print "Unknown arguments passed.\n";
+            show_usage(1);
+            return 1;
+        }
+    }
+    if ( $args_ok != 1 ) {
+        show_usage();
+        return 1;
+    }
+
+    # Allow for manual override of this automated check
+    my $disable_touchfile = '/var/cpanel/disable_auto_jb';
+
+    if ( -e $disable_touchfile ) {
+        print "Skipping automatic check for JetBackup license due to existence of $disable_touchfile\n";
+        return 0;
+    }
+
+    my $handler            = Whostmgr::JetBackup->new();
+    my $has_active_license = 0;
+
+    # Load mainserverip in to $handler
+    $handler->mainserverip();
+
+    # Retrieve the license from the store server
+    my ( $rc, $serial_no ) = $handler->get_jetbackup_license();
+
+    # If there is no active license available, there is no need to continue, otherwise we'll save the serial number from the license server
+    if ( $rc == 1 ) {
+        $has_active_license = 1;
+    }
+    else {
+        # No active license exists, no need to carry on
+        print "No license found for JetBackup in the cPanel Store.\n";
+        return 0;
+    }
+
+    # If it's installed (at least in some fashion) we need to check to see if it's using the right license.
+    # If it's not installed and we have a valid serial, install LS with the serial
+    my $is_installed = $handler->is_jetbackup_installed();
+
+    # Note - there is currently no need for the license serial to be used on the local server, as the
+    # `jetbackup --license` command clears the local cache in the mongodb and syncs it directly from the
+    # upstream jetapps license server. Keeping it here for now as it doesn't hurt to pass in.
+    if ($is_installed) {
+        my ( $rc, $stdout, $stderr ) = $handler->ensure_using_latest_license($serial_no);
+        if ( $rc == 1 ) {
+            print "Successfully installed new license on existing install:\n$stdout\n";
+        }
+        elsif ( $rc == 2 ) {
+            print "Valid JetBackup license already in place on existing install\n";
+        }
+        else {
+            print "Failed to install new license on existing install:\n$stdout\n$stderr\n";
+        }
+    }
+    else {
+        if ( $handler->install_jetbackup() ) {
+            print "Successfully installed JetBackup with new license.\n";
+        }
+    }
+    return 0;
+}
+###[ Functions ]########################################################################################################
+
+sub show_usage {
+    my ($use_stderr) = @_;
+    my $out_fh = ( $use_stderr ? \*STDERR : \*STDOUT );
+    print $out_fh <<EOF;
+This script checks to see if there is a JetBackup license available for the server it is run on in the cPanel Store,
+and if so, ensures JetBackup is installed with a valid paid license, using the one from the store if not
+already in place.
+
+Usage:
+    scripts/jetbackupcheck <--help|--run>
+
+    --help  : Show this output
+    --run   : Actually run the check for JetBackup license and installation
+
+EOF
+    return;
+}

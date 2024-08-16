@@ -1,0 +1,241 @@
+[%
+    USE JSON;
+    USE Whostmgr;
+
+    SET OVER_USERS = Whostmgr.get_max_users() && Whostmgr.minimum_accounts_needed( Whostmgr.get_max_users() + 1 );
+    SET scripts = OVER_USERS ? 0 : [ '/js2/_sshkey_selection.js' ];
+
+    WRAPPER 'master_templates/master.tmpl'
+        app_key = 'transfer_tool'
+        header = data.header,
+        stylesheets = [
+            '/css/whm_dynamic_notices.css'
+        ],
+        scripts= scripts,
+        theme = 'bootstrap';
+
+
+-%]
+
+[% IF OVER_USERS %]
+    [%- PROCESS 'menu/_license_excess_create.tmpl' -%]
+    [%#
+        these are referenced by the js that is auto-loaded
+        preventing auto-load would require significant work in _loadjs.tmpl
+        and since that's used on every page, this is a smaller fix
+    %]
+    <span aria="hidden" class="help-block whmHelp"></span>
+    <input aria="hidden" name="host" id="host" type="hidden" />
+    <input aria="hidden" name="remote_server_type" id="remote_server_type" type="hidden" />
+[% ELSE %]
+
+    [%
+        PROCESS '_ajaxapp_styles.tmpl';
+        PROCESS '_ajaxapp.tmpl';
+    %]
+
+    <div id="content">
+
+        [% INCLUDE _pending_transfers.tmpl %]
+
+        <!--TODO: Find solution so we open new page in a new tab -->
+        <form name="copyform" method="post" role="form" id='copyform'>
+            <input type="hidden" name="copytype" value="[% data.action %]" />
+            [% INCLUDE _sshkey_selection.tmpl %]
+            [% SET restricted_by_default = 0 %]
+            [% PROCESS _restricted_restore_option.tmpl %]
+            <!-- We must set this value or they will not be given the choice for each account -->
+            <input type="hidden" name="copy_reseller_privs" value="1" />
+            <fieldset>
+                <legend>
+                    [% locale.maketext('Advanced') %]
+                    <button id="showHideAdvanced" type="button" class="btn btn-default btn-xs">[% locale.maketext('Show') %]</button>
+                </legend>
+
+                <div id="advancedOptions" class="col-sm-10">
+                <div class="form-group">
+                    <label>[% locale.maketext('Remote Server Type:') %]</label>
+                    <div class="row">
+                            <div class="col-sm-6">
+                                <select  id="remote_server_type" name="remote_server_type" class="form-control">
+                                    <option value="auto" selected="selected">[% locale.maketext('Auto Detect') %]</option>
+                                    <option value="WHM">cPanel &amp; WHM</option>
+                                    <option value="plesk">Parallels Plesk®</option>
+                                    <option value="directadmin">DirectAdmin</option>
+                                    <option value="ensim">Ensim</option>
+                                </select>
+                        </div>
+                        <span class="help-block whmHelp">
+                            [% locale.maketext('WHM version will be auto detected.') %]
+                        </span>
+                            </div>
+                    </div>
+                    <div class="checkbox">
+                        <label>
+                            <input  type="checkbox"
+                                    name="unencrypted"
+                                    id="unencrypted"
+                                    value="1"/>
+                            [% locale.maketext('Unencrypted') %]
+                        </label>
+                    </div>
+                    <span class="help-block">
+                        [% locale.maketext('To use encryption, the remote server must run [asis,cPanel] version “[_1]” or later.', '11.23.6') %]
+                    </span>
+                    <div class="checkbox">
+                        <label>
+                            <input  type="checkbox"
+                                    name="compressed"
+                                    id="compressed"
+                                    checked="checked"
+                                    value="1"/>
+                            [% locale.maketext('Compressed Transfers') %]
+                        </label>
+                    </div>
+                    <div class="checkbox">
+                        <label>
+                            <input  type="checkbox"
+                                    name="low_priority"
+                                    id="low_priority"
+                                    value="1"
+                                    />
+                            [% locale.maketext('Low Priority') %]
+                        </label>
+                    </div>
+                    <span class="help-block">
+                        [% locale.maketext('Low Priority transfers run with a lower CPU and disk IO priority on the source server.') %]
+                        [% locale.maketext('This option will reduce the impact to performance on the source server, but it will increase the time it takes to transfer accounts.') %]
+                    </span>
+                    <div class="checkbox">
+                        <label>
+                            <input  type="checkbox"
+                                    name="use_backups"
+                                    id="use_inc_backup_speedup"
+                                    value="1"
+                                    checked="checked"
+                                    />
+                            [% locale.maketext('Use Incremental Backups Speed-up') %]
+                        </label>
+                    </div>
+                    <span class="help-block">
+                        [% locale.maketext('[asis,cPanel 11.29.126] and later required on both ends.') %]
+                    </span>
+                    <div class="checkbox">
+                        <label>
+                            <input  type="checkbox"
+                                    name="enable_custom_pkgacct"
+                                    id="enable_custom_pkgacct"
+                                    checked="checked"
+                                    value="1"/>
+                            [% locale.maketext('Use custom account packaging modules from “[_1]”.', '/var/cpanel/lib/Whostmgr/Pkgacct') %]
+                        </label>
+                    </div>
+                    <div class="help-block">
+                        [% locale.maketext('To find out more about custom account packaging and restoring modules (previously called overrides), please read the documentation found [output,url,_1,here,target,_blank].', "https://go.cpanel.net/override" ) %]
+                        [% locale.maketext('Custom restore modules placed in “[_1]” will always be preferred over the cPanel-provided modules in “[_2]”.',data.CUSTOM_PERL_MODULES_DIR _ '/Whostmgr/Transfers/Systems','/usr/local/cpanel/Whostmgr/Transfers/Systems') %]
+                    </div>
+                    <div class="form-group">
+                        <label for="transfer_threads">[% locale.maketext('Number of Transfer Threads') %]:</label>
+                        <div class="row">
+                            <div class="col-sm-3">
+                                <input type="number" value="[% data.transfer_threads_soft_limit %]" id="transfer_threads" name="transfer_threads" size="1" maxlength="1" min="1" max="[% data.transfer_threads_hard_limit %]" step="1" title="[% locale.maketext('You must provide an integer number between 1 and [numf,_1].', data.transfer_threads_hard_limit) %]" class="form-control" />
+                            </div>
+                        </div>
+                        <div class="help-block">
+                            [% IF data.thread_recommendations_are_max -%]
+                                [% locale.maketext('You should use no more than [quant,_1,transfer thread,transfer threads] to avoid performance degradation.', data.transfer_threads_hard_limit) %]
+                            [% ELSE -%]
+                                [% locale.maketext('Because your system has [format_bytes,_1] of available memory and [quant,_2,CPU,CPUs], you should use no more than [quant,_3,transfer thread,transfer threads] to avoid severe performance degradation.', data.available_memory_bytes, data.cpu_count, data.transfer_threads_soft_limit) %]
+                            [% END -%]
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label for="restore_threads">[% locale.maketext('Number of Restore Threads') %]:</label>
+                        <div class="row">
+                            <div class="col-sm-3">
+                                <input type="number" value="[% data.restore_threads_soft_limit %]" id="restore_threads" name="restore_threads" size="1" maxlength="1" min="1" max="[% data.restore_threads_hard_limit %]" step="1" title="[% locale.maketext('You must provide an integer number between 1 and [numf,_1].', data.restore_threads_hard_limit) %]" class="form-control" />
+                            </div>
+                        </div>
+                        <div class="help-block">
+                            [% IF data.thread_recommendations_are_max -%]
+                                [% locale.maketext('You should use no more than [quant,_1,restore thread,restore threads] to avoid performance degradation.', data.restore_threads_hard_limit) %]
+                            [% ELSE -%]
+                                [% locale.maketext('Because your system has [format_bytes,_1] of available memory and [quant,_2,CPU,CPUs], you should use no more than [quant,_3,restore thread,restore threads] to avoid severe performance degradation.', data.available_memory_bytes, data.cpu_count, data.restore_threads_soft_limit) %]
+                            [% END -%]
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label for="restore_threads">[% locale.maketext('Transfer Session Timeout') %]:</label>
+                        <div class="row">
+                            <div class="col-sm-3">
+                                <input type="number" value="[% data.default_session_timeout %]" id="session_timeout" name="session_timeout" size="1" maxlength="[% data.max_session_timeout.size %]" min="[% data.min_session_timeout %]" max="[% data.max_session_timeout %]" step="1" title="[% locale.maketext('You must provide an integer number between [numf,_1] and [numf,_2].', data.min_session_timeout, data.max_session_timeout) %]" class="form-control" />
+                            </div>
+                        </div>
+                        <div class="help-block">
+                [% IF data.max_session_timeout < 60 %]
+                    [% locale.maketext('This value represents the number of seconds that you wish for the transfer session to remain open before it times out due to a lack of activity. We recommend that you do not enter a value greater than [quant,_2,second,seconds] ([list_and,_1]).', data.seconds_to_locale(data.max_session_timeout), data.max_session_timeout) %]
+                [% ELSE %]
+                    [% locale.maketext('This value represents the number of seconds that the transfer session remains open before it times out. We recommend that you do not enter a value greater than [quant,_1,second,seconds].', data.max_session_timeout) %]
+                [% END %]
+                        </div>
+                    </div>
+                </div>
+            </fieldset>
+
+            <div id="tlsWarning" class="alert alert-message alert-warning hidden">
+                <div id="tlsWarningHeader" class="tlsWarningText">[% locale.maketext('This connection is untrusted.') %]</div>
+
+                <div id="tlsWarningText1" class="tlsWarningText"></div>
+
+                <div id="sshAPIReturnText">
+                    <pre><code></code></pre>
+                </div>
+
+                <div id="tlsWarningText2" class="tlsWarningText"></div>
+
+                <div id="tlsWarningText3" class="tlsWarningText"></div>
+                <div id="tlsWarningText4" class="tlsWarningText"></div>
+
+                <div class="checkbox">
+                    <label>
+                        <input type="checkbox" name="retryContCheck" id="retryContCheck" value="0" />
+                        [% locale.maketext('I understand the risks. Connect anyway.') %]
+                    </label>
+                </div>
+
+                <div id="retryBtnContainer">
+                    <button id="retryTransportBtn" type="button" class="btn btn-primary" disabled="true">[% locale.maketext('Continue') %]</button>
+                    <button id="cancelRetryTransportBtn" type="button" class="btn btn-link">[% locale.maketext('Cancel') %]</button>
+                </div>
+            </div>
+
+            <div id="callback_block"></div>
+            <button id="formSubmitButton" type="submit" class="btn btn-primary">
+                <div class="button-text">[% data.actionname %]</div>
+            </button>
+        </form>
+    </div>
+
+    <div class="row">
+        <div class="col-xs-12">
+            <div id="copyrights" class="pull-right">
+                [% locale.maketext('All trademarks are owned by their respective authors.') %]
+            </div>
+        </div>
+    </div>
+
+    [% INCLUDE _transfer_api_info.tmpl %]
+    <script text="text/javascript">
+        CPANEL.namespace("CPANEL.PAGE");
+        CPANEL.PAGE = {
+            key_list: [% data.key_list.json() %],
+            transfer_threads_soft_limit: [% data.transfer_threads_soft_limit %],
+            restore_threads_soft_limit: [% data.restore_threads_soft_limit %],
+            transfer_threads_hard_limit: [% data.transfer_threads_hard_limit %],
+            restore_threads_hard_limit: [% data.restore_threads_hard_limit %],
+            default_session_timeout: [% data.default_session_timeout %]
+        };
+    </script>
+    [% END -%]
+
+[% END #wrapper -%]

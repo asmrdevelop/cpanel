@@ -1,0 +1,63 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - bin/update_appconfig_apps               Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::update_appconfig_apps;
+## no critic qw(TestingAndDebugging::RequireUseWarnings)
+
+use strict;
+use Cpanel::AppConfig     ();
+use Whostmgr::Addons      ();
+use Cpanel::Version::Full ();
+
+run() unless caller;
+
+sub run {
+    usage() if grep ( m/-help/, @ARGV );
+    my $apps = Cpanel::AppConfig::get_application_list();
+
+    foreach my $service ( keys %{$apps} ) {
+        foreach my $app ( @{ $apps->{$service} } ) {
+            next if !$app->{'origin'} || $app->{'origin'} eq 'internal';
+
+            my $addon_key = $service . '_' . $app->{'name'};
+            next if !Whostmgr::Addons::should_run_upgrade_script($addon_key);
+            if ( $app->{'upgradecall'} && -x $app->{'upgradecall'} ) {
+                my $current_version  = Cpanel::Version::Full::getversion();
+                my $previous_version = Whostmgr::Addons::get_previous_version($addon_key);
+                print "Upgrading $addon_key from $previous_version to $current_version\n";
+                system $app->{'upgradecall'}, $previous_version, $current_version;
+            }
+            Whostmgr::Addons::set_upgrade_performed($addon_key);
+        }
+
+    }
+
+    exit(0);
+}
+
+sub usage {
+    print <<EOM;
+
+
+$0: Summary
+
+This tool with run the configured upgradescript for each app
+registered with appconfig if it has not yet been run for this version
+of cPanel.
+
+https://go.cpanel.net/appconfig
+
+Example usage:
+
+  $0
+
+  $0 --help
+
+EOM
+
+    exit(1);
+}

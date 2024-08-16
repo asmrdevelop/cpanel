@@ -1,0 +1,47 @@
+<div class="record-set">
+    <div class="row">
+        <div class="col-xs-12">
+            <div class="form-group">
+                <label>
+                    <span id="{{::parentID}}_recordSet_label" ng-bind="label"></span>
+                    <span id="{{::parentID}}_recordSet_zoneTypeLabel" ng-bind="recordZoneType" class="label label-info"></span>
+                </label>
+            </div>
+            <div class="form-group" ng-if="recordsLoaded && !record">
+                <callout callout-type="info"><em ng-bind="noRecordMessage"></em></callout>
+            </div>
+            <div class="form-group" ng-if="recordsLoaded && record">
+                <copy-field label="[% locale.maketext('Name') %]" id="{{::parentID}}_recordSet_name" text="nameText"></copy-field>
+                <copy-field label="[% locale.maketext('Value') %]" id="{{::parentID}}_recordSet_value" text="valueText">
+
+                    <span id="{{::parentID}}_viewSelector" class="change-view" ng-if="splitable && !!valueText && valueText.length > 255">
+                        <label for="{{::parentID}}_dkim_style">[% locale.maketext("View:") %]</label>
+                        <div class="btn-group btn-group-xs">
+                            <a class="btn btn-default" href="javascript:void()" ng-click="toggleSplitMode()" ng-class="{ active: splitMode === 'full' }"
+                                title="[% locale.maketext('Full view displays the entire record. This is useful for providers who will automatically split the record.') %]">[% locale.maketext("Full") %]</a>
+                            <a class="btn btn-default" href="javascript:void()" ng-click="toggleSplitMode()" ng-class="{ active: splitMode === 'split' }"
+                                title="[% locale.maketext('Split view divides the record in 255-character parts. This is useful for providers who will not automatically split the record.') %]">[% locale.maketext("Split") %]</a>
+                        </div>
+                    </span>
+
+                    <a
+                        ng-if="!hideExtras && recordType === 'spf'"
+                        href="#/manage/spf?domain={{ :: domainName | htmlSafeString}}"
+                        class="btn btn-sm btn-link">
+                            [% locale.maketext("Customize") %]
+                            <i class="fas fa-pencil-alt" aria-hidden="true"></i>
+                    </a>
+
+                    <a
+                        ng-if="!hideExtras && recordType === 'dkim' && valueText"
+                        href="#/manage/dkim?domain={{ :: domainName | htmlSafeString}}"
+                        class="btn btn-sm btn-link">
+                            [% locale.maketext("View the Private Key") %]
+                            <i class="fas fa-pencil-alt" aria-hidden="true"></i>
+                    </a>
+
+                </copy-field>
+            </div>
+        </div>
+    </div>
+</div>

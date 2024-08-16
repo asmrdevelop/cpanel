@@ -1,0 +1,448 @@
+[% SET CPANEL.CPVAR.dprefix = "../" %]
+
+[% WRAPPER '_assets/master.html.tt'
+    app_key           = 'bandwidth',
+    embed_stylesheets = [ 'stats/bandwidth.min.css' ],
+-%]
+
+[%
+USE CPDate;
+USE CPMath;
+
+PROCESS '_assets/resource_usage_macro.html.tt';
+
+SET timezone = CPANEL.cookies.timezone;
+
+SET now = CPANEL.now();
+
+SET ONE_DAY_AGO = CPDate.add_local_interval( now, -1, 'day', timezone );
+
+#Might as well start sampling on a 5-minute boundary
+ONE_DAY_AGO = ONE_DAY_AGO - ONE_DAY_AGO % (5 * 60);
+
+#Might as well start sampling on an hour boundary
+SET ONE_WEEK_AGO = CPDate.local_startof(
+    CPDate.add_local_interval( now, -7, 'day', timezone ),
+    'hour',
+    timezone,
+);
+
+SET ONE_YEAR_AGO = CPDate.add_local_interval( now, -1, 'year', timezone );
+
+SET last_tick = CPDate.local_startof( now, 'day', timezone );
+SET WEEK_TICKS = [];
+FOR i = [ 0 .. 6 ];
+    WEEK_TICKS.unshift( last_tick * 1000 );
+    last_tick = CPDate.add_local_interval( last_tick, -1, 'day', timezone );
+END;
+SET errors = [];
+
+SET PROTOCOLS = execute_or_die(
+    'Bandwidth',
+    'get_enabled_protocols'
+).data;
+
+SET daily_data = execute(
+    'Bandwidth',
+    'query',
+    {
+        timezone => timezone,
+        grouping => "protocol|year_month_day_hour_minute",
+        start => ONE_DAY_AGO,
+        interval => "5min",
+    },
+);
+IF daily_data.status == 0;
+    errors = errors.merge(daily_data.errors);
+END;
+
+SET weekly_data = execute(
+    'Bandwidth',
+    'query',
+    {
+        timezone => timezone,
+        grouping => "protocol|year_month_day_hour",
+        start => ONE_WEEK_AGO,
+        interval => "hourly",
+    },
+);
+IF weekly_data.status == 0;
+    errors = errors.merge(weekly_data.errors);
+END;
+
+SET yearly_data = execute(
+    'Bandwidth',
+    'query',
+    {
+        timezone => timezone,
+        grouping => "protocol|year_month_day",
+        start => ONE_YEAR_AGO,
+        interval => "daily",
+    },
+);
+IF yearly_data.status == 0;
+    errors = errors.merge(yearly_data.errors);
+END;
+
+# Gather data for 'Monthly Bandwidth Transfer' if there is a bandwidth limit.
+IF CPANEL.CPDATA.BWLIMIT > 0;
+    Api2.pre_exec( 'Stats', 'getthismonthsbwusage' );
+    SET get_bandwidth = Api2.exec( 'Stats', 'getthismonthsbwusage' );
+    Api2.post_exec( 'Stats', 'getthismonthsbwusage' );
+    SET bandwidth = get_bandwidth.0.bw;
+
+    # NOTES:
+    #  - bandwidth can be > then the limit.
+    #  - bar_length needs to be an integer between 0 and 400 pixels
+    SET bandwidth_percent = CPMath.ceil( (bandwidth / CPANEL.CPDATA.BWLIMIT) * 100 );
+
+    SET bar_percent = bandwidth_percent;
+    IF bar_percent > 100;
+        bar_percent = 100;
+    END;
+
+    SET bandwidth_formatted = locale.format_bytes(bandwidth);
+    SET bandwidth_limit_formatted = locale.format_bytes(CPANEL.CPDATA.BWLIMIT);
+
+    IF bandwidth_percent >= 80;
+        bandwidth_class = 'danger';
+        IF bandwidth_percent >= 100;
+            bandwidth_message = locale.maketext('Your websites’ users have consumed all your monthly bandwidth. Your websites may be inaccessible until the start of the next month.');
+        ELSE;
+            bandwidth_message = locale.maketext('Your websites’ users have consumed [_1] of your monthly bandwidth. When you run out of bandwidth, your websites may be inaccessible until the start of the next month.', bandwidth_formatted);
+        END;
+    ELSIF bandwidth_percent >= 60;
+        bandwidth_class = 'warning';
+        bandwidth_message = locale.maketext('Your websites’ users have consumed [_1] of your monthly bandwidth.', bandwidth_formatted);
+    ELSE;
+        bandwidth_class = 'success';
+        bandwidth_message = locale.maketext('Your websites’ users have consumed [_1] of your monthly bandwidth.', bandwidth_formatted);
+    END;
+END;
+
+SET bandwidth_data = execute(
+    'Stats',
+    'get_bandwidth',
+    { timezone => timezone },
+);
+IF bandwidth_data.status == 0;
+    errors = errors.merge(bandwidth_data.errors);
+END;
+
+# Remove any redundant entries from errors list.
+errors = errors.unique;
+
+PROCESS '_bandwidth_graph_include.tmpl';
+-%]
+
+<div class="body-content">
+    <span id="bandwidthInformationMsg">
+    [%-
+            # Note: a MACRO was not used here because we need to be able
+            # to access resource_usage_limits after the block runs
+            SET resource_usage_key = 'bandwidthusage';
+            SET resource_usage_percent_used_to_warn = 80;
+            PROCESS resource_usage_block;
+
+    -%]
+    </span>
+    <p id="descBandwidth" class="description">
+        [% locale.maketext("This function allows you to see the bandwidth usage for your site. It shows the current month’s bandwidth usage, as well as your total bandwidth usage. This includes all HTTP (web) and POP (mail) bandwidth usage. This may also include FTP bandwidth usage if your system administrator enabled FTP bandwidth logging.")  %]
+    </p>
+    <p class="description">[% your_timezone_is() %]</p>
+
+    [% FOREACH error IN errors %]
+        <div class="alert alert-danger" role="alert">
+            <span class="glyphicon glyphicon-remove-sign" aria-hidden="true"></span>
+            <div class="alert-message">
+                <strong class="alert-title">
+                    [% locale.maketext('Error:') %]
+                </strong>
+                <span class="alert-body">
+                    <span id="error-[% loop.index() %]">
+                        [% error.html() %]
+                    </span>
+                </span>
+            </div>
+        </div>
+    [% END # FOREACH errors %]
+
+    [% IF CPANEL.CPDATA.BWLIMIT > 0 %]
+        <div class="section bandwidth-section">
+            <table>
+               <tr>
+                    <td>
+                        <fieldset>
+                            <legend>
+                                <strong id="bandwidth-meter-label">
+                                    [% locale.maketext("Monthly Bandwidth Transfer") %]
+                                </strong>
+                            </legend>
+                            <div>
+                                <span id="bandwidth-used"
+                                      aria-label="[% locale.maketext('Bandwidth Used') %]">
+                                      [% bandwidth_formatted %]
+                                    </span>
+                                /
+                                <span id="bandwidth-limit"
+                                      aria-label="[% locale.maketext('Bandwidth Allowed Per Month') %]">
+                                    [% bandwidth_limit_formatted %]
+                                </span>
+                                (<span id="bandwidth-used-percent"
+                                    aria-label="[% locale.maketext('Percent Bandwidth Used') %]">
+                                    [% bandwidth_percent %]%
+                                </span>)
+                            </div>
+                            <div>
+                                <div class="progress [% bandwidth_class %]"
+                                     role="slider"
+                                     aria-readonly="true"
+                                     aria-labelledby="bandwidth-meter-label"
+                                     aria-valuemin="0"
+                                     aria-valuemax="[% CPANEL.CPDATA.BWLIMIT %]"
+                                     aria-valuenow="[% bandwidth %]"
+                                     aria-valuetext="[% bandwidth_message %]">
+                                    <div id="progressbar_bandwidth" class="progress-bar" style="width:[% bar_percent %]%">
+                                    </div>
+                                </div>
+                            </div>
+                        </fieldset>
+                    </td>
+                </tr>
+            </table>
+        </div>
+    [% END %]
+
+    <div class="section">
+        <table id="bw_graphs">
+            <tr>
+                <td>
+                    <fieldset>
+                        <legend>[% locale.maketext('Past [quant,_1,hour,hours]',24) -%]</legend>
+                        <div id="daily_container_d3" class="bw-time-graph"></div>
+                    </fieldset>
+                    <br>
+                    <fieldset>
+                        <legend>[% locale.maketext('Past week') -%]</legend>
+                        <div id="weekly_container_d3" class="bw-time-graph"></div>
+                    </fieldset>
+                    <br>
+                    <fieldset>
+                        <legend>[% locale.maketext('Past year') -%]</legend>
+                        <div id="yearly_container_d3" class="bw-time-graph"></div>
+                    </fieldset>
+                    <br>
+                </td>
+            </tr>
+        </table>
+        <br />
+        [%
+        IF bandwidth_data.status;
+
+            # Setting TZ allows use of the system’s local time functions
+            # to convert timestamps to month/year.
+            SET old_tz = CPANEL.ENV.TZ;
+            CPANEL.ENV.TZ = timezone;
+
+            SET year_month_order = CPDate.ymd_order().replace('d', '');
+            SET months_localized = CPDate.month_stand_alone_wide();
+            SET months = {};
+            FOREACH item IN bandwidth_data.data;
+                SET start = item.month_start;
+                IF !months.$start;
+                    SET start_parts = CPDate.localtime_parts(start);
+                    SET month_num = start_parts.4;
+                    SET month_localized = months_localized.$month_num;
+
+                    USE month_start = date(time => start);
+                    SET year = start_parts.5 + 1900;
+
+                    IF year_month_order == 'ym';
+                        SET heading = year _ " " _ month_localized ;
+                    ELSE;
+                        SET heading = month_localized _ " " _ year;
+                    END;
+
+                    SET months.$start = {
+                        heading     => heading,
+                        month_short => month_start.format(format => '%b', locale => 'en_US'),
+                        year        => year,
+                        total       => 0,
+                        pie         => '',
+                        pie_index   => 1,
+                        items       => [],
+                    };
+
+                END;
+                months.$start.items.push(item);
+            END; # FOREACH item in bandwidth_data %]
+
+            [%  FOREACH item IN months.keys.nsort.reverse %]
+            <h3>[% months.$item.heading %]</h3>
+            <div class="row" >
+                <div class="col-xs-12 col-sm-8 col-md-8 col-lg-9">
+                    [%
+                        FOREACH listing IN months.$item.items();
+                            months.$item.total = months.$item.total + listing.bytes;
+
+                            SET domain_html = listing.domain.html();
+                            SET domain_uri  = listing.domain.uri();
+
+                            SET id = months.$item.month_short _ '-' _ months.$item.year;
+
+                            months.$item.pie_chart = months.$item.pie_chart _ '&amp;'_ months.$item.pie_index.uri() _ '=' _ listing.bytes.uri();
+                            months.$item.pie_index = months.$item.pie_index + 1;
+
+                            # This is expensive just to get a color.
+                            item_color_url = CPANEL.ENV.cp_security_token _ '/backend/piegraph.cgi?color=' _ loop.index.uri();
+
+                            # non-HTTP protocols do not have domain-specific bandwidth data
+                            SET query_specific_domain_yn = (listing.protocol == 'http');
+
+                            USE nav_details_url = url('detailsubbw.html',
+                                mon    => months.$item.month_short,
+                                year   => months.$item.year,
+                                domain => query_specific_domain_yn ? listing.domain : '',
+                                target => CPANEL.authuser,
+                                protocol => listing.protocol,
+                            );
+                    %]
+                    <div class="row" >
+                        <div class="col-xs-9 text-left">
+                            <img src="[% item_color_url %]">
+                            <a href="[% nav_details_url %]" id="lnk-details-[% id.slugify() _ '-' _ listing.protocol.slugify() %]">
+                                [% listing.protocol.upper.html() %]
+                                [% IF listing.protocol == 'http' %]- [% domain_html %] [% END %]
+                            </a>
+                        </div>
+                        <div class="col-xs-3 text-right">
+                            <span id="total-[% id.slugify() _ '-' _ listing.protocol.slugify() %]">
+                                [% locale.format_bytes(listing.bytes).html() %]
+                            </span>
+                        </div>
+                    </div>
+                    [%  END  %]
+
+                    [%  USE nav_total_url = url('detailbw.html',
+                            mon => months.$item.month_short,
+                            year => months.$item.year,
+                            target => CPANEL.authuser,
+                        );
+
+                        USE pie_url = url( CPANEL.ENV.cp_security_token _ '/backend/piegraph.cgi',
+                            action => 'pie',
+                        );
+                        pie_url = pie_url _ months.$item.pie_chart;
+                    %]
+                    <div class="row" >
+                        <div class="col-xs-9 text-left">
+                            <div style="width: 22px;float:left;">&nbsp;</div>
+                            <b>
+                                <a href="[% nav_total_url %]" id="total-bandwidth-usage-details-[% id.slugify() %]">
+                                    [%locale.maketext('Total - All Services') %]
+                                </a>
+                            </b>
+                        </div>
+                        <div class="col-xs-3 text-right">
+                            <span id="total-bandwidth-usage-[% id.slugify() %]">
+                            [% locale.format_bytes(months.$item.total).html() %]
+                            </span>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-xs-12 col-sm-4 col-md-4 col-lg-3">
+                    <a href="[% nav_total_url%]" id="lnk-pie-[% id.slugify() %]">
+                        <img src="[% pie_url %]" border="0">
+                    </a>
+                </div>
+            </div>
+            [%  END #FOREACH item in months %]
+
+            [% CPANEL.ENV.TZ = old_tz; -%]
+        [% END %]
+
+    </div>
+</div>
+
+<script>
+if (!PAGE) {
+    PAGE = {};
+}
+
+PAGE.WEEK_TICKS = [% JSON.stringify(WEEK_TICKS) %].map( function(t) {
+    return new Date(t);
+} );
+PAGE.PROTOCOLS = [% JSON.stringify(PROTOCOLS) %];
+PAGE.WEEKDAYS = [% CPDate.day_stand_alone_abbreviated().json() %];
+PAGE.MONTHS = [% CPDate.month_stand_alone_abbreviated().json() %];
+PAGE.DAILY_DATA = [% JSON.stringify(daily_data.data) %];
+PAGE.WEEKLY_DATA = [% JSON.stringify(weekly_data.data) %];
+PAGE.YEARLY_DATA = [% JSON.stringify(yearly_data.data) %];
+PAGE.ONE_DAY_AGO = [% "${ONE_DAY_AGO}000" %];
+PAGE.ONE_WEEK_AGO = [% "${ONE_WEEK_AGO}000" %];
+PAGE.ONE_YEAR_AGO = [% "${ONE_YEAR_AGO}000" %];
+
+// LOCALE’s CLDR isn’t loading correctly on page load.
+wait_for_CLDR_to_load( function() {
+    var did_sth = Bandwidth_Graph.draw_protocols_time_graph( {
+        time_format: function(t) {
+            return LOCALE.local_datetime(t, "time_format_short")
+        },
+        protocols_order: PAGE.PROTOCOLS,
+        container_path: "#daily_container_d3",
+        min_date: PAGE.ONE_DAY_AGO,
+        resolution: "5min",
+        api_protocol_data: PAGE.DAILY_DATA
+    } );
+
+    if (did_sth) {
+        Bandwidth_Graph.draw_protocols_time_graph_key({
+          protocols_order: PAGE.PROTOCOLS,
+          container_path: "#daily_container_d3"
+        });
+    }
+
+    PAGE.WEEKDAYS.unshift( PAGE.WEEKDAYS.pop() );
+
+    did_sth = Bandwidth_Graph.draw_protocols_time_graph( {
+        time_format: function(t) {
+            return PAGE.WEEKDAYS[ t.getDay() ] + " (" + LOCALE.numf(t.getDate()) + ")"
+        },
+        time_ticks: PAGE.WEEK_TICKS,
+        protocols_order: PAGE.PROTOCOLS,
+        container_path: "#weekly_container_d3",
+        min_date: PAGE.ONE_WEEK_AGO,
+        resolution: "hourly",
+        api_protocol_data: PAGE.WEEKLY_DATA,
+    } );
+
+    if (did_sth) {
+        Bandwidth_Graph.draw_protocols_time_graph_key({
+          protocols_order: PAGE.PROTOCOLS,
+          container_path: "#weekly_container_d3"
+        });
+    }
+
+    did_sth = Bandwidth_Graph.draw_protocols_time_graph( {
+        time_format: function(t) {
+            return PAGE.MONTHS[t.getMonth()]
+        },
+        protocols_order: PAGE.PROTOCOLS,
+        container_path: "#yearly_container_d3",
+        min_date: PAGE.ONE_YEAR_AGO,
+        resolution: "daily",
+        api_protocol_data: PAGE.YEARLY_DATA,
+    } );
+
+    if (did_sth) {
+        Bandwidth_Graph.draw_protocols_time_graph_key({
+          protocols_order: PAGE.PROTOCOLS,
+          container_path: "#yearly_container_d3"
+        });
+    }
+} );
+
+CPTimezone.show_cookie_timezone_mismatch_nodes();
+</script>
+
+[% END #wrapper -%]

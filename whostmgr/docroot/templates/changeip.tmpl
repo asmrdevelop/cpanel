@@ -1,0 +1,114 @@
+[% USE Net -%]
+[% USE CPSort -%]
+[% USE CPList -%]
+[% IF ! data.mc -%]
+[% PROCESS 'master_templates/_defheader.tmpl'
+    breadcrumburl = '/scripts2/changeip'
+    theme="yui"
+    app_key='change_sites_ip_address'
+-%]
+[% END -%]
+[% IF data.ipmigratelock -%]
+You cannot change IP addresses while an IP migration is in progress.
+[% ELSE -%]
+
+<h3 class='simpleheading'>Changing IP for [% data.user %] ([% data.domain %])</h3>
+
+<span class="b2">Current Address:</span> <i>[% data.domainip %]</i>
+[% IF data.owner_shared_ip == data.domainip -%]
+(owner [% data.owner %]'s shared IP)
+[% ELSIF data.server_shared_ip == data.domainip -%]
+(main server shared IP)
+[% END -%]
+
+<br /><span class="b2">Current Sub/Parked Domains:</span>
+
+<table border='0' width='100%'>
+[% FOR dns=data.dnslist.sort -%]
+<tr><td>[% dns %]</td><td></td><td></td><td></td></tr>
+[% END -%]
+</table>
+
+[% IF data.mc == '' -%]
+<form method="POST">
+      <input type="hidden" name="user" value="[% data.user %]" />
+      <input type="hidden" name="oldip" value="[% data.domainip %]" />
+      <span class="b2">New Address:</span>
+      <select name="customip">
+[% ELSE -%]
+      <input type="hidden" name="user-[% data.mc %]" value="[% data.user %]" />
+      <input type="hidden" name="oldip-[% data.mc %]" value="[% data.domainip %]" />
+      <span class="b2">New Address:</span>
+      <select name="customip-[% data.mc %]">
+[% END -%]
+
+[% FOR ip=data.ipdata.keys().cpsort({ 'num' => 1, 'code' => \Net.inet_aton, }) -%]
+[%
+    SET delegated_to_user = data.ipdata.$ip.delegated.${data.user};
+    SET dedicated = data.ipdata.$ip.dedicated_user;
+    SET reserved = data.ipdata.$ip.reserved;
+    SET nameserver = data.ipdata.$ip.nameserver;
+    SET input_disabled = (dedicated && dedicated != data.domain);
+-%]
+<option
+[%-
+    IF input_disabled;
+        ' disabled="disabled"';
+    ELSIF ip == data.domainip;
+        ' selected="selected"';
+    END;
+-%] value='[% ip %]'>
+[%- ip -%]
+[%
+    IF ip == data.server_shared_ip;
+        ' (main shared IP)';
+    END;
+    IF data.ipdata.$ip.shared.size > 0;
+        #sort root first
+        SET shared_list = data.ipdata.$ip.shared.ungrep('\Aroot\z');
+        IF shared_list.size < data.ipdata.$ip.shared.size;
+            shared_list.unshift('root');
+        END;
+        IF shared_list.size > 5;
+            SET others_count = shared_list.size - 4;
+            ' (' _ locale.maketext('Shared by [_1], [_2], [_3], [_4], and [quant,_5,other,others].',shared_list.0,shared_list.1,shared_list.2,shared_list.3,others_count) _ ')';
+        ELSE;
+            ' (' _ locale.maketext('Shared by [list_and,_1].',shared_list) _ ')';
+        END;
+    END;
+    IF data.ipdata.$ip.delegated.size > 0;
+        #sort root first
+        SET delegated_list = data.ipdata.$ip.delegated.ungrep('\Aroot\z');
+        IF delegated_list.size < data.ipdata.$ip.delegated.size;
+            delegated_list.unshift('root');
+        END;
+        IF delegated_list.size > 5;
+            SET others_count = delegated_list.size - 4;
+            ' (' _ locale.maketext('Delegated to [_1], [_2], [_3], [_4], and [quant,_5,other,others].',delegated_list.0,delegated_list.1,delegated_list.2,delegated_list.3,others_count) _ ')';
+        ELSE;
+            ' (' _ locale.maketext('Delegated to [list_and,_1].',delegated_list) _ ')';
+        END;
+    END;
+    IF dedicated;
+        " (dedicated to $dedicated)";
+    END;
+    IF nameserver;
+        " (nameserver $nameserver)";
+    END;
+    IF reserved;
+        ' (reserved)';
+    END;
+-%]
+</option>
+[% END -%]
+</select>
+
+[% IF data.mc == '' -%]
+<br /><input type="submit" class="btn-primary" value="Change"></form>
+<br /><span class="b2">Warning:</span> Changing a site's IP address may cause it to appear down from some locations until the DNS has propagated to all nameservers on the Internet.
+[% END -%]
+
+[% END -%]
+[% IF ! data.mc -%]
+[% PROCESS 'master_templates/_deffooter.tmpl' theme="yui"-%]
+[% END -%]

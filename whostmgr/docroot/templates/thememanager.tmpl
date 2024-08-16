@@ -1,0 +1,104 @@
+[% USE JSON -%]
+[% WRAPPER 'master_templates/master.tmpl' theme="yui"
+    breadcrumburl = '/scripts/thememanager_landing'
+    scripts = [
+        '/js/photobox.js',
+        '/js/photobox_controller.js',
+    ]
+    stylesheets = [ '/yui/container/assets/container.css', '/photobox.css' ]
+    extrastyle = '
+    #doctitle h1 {
+color:#003541;
+font-size:14px;
+}
+h2{
+    font-size:12px;
+}
+.highlight{
+    background: #f3f3f3;
+    border: 1px solid #ACCCB8;
+    padding: 12px 5px 15px 5px;
+    margin-bottom:12px;
+    width:450px;
+}
+.tbl_but_wrap{
+    float:left;
+    font-size:7px;
+    margin:0 auto;
+    padding-bottom:2px;
+    padding-top:3px;
+    text-align:center;
+    width:54px;
+}
+    '
+-%]
+<h2>[% locale.maketext("Manage “[_1]”[comment,name of a theme] Themes", data.appname ) %]</h2>
+
+<div class="highlight">
+    <h2>[% locale.maketext("Install Theme") %]</h2>
+      <form action="[% cp_security_token %]/scripts/uptheme" method="post" enctype="multipart/form-data">
+      <input name="themetype" value="[% data.app %]" type="hidden">
+      Theme Ball: <input name="theme" type="file"><input class="btn-primary" value="[% locale.maketext("Upload") %]" type="submit">
+   </form>
+</div>
+
+[% IF data.themes.size > 0 %]
+<h2>[% locale.maketext( "“[_1]” Themes", data.appname) %]</h2>
+
+<table id="icontbl" class="sortable" cellpadding="0" cellspacing="0"><thead><tr>
+
+            <th class="cell clickable" scope="col">[% locale.maketext( "Theme" ) %]</th>
+            <th class="cell" scope="col" nonsortable="true">[% locale.maketext("Type") %]</th>
+            <th class="cell" scope="col" nonsortable="true">[% locale.maketext( "Actions" ) %]</th>
+            </tr></thead>
+            <tbody>
+
+            [% FOR theme IN data.themes.sort() %]
+            [% NEXT IF (theme == 'jupiter') %]
+            <tr>
+            <td>[% theme FILTER html %]&nbsp;<a onClick='dophotobox([% theme.html.json.html %]); return false;' id="preview-[% theme FILTER html %]" href="[% cp_security_token %]/scripts/themeimage/[% theme FILTER uri %]/preview?app=[% data.app %]"><img alt="Preview &ldquo;[% theme FILTER html %]&rdquo;" title="Preview &ldquo;[% theme FILTER html %]&rdquo;" src="/images/trace.gif" width="16" height="16" border="0" /></a></td>
+                <td><img title="[% data.appname %]" alt="[% data.appname %]" src="/images/[% data.image %]"></td>
+                <td>
+                <div class="tbl_but_wrap">
+                    [% IF ! data.immutable.$theme %]
+                    <a href="[% cp_security_token %]/scripts/suredeltheme?theme=[% theme FILTER uri %]&themetype=[% data.app %]"><img title="Delete &ldquo;[% theme FILTER html %]&rdquo;" alt="Delete &ldquo;[% theme FILTER html %]&rdquo;" src="/images/remove.gif" width="18" height="18" border="0" /><br />
+                    [% locale.maketext("Delete") %]</a>
+                    [% END %]
+                </div>
+                <div class="tbl_but_wrap">
+                     <a href="[% cp_security_token %]/scripts/clonetheme?theme=[% theme FILTER uri %]&themetype=[% data.app %]"><img title="Clone &ldquo;[% theme FILTER html %]&rdquo;" alt="Clone &ldquo;[% theme FILTER html %]&rdquo;" src="/images/copy.gif" width="16" height="16" border="0" /><br />
+                    [% locale.maketext("Clone") %]</a>
+                </div>
+                <div class="tbl_but_wrap">
+                     <a href="[% cp_security_token %]/scripts/downtheme/[% theme FILTER uri %].[% data.app %]theme"><img title="Download &ldquo;[% theme FILTER html %]&rdquo;" alt="Download &ldquo;[% theme FILTER html %]&rdquo;" src="/images/download.gif" width="16" height="16" border="0" /><br />
+                   [% locale.maketext("Download") %]</a>
+                </div>
+                </td>
+
+                </tr>
+               [% END %]
+
+            </tbody><tfoot></tfoot></table>
+    <p><img src="/images/trace.gif" align="absmiddle" border="none">= [% locale.maketext("Preview Theme") %] <br>
+<img src="/images/download.gif" align="absmiddle" border="0" height="21" width="21">= [% locale.maketext("Download Theme") %] </p>
+[% END %]
+
+<h2>Addon [% data.appname %] Themes</h2>
+
+[%
+    INCLUDE 'photobox.tmpl';
+
+    SET jsphotos = [];
+
+    FOR theme=data.themes;
+      NEXT IF (theme == 'jupiter');
+        jsphotos.push({
+            src     => "${cp_security_token}/scripts/themeimage/${theme.uri}/preview?app=${data.app}",
+            caption => theme.html,
+        });
+    END;
+
+    SET jsphotosstring = jsphotos.json();
+-%]
+<script>YAHOO.util.Event.addListener(window, "load", function() { init_photobox([% jsphotosstring %]); } );</script>
+[% END #wrapper -%]

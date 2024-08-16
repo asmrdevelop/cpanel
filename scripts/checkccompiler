@@ -1,0 +1,42 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/checkccompiler                  Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+use warnings;
+
+use Cpanel::Sys::Compiler ();
+use Cpanel::Usage         ();
+
+my $verbose  = 0;
+my $compiler = 'gcc';
+
+Cpanel::Usage::wrap_options( \@ARGV, \&usage, { 'compiler' => \$compiler, 'verbose' => \$verbose } );
+
+if ( -e '/etc/skipccheck' ) {
+    print "C compiler check disabled per /etc/skipccheck\n";
+    exit 0;
+}
+
+my ( $status, $statusmsgs, $flags_ref ) = Cpanel::Sys::Compiler::check_c_compiler( 'compiler' => $compiler, 'verbose' => $verbose );
+print join( "\n", @{$statusmsgs} ) . "\n";
+if ( ref $flags_ref && @{$flags_ref} ) {
+    print "Prefered Compile Flags: " . join( " ", @{$flags_ref} ) . "\n";
+}
+exit( $status ? 0 : 1 );
+
+sub usage {
+    print <<EO_USAGE;
+checkccompiler [options]
+
+    Options:
+      --help       Brief help message
+      --verbose    Display verbose information messages
+      --compiler   Compiler to test with
+
+EO_USAGE
+    exit 0;
+}

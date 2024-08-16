@@ -1,0 +1,246 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/fix_addon_permissions           Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::fix_addon_permissions;
+
+use strict;
+use warnings;
+
+use Cpanel                        ();
+use Cpanel::AccessIds             ();
+use Cpanel::cPAddons::File::Perms ();
+use Cpanel::cPAddons::Instances   ();
+use Cpanel::cPAddons::Module      ();
+use Getopt::Long                  ();
+
+use Cpanel::Imports;
+
+exit run( \@ARGV ) unless caller;
+
+sub run {
+    my ($args) = @_;
+
+    my $opts = {
+        fix                 => 0,
+        instances           => [],
+        user                => '',
+        verbose             => 0,
+        help                => 0,
+        perms_run_as_user   => 0600,
+        perms_run_as_nobody => 0644,
+    };
+
+    Getopt::Long::GetOptionsFromArray(
+        $args,
+        'fix!'    => \$opts->{fix},
+        'user:s'  => \$opts->{user},
+        'verbose' => \$opts->{verbose},
+        'help'    => \$opts->{help},
+    );
+
+    if ( $opts->{help} ) {
+        print_help();
+        return 0;
+    }
+
+    if ( $> != 0 ) {    # root
+                        # Regular users cant choose a user to set.
+        $opts->{user} = '';
+    }
+
+    if ( !$opts->{user} ) {
+        if ( $> == 0 ) {    # root
+            print STDERR locale()->maketext('You did not provide a user.') . "\n";
+            return 1;
+        }
+        my @user = getpwuid($>);
+        $opts->{user}    = $user[0];
+        $opts->{homedir} = $user[7];
+    }
+    else {
+        my @user = getpwnam( $opts->{user} );
+        $opts->{homedir} = $user[7];
+    }
+
+    if ( !$opts->{user} ) {
+        print STDERR locale()->maketext('You did not provide a user or the requested user does not exist.') . "\n";
+        return 1;
+    }
+
+    $Cpanel::user = $opts->{user};
+    my $webserver_runs_as_user = Cpanel::cPAddons::File::Perms::runs_as_user();
+    if ( !$webserver_runs_as_user ) {
+        print STDERR locale()->maketext('The web server does not run scripts as the script owner. The system must set the file permission on this application more permissively. This can result in security issues with this application on shared servers.') . "\n";
+    }
+    else {
+        print STDOUT locale()->maketext('The web server runs scripts as the script owner. The system can install the application with safe file permissions.') . "\n"
+          if $opts->{verbose};
+    }
+
+    if ( $opts->{fix} ) {
+        my $homedir = $opts->{homedir};
+        my @modules = get_installed_modules($homedir);
+        for my $module (@modules) {
+            process_module( $opts, $module, $webserver_runs_as_user );
+        }
+    }
+    return 0;
+}
+
+sub process_module {
+    my ( $opts, $module, $webserver_runs_as_user ) = @_;
+
+    if ( $> == 0 ) {    # root
+        return Cpanel::AccessIds::do_as_user_with_exception(
+            $opts->{user},
+            sub {
+                process_module_as_user( $opts, $module, $webserver_runs_as_user );
+            }
+        );
+    }
+    else {
+        return process_module_as_user( $opts, $module, $webserver_runs_as_user );
+    }
+}
+
+sub process_module_as_user {
+    my ( $opts, $module, $webserver_runs_as_user ) = @_;
+
+    my $res = get_instances_as_user( $opts->{user}, $opts->{homedir}, $module );
+
+    if ( $res->{error} ) {
+        print STDERR $res->{error};
+        return 1;
+    }
+
+    $opts->{instances} = [ values %{ $res->{instances} } ] || [];
+
+    if ( !@{ $opts->{instances} } ) {
+        print STDOUT locale()->maketext('The user has not installed any [asis,cPAddons].') . "\n";
+        return 0;
+    }
+
+    for my $instance ( @{ $opts->{instances} } ) {
+        next if ( $instance->{registry} !~ m/^\Q$module\E./ );
+
+        if ( $opts->{verbose} ) {
+            print STDERR locale()->maketext( 'Processing instance: “[_1]” module: “[_2]” …', $instance->{registry}, $module ) . "\n";
+        }
+
+        my $mod         = $instance->{addon};
+        my $module_data = Cpanel::cPAddons::Module::get_module_data($mod);
+        if ( !$module_data ) {
+            print STDERR locale()->maketext('The system could not load the “[_1]” module. It may be damaged or not installed.');
+            next;
+        }
+
+        my $info_hr = $module_data->{meta};
+        if ( !$info_hr->{security} || ref $info_hr->{security} ne 'ARRAY' ) {
+            print STDOUT locale()->maketext('The module does not contain any security rules, skipping …') . "\n"
+              if $opts->{verbose};
+            next;
+        }
+
+        my @measures = grep { $_->{name} eq 'process_config_file_permissions' } @{ $info_hr->{security} };
+        if ( !@measures ) {
+            print STDOUT locale()->maketext('The module does not contain a process_config_file_permission policy, skipping …') . "\n"
+              if $opts->{verbose};
+            next;
+        }
+
+        my $measure = $measures[0];
+        if ( $measure->{fix} && $measure->{files} ) {
+
+            # Expand to the actual install directory paths
+            my @files = map { "$instance->{installdir}/$_" } @{ $measure->{files} };
+
+            if ($webserver_runs_as_user) {
+
+                # Set permissions to safer ones.
+                fix_permissions( \@files, $opts->{perms_run_as_user}, $opts->{verbose} );
+            }
+            else {
+                # Set permissions to dangerous ones.
+                fix_permissions( \@files, $opts->{perms_run_as_nobody}, $opts->{verbose} );
+            }
+        }
+        else {
+            print locale()->maketext( 'The “[_1]” module does not contain any security rules.', $mod )
+              if $opts->{verbose};
+        }
+    }
+
+    return 0;
+}
+
+sub get_instances_as_user {
+    my ( $user, $homedir ) = @_;
+
+    local $ENV{'CPASUSER'}         = $user;
+    local $ENV{'CPNONAVFORPARENT'} = 1;
+    Cpanel::initcp($user);
+
+    local $Cpanel::homedir = $homedir;
+
+    return Cpanel::cPAddons::Instances::get_instances();
+}
+
+sub fix_permissions {
+    my ( $files, $perms, $verbose ) = @_;
+
+    my ( $exit, $msg ) = Cpanel::cPAddons::File::Perms::fix( $files, $perms );
+    if ($exit) {
+        if ( $exit == 4 ) {
+            print STDERR locale()->maketext( 'The system could not set the file permissions to “[_1]” on the requested files:', sprintf( '%04o', $perms ) ) . "\n";
+            print STDERR "  $_\n" foreach @$files;
+        }
+        print STDERR $msg . "\n";
+    }
+    elsif ($verbose) {
+        print STDOUT locale()->maketext('You must set the file permissions to “[_1]” on the following files:') . "\n";
+        print STDOUT "  $_\n" foreach @$files;
+    }
+
+    return $exit;
+}
+
+sub get_installed_modules {
+    my $homedir = shift;
+    my @registries;
+    if ( -d "$homedir/.cpaddons/" ) {
+        if ( opendir( DIRX, "$homedir/.cpaddons/" ) ) {
+            @registries = grep !/^moderation$/, grep !/\,v$/, grep !/^\./, readdir DIRX;
+            closedir DIRX;
+        }
+    }
+
+    my %final;
+    foreach my $registry (@registries) {
+        $registry =~ s/\.\d*\.yaml$//;
+        $final{$registry} = 1;
+    }
+    return keys %final;
+}
+
+sub print_help {
+    print STDOUT <<EOU;
+usage: $0 [--fix|--no-fix]
+
+Performs runtime script execute checks and repairs directory permissions on supported addons installed on the server.
+
+The tool looks for mod_ruid2, mpm_idk and mod_suphp to determine if the addons can be run with safer file permissions.
+
+--user    - optional, only needed if calling from root.
+--fix     - changes the permission for the files to 0600 if running as the user or 0644 if running as nobody/apache.
+--help    - gets this help document
+--verbose - add more output.
+
+EOU
+    return;
+}
+
+1;

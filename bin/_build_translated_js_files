@@ -1,0 +1,369 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - bin/_build_translated_js_files          Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package bin::_build_translated_js_files;
+
+use strict;
+use warnings;
+
+use Encode                       ();
+use File::Basename               ();
+use Cpanel::JSON                 ();
+use Cpanel::AdminBin::Serializer ();
+use Cpanel::Autodie              ();
+use Cpanel::LoadModule           ();
+use Cpanel::LoadFile             ();
+use Cpanel::Locale               ();
+use Cpanel::Locale::Utils::Files ();
+use Cpanel::Themes::Get          ();
+use Cpanel::FileUtils::Write     ();
+use Cpanel::SafeDir::MK          ();
+use Parallel::Subs               ();
+use Try::Tiny;
+
+use Cpanel::Imports;
+
+# Constants
+my $LEX_TEMPLATE_PATH        = '/usr/local/cpanel/bin/_javascript_locale.template';
+my $CLDR_TEMPLATE_PATH       = '/usr/local/cpanel/bin/_cldr_locale.template';
+my $CLDR_SOURCE_BASEPATH     = '/usr/local/cpanel/base/cldr';
+my $STANDALONE_CLDR_BASEPATH = '/usr/local/cpanel/share/libraries/cldr';
+
+my $NAME_MAP = {
+    '/usr/local/cpanel/share/libraries/cjt2/dist' => 'cjt',
+    '/usr/local/cpanel/share/libraries/cjt2/src'  => 'cjt',
+    '/usr/local/cpanel/whostmgr/docroot'          => '',
+    '/usr/local/cpanel/base/frontend'             => '',
+    '/usr/local/cpanel/base/unprotected'          => '',
+    '/usr/local/cpanel/base/webmail'              => '',
+    '/usr/local/cpanel/base/cjt'                  => 'legacy_cjt',
+    '/usr/local/cpanel/base/sharedjs'             => 'legacy_shared',
+    '/usr/local/cpanel/share/apps'                => 'shared',
+};
+
+my $NAME_REGEX = '^(' . join( '|', map { quotemeta($_) } keys %$NAME_MAP ) . ')';
+
+my $work_dir = '/var/cpanel/caches/_build_translated_js_files';
+my ( $tag_lh, $locale, @files );
+my %_generate_lex_js_cache;
+
+__PACKAGE__->script(@ARGV) unless caller();
+
+sub script {    ## no critic qw(Subroutines::ProhibitExcessComplexity)
+    my ( $class, @args ) = @_;
+
+    ( $locale, @files ) = @args;
+
+    %_generate_lex_js_cache = ();
+
+    my $quiet = grep( /^--quiet$/, @files ) ? 1 : 0;
+    my $force = grep( /^--force$/, @files ) ? 1 : 0;
+    if ( $quiet || $force ) {
+        @files = grep { !m/^--(?:quiet|force)$/ } @files;
+    }
+
+    if ( !-d $work_dir ) {
+        Cpanel::SafeDir::MK::safemkdir( $work_dir, '0755' ) or die "Could not create the directory “$work_dir”: $!";
+    }
+
+    die "Give me a locale tag as my first argument.\n" if !$locale;
+    $tag_lh = Cpanel::Locale->get_handle($locale);    # typically get_handle should not be given an arg but we pass it in here because we are compiling $locale data
+
+    if ( index( $locale, 'i_' ) != 0 ) {
+        die "Could not create a locale handle of “$locale”.\n" if $locale ne $tag_lh->get_language_tag();    # ? TODO: Soft locale support ?
+    }
+
+    my $generate_standalone_cldr_js = 0;
+    if ( !@files ) {
+        @files                       = Cpanel::Locale::Utils::Files::get_js_files($locale);
+        $generate_standalone_cldr_js = 1;
+    }
+    print locale->maketext( 'Building translated JavaScript files for “[_1]” …', $locale ) . "\n" unless $quiet;
+
+    my $appears_to_be_buildbox = -e '/var/cpanel/dev_sandbox' && -d '/usr/local/cpanelsync/' ? 1 : 0;    # dev_sandbox file is present on build boxes
+
+    # load the template file
+    my $lex_template         = Cpanel::LoadFile::load($LEX_TEMPLATE_PATH)  or die "Can't read file $LEX_TEMPLATE_PATH [$!]\n";
+    my $cldr_template        = Cpanel::LoadFile::load($CLDR_TEMPLATE_PATH) or die "Can't read file $CLDR_TEMPLATE_PATH [$!]\n";
+    my $js_tmpl_file_mtime   = ( stat($LEX_TEMPLATE_PATH) )[9];
+    my $cldr_tmpl_file_mtime = ( stat($CLDR_TEMPLATE_PATH) )[9];
+
+    my $theme_regex = join( '|', map { quotemeta($_) } Cpanel::Themes::Get::get_list() );
+
+    my $trailer        = "-$locale.js";
+    my $trailer_length = length $trailer;
+
+    my $parallel = Parallel::Subs->new();
+    my $theme    = $Cpanel::Config::Constants::DEFAULT_CPANEL_THEME;
+
+    for my $file (@files) {
+        if ( substr( $file, -$trailer_length ) ne $trailer ) {
+            warn "Skipping file that does not end in “-$locale.js” ($file)\n";
+            next;
+        }
+
+        my $source_file = substr( $file, 0, -$trailer_length ) . '.js';
+        my $append_cldr = 0;
+
+        if ( index( $source_file, '/base/cjt/' ) > -1 && $source_file =~ m{/base/cjt/(?:cjt|cpanel-all)-min\.js$} ) {
+            $append_cldr = 1;
+            $source_file =~ s/-min\.js$/\.js/;                   # we only build one lex for all variants, so remove for these two specials
+            $file        =~ s/-min-$locale\.js$/-$locale\.js/;
+        }
+        elsif ( index( $source_file, '/share/libraries/cjt2/dist/cjt2.' ) > -1 && $source_file =~ m{/share/libraries/cjt2/dist/cjt2\..+\.cmb\.js$} ) {
+            $append_cldr = 1;
+        }
+        elsif ( $source_file =~ m{/base/frontend/$theme/_assets/master.cmb.js$} ) {
+            $append_cldr = 1;
+        }
+
+        # we only build one lex for all variants, so skip
+        next if index( $source_file, '_optimized' ) > -1;
+        my $end_part = substr( $source_file, -7 );
+        next if $end_part eq '-min.js' || $end_part eq '.min.js';
+
+        my $gen_file_mtime = ( stat($file) )[9];
+        my $src_file_mtime = ( stat($source_file) )[9] || 0;
+
+        if (
+            !$force                                     &&                                 # Not forced
+            $gen_file_mtime                             &&                                 # Source file exists
+            ( $gen_file_mtime > $src_file_mtime )       &&                                 # Generated file is newer the source file
+            ( $gen_file_mtime > $js_tmpl_file_mtime )   &&                                 # Generated file is newer then js source template
+            ( $gen_file_mtime > $cldr_tmpl_file_mtime ) &&                                 # Generated file is newer then cldr template
+            ( $append_cldr ? _cldr_assets_mtime_check( $tag_lh, $gen_file_mtime ) : 1 )    # Generated file is newer then cldr assets
+          ) {                                                                              # Generated file is newer then the generation template
+            print locale->maketext( '“[_1]” is newer than “[_2]”, skipping …', $file, $source_file ) . "\n" unless $quiet;
+            next;
+        }
+
+        if ( substr( $source_file, -8 ) eq '.spec.js' ) {
+            print STDERR "WARNING: Passing an invalid source file: $source_file. Skipping...\n";
+            next;
+        }
+        else {
+            # build lexicon ($file) for $source_file
+            print locale->maketext( 'Building “[_1]” lexicon for “[_2]” …', $locale, $source_file ) . "\n" unless $quiet;
+            if ( !$src_file_mtime ) {
+                print STDERR locale->maketext( 'The system could not locate the file “[_1]” while building the lexicon “[_2]” …', $source_file, $locale ) . "\n";
+                next;
+            }
+
+        }
+
+        my $do_generate = sub {
+
+            # Build the lexicon part of the script
+            my $script = _generate_lex_js( $source_file, $file, $lex_template );
+            if ($script) {
+                if ($append_cldr) {
+
+                    # Build the cldr part of the script
+                    my $cldr_script = _generate_cldr_js( $tag_lh, $cldr_template );
+                    $script =~ s/\/\/~~END-GENERATED~~/$cldr_script/;
+                }
+
+                # Write the outputfile
+                Cpanel::FileUtils::Write::overwrite( $file, $script, 0644 );
+
+                # case CPANEL-2322
+                # We no longer publish these since they are always generated
+                # on the cpanel machine anyways
+            }
+
+            return 1;
+
+        };
+
+        #$do_generate->();
+        $parallel->add($do_generate);
+
+    }
+
+    # Generate independent CLDR files that aren't bundled with translations
+    if ($generate_standalone_cldr_js) {
+        my $cldr_target_file       = "$STANDALONE_CLDR_BASEPATH/$locale.js";
+        my $cldr_target_file_mtime = ( stat($cldr_target_file) )[9] || 0;
+
+        if ( !$force && _cldr_assets_mtime_check( $tag_lh, $cldr_target_file_mtime ) ) {
+            print locale->maketext( '“[_1]” is newer than “[_2]”, skipping …', $cldr_target_file, "$CLDR_SOURCE_BASEPATH/**/$locale*" ) . "\n" unless $quiet;
+        }
+        else {
+            $parallel->add(
+                sub {
+                    _generate_standalone_cldr_js( $cldr_target_file, $tag_lh, $cldr_template );
+                }
+            );
+        }
+    }
+
+    my $jobs = $parallel->total_jobs;
+    if ($jobs) {
+        print qq[# running $jobs jobs in parallel\n];
+        $parallel->wait_for_all_optimized();
+    }
+
+    return 1;
+}
+
+#################
+#### functions ##
+#################
+sub _generate_lex_js {
+    my ( $source_file, $dest_file, $lex_template ) = @_;
+
+    my $hr = _get_en_lex_for($source_file);
+    for my $phrase ( keys %{$hr} ) {
+        $hr->{$phrase} = ( $_generate_lex_js_cache{$phrase} ||= $tag_lh->lextext($phrase) );    ## no extract maketext
+    }
+
+    # process the template file
+    my $lex    = Cpanel::JSON::canonical_dump($hr);
+    my $now    = localtime();
+    my $output = $lex_template;
+    my $module = _make_amd_module_name($dest_file);
+    $output =~ s/%%source%%/$source_file/g;
+    $output =~ s/%%generated%%/$dest_file/g;
+    $output =~ s/%%module%%/$module/g;
+    $output =~ s/%%locale%%/$locale/g;
+    $output =~ s/%%now%%/$now/g;
+    $output =~ s/%%lex%%/$lex/g;
+
+    return $output;
+}
+
+sub _make_amd_module_name {
+    my ($path) = @_;
+
+    my ($startswith) = $path =~ m{$NAME_REGEX}o;
+
+    if ($startswith) {
+        my $replace = $NAME_MAP->{$startswith};
+        substr( $path, 0, length $startswith, $replace );              # Adjust the starting phrase
+        substr( $path, -3, 3, '' ) if substr( $path, -3 ) eq '.js';    # Remove the extension
+        return $path if $path;
+    }
+
+    print STDERR "WARNING: Something is wrong with $path, can not make a module name.\n";
+    return;
+}
+
+my %_get_en_lex_for_cache;
+
+# Provides a hash ref with the extracted phrases from the file as the keys, and undef as the
+# values, since we haven't looked up translations yet.
+sub _get_en_lex_for {
+    my ($source_file) = @_;
+
+    return $_get_en_lex_for_cache{$source_file} if $_get_en_lex_for_cache{$source_file};
+
+    my $source_file_norm = _normalize_file($source_file);
+
+    my $hr = {};
+
+    my $source_mtime = -e $source_file ? ( stat($source_file) )[9] : 0;
+    if ( -e "$source_file_norm" && -s _ && ( ( stat(_) )[9] > $source_mtime ) ) {
+        local $@;
+        eval { $hr = Cpanel::AdminBin::Serializer::LoadFile("$source_file_norm"); };
+        if ( !$@ && ref $hr ) {
+            return ( $_get_en_lex_for_cache{$source_file} = $hr );
+        }
+    }
+
+    Cpanel::LoadModule::load_perl_module('Cpanel::Locale::Utils::Tool::Find');
+
+    # this log->info any issues
+    print "\t" . locale->maketext("Creating cache for “$source_file” …") . "\n";
+    my %phrases = Cpanel::Locale::Utils::Tool::Find::run(
+        $source_file,
+        {
+            'return_hash'              => 1,
+            'passed'                   => 1,
+            'violations'               => 1,    # ? TODO: not include these ?
+            'warnings'                 => 1,
+            'all'                      => 1,
+            'no-remove-queue-reminder' => 1,
+        }
+    );
+
+    # Now that we've found all of the phrases in the JS file, we need to replace
+    # any JS unicode codepoints (\uXXXX) in the phrases with the actual characters,
+    # because our translations are stored that way and are looked up based on an
+    # exact text match.
+    my $unicode_codepoint_regex = qr/\\u([0-9a-fA-F]{4})/;
+    for my $phrase ( keys %phrases ) {
+
+        # $phrases{$phrase} is an array of matches for a particular phrase. We are
+        # only interested in the original_text property value, which does not differ
+        # from match to match, so we can just pick the first match.
+        my $phrase_hr = $phrases{$phrase}[0];
+        if ($phrase_hr) {
+
+            # If the phrase contains a JS unicode codepoint, $phrase will not contain
+            # the leading \ so we use the originally extracted text rather than $phrase,
+            # for better specificity during substitution.
+            if ( $phrase_hr->{original_text} ne $phrase && $phrase_hr->{original_text} =~ $unicode_codepoint_regex ) {
+                $phrase = $phrase_hr->{original_text} =~ s{$unicode_codepoint_regex}{chr hex $1}ger;
+                $phrase = Encode::encode( 'UTF-8', $phrase );
+            }
+        }
+        $hr->{$phrase} = undef;
+    }
+    Cpanel::FileUtils::Write::overwrite( "$source_file_norm", Cpanel::AdminBin::Serializer::Dump($hr), 0644 );
+
+    return ( $_get_en_lex_for_cache{$source_file} = $hr );
+}
+
+sub _normalize_file {
+    my ($file) = @_;
+
+    $file =~ tr{/}{_};
+    $file .= '.cache';
+
+    return "$work_dir/$file";
+}
+
+sub _cldr_assets_mtime_check {
+    my ( $tag_lh, $gen_file_mtime ) = @_;
+
+    my $functions_path = $tag_lh->get_asset_file("$CLDR_SOURCE_BASEPATH/functions/%s.js")  || return 1;
+    my $datetime_path  = $tag_lh->get_asset_file("$CLDR_SOURCE_BASEPATH/datetime/%s.json") || return 1;
+    my $misc_path      = $tag_lh->get_asset_file("$CLDR_SOURCE_BASEPATH/misc_info/%s.js")  || return 1;
+
+    return
+         $gen_file_mtime > ( stat($functions_path) )[9]
+      && $gen_file_mtime > ( stat($datetime_path) )[9]
+      && $gen_file_mtime > ( stat($misc_path) )[9];
+}
+
+sub _generate_cldr_js {
+    my ( $tag_lh, $cldr_template ) = @_;
+
+    my $functions     = Cpanel::LoadFile::load( $tag_lh->get_asset_file("$CLDR_SOURCE_BASEPATH/functions/%s.js") )  || return "";
+    my $datetime_info = Cpanel::LoadFile::load( $tag_lh->get_asset_file("$CLDR_SOURCE_BASEPATH/datetime/%s.json") ) || return "";
+    my $misc_info     = Cpanel::LoadFile::load( $tag_lh->get_asset_file("$CLDR_SOURCE_BASEPATH/misc_info/%s.js") )  || return "";
+
+    my $output = $cldr_template;
+    $output =~ s/%%locale%%/$locale/g;
+    $output =~ s/%%functions%%/$functions/g;
+    $output =~ s/%%datetime_info%%/$datetime_info/g;
+    $output =~ s/%%misc_info%%/$misc_info/g;
+
+    return $output;
+}
+
+sub _generate_standalone_cldr_js {
+    my ( $cldr_target_file, $tag_lh, $cldr_template ) = @_;
+
+    Cpanel::Autodie::mkdir_if_not_exists($STANDALONE_CLDR_BASEPATH);
+
+    my $content = _generate_cldr_js( $tag_lh, $cldr_template );
+    Cpanel::FileUtils::Write::overwrite( $cldr_target_file, $content, 0644 );
+    return;
+}
+
+1;

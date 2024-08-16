@@ -1,0 +1,68 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/regenerate_tokens               Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::regenerate_tokens;
+
+use cPstrict;
+use Cpanel::Imports;
+use Cpanel::ImagePrep         ();
+use Cpanel::ImagePrep::Common ();
+use Cpanel::ImagePrep::Output ();
+
+use base 'Cpanel::HelpfulScript';
+use constant _OPTIONS => ( 'force', 'no-precheck' );
+
+=head1 NAME
+
+scripts/regenerate_tokens
+
+=head1 SYNOPSIS
+
+usage: /usr/local/cpanel/scripts/regenerate_tokens [--force] [--no-precheck]
+
+This script regenerates secret data on a virtual machine that is not
+handled properly by most virtual machine templating systems. It is meant
+to be used on production instances that already exist with these deficiencies.
+Because of this, certain types of actions (those labeled "non-repair only" due
+to their destructive nature) will be skipped, and you cannot rely on this script
+to take care of all your post-snapshot cleanup needs.
+
+To prevent such problems from occurring in the first place when creating
+snapshots, see C<scripts/snapshot_prep> and C<scripts/post_snapshot>.
+These scripts also cover tasks of the "non-repair only" type.
+
+Options:
+
+--force: Rerun all cleanups regardless of whether they have run before.
+
+--no-precheck: Do not check whether this server is a cloud instance. This
+may be needed on servers not using cloud-init.
+
+=cut
+
+exit __PACKAGE__->new(@ARGV)->run unless caller;
+
+sub run {
+    my ($self) = @_;
+
+    if ( !$self->getopt('no-precheck') && !Cpanel::ImagePrep::Common::is_cloud() ) {
+        logger()->info('This system does not appear to be a cloud instance.');
+        return 0;
+    }
+
+    my $force = $self->getopt('force');
+
+    my ( $table,  $cb )     = Cpanel::ImagePrep::Output->get_status_output_callback();
+    my ( $status, $reason ) = Cpanel::ImagePrep::regenerate_tokens(
+        output_callback => $cb,
+        force           => $force,
+    );
+    print $table->draw . "$reason\n";
+    return $status ? 0 : 1;
+}
+
+1;

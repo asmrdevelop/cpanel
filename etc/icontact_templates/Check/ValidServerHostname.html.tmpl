@@ -1,0 +1,33 @@
+[%#
+Variables passed in:
+
+origin                  - the system component from which the notification was requested.
+reason                  - reason for the misconfiguration
+solution (optional)     - solution to fix the misconfiguration
+ip                      - ip address of your server
+
+For more information about how to customize notification templates, read our documentation at https://go.cpanel.net/notificationtemplates
+
+-%]
+
+[%
+    PROCESS "include/colors.tmpl";
+    PROCESS "include/styles.tmpl";
+    PROCESS "include/code_block.tmpl";
+
+    WRAPPER 'wrapper/main.html.tmpl';
+          NOTICE.email_reason = CPANEL.locale.maketext('The system detected an invalid hostname configuration on: [_1]' , NOTICE.host_server);
+%]
+
+<p>
+    [% CPANEL.locale.maketext('The main [output,abbr,IP,Internet Protocol] address of your [asis,cPanel] [output,amp] [asis,WHM] server is “[_1]”. The hostname does not resolve to this [output,abbr,IP,Internet Protocol] address.', NOTICE.ip); %]
+    [% CPANEL.locale.maketext('This misconfiguration can cause some services on your server to fail to restart properly.'); %]
+    [% CPANEL.locale.maketext('The cause of your misconfiguration is:'); %]
+</p>
+<p>[% code_block(formatted_code=NOTICE.reason) %]</p>
+[% IF NOTICE.solution %]
+    <p>[% CPANEL.locale.maketext('To fix this problem, we recommend that you perform the following action:') %]
+    <p>[% code_block(formatted_code=NOTICE.solution) %]</p>
+[% END %]
+
+[% END %]

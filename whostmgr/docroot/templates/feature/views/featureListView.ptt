@@ -1,0 +1,111 @@
+<section class="description">
+    <p>[% locale.maketext("This interface allows you to enable and disable features and cPAddons in each user’s [asis,cPanel]. To assign a feature list to a package, use the [output,url,_1,Edit a Package,id,_2] interface. For more information, read the [output,url,_3,documentation,id,_4,target,_5].", "$cp_security_token/scripts/editpkg2", "lnkEditPackage", "https://go.cpanel.net/featmgr", "lnkFeatureManagerDocumentation","featuremanagerdoc") %] </p>
+    <ul ng-hide="onlyReseller">
+        <li><button id="btnEditDefaultFeatureList"
+                    class="btn btn-link"
+                    ng-click="loadView('editFeatureList', { name: 'default' })">
+                default
+            </button> — [% locale.maketext("The system grants [asis,cPanel] users access to these features by default. If you disable a feature from this list, the system will disable it in every user’s [asis,cPanel] that uses that list.") %]
+        </li>
+        <li><button id="btnEditDisabledFeatureList"
+                    class="btn btn-link"
+                    ng-click="loadView('editFeatureList', { name: 'disabled' })">
+                disabled
+            </button> — [% locale.maketext("[asis,cPanel] users cannot access these features, and other lists cannot grant access to them.") %]
+        </li>
+        <li><button id="btnEditMailOnlyFeatureList"
+                    class="btn btn-link"
+                    ng-click="loadView('editFeatureList', { name: 'Mail Only' })">
+                Mail Only
+            </button> — [% locale.maketext("For [asis,cPanel] users that can only access mail-related features, such as Email Archiving or SpamAssassin.") %]
+        </li>
+    </ul>
+    <p ng-hide="onlyReseller">[% locale.maketext("To create a feature list for a specific reseller account, you must prefix the list name with the reseller username and an underscore.") %]</p>
+</section>
+
+<section class="row">
+    <form id="formAddFeature" name="formAddFeature" novalidate>
+    <div class="col-xs-12 col-sm-6 col-md-4 col-lg-4">
+        <h4  id="hdrAddFeatureList" class="section-heading">[% locale.maketext("Add a new feature list") %]</h4>
+        <div class="form-group">
+            <div class="row">
+                <div class="col-xs-12">
+                    <input
+                        id="txtNewFeatureList"
+                        name="txtNewFeatureList"
+                        type="text"
+                        placeholder="[% locale.maketext('New feature list name') %]"
+                        class="form-control"
+                        ng-model="newFeatureList"
+                        ng-pattern="/^(?!.*\.cpaddons$)/i"
+                        ng-required="true"
+                        autofocus>
+                </div>
+                <div class="col-xs-12">
+                    <ul id="valItemGroupAddFeature" validation-container field-name="txtNewFeatureList">
+                        <validation-item
+                            field-name="txtNewFeatureList"
+                            validation-name="pattern">
+                            [% locale.maketext("Feature list name cannot end with [asis,.cpaddons]") %]
+                        </validation-item>
+                        <validation-item
+                            field-name="txtNewFeatureList"
+                            validation-name="required">
+                            [% locale.maketext("Feature list name is required.") %]
+                        </validation-item>
+                    </ul>
+                </div>
+            </div>
+        </div>
+        <div class="form-group">
+            <div class="row">
+                <div class="col-xs-12">
+                    <button id="btnAddFeatureList"
+                            type="submit"
+                            ng-disabled="loadingView"
+                            cp-action="add(newFeatureList)">
+                        [% locale.maketext('Add Feature List') %]
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+    </form>
+
+    <form id="formEditFeature" name="formEditFeature" novalidate>
+    <div class="col-xs-12 col-sm-6 col-md-4 col-lg-4" ng-show="loadingPageData != 'error' && featureLists.length">
+        <h4 id="hdrManageFeatureList" class="section-heading">[% locale.maketext("Manage feature list") %]</h4>
+        <div class="form-group">
+            <div class="row">
+                <div class="col-xs-12">
+                    <select id="ddlSelectedFeatureList"
+                            class="form-control"
+                            ng-model="selectedFeatureList"
+                            ng-disabled="!featureLists"
+                            ng-options="feature as feature for feature in featureLists"></select>
+                </div>
+            </div>
+        </div>
+        <div class="form-group">
+            <div class="row">
+                <div class="col-xs-12">
+                    <button id="btnEditFeatureList"
+                            type="submit"
+                            class="btn btn-primary"
+                            ng-click="loadView('editFeatureList', { name: selectedFeatureList })"
+                            ng-disabled="!isEditable(selectedFeatureList)">
+                        [% locale.maketext('Edit') %]
+                    </button>
+                    <button id="btnDeleteFeatureList"
+                            type="button"
+                            cp-action="delete(selectedFeatureList)"
+                            ng-disabled="!isDeletable(selectedFeatureList)">
+                        [% locale.maketext('Delete') %]
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+    </form>
+</section>
+</form>

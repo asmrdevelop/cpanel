@@ -1,0 +1,220 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - bin/rebuild_sprites                     Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package bin::rebuild_sprites;
+
+use strict;
+use warnings;
+use GD                     ();
+use Cpanel::ModReg         ();
+use Cpanel::PwCache::Build ();
+use Cpanel::Reseller       ();
+use Cpanel::Themes::Get    ();
+use Cpanel::Usage          ();
+use IO::Interactive::Tiny  ();
+
+# args
+sub _attributes {
+    [qw{ force verbose dist cponly quiet }];
+}
+
+# call binary
+run(@ARGV) unless caller();
+
+sub run {
+    my (@args) = @_;
+
+    my ( $force, $verbose, $dist, $cponly, $quiet ) = ( 0, 0, 0, 0, 0 );
+
+    my $opts = {
+        force   => \$force,
+        verbose => \$verbose,
+        dist    => \$dist,
+        cponly  => \$cponly,
+        quiet   => \$quiet,
+    };
+
+    Cpanel::Usage::wrap_options( \@ARGV, \&usage, $opts );
+
+    my $sprites = bin::rebuild_sprites->new(
+        force => $force, verbose => $verbose,
+        dist  => $dist,  cponly  => $cponly, quiet => $quiet
+    );
+
+    $sprites->rebuild();
+}
+
+sub usage {
+    my $prog = $0;
+    print <<USAGE;
+$0 [OPTIONS]
+Available options are
+    -force
+    -verbose
+    -dist : rebuild sprites in dist mode
+    -cponly
+    -quiet : no interactive question ( auto set if not launched from a console )
+    -help: this help
+USAGE
+    exit 1;
+}
+
+my $global_init = 0;
+
+sub new {
+    my ( $package, %opts ) = @_;
+    my $self = bless {}, __PACKAGE__;
+
+    # run this code only at the first creation
+    unless ($global_init) {
+        Cpanel::Reseller::getresellersaclhash();
+        Cpanel::PwCache::Build::init_passwdless_pwcache();
+
+        # accessors methods need to be define only once
+        $self->_set_attributes();
+        $global_init = 1;
+    }
+
+    # set values from opts ( use attributes to set default value )
+    map { $self->$_( $opts{$_} || 0 ); } @{ _attributes() };
+
+    # unless we do not explicitely set the option quiet
+    #   we will use IO::Interactive to detect if we are launched from a terminal or not
+    unless ( $self->quiet() ) {
+        $self->quiet( IO::Interactive::Tiny::is_interactive() ? 0 : 1 );
+    }
+
+    # return object
+    $self;
+}
+
+sub say {
+    my ( $self, @msg ) = @_;
+
+    $self->print( @msg, "\n" );
+}
+
+sub print {
+    my ( $self, @msg ) = @_;
+    return if $self->quiet();
+
+    print join( ' ', @msg );
+}
+
+sub _theme_dir {
+    '/usr/local/cpanel/base/frontend';
+}
+
+sub _test_img {
+    my ( $self, $ext ) = @_;
+    $ext ||= 'jpg';
+    $ext =~ s/^\.//;
+    return join( '.', '/usr/local/cpanel/etc/testimgs/testimg', $ext );
+}
+
+sub rebuild {
+    my ($self) = @_;
+
+    my $theme_dir = $self->_theme_dir();
+
+    unless ( $self->quiet() ) {
+        if ( !$self->dist() && -e '/usr/local/cpanel/.git' ) {
+            if ( -t STDIN ) {
+                $| = 1;
+                print("Do you want to rebuild_sprites in dist mode? ");
+                my $answer;
+                chomp( $answer = readline(STDIN) );
+                if ( $answer =~ /^y/i ) {
+                    $self->dist(1);
+                }
+            }
+        }
+    }
+
+    my $working_gd = 1;
+    my $testjpeg   = GD::Image->newFromJpeg( $self->_test_img(), 1 );
+    if ( !$testjpeg ) {
+        $self->say("$0: Missing jpeg support");
+        $working_gd = 0;
+    }
+    my $testgif = GD::Image->newFromGif( $self->_test_img('gif') );
+    if ( !$testgif ) {
+        $self->say("$0: Missing gif support");
+        $working_gd = 0;
+    }
+    my $testpng = GD::Image->newFromPng( $self->_test_img('png'), 1 );
+    if ( !$testpng ) {
+        $self->say("$0: Missing png support");
+        $working_gd = 0;
+    }
+
+    if ( opendir my $theme_dh, $theme_dir ) {
+        my $local_alarm = alarm 900;
+
+        $self->print('Searching for themes that support the cpanel plugins system....');
+        my %THEMECFGS;
+        while ( my $theme = readdir($theme_dh) ) {
+            next if ( $theme =~ m/^\./ || Cpanel::Themes::Get::theme_has_reached_eol($theme) );
+            if ( -e $theme_dir . '/' . $theme . '/cpanelplugins.conf' ) {
+                $self->print( '.', $theme );
+                $THEMECFGS{$theme} = Cpanel::ModReg::loadcfg( $theme_dir . '/' . $theme . '/cpanelplugins.conf' );
+            }
+            $self->print('.');
+        }
+        closedir $theme_dh;
+        $self->say("Done\n");
+
+        my $method;
+        foreach my $theme ( keys %THEMECFGS ) {
+            $method = $THEMECFGS{$theme}->{'method'} || q{};
+            if ( $method eq 'dynamicui' || $method eq 'dyanmicui' ) {    #legacy misspelling
+                Cpanel::ModReg::rebuildsprites(
+                    $theme,
+                    join(
+                        '|', $THEMECFGS{$theme}->{'sprites'},
+                        $THEMECFGS{$theme}->{'uisprites'}
+                    ),
+                    $self->force(),
+                    $self->verbose(),
+                    $working_gd,
+                    $self->dist(),
+                    $self->cponly()
+                );
+            }
+        }
+
+        $self->say("Rebuild Complete");
+        alarm $local_alarm;
+    }
+    elsif ( -e $theme_dir ) {
+        die "Failed to read $theme_dir: $!";
+    }
+    else {
+        die "Missing frontend theme directory ($theme_dir)!\n";
+    }
+
+}
+
+sub _set_attributes {
+    my $attributes = _attributes();
+
+    # call once at first init
+    return unless $attributes;
+    foreach my $att (@$attributes) {
+        my $accessor = __PACKAGE__ . "::$att";
+
+        # allow symbolic refs to typeglob
+        no strict 'refs';
+        *$accessor = sub {
+            my $self = shift;
+            $self->{$att} = shift if @_;
+            return $self->{$att};
+        };
+    }
+}
+
+1;

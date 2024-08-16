@@ -1,0 +1,26 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+my $installed = 0;
+open( RUBY, '<', '/usr/bin/ruby' );
+while (<RUBY>) {
+    if (/cPanel Ruby Wrapper ([\d\.]+)/) {
+        $ver       = $1;
+        $installed = 1;
+        last();
+    }
+}
+close(RUBY);
+
+if ( !$installed ) {
+    print "Cannot uninstall, /usr/bin/ruby is not the wrapper!\n";
+    exit(1);
+}
+
+if ( -e '/usr/bin/ruby-bin' ) {
+    rename( '/usr/bin/ruby',     '/usr/bin/ruby-wrapper' );
+    rename( '/usr/bin/ruby-bin', '/usr/bin/ruby' );
+    print "Uninstall of cPanel Ruby Wrapper Complete\n";
+}
+else {
+    print "Uninstall Failed\n";
+}

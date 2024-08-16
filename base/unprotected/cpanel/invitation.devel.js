@@ -1,0 +1,1 @@
+resetpass.devel.js

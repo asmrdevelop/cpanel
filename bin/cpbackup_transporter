@@ -1,0 +1,211 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - bin/cpbackup_transporter                Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+## no critic qw(TestingAndDebugging::RequireUseWarnings)
+
+use Cpanel::LoggerAdapter ();
+use Cpanel::STDERRCapture ();
+use File::Copy            ();
+
+my $logfile;
+my $logger;
+
+BEGIN {
+    $logfile = "/usr/local/cpanel/logs/cpbackup_transporter.log";
+    require Cpanel::LoggerAdapter;
+    require Cpanel::TaskQueue::Loader;
+    $logger = Cpanel::LoggerAdapter->new( { alternate_logfile => $logfile } );
+    Cpanel::TaskQueue::Loader::load_taskqueue_modules($logger);
+    require Cpanel::TaskQueue::PluginManager;
+}
+
+use Cpanel::STDERRCapture ();
+use File::Copy;
+
+my $daemon_identifier = 'cpbackup_transporter';
+my $logdir            = '/usr/local/cpanel/logs/cpbackup_transporter';
+
+use Cpanel::Backup::Config ();
+use Cpanel::Daemonizer     ();
+use Cpanel::Env            ();
+
+Cpanel::TaskQueue::PluginManager::load_plugin_by_name('Cpanel::Backup::Queue');
+
+# This, along with package at the bottom of this script, allows us to capture STDERR from All The Things run under this script (other than system calls)
+$Cpanel::STDERRCapture::logger = $logger;
+tie *STDERR, "Cpanel::STDERRCapture";
+
+# Set umask so dirs/logs get 0700/0600 permissions upon creation
+my $orig_umask = umask 0077;
+if ( !-d '/usr/local/cpanel/logs/cpbackup_transporter' ) {
+    mkdir '/usr/local/cpanel/logs/cpbackup_transporter' || die "Could not create transfer log backup directory: $!\n";
+}
+
+# MAX_TIME_TO_WAIT_FOR_NEW_WORK
+# Stay alive for this many seconds after processing to wait for new work
+# in order to avoid a constant respawn cycle when the queue run only takes
+# a few seconds.
+my $MAX_TIME_TO_WAIT_FOR_NEW_WORK = 300;
+
+# Rotate log each run, so that during typical usage, each backup run will have it's own log. Keep a max of 10 runs (number pulled out of thin air.)
+my $max_log_retention = 10;
+my $time              = time;
+my $mtime             = ( stat($logfile) )[9];
+my $time_lapsed       = $time - $mtime;
+
+# If the time lapse is negative, rotate the log file to give us a new starting time.
+if ( $time_lapsed < 0 ) {
+    print "Time shift detected\n";
+    $time_lapsed = 7201;
+}
+
+# If the log file hasn't changed in 2 hours, assume it's a complete log
+if ( $time_lapsed > 7200 ) {
+
+    # Move most recent run's log file to our archive directory (and any other that happen to be there)
+    if ( -f $logfile ) {
+        if ( !File::Copy::move( $logfile, "$logdir/cpbackup_transporter.$mtime.log" ) ) {
+            warn "Could not rename $logfile to $logdir/cpbackup_transporter.$mtime.log : $!\n";
+        }
+    }
+}
+
+# Prune the older log files in our transfer directory so we never take up too much space, but still preserve recent logs
+if ( opendir( my $log_dir, '/usr/local/cpanel/logs/cpbackup_transporter' ) ) {
+    my @files = readdir($log_dir);
+
+    # Prune the logs, sorted from newest to latest
+    my $cnt = 0;
+    foreach my $file ( reverse sort @files ) {
+        if ( $file =~ m/^cpbackup_transporter\.\d{10}.log$/ ) {
+            $cnt++;
+            if ( $cnt > $max_log_retention ) {
+                print "Pruning /usr/local/cpanel/logs/cpbackup_transporter/$file\n";
+                unlink '/usr/local/cpanel/logs/cpbackup_transporter/' . $file;
+            }
+        }
+    }
+}
+else {
+    die "Could not open /usr/local/cpanel/logs/cpbackup_transporter/ for log rotation : $!\n";
+}
+
+$logger->info("Initializing log file");
+
+# Restore original umask
+umask $orig_umask;
+
+#
+# Variable declarations
+#
+my $queue_dir = '/var/cpanel/backups/queue';
+
+# Object which handles setting things up to run in the background
+my ( $ret, $daemonizer ) = Cpanel::Daemonizer->new(
+    'identifier' => $daemon_identifier,
+    'name'       => 'cPanel Backup Transporter Queue',
+    'logger'     => $logger,
+    'verbose'    => 1
+);
+
+if ( $ret != 1 ) {
+    $logger->throw("Could not get new Cpanel::Daemonizer handle: $daemonizer");
+}
+
+if ( grep /^-*(h|help)$/, @ARGV ) {
+    usage();
+    exit;
+}
+
+# Depending on the arguments, kill all the daemon or start it
+if ( @ARGV && '--stop' eq $ARGV[0] ) {
+    $daemonizer->halt_all_instances(15);
+}
+else {
+    $daemonizer->start();
+}
+
+#
+# Load our plugin(s)
+#
+Cpanel::Env::clean_env();
+Cpanel::Env::set_safe_path();
+
+# we are going to use a valid value from configuration ( default is used if current setting is unvalid )
+my $timeout = Cpanel::Backup::Config::get_valid_value_for('maximum_timeout');
+
+# Begin real work.
+my $queue = Cpanel::TaskQueue->new(    # PPI USE OK -- Already loaded by Cpanel::TaskQueue::Loader
+    {
+        name            => 'backups',
+        cache_dir       => $queue_dir,
+        max_running     => 1,
+        logger          => $logger,
+        default_timeout => $timeout,
+        max_timeout     => $timeout,
+    }
+);
+
+# Tracker for the event loop
+my $retry_count = 0;
+
+#
+# Event loop, processes all tasks in the queue
+# When the queue is emptied, exit.
+#
+my $idle_time = 0;
+$daemonizer->set_status_msg('Checking queue for tasks');
+while ( $daemonizer->is_running() ) {
+    if ( $queue->has_work_to_do() ) {
+        $idle_time = 0;
+        eval {
+            $daemonizer->set_status_msg('Processing next task');
+            $queue->process_next_task();
+        };
+        if ($@) {
+            my $ex = $@;
+
+            $logger->warn("Exception detected: $ex");
+        }
+    }
+    else {
+        if ( $idle_time++ >= $MAX_TIME_TO_WAIT_FOR_NEW_WORK ) {
+            $daemonizer->set_status_msg("Exiting - the queue has been emptied; no more work to do after waiting for ${MAX_TIME_TO_WAIT_FOR_NEW_WORK}s");
+            last;
+        }
+        else {
+            my $max_remain_time = $MAX_TIME_TO_WAIT_FOR_NEW_WORK - $idle_time;
+            $daemonizer->set_status_msg("Waiting up to ${max_remain_time}s for new tasks") if $max_remain_time % 30 == 0;
+            sleep 1;
+        }
+    }
+}
+
+#
+# We're done, cleanup and exit
+#
+$daemonizer->stop();
+
+untie *STDERR;
+
+exit;
+
+sub usage {
+    my $prog = $0;
+    $prog =~ s{^.+/(.+)$}{$1};
+    print <<EOF;
+$prog [options]
+
+    This script lets you start or stop the backup queue transports
+    With no arguments, running this will start the backup queue transport daemon
+
+    --stop - stop all transfers
+    --help - display this help message and exit
+EOF
+    exit;    ## no critic [Cpanel::NoExitsFromSubroutines] -- is a daemonized application which follows the rules.
+}

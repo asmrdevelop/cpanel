@@ -1,0 +1,142 @@
+<div>
+    <div class="row search-page-container">
+        <div class="col-xs-12 col-sm-12 col-md-4 col-lg-4">
+            <search ng-model="meta.filterValue" ng-change="searchList()"></search>
+        </div>
+    </div>
+
+    <div class="row">
+        <div class="col-md-12">
+            <quick-filters title="[% locale.maketext('Filter:') %]" active="meta.quickFilterValue" on-filter-change="quickFilterUpdated()">
+              <quick-filter-item value="all">[% locale.maketext('All') %]</quick-filter-item>
+              <quick-filter-item value="{{ COUNTRY_CONSTANTS.WHITELISTED }}">[% locale.maketext('Whitelisted') %]</quick-filter-item>
+              <quick-filter-item value="{{ COUNTRY_CONSTANTS.BLACKLISTED }}">[% locale.maketext('Blacklisted') %]</quick-filter-item>
+              <quick-filter-item value="{{ COUNTRY_CONSTANTS.UNLISTED }}">[% locale.maketext('Not Specified') %]</quick-filter-item>
+            </quick-filters>
+        </div>
+    </div>
+
+    <table id="countries_table" class="table table-striped" ng-class="{'table-overlay':countriesUpdating}">
+        <thead>
+            <tr>
+                <th class="mass_edit_checkbox">
+                    <input type="checkbox"
+                        id="countries_select_all_checkbox"
+                        title="[% locale.maketext('Click to select all countries.') %]"
+                        ng-checked="allSelected()"
+                        ng-click="toggleSelectAll()">
+                </th>
+                <th class="name_column">
+                    <span toggle-sort id="sortName" onsort="sortList" sort-meta="meta" sort-field="name">
+                        [% locale.maketext('Country Name') %]
+                    </span>
+                </th>
+                <th class="status_header">[% locale.maketext('Status') %]</th>
+                <th class="gear_column">
+                    <span class="dropdown" uib-dropdown>
+                    <a href class="dropdown-toggle" uib-dropdown-toggle >
+                      <span class="fas fa-cog fa-lg"></span>
+                    </a>
+                    <ul class="dropdown-menu[%- IF locale.get_html_dir_attr() != 'rtl' -%] dropdown-menu-right[% END %] gear_menu" uib-dropdown-menu>
+                        <li>
+                            <a href
+                                class="dropdown-toggle"
+                                ng-class="{disabled: allSelected()}"
+                                ng-click="selectAll();">[% locale.maketext('Select All') %]</a>
+                        </li>
+                        <li>
+                            <a href
+                                class="dropdown-toggle"
+                                ng-class="{disabled:selectedItems.length === 0}"
+                                ng-click="deselectAll();">[% locale.maketext('Clear Selection') %]</a>
+                        </li>
+                        <li class="divider"></li>
+                        <li>
+                            <a href
+                                class="dropdown-toggle"
+                                ng-class="{disabled:countriesUpdating || selectedItems.length === 0}"
+                                ng-click="whitelistCountries(selectedItems);">[% locale.maketext('Whitelist Selected Countries') %]</a>
+                        </li>
+                        <li>
+                            <a href
+                                class="dropdown-toggle"
+                                ng-class="{disabled:countriesUpdating || selectedItems.length === 0}"
+                                ng-click="confirm_country_blacklisting();">[% locale.maketext('Blacklist Selected Countries') %]</a>
+                        </li>
+                        <li>
+                            <a href
+                                class="dropdown-toggle"
+                                ng-class="{disabled:countriesUpdating || selectedItems.length === 0}"
+                                ng-click="unlistCountries(selectedItems);">[% locale.maketext('Set Selected to “Not Specified”') %]</a>
+                        </li>
+                    </ul>
+                  </span>
+                </th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr class="info empty-row" ng-if="loading || items.length === 0" >
+                <td colspan="4">
+                    <i ng-show="loading" class="fas fa-spinner fa-spin"></i>
+                    <span ng-show="loading">[% locale.maketext('Loading countries data …') %]</span>
+                    <span ng-show="!loading && items.length === 0" >[% locale.maketext('The countries list is empty.') %]</span>
+                </td>
+            </tr>
+            <tr ng-repeat="item in filteredList" class="no-animate" 
+                ng-class="{success:item.status === COUNTRY_CONSTANTS.WHITELISTED,danger:item.status === COUNTRY_CONSTANTS.BLACKLISTED}">
+                <td class="mass_edit_checkbox">
+                    <input type="checkbox"
+                        id="{{ :: item.code}}_checked"
+                        class="countries_select_item"
+                        title="[% locale.maketext('Click to select “[_1]”.', '{{ :: item.name}}') %]"
+                        ng-checked="exists(item.code, selectedItems)"
+                        ng-click="toggleSelect(item.code, selectedItems)">
+                </td>
+                <td class="name_column">{{ :: item.name}} ({{ :: item.code}})</td>
+                <td>
+                    <div class="radio">
+                        <label for="item{{ :: item.code}}_statusWhitelisted">
+                            <input
+                                type="radio"
+                                name="item{{ :: item.code}}_status"
+                                id="item{{ :: item.code}}_statusWhitelisted"
+                                ng-model="item.status"
+                                value="{{ :: COUNTRY_CONSTANTS.WHITELISTED }}"
+                                ng-disabled="countriesUpdating"
+                                ng-change="countriesUpdated()" >
+                            <span>[% locale.maketext('Whitelisted') %]</span>
+                        </label>
+                    </div>
+                    <div class="radio">
+                        <label for="item{{ :: item.code}}_statusNone">
+                            <input
+                                type="radio"
+                                name="item{{ :: item.code}}_status"
+                                id="item{{ :: item.code}}_statusNone"
+                                ng-model="item.status"
+                                value="{{ :: COUNTRY_CONSTANTS.UNLISTED }}"
+                                ng-disabled="countriesUpdating"
+                                ng-change="countriesUpdated()"  >
+                            <span><em>[% locale.maketext('Not Specified') %]</em></span>
+                        </label>
+                    </div>
+                    <div class="radio">
+                        <label for="item{{ :: item.code}}_statusBlacklisted">
+                            <input
+                                type="radio"
+                                name="item{{ :: item.code}}_status"
+                                id="item{{ :: item.code}}_statusBlacklisted"
+                                ng-model="item.status"
+                                value="{{ :: COUNTRY_CONSTANTS.BLACKLISTED }}"
+                                ng-disabled="countriesUpdating"
+                                ng-change="countriesUpdated()"  >
+                            <span>[% locale.maketext('Blacklisted') %]</span>
+                        </label>
+                    </div>
+                </td>
+                <td class="gear_column"></td>
+            </tr>
+        </tbody>
+    </table>
+
+</div>

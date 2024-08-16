@@ -1,0 +1,35 @@
+[%
+USE Whostmgr;
+
+WRAPPER 'master_templates/master.tmpl'
+    app_key = 'upgrade_to_latest_version'
+    header = locale.maketext('Upgrade to Latest Version')
+    breadcrumburl = '/scripts2/upcpform'
+    theme = 'bootstrap';
+%]
+<div class="row">
+<div class="col-xs-12">
+
+[% PROCESS 'warnings/_mysql_version.tmpl' %]
+
+[% IF data.update_type.lower == 'never' %]
+<p>[% locale.maketext("Updates are currently [output,strong,disabled]. To enable updates, visit [output,url,_1,Update Preferences,id,_2].", '../scripts2/updateconf', 'whm-update-preferences-link') %]</p>
+[% ELSE %]
+<form action="[% cp_security_token %]/scripts/upcp2" name="mainform">
+    <p>[% locale.maketext("You will be upgrading to the latest [output,strong,_1] build.",data.treename.html) %] </p>
+    <div class="form-group">
+        <div class="checkbox">
+            <label>
+                <input type="checkbox" name="force" value="1">
+                [% locale.maketext('Force a reinstall even if the system is up to date.') %]
+            </label>
+        </div>
+    </div>
+    <div class="form-group">
+        <input type="submit" class="btn btn-primary" value="[% locale.maketext('Click to Upgrade') %]">
+    </div>
+</form>
+</div>
+</div>
+[% END %]
+[% END #wrapper -%]

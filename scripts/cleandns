@@ -1,0 +1,384 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/cleandns                        Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::cleandns;
+
+use strict;
+use warnings;
+
+use Getopt::Long              ();
+use File::Basename            ();
+use Cpanel::SafeFile          ();
+use Cpanel::DNSLib            ();
+use Cpanel::Hostname          ();
+use Cpanel::FileUtils::Move   ();
+use Cpanel::FileUtils::Copy   ();
+use Cpanel::Logger            ();
+use Cpanel::SafetyBits        ();
+use Cpanel::StringFunc::Count ();
+use Cpanel::StringFunc::Match ();
+
+exit main(@ARGV) unless caller();
+
+sub help {
+    print "USAGE:\n\t$0\n\nRemoves zones no longer operated by cPanel users on this host, and removes duplicate zone definitions.\n";
+    return 1;
+}
+
+#Only use prints if you expect to shoot this over to a web interface, otherwise logger() stuff
+sub main {
+    my @args = @_;
+
+    my $logger = Cpanel::Logger->new();
+    my ( $restart, $help );
+    Getopt::Long::GetOptionsFromArray(
+        \@args,
+        v        => \$Cpanel::Debug::level,
+        r        => \$restart,
+        'h|help' => \$help,
+    );
+    return help() if $help;
+
+    my $dnslib    = Cpanel::DNSLib->new();
+    my $namedconf = $dnslib->{'namedconf'};
+
+    my ( $confstatus, $confresult ) = remove_warnings_checknamedconf( $dnslib->checknamedconf() );
+
+    my @confresults      = split( /\n/, $confresult );
+    my @only_dupes       = grep { m/already exists previous definition/i } @confresults;
+    my $only_dupe_errors = ( scalar(@only_dupes) == scalar(@confresults) );
+
+    if ( !$confstatus && !$only_dupe_errors ) {
+        $logger->warn("Fatal! $namedconf fails named-checkconf, please repair named.conf and try again");
+        $logger->warn($confresult);
+        print "$namedconf is in a state that cannot be automatically corrected.\n";
+        print "Please address these issues and before trying again.";
+        return 1;
+    }
+
+    my $binduser = $dnslib->{'data'}{'binduser'};
+    my $bindgrp  = $dnslib->{'data'}{'bindgroup'};
+
+    my %ZONES = gather_zones( $logger, $dnslib, $namedconf, $binduser, $bindgrp );
+
+    $logger->debug("The following zone and zonefiles were found");
+    $logger->debug("zones with out corresponding zone file (and duplicates) will be removed");
+    $logger->debug("========================================================");
+    foreach my $key ( sort keys %ZONES ) {
+        $logger->debug("$key ==> $ZONES{$key}");
+    }
+    $logger->debug("========================================================");
+
+    Cpanel::FileUtils::Copy::safecopy( $namedconf, $namedconf . '.precleandns' );
+
+    my ( $NDC, $namelock, @CONF ) = build_clean_config( $logger, $namedconf, %ZONES );
+    write_cleaned_config( $namedconf, $namelock, $NDC, @CONF );
+
+    ( $confstatus, $confresult ) = remove_warnings_checknamedconf( $dnslib->checknamedconf() );
+
+    if ( !$confstatus ) {
+        $logger->warn("cleandns was unable to properly clean $namedconf");
+        $logger->warn($confresult);
+        $logger->info("Reverting to original version.");
+        Cpanel::FileUtils::Copy::safecopy( $namedconf, $namedconf . '.brokencleandns' );
+        Cpanel::FileUtils::Move::safemv( "-f", $namedconf . 'precleandns', $namedconf );
+        Cpanel::SafetyBits::safe_chown( $binduser, $bindgrp, $namedconf );
+        print "There was an error running the DNS cleanup. Please check the cPanel error logs.";
+        return 2;
+    }
+
+    my $shorthost = Cpanel::Hostname::shorthostname();
+    if ( !$shorthost ) {
+        $shorthost = 'localhost';
+        my $host_name_not_properly_set_msg = "Your hostname is not properly set, please run /usr/local/cpanel/bin/set_hostname";
+        say STDERR ($host_name_not_properly_set_msg);
+        $logger->warn($host_name_not_properly_set_msg);
+    }
+
+    my $numzones = scalar keys %ZONES;
+    $logger->info("DNS cleanup successful");
+    print "Cleaned up " . $numzones . " zone(s) on $shorthost.";
+
+    if ($restart) {
+        $logger->info("Restarting Bind using restartsrv");
+        exec '/usr/local/cpanel/scripts/restartsrv', 'named';
+    }
+    $logger->debug("Bind will not be restarted automatically.");
+    $logger->debug("To restart Bind run the following: /usr/local/cpanel/scripts/restartsrv_named");
+
+    return 0;
+}
+
+sub _is_line_comment {
+    my ( $line, $cppcomment, $callback ) = @_;
+
+    # Rudimentary comment exclusion.
+    if ($cppcomment) {
+        if ( $line =~ m/\*\// ) {
+            $cppcomment = 0;
+        }
+        $callback->($line) if $callback;
+        return ( 1, $cppcomment );
+    }
+    if ( $line =~ m/^\s*\#/ ) {
+        $callback->($line) if $callback;
+        return ( 1, $cppcomment );
+    }
+    if ( $line =~ m/^\s\/\// ) {
+        $callback->($line) if $callback;
+        return ( 1, $cppcomment );
+    }
+    if ( $line =~ m/^\s*\/\*/ ) {
+        $cppcomment = 1;
+        $callback->($line) if $callback;
+        return ( 1, $cppcomment );
+    }
+    return ( 0, $cppcomment );
+}
+
+# XXX I am dissatisfied with this loop and build_clean_config being nearly the same.
+# This means we are straight up wasting time in this script which is called by dnsadmin
+# and hence needs good performance.
+
+sub gather_zones {    ## no critic(ProhibitExcessComplexity)
+    my ( $logger, $dnslib, $namedconf, $binduser, $bindgrp ) = @_;
+
+    my %ZONES;
+    my $inc      = 0;
+    my $seenhint = 0;
+    my $zone     = '';
+    my ( $numbrace, $zonemarker, $cppcomment, $continue ) = ( 0, 0, 0, 0 );
+    my $zonedir = $dnslib->{'data'}{'zonefiledir'};
+
+    # Read through named.conf. Gather hash of zones and zone files
+    open( my $NDC, '<', $namedconf ) || $logger->die("Unable to open $namedconf: $!");
+
+    while (<$NDC>) {
+        ( $continue, $cppcomment ) = _is_line_comment( $_, $cppcomment );
+        next if $continue;
+
+        if ($zonemarker) {
+            $numbrace += Cpanel::StringFunc::Count::get_curly_brace_count($_);
+            if ( $numbrace == 0 ) {
+                $zonemarker = 0;
+            }
+            if (m/.*[\s\t\;\{]file\s+["']([^"']+)/) {
+                my $file        = $1;
+                my $relativedir = '';
+                if ( !Cpanel::StringFunc::Match::beginmatch( $file, '/' ) ) {
+                    if ( $file =~ m/^([^\/]+)/ ) {
+                        $relativedir = $1;
+                    }
+                }
+                if ( -e $file ) {
+                    $ZONES{$zone} = $file;
+                }
+                else {
+                    my $filename = File::Basename::basename($file);
+                    my $filenew  = $zonedir . '/' . $filename;
+                    if ( -e $filenew ) {
+                        $ZONES{$zone} = $filenew;
+                    }
+                    elsif ( $relativedir ne ''
+                        && -e $zonedir . '/' . $relativedir . '/' . $filename ) {
+                        $ZONES{$zone} = $zonedir . '/' . $relativedir . '/' . $filename;
+                    }
+                    elsif ( -e '/' . $file ) {
+                        $ZONES{$zone} = '/' . $file;
+                    }
+                    else {
+                        $ZONES{$zone} = '';
+                    }
+                }
+                next();
+            }
+            if (m/.*[\s\t\;\{]type\s+slave/) {
+                delete( $ZONES{$zone} );
+            }
+        }
+        if (m/\s*zone\s+["']([^"']+)/) {
+            $zone       = $1;
+            $zonemarker = 1;
+            $numbrace += Cpanel::StringFunc::Count::get_curly_brace_count($_);
+
+            if (m/.*[\s\t\;\{]file\s+["']([^"']+)/) {
+                my $file        = $1;
+                my $relativedir = '';
+                if ( !Cpanel::StringFunc::Match::beginmatch( $file, '/' ) ) {
+                    if ( $file =~ m/^([^\/]+)/ ) {
+                        $relativedir = $1;
+                    }
+                }
+                if ( -e $file ) {
+                    $ZONES{$zone} = $file;
+                }
+                else {
+                    my $filename = File::Basename::basename($file);
+                    my $filenew  = $zonedir . '/' . $filename;
+                    if ( -e $filenew ) {
+                        $ZONES{$zone} = $filenew;
+                    }
+                    elsif ( $relativedir ne ''
+                        && -e $zonedir . '/' . $relativedir . '/' . $filename ) {
+                        $ZONES{$zone} = $zonedir . '/' . $relativedir . '/' . $filename;
+                    }
+                    elsif ( -e '/' . $file ) {
+                        $ZONES{$zone} = '/' . $file;
+                    }
+                    elsif ( $zone eq '.' ) {
+                        Cpanel::FileUtils::Copy::safecopy( '/usr/local/cpanel/scripts/named.ca', $filenew );
+                        Cpanel::SafetyBits::safe_chown( $binduser, $bindgrp, $filenew );
+                        $ZONES{$zone} = $filenew;
+                    }
+                    else {
+                        $ZONES{$zone} = '';
+                    }
+                }
+                next;
+            }
+        }
+
+        if ( !$zonemarker ) {
+            next;
+        }
+        else {
+            $numbrace += Cpanel::StringFunc::Count::get_curly_brace_count($_);
+            if ( $numbrace == 0 ) {
+                $inc = 0;
+            }
+        }
+    }
+    close($NDC);
+    return %ZONES;
+}
+
+sub build_clean_config {
+    my ( $logger, $namedconf, %ZONES ) = @_;
+
+    my @CONF;
+    my $zone = '';
+    my ( $numbrace, $zonemarker, $cppcomment, $continue ) = ( 0, 0, 0, 0 );
+
+    # Modify named.conf and remove bad entries.
+    my $namelock = Cpanel::SafeFile::safeopen( my $NDC, "+<", $namedconf );
+    if ( !$namelock ) {
+        $logger->die("Could not open $namedconf");
+    }
+
+    my $seen_already = {};
+    my $what_view    = 'none';
+    while (<$NDC>) {
+
+        ( $continue, $cppcomment ) = _is_line_comment( $_, $cppcomment, sub { push( @CONF, shift ) } );
+        next if $continue;
+
+        #Gotta know what view we are in to filter dupes out
+        m/\s*view\s+["']([^"']+)/;
+        $what_view = $1 if $1;
+
+        if ($zonemarker) {
+            $numbrace += Cpanel::StringFunc::Count::get_curly_brace_count($_);
+            if ( $numbrace == 0 ) {
+                $zonemarker = 0;
+            }
+            if ( defined( $ZONES{$zone} ) && $ZONES{$zone} eq '' ) {
+                next;
+            }
+            elsif ( !defined( $ZONES{$zone} ) ) {
+                push @CONF, $_;
+                next;
+            }
+            elsif (m/(.*[\s\t\;\{])file\s+["']/) {
+                my $space = $1;
+                push @CONF, $space . "file \"$ZONES{$zone}\"\;\n";
+                next;
+            }
+            else {
+                push @CONF, $_;
+                next;
+            }
+        }
+        if (m/\s*zone\s+["']([^"']+)/) {
+            $zone = $1;
+            $seen_already->{"$what_view.$zone"}++;
+            if ( $seen_already->{"$what_view.$zone"} && $seen_already->{"$what_view.$zone"} > 1 ) {
+                $zonemarker = 0;
+                next;
+            }
+
+            $zonemarker = 1;
+            $numbrace += Cpanel::StringFunc::Count::get_curly_brace_count($_);
+            if ( defined( $ZONES{$zone} ) && $ZONES{$zone} eq '' ) {
+                next();
+            }
+            elsif ( !defined( $ZONES{$zone} ) ) {
+                push( @CONF, $_ );
+                next();
+            }
+            elsif (m/(.*[\s\t\;\{])file\s+["']/) {
+                my $space = $1;
+                push @CONF, $space . "file \"$ZONES{$zone}\"\;\n";
+                next;
+            }
+            else {
+                push @CONF, $_;
+                next;
+            }
+        }
+
+        #Evade warnings
+        my $skip_dupe_body = ( $what_view && $zone && $seen_already->{"$what_view.$zone"} && $seen_already->{"$what_view.$zone"} > 1 );
+
+        if ( !$zonemarker && !$skip_dupe_body ) {
+            push @CONF, $_;
+        }
+    }
+
+    seek( $NDC, 0, 0 );
+    return ( $NDC, $namelock, @CONF );
+}
+
+sub write_cleaned_config {
+    my ( $namedconf, $namelock, $NDC, @CONF ) = @_;
+
+    my $deadline = 0;
+    foreach (@CONF) {
+        if (m/^[\r\n\s\t]*$/) {
+            $deadline++;
+        }
+        else {
+            $deadline = 0;
+        }
+        if ( $deadline < 2 ) {
+            print $NDC $_;
+        }
+    }
+    print $NDC "\n";
+
+    truncate( $NDC, tell($NDC) );
+    unlink("$namedconf.cache");
+    Cpanel::SafeFile::safeclose( $NDC, $namelock );
+    return 1;
+}
+
+sub remove_warnings_checknamedconf {
+    my ( $configstatus, $configresult ) = @_;
+    return ( $configstatus, $configresult ) if $configstatus;
+    my $config_warning_rx = qr/option 'additional-from-cache' (?:is obsolete|no longer exists)/;
+    my @errors            = split "\n", $configresult;
+    return ( $configstatus, $configresult ) unless scalar @errors;
+    my $new_config_result = [];
+    foreach my $errorLine (@errors) {
+        push @{$new_config_result}, $errorLine unless $errorLine =~ /$config_warning_rx/;
+    }
+    $configstatus = 1 if $#{$new_config_result} < 0;
+    $configresult = join( "\n", @{$new_config_result} );
+    return ( $configstatus, $configresult );
+
+}
+
+1;    #magic true since this is included in build-tools/clean_test_cruft

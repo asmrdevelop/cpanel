@@ -1,0 +1,104 @@
+[%
+    PROCESS  "include/colors.tmpl";
+    PROCESS "include/styles.tmpl";
+
+    DEFAULT #styles
+        header_txt_color    = dark_gray,
+        content_bg_color    = white,
+        footer_txt_color    = med_dark_gray;
+
+    DEFAULT #content
+        logo_path           = "include/cpanel-logo-tiny.png",
+        copyright_string    = CPANEL.locale.maketext('Copyright©[output,nbsp][current_year] cPanel, L.L.C.');
+%]
+
+<body style="background:[% light_gray %]">
+    <div style="margin:0;padding:0;background:[% light_gray %]">
+        <table cellpadding="10" cellspacing="0" border="0" width="100%" style="width:0 auto;">
+            <tbody>
+                <tr>
+                    <td align="center">
+                        <table cellpadding="0" cellspacing="0" border="0" width="[% total_width %]" style="border:0;width:0 auto;max-width:[%- total_width -%]px;">
+                            <tbody>
+                                <tr>
+                                    [% #HEADER START %]
+                                    <td width="[% total_width %]" height="25" style="font-family:[% font_family %];font-size:16px;color:[% header_txt_color %]">
+                                        [% IF NOTICE.email_reason %]
+                                            [%# TODO: include MESSAGE.subject.tmpl if not set %]
+                                            [% NOTICE.email_reason %]
+                                        [% END %]
+                                    </td>
+                                    [% #HEADER END %]
+                                </tr>
+                                <tr>
+                                    [% #BODY START %]
+                                    <td style="padding: 15px 0 20px 0; background-color: [% content_bg_color %]; border: 2px solid [% medium_gray %]; border-bottom: 2px solid [% cpanel_orange %];">
+                                        <table width="[% total_width %]" border="0" cellpadding="0" cellspacing="0" style="background:[% content_bg_color %];font-family:[% font_family %];">
+                                            <tbody>
+                                                <tr>
+                                                    <td width="[% left_padding %]">
+                                                    </td>
+                                                    <td width="[% content_width %]">
+                                                        <table cellpadding="0" cellspacing="0" border="0" width="100%">
+                                                            <tbody>
+                                                                <tr>
+                                                                    <td>
+                                                                        [% content %]
+                                                                    </td>
+                                                                </tr>
+                                                                <tr>
+                                                                    <td>
+                                                                        [% PROCESS 'include/origin_info.html.tmpl' -%]
+                                                                        [% IF NOTICE.notification_cannot_be_disabled %]
+                                                                           <!-- -->
+                                                                        [% ELSIF NOTICE.notification_targets_user_account %]
+                                                                         <p>
+                                                                           [% IF NOTICE.subaccount.length; %]
+                                                                               [% # TODO: Implement support for subaccounts to configure which notices they receive. %]
+                                                                           [% ELSIF NOTICE.user.match('@') && NOTICE.team_account.length; %]
+                                                                               [% # TODO: Implement support for team_accounts to configure which notices they receive. %]
+                                                                           [% ELSIF NOTICE.user.match('@'); %]
+                                                                             [% CPANEL.locale.maketext('You can disable the “[_1]” type of notification through the [asis,cPanel Webmail] interface: [output,url,_2,_2,target,_3]', CPANEL.module_description, CPANEL.webmail_contact_info_url(NOTICE.username),'_blank') %]
+                                                                           [% ELSE %]
+                                                                             [% CPANEL.locale.maketext('You can disable the “[_1]” type of notification through the [asis,cPanel] interface: [output,url,_2,_2,target,_3]', CPANEL.module_description, CPANEL.cpanel_contact_info_url(NOTICE.username),'_blank') %]
+                                                                           [% END %]
+                                                                         </p>
+                                                                        [% ELSE %]
+                                                                          <p>
+                                                                          [% CPANEL.locale.maketext('“[_1]” notifications are currently configured to have an importance of “[_2]”.', CPANEL.module_description, CPANEL.module_event_importance_description) %]
+                                                                          [% CPANEL.locale.maketext('You can change the importance or disable this type of notification in [asis,WHM]’s Contact Manager at: [output,url,_1,_1,target,_2]', CPANEL.assemble_whm_url("scripts2/editcontact?event=" _ CPANEL.notification_system_name),'_blank') %]
+                                                                          </p>
+                                                                        [% END %]
+<p>
+    [% CPANEL.locale.maketext('Do not reply to this automated message.'); %]
+</p>
+                                                                    </td>
+                                                                </tr>
+                                                            </tbody>
+                                                        </table>
+
+                                                    </td>
+                                                    <td width="[% right_padding %]">
+                                                    </td>
+                                                </tr>
+                                            </tbody>
+                                        </table>
+                                    </td>
+                                    [% #BODY END %]
+                                </tr>
+                                <tr>
+                                    <td align="center" style="padding-top: 10px;">
+                                    [% #FOOTER START %]
+                                        <img src="cid:[% CPANEL.add_html_related( path => logo_path ) %]" height="25" width="25" style="border:0;line-height:100%;border:0" alt="cP">
+                                        <p style="font-family:[% font_family %];font-size:12px;color:[% footer_txt_color %]; padding: 0; margin: 0;">[% copyright_string %]<p>
+                                    [% #FOOTER END %]
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+</body>

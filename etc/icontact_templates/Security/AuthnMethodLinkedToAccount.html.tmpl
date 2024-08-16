@@ -1,0 +1,35 @@
+[%#
+Variables passed in:
+
+origin                       - the system component from which the authentication link originated
+provider_display_name        - the type of account linked to the user ie. cpanelid, google, etc
+preferred_username           - the human readable account identifier for the external account
+ip_address                   - the IP address from which the authentication link originated
+ip_address_is_public         - whether the “ip_address” is public (i.e., not a loopback, private, etc.)
+reverse_dns_hostnames        - arrayref of whatever a reverse DNS lookup returned, if successful
+country_name                 - the name of the country that GeoIP reports is where the IP address’s computer is
+country_code                 - the two-letter country code of the “country_name”
+country_lookup_error         - whatever error may have prevented getting a “country_name”
+
+For more information about how to customize notification templates, read our documentation at https://go.cpanel.net/notificationtemplates
+
+-%]
+
+[%
+    PROCESS "include/colors.tmpl";
+    PROCESS "include/styles.tmpl";
+
+    WRAPPER 'wrapper/main.html.tmpl'
+        NOTICE.email_reason = CPANEL.locale.maketext('You may now log in to the account “[_1]” on this server via the “[_2]” account “[_3]”.', NOTICE.user, NOTICE.provider_display_name, NOTICE.preferred_username);
+%]
+
+<p>
+    [% CPANEL.locale.maketext('The “[_1]” account “[_2]” is now authorized to access “[_3]” ([_4])', NOTICE.provider_display_name, NOTICE.preferred_username, NOTICE.user, NOTICE.user_domain) %]
+</p>
+<p>
+    [% CPANEL.locale.maketext('If you meant to do this, then you may disregard this email. If you did not mean to do this, contact your system administrator.') %]
+
+    [% NOTICE.messages_about_disabled_settings.html() %]
+</p>
+
+[% END %]

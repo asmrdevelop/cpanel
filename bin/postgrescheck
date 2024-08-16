@@ -1,0 +1,129 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - bin/postgrescheck                       Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+use warnings;
+
+use Cpanel::Debug                    ();
+use Cpanel::Usage                    ();
+use Cpanel::PostgresUtils::PgPass    ();
+use Cpanel::PostgresAdmin::Check     ();
+use Cpanel::PasswdStrength::Check    ();
+use Cpanel::PasswdStrength::Generate ();
+use Cpanel::PostgresUtils::Passwd    ();
+use Cpanel::Exception                ();
+use Cpanel::PwCache                  ();
+use Cpanel::Services::Enabled        ();
+use Cpanel::Services::Running        ();
+
+use Try::Tiny;
+
+sub usage {
+    print <<EOM;
+postgrescheck [--check-auth [--reset-pass-on-fail]]
+
+By default, checks to make sure postgres is up.  With --check-auth, also
+ensures that the postgres user can connect to the database.  With
+--reset-pass-on-fail, resets the postgres password if that user cannot.
+EOM
+    exit 1;
+}
+
+sub make_new_password {
+    my $lengthcounter = 8;
+    my $newpass       = Cpanel::PasswdStrength::Generate::generate_password($lengthcounter);
+    while ( $newpass =~ /[':"]/ || !Cpanel::PasswdStrength::Check::check_password_strength( 'pw' => $newpass, 'app' => 'postgres' ) ) {
+        $newpass = Cpanel::PasswdStrength::Generate::generate_password($lengthcounter);
+        next if ( $newpass =~ /[':"]/ );
+        $lengthcounter++;
+        last if $lengthcounter > 128;
+    }
+    return $newpass;
+}
+
+sub _get_login_errors {
+
+    # We do not want to emit the password
+    # so we suppress the stack trace
+    my $suppress = Cpanel::Exception::get_stack_trace_suppressor();
+    require Cpanel::Postgres::Connect;
+    local $@;
+    eval { Cpanel::Postgres::Connect::get_dbi_handle(); };
+    return $@;
+}
+
+my ( $check_auth, $reset_pass );
+my $options = { 'check-auth' => \$check_auth, 'reset-pass-on-fail' => \$reset_pass };
+Cpanel::Usage::wrap_options( \@ARGV, \&usage, $options );
+
+my $pg_check = Cpanel::PostgresAdmin::Check::is_configured();
+if ( !Cpanel::Services::Enabled::is_enabled('postgresql') || ( !$pg_check->{'status'} && !( $pg_check->{'message'} =~ m/Unable to locate pgpass/ && $check_auth && $reset_pass ) ) ) {
+    exit(0);    # not an error, just not installed or enabled
+}
+
+my $postgres_login_error;
+
+if ($check_auth) {
+    $postgres_login_error = _get_login_errors();
+
+    if ($postgres_login_error) {
+
+        if ( try { $postgres_login_error->failure_is('connection_failure') } ) {
+
+            # PgSQL gives a single error--connection_failure (08006)--for
+            # both connection failure and authentication failure states.
+            # So first check whether the DB is up:
+
+            if ( !Cpanel::Services::Running::is_online('postgresql') ) {
+                Cpanel::Debug::log_die("postgresql is not online.");
+            }
+
+            # If we got connection_failure while PostgreSQL was online
+            # then assume the problem was with authentication.
+            if ($reset_pass) {
+                my $data     = Cpanel::PostgresUtils::PgPass::pgpass() || {};
+                my $user     = Cpanel::PostgresUtils::PgPass::getpostgresuser();
+                my $password = $data->{$user}{'password'} || make_new_password();
+                if ( !$password ) {
+                    Cpanel::Debug::log_die("Failed to fetch or generate new postgres password.");
+                }
+                my ($root_homedir) = ( Cpanel::PwCache::getpwnam('root') )[7];
+                my $root_pgpass_file = Cpanel::PostgresUtils::PgPass::find_pgpass() || "$root_homedir/.pgpass";
+
+                my ( $ok, $msg ) = Cpanel::PostgresUtils::Passwd::passwd( $password, $root_pgpass_file );
+                if ( !$ok ) {
+                    Cpanel::Debug::log_die($msg);
+                }
+                else {
+                    Cpanel::Debug::log_info($msg);
+                }
+
+                $postgres_login_error = _get_login_errors();
+                if ($postgres_login_error) {
+                    Cpanel::Debug::log_die("Failed to log in after password reset attempt: $postgres_login_error");
+                }
+            }
+            else {
+                Cpanel::Debug::log_die("$postgres_login_error\n\nAuthentication failed, but --reset-pass-on-fail was not passed.");
+            }
+        }
+
+    }
+
+    if ($postgres_login_error) {
+        Cpanel::Debug::log_die("Failed to log in: $postgres_login_error");
+    }
+}
+
+my $pg_active = Cpanel::PostgresAdmin::Check::ping();
+
+if ( !$pg_active || $pg_active ne 'PONG' ) {
+    $postgres_login_error ||= _get_login_errors();
+    Cpanel::Debug::log_die("Failed to login: $postgres_login_error");
+}
+
+exit(0);

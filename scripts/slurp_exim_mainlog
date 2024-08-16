@@ -1,0 +1,177 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/slurp_exim_mainlog              Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::slurp_exim_mainlog;
+
+use strict;
+use warnings;
+
+use parent qw( Cpanel::HelpfulScript );
+
+use Cpanel::EximStats::ImportInProgress ();
+use Cpanel::Autodie::Unlink             ();
+use Cpanel::Daemonizer::Tiny            ();
+use Cpanel::Exception                   ();
+use Cpanel::EximStats::Retention        ();
+use Cpanel::FileUtils::Dir              ();
+use Cpanel::FileUtils::TouchFile        ();
+use Cpanel::PIDFile                     ();
+use Cpanel::Time::ISO                   ();
+
+use Try::Tiny;
+
+=encoding utf-8
+
+=head1 NAME
+
+scripts::slurp_exim_mainlog
+
+=head1 SYNOPSIS
+
+    slurp_exim_mainlog ( --reimport | --force | --help )
+
+This command will do an import of the unarchived (non-'.gz') /var/log/exim_mainlog* files that are
+newer than the exim retention setting (90 by default) days. The slurp normally will only run once,
+but if you pass the --reimport flag it will attempt to import the log files after a 7 day waiting period.
+If you pass the --force flag, the import will start with no regard to the last time it ran.
+
+=head1 DESCRIPTION
+
+This script does an import of the exim_mainlog files in /var/log. The import can only happen
+once every 7 days
+
+=cut
+
+our $EXIM_LOG_DIR    = '/var/log';
+our $PID_FILE        = '/var/run/slurp_exim_mainlog.pid';
+our $OUTPUT_LOG_DIR  = '/var/cpanel/logs';
+our $OUTPUT_LOG_FILE = 'eximstats_sqlite_import.log';
+
+our $MAX_OUTPUT_LOG_AGE   = 30 * 24 * 60**2;    # 30 days
+our $TIME_BETWEEN_IMPORTS = 7 * 24 * 60**2;     # 7 days
+
+sub _OPTIONS {
+    return qw( force reimport );
+}
+
+__PACKAGE__->new(@ARGV)->script() unless caller();
+
+## CAVEATS re: case 53744
+## 1. the eximstats schema handles dedupes, so we process all recent files
+## 2. TaskQueue is overkill for this one-time slurp
+
+sub script {
+    my ($self) = @_;
+
+    my $time = _time();
+
+    ## skip the slurp of exim_mainlog* if the touch file exists and it hasn't been TIME_BETWEEN_IMPORTS yet
+    if ( !$self->getopt('force') ) {
+        if ( $self->getopt('reimport') ) {
+            my $last_import_time          = ( stat $Cpanel::EximStats::ImportInProgress::IMPORTED_FILE )[9] || 0;
+            my $seconds_since_last_import = ( $time - $last_import_time );
+            if ( -e $Cpanel::EximStats::ImportInProgress::IMPORTED_FILE && $TIME_BETWEEN_IMPORTS > $seconds_since_last_import ) {
+                print "[slurp_exim_mainlog] Skipping re-import because the logs were last imported at " . scalar localtime($last_import_time) . ", and the system only allows imports every $TIME_BETWEEN_IMPORTS seconds without the --force flag.\n";
+
+                return;
+            }
+        }
+        else {
+            if ( -e $Cpanel::EximStats::ImportInProgress::IMPORTED_FILE ) {
+                print "[slurp_exim_mainlog] Skipping import because the logs were already imported.\n";
+
+                return;
+            }
+        }
+    }
+
+    my $IMPORT_LOG_AGE_LIMIT = 60**2 * 24 * ( int( Cpanel::EximStats::Retention::get_valid_exim_retention_days() ) || 60 );
+
+    Cpanel::PIDFile->do(
+        $PID_FILE,
+        sub {
+            my %imports;
+            for my $log ( grep { m/^exim_mainlog/ } @{ Cpanel::FileUtils::Dir::get_directory_nodes($EXIM_LOG_DIR) } ) {
+
+                # Skip archived logs for this import
+                next if substr( $log, -3 ) eq '.gz';
+
+                my $age = ( stat("$EXIM_LOG_DIR/$log") )[9];
+
+                ## eximstats shows info for 90 days by default, but it's configurable
+                next if ( $time - $age > $IMPORT_LOG_AGE_LIMIT );
+
+                $imports{"$EXIM_LOG_DIR/$log"} = $age;
+            }
+
+            my @imports = keys %imports ? map { $_->[0] } sort { $b->[1] <=> $a->[1] } map { [ $_, $imports{$_} ] } keys %imports : ();
+
+            Cpanel::FileUtils::TouchFile::touchfile($Cpanel::EximStats::ImportInProgress::IMPORTED_FILE);
+
+            $self->call_import_exim_data( \@imports );
+        }
+    );
+
+    return;
+}
+
+# In a function for tests
+sub call_import_exim_data {
+    my ( $self, $imports_ar ) = @_;
+
+    if ( !scalar @$imports_ar ) {
+        print "[slurp_exim_mainlog] there were no exim_mainlog files new enough to import.\n";
+        return;
+    }
+
+    $self->remove_old_output_logs();
+
+    my $log_file = "$OUTPUT_LOG_DIR/$OUTPUT_LOG_FILE." . Cpanel::Time::ISO::unix2iso();
+    print "[slurp_exim_mainlog] starting import of the exim_mainlog files. Output will be logged to: $log_file\n";
+
+    Cpanel::Daemonizer::Tiny::run_as_daemon(
+        sub {
+            close(STDIN);
+            open( STDIN, "<", "/dev/null" );
+
+            open( my $log_fh, '>>',  $log_file );
+            open( STDOUT,     ">&=", $log_fh );
+            open( STDERR,     ">&=", $log_fh );
+
+            exec( '/usr/local/cpanel/scripts/import_exim_data', @$imports_ar );
+        }
+    );
+
+    return;
+}
+
+sub remove_old_output_logs {
+    my ($self) = @_;
+
+    my @logs_to_remove;
+    for my $log ( grep { m/^\Q$OUTPUT_LOG_FILE\E\.[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$/ } @{ Cpanel::FileUtils::Dir::get_directory_nodes($OUTPUT_LOG_DIR) } ) {
+        my $log_path = "$OUTPUT_LOG_DIR/$log";
+
+        next if !-e $log_path || _time() - ( stat(_) )[9] < $MAX_OUTPUT_LOG_AGE;
+
+        push @logs_to_remove, $log_path;
+    }
+
+    try {
+        Cpanel::Autodie::Unlink::unlink_if_exists_batch(@logs_to_remove) if scalar @logs_to_remove;
+    }
+    catch {
+        warn "[slurp_exim_mainlog] there was a problem removing old output logs: " . Cpanel::Exception::get_string_no_id($_);
+    };
+
+    return;
+}
+
+# For tests
+sub _time {
+    return time();
+}

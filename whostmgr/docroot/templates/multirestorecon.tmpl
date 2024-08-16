@@ -1,0 +1,122 @@
+[% WRAPPER 'master_templates/master.tmpl'
+    theme="yui"
+    app_key = 'legacy_restore_multiple_backups'
+-%]
+
+<style type="text/css">
+.alert-info {
+  background-color: #d7edf9;
+  border: 1px solid #2980b9;
+  color: #31708f;
+  padding: 15px;
+  margin-bottom: 20px;
+  border-radius: 2px;
+  margin: 0 0 10px;
+}
+</style>
+
+<div class="alert-info">
+  [% locale.maketext("[asis,cPanel amp() WHM] will deprecate the Legacy Backup system in the near future. We [output,strong,strongly] recommend that you upgrade to the new Backup system.") %]
+</div>
+
+[% IF data.disabled -%]
+<h3 class="simpleheading">[% locale.maketext('Backup is not enabled.') %] [% locale.maketext('If you are trying to restore a crashed system, please set backup to “[_1]”.', locale.maketext('Restore Only')); %]</h3>
+[% ELSIF ! data.restoretype -%]
+[% IF data.backupdirs.size == 0 -%]
+<span class="b2">Sorry, there are no backups located at [% data.backupbase FILTER html %].</span>
+[% ELSE -%]
+
+[% INCLUDE _pending_transfers.tmpl %]
+
+[% locale.maketext('Please select which type of backup to restore:') %]
+<form action="[% cp_security_token %]/scripts5/multirestorecon">
+[% FOR backupdir = data.backupdirs.sort() -%]
+<input type="submit" class="btn-primary" name="restoretype" value="[% backupdir FILTER html %]" />
+[% END -%]
+</form>
+[% END -%]
+[% ELSE -%]
+[% PROCESS '_loadjs.tmpl' src='/js/checkselect.js' -%]
+
+[% locale.maketext('We are restoring a “[_1]” backup …', data.restoretype.html() ) %]<br />
+[% locale.maketext('Please select users to restore:') %]<br />
+<form method="POST" action="[% cp_security_token %]/scripts5/domultibackuprestore" target="_blank">
+  <input type="hidden" name="restoretype" value="[% data.restoretype FILTER html %]" />
+  <table class=sortable id=accts>
+    <tr>
+        <th>[% locale.maketext('Restore') %]</th>
+        <th>[% locale.maketext('Username') %]</th>
+        <th>[% locale.maketext('Give IP Address (only if recreating)') %]</th>
+        <th>[% locale.maketext('Restore Subdomains') %]</th>
+        <th>[% locale.maketext('Restore Mail Config') %]</th>
+        <th>[% locale.maketext('Restore Databases') %]</th>
+        <th>[% locale.maketext('Restore Bandwidth Data') %]</th>
+   </tr>
+[% FOR user = data.users.sort() -%]
+    <tr class="[% loop.index % 2 ? 'tdshade2' : 'tdshade1' %]">
+            <td><input value="1" type="checkbox" name="whm530restore-[% user %]"></td>
+            <td>[% user FILTER html %]</td>
+            <td><input value="1" type="checkbox" name="whm530restoreip-[% user %]"></td>
+            <td><input value="1" type="checkbox" name="whm530restoresubs-[% user %]" checked="checked"></td>
+            <td><input value="1" type="checkbox" name="whm530restoremail-[% user %]" checked="checked"></td>
+            <td><input value="1" type="checkbox" name="whm530restoremysql-[% user %]" checked="checked"></td>
+            <td><input value="1" type="checkbox" name="whm530restorebwdata-[% user %]" checked="checked"></td>
+    </tr>
+[% END -%]
+    <tr class="[% data.users.max() ? 'tdshade2' : 'tdshade1' %]">
+        <td><input type="button" class="btn-secondary" onClick="checkall(this.form,'whm530restore-');" value="Select Column"><br /><input type="button" class="btn-secondary" onClick="checkall(this.form,'whm530restore-',1);" value="Deselect Column"></td>
+        <td></td>
+        <td><input type="button" class="btn-secondary" onClick="checkall(this.form,'whm530restoreip-');" value="Select Column"><br /><input type="button" class="btn-secondary" onClick="checkall(this.form,'whm530restoreip-',1);" value="Deselect Column"></td>
+        <td><input type="button" class="btn-secondary" onClick="checkall(this.form,'whm530restoresubs-');" value="Select Column"><br /><input type="button" class="btn-secondary" onClick="checkall(this.form,'whm530restoresubs-',1);" value="Deselect Column"></td>
+        <td><input type="button" class="btn-secondary" onClick="checkall(this.form,'whm530restoremail-');" value="Select Column"><br /><input type="button" class="btn-secondary" onClick="checkall(this.form,'whm530restoremail-',1);" value="Deselect Column"></td>
+        <td><input type="button" class="btn-secondary" onClick="checkall(this.form,'whm530restoremysql-');" value="Select Column"><br /><input type="button" class="btn-secondary" onClick="checkall(this.form,'whm530restoremysql-',1);" value="Deselect Column"></td>
+        <td><input type="button" class="btn-secondary" onClick="checkall(this.form,'whm530restorebwdata-');" value="Select Column"><br /><input type="button" class="btn-secondary" onClick="checkall(this.form,'whm530restorebwdata-',1);" value="Deselect Column"></td>
+    </tr>
+  </table>
+  <input type="button" class="btn-secondary" onClick="selectAll(this.form,0)" value="Select All"> <br />
+  <input type="button" class="btn-secondary" onClick="selectAll(this.form,1)" value="Reverse Selection">
+  <br />
+  <input type="submit" class="btn-primary" value="Start Restore">
+</form>
+
+<script type="text/javascript">
+
+checkarea='accts';
+YAHOO.util.Event.addListener( document.getElementById(checkarea) , "mousedown" , handleSelectBoxMouseDown);
+
+function selectAll(formObj, isInverse)
+{
+    for (var i=0;i < formObj.length;i++)
+    {
+        fldObj = formObj.elements[i];
+        if (fldObj.type == 'checkbox')
+        {
+        if(isInverse)
+        fldObj.checked = (fldObj.checked) ? false : true;
+        else fldObj.checked = true;
+        }
+    }
+}
+function checkall(formObj,matchtext,isInverse)
+{
+    for (var i=0;i < formObj.length;i++)
+    {
+        fldObj = formObj.elements[i];
+        if (fldObj.type == 'checkbox')
+        {
+        var elename = fldObj.name;
+        if (elename.substr(0,matchtext.length) == matchtext) {
+            if (isInverse) {
+                fldObj.checked = false;
+            } else {
+                fldObj.checked = true;
+            }
+        }
+        }
+    }
+}
+</script>
+[% END -%]
+
+[% INCLUDE _transfer_api_info.tmpl %]
+[% END -%]

@@ -1,0 +1,182 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/mysqlconnectioncheck            Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+#
+package scripts::mysqlconnectioncheck;
+#
+
+use strict;
+use warnings;
+
+use Cpanel::MysqlUtils::Check        ();
+use Cpanel::MysqlUtils::MyCnf::Basic ();
+use Cpanel::Hostname                 ();
+use Cpanel::Exception                ();
+use Cpanel::MysqlUtils::RootPassword ();
+use Cpanel::Services::Enabled        ();
+use Cpanel::PIDFile                  ();
+
+use Try::Tiny;
+
+local $| = 1;
+
+our $service  = 'mysqlconnectioncheck';
+our $lockfile = '/var/cpanel/mysqlconnectioncheck.pid';
+
+exit( __PACKAGE__->script() ) unless caller;
+
+sub script {
+    my ( $pkg, %opts ) = @_;
+
+    return 0 if !Cpanel::Services::Enabled::is_provided(q{mysql});
+
+    # Restartsrv will call mysqlconnectioncheck
+    # In order to avoid this locking forever
+    # we have a check to see if we are calling ourselves
+    return 0 if ( $ENV{'MYSQLCCHK'} && $ENV{'MYSQLCCHK'} eq '1' );
+    local $ENV{'MYSQLCCHK'} = 1;
+
+    my $hostname        = Cpanel::Hostname::gethostname();
+    my $dbhost          = Cpanel::MysqlUtils::MyCnf::Basic::getmydbhost('root') || 'localhost';
+    my $dbpassword      = Cpanel::MysqlUtils::MyCnf::Basic::getmydbpass('root');                  # read from /root/.my.cnf
+    my $is_remote_mysql = Cpanel::MysqlUtils::MyCnf::Basic::is_remote_mysql();
+
+    my $exit_status;
+    try {
+        $exit_status = Cpanel::PIDFile->do(
+            $lockfile,
+            sub {
+                if ( !$dbpassword ) {
+                    attempt_password_set();
+                }
+
+                my ( $connection_ok, $connection_failure_reason, $connection_failure_message ) = Cpanel::MysqlUtils::Check::check_mysql_connection();
+                my $notify_data = {
+                    'hostname'        => $hostname,
+                    'is_remote_mysql' => $is_remote_mysql,
+                    'dbhost'          => $dbhost,
+                    'dbpassword'      => ( $dbpassword || '' ),
+                    'error'           => $connection_failure_message,
+                    'root_my_cnf'     => '/root/.my.cnf'                # move to Cpanel::ConfigFiles after 11.42 backport
+                };
+                if ( $connection_ok || $connection_failure_reason eq 'cannot_connect' ) {
+                    return $connection_ok ? 0 : 1;
+                }
+
+                # So, there's more than one reason for authentication to fail which attempt_password_reset
+                # will fix -- The most obvious case is access_denied, but you can also have a misconfiguration
+                # regarding the hostname component of the username. In this case, you can additionally see
+                # errors in server handshakes due to the certificate used by the server not matching the hostname
+                # you are using for the connection.
+                elsif ( $connection_failure_reason eq 'access_denied' or $connection_failure_message =~ m/Error in server handshake/ ) {
+                    if ($is_remote_mysql) {
+                        _notify( 'cannot_reset_remote_pass', $notify_data );
+                    }
+                    else {
+                        return attempt_password_reset( $notify_data, $opts{disable_integration_output} );
+                    }
+                }
+                else {
+                    print "[$0] Failed to connect: $connection_failure_message\n";
+                    _notify( 'unknown_error', $notify_data );
+                }
+
+                # If we got here, something has gone wrong, but we're not sure what
+                return 1;
+            }
+        );
+    }
+    catch {
+        print Cpanel::Exception::get_string($_) . "\n";
+        $exit_status = 1;
+    };
+
+    return $exit_status;
+}
+
+sub attempt_password_set {
+    print "No MySQL password set!\n";
+    print "Attempting to set the MySQL root user's password.\n";
+
+    eval {
+        require Cpanel::MysqlUtils::ResetRootPassword;
+        my $newpass = Cpanel::MysqlUtils::ResetRootPassword::get_root_password_that_meets_password_strength_requirements();
+        Cpanel::MysqlUtils::RootPassword::set_mysql_root_password($newpass);
+    };
+    if ($@) {
+        print "There was an error while setting the mysql root password: $@\n";
+        return 0;
+    }
+    return 1;
+}
+
+sub attempt_password_reset {
+    my ( $notify_data, $disable_output ) = @_;
+
+    require Cpanel::MysqlUtils::ResetRootPassword;
+    require Cpanel::MysqlUtils::Integration;
+
+    my ( $newpass, $reset_obj, $reset_ok, $reset_message );
+    try {
+        $newpass   = Cpanel::MysqlUtils::ResetRootPassword::get_root_password_that_meets_password_strength_requirements();
+        $reset_obj = Cpanel::MysqlUtils::ResetRootPassword->new( 'password' => $newpass );
+    }
+    catch {
+        $reset_message = Cpanel::Exception::get_string($_);
+    };
+    if ( !$reset_message ) {
+        ( $reset_ok, $reset_message ) = $reset_obj->reset();
+
+        if ($reset_ok) {
+
+            local $@;
+            eval { Cpanel::MysqlUtils::RootPassword::update_mysql_root_password_in_configuration($newpass) };
+            if ($@) {
+                print "There was an error while updating configuration with the new mysql root password: $@\n";
+            }
+        }
+    }
+    print "$reset_message\n" if $reset_message;
+
+    my ($connect_ok_second_time) = Cpanel::MysqlUtils::Check::check_mysql_connection();
+
+    if ($connect_ok_second_time) {
+        _notify( 'reset_pass_successful', $notify_data );
+        local ( *STDOUT, *STDERR );
+
+        if ($disable_output) {
+            open( \*STDOUT, '>&', \*STDERR ) or warn $!;
+        }
+        Cpanel::MysqlUtils::Integration::update_apps_that_use_mysql_in_background();
+        return 0;
+    }
+    else {
+        $notify_data->{'reset_error'} = $reset_message;
+        _notify( 'reset_pass_failed', $notify_data );
+    }
+
+    return 1;
+}
+
+sub _notify {
+    my ( $action, $data ) = @_;
+
+    require Cpanel::Notify;
+    require Cpanel::IP::Remote;
+    return Cpanel::Notify::notification_class(
+        'class'            => 'Check::MysqlConnection',
+        'application'      => $service,
+        'interval'         => 3600,
+        'status'           => $action,
+        'constructor_args' => [
+            %{$data},
+            'origin'            => $service,
+            'action'            => $action,
+            'source_ip_address' => Cpanel::IP::Remote::get_current_remote_ip(),
+        ],
+    );
+}

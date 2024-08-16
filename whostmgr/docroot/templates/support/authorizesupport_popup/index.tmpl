@@ -1,0 +1,82 @@
+[%
+    USE Whostmgr;
+    USE JSON;
+
+    SET stylesheets = [
+        Whostmgr.find_file_url('/templates/support/authorizesupport_popup/index.min.css')
+    ];
+
+    SET scripts = [
+        Whostmgr.find_file_url('/libraries/jquery/current/jquery.min.js'),
+        Whostmgr.find_file_url('/templates/support/authorizesupport_popup/index.min.js'),
+    ];
+
+    WRAPPER 'master_templates/master.tmpl'
+        skipbreadcrumb = 1,
+        skipsupport    = 1,
+        skipheader     = 1,
+        hide_header    = 1,
+        hide_navigation = 1,
+        hide_license_warnings = 1,
+        scripts        = scripts,
+        stylesheets    = stylesheets,
+        CJT2_EXCLUSIVE = 1,
+        theme          = 'bootstrap';
+%]
+
+<div class="whm-logo">
+    [% Whostmgr.find_file_and_insert('/images/whm-logo.svg') %]
+</div>
+<h1>[% locale.maketext('Support Access Request') %]</h1>
+<hr>
+
+<!-- Initial view -->
+<form id="grant-access-form">
+    <div class="intro-text">
+        <p>[% locale.maketext('[asis,cPanel] Support is requesting temporary access to your server to better assist you with ticket number “[_1]”.', data.ticket_id) %]</p>
+        <p>[% locale.maketext('You can revoke this access at any time with [asis,WHM]’s [asis,Grant cPanel Support Access] interface.') %]</p>
+    </div>
+    <button type="submit" class="btn btn-primary" id="grant-access-button">
+        [% locale.maketext('Grant Access') %]
+    </button>
+</form>
+
+<!-- Progress view -->
+<div id="progress-view" style="display: none;">
+    <div id="grant-progress" class="progress-container">
+        <span class="progress-icon">
+            <span icon-state="default" class="fas fa-2x text-muted fa-check"></span>
+            <span icon-state="run"     class="fas fa-2x text-primary fa-spinner fa-spin"></span>
+            <span icon-state="done"    class="fas fa-2x text-success fa-check"></span>
+            <span icon-state="error"   class="fas fa-2x text-danger fa-times"></span>
+            <span icon-state="unknown" class="fas fa-2x text-info fa-question"></span>
+        </span>
+        <span>[% locale.maketext('Authorizing [asis,cPanel] support to access this server …') %]</span>
+    </div>
+    <div id="ssh-test-progress" class="progress-container">
+        <span class="progress-icon">
+            <span icon-state="default" class="fas fa-2x text-muted fa-check"></span>
+            <span icon-state="run"     class="fas fa-2x text-primary fa-spinner fa-spin"></span>
+            <span icon-state="done"    class="fas fa-2x text-success fa-check"></span>
+            <span icon-state="error"   class="fas fa-2x text-danger fa-times"></span>
+            <span icon-state="unknown" class="fas fa-2x text-info fa-question"></span>
+        </span>
+        <span>[% locale.maketext('Starting [asis,SSH] connection testing …') %]</span>
+    </div>
+    <div id="redirect-progress" class="progress-container">
+        <span class="progress-icon">
+            <span icon-state="default" class="fas fa-2x text-muted fa-check"></span>
+            <span icon-state="run"     class="fas fa-2x text-primary fa-spinner fa-spin"></span>
+            <span icon-state="done"    class="fas fa-2x text-success fa-check"></span>
+            <span icon-state="error"   class="fas fa-2x text-danger fa-times"></span>
+            <span icon-state="unknown" class="fas fa-2x text-info fa-question"></span>
+        </span>
+        <span>[% locale.maketext('Transferring you to the [asis,cPanel Customer Portal] …') %]</span>
+    </div>
+</div>
+
+<script type="text/javascript">
+    var PAGE = [% data.json() %];
+</script>
+
+[% END # WRAPPER %]

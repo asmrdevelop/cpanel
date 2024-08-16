@@ -1,0 +1,41 @@
+=encoding UTF-8
+
+=head1 NAME
+
+bin/ensure_autoenabled_features
+
+=head1 USAGE
+
+This script is more to support auto enabling of features during the initial
+install driven by C</scripts/cpanel_initial_install>. However, it can be run
+via commandline as described below:
+
+    ensure_autoenabled_features [--run | --list]
+
+=head1 REQUIRED ARGUMENTS
+
+The script will not run if it is not passed either C<--run> or C<--list>. These
+two flags are mutually exclusive.
+
+=head1 OPTIONS
+
+=over 4
+
+=item --run
+
+Required argument to enable all qualifying C<Cpanel::Config::ConfigObj::Driver> modules.
+
+=item --list
+
+Makes no changes to the system, but merely
+sends a list of all qualifying C<Cpanel::Config::ConfigObj::Driver> modules
+to C<STDOUT>—i.e., those modules that B<would> be enabled if the C<--run>
+flag were given.
+
+=back
+
+=head1 DESCRIPTION
+
+This iterates over all C<Cpanel::Config::ConfigObj::Driver> modules, and if
+it is set to be auto enabled (C<::META::auto_enable>) and is set to not show up in the
+Feature Showcase (via C<::META::showcase>), then the Driver's C<enable> method is called.

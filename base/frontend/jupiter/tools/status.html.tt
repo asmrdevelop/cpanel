@@ -1,0 +1,94 @@
+[%
+SET server_information = "";
+SET CPANEL.CPVAR.dprefix = "../";
+IF CPANEL.feature('serverstatus');
+    SET server_information = execute("ServerInformation", "get_information");
+END;
+%]
+
+[% WRAPPER '_assets/master.html.tt'
+    page_title = locale.maketext('Server Information')
+-%]
+<div class="body-content">
+
+    <div class="section">
+        <h3>
+            [% locale.maketext("Server Information")  %]
+        </h3>
+        <div id="cPanel_information">
+            [% PROCESS _assets/cpanel_info.html.tt %]
+        </div>
+    </div>
+
+    [% IF !server_information.status %]
+        [% FOREACH error IN server_information.errors %]
+            <div class="alert alert-danger" role="alert">
+                <span class='glyphicon glyphicon-remove-sign' aria-hidden="true"></span>
+                <div class='alert-message'>
+                    <strong class="alert-title">
+                        [% locale.maketext('Error:') %]
+                    </strong>
+                    <span class="alert-body">
+                        <span id="error-[% loop.index() %]">
+                            [% error.html() %]
+                        </span>
+                    </span>
+                </div>
+            </div>
+        [% END %]
+    [% END %]
+    [% IF CPANEL.feature('serverstatus') && server_information.status %]
+    <div id="serviceInfoSection" class="section">
+        <h3>
+            [% locale.maketext("Service Information")  %]
+        </h3>
+        <table id="serviceInfoTable" class="table table-striped sortable">
+            <thead>
+                <tr id="serverstatus_tableheader">
+                   <th>[% locale.maketext("Service") %]</th>
+                   <th>[% locale.maketext("Details") %]</th>
+                   <th>[% locale.maketext("Status") %]</th>
+                </tr>
+            </thead>
+            <tbody>
+            [% IF server_information.data.size() == 0 %]
+                <tr><td colspan="3">[% locale.maketext('No services are available.') %]</td></tr>
+            [% ELSE %]
+                [% FOREACH status IN server_information.data;
+                    name_slug = status.name.slugify() %]
+                    <tr>
+                        <td class="statuscell" id="service-status-name-[% name_slug %]">
+                            [% status.name.html() %]
+                            [% IF status.version.defined %]
+                                ([% status.version.html() %])
+                            [% END %]
+                        </td>
+                        <td class="statuscell" id="service-status-value-[% name_slug %]">[% status.value.html() %] </td>
+                        <td class="statuscell" id="service-status-[% name_slug %]">
+                            [% IF status.status == 1 %]
+                                <img id="service-status-ok-[% name_slug %]"
+                                     title="[% locale.maketext('“[_1]” is ok.', status.name.html()) %]"
+                                     src="/green-status.gif" />
+                            [% ELSIF status.status == 0 %]
+                                <img id="service-status-warn-[% name_slug %]"
+                                     title="[% locale.maketext('“[_1]” is reporting warnings.', status.name.html()) %]"
+                                     src="/yellow-status.gif" />
+                            [% ELSIF status.status == -1 || status.error %]
+                                <img id="service-status-error-[% name_slug %]"
+                                     title="[% locale.maketext('“[_1]” is reporting errors.', status.name.html()) %]"
+                                     src="/red-status.gif" />
+                            [% END %]
+                        </td>
+                    </tr>
+                [% END %]
+            [% END %]
+            </tbody>
+        </table>
+    </div>
+    [% END %]
+
+    [% SET return_link = CPANEL.CPVAR.dprefix _ 'index.html';
+    PROCESS _assets/return_link.html.tt return_location=return_link return_link_text=locale.maketext('Go Back') %]
+</div>
+[% END #wrapper %]
+

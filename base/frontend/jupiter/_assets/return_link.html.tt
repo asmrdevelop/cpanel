@@ -1,0 +1,46 @@
+[%-
+USE Api2;
+SET text_direction = Api2.exec( 'Locale', 'get_html_dir_attr', {} ),
+    isRTL = (text_direction.0.dir == 'rtl') ? 1 : 0,
+    return_link = return_location || CPANEL.CPVAR.dprefix _ 'index.html',
+    return_link_text = return_link_text || locale.maketext('Go Back');
+    id_prefix = id_prefix || '';
+    post = post || 0;
+
+IF id_prefix;
+    SET return_link_id = id_prefix _ 'Return';
+ELSE;
+    SET return_link_id = 'lnkReturn';
+END;
+
+-%]
+
+<div class="return-link">
+    [% IF post %]
+        <form action="[% return_link %]" method="post">
+            [% FOREACH key IN formdata.keys %]
+                <input type='hidden' name='[% key.html() %]' value='[% formdata.$key %]'>
+            [% END %]
+            <button class="btn btn-link">
+                [% IF isRTL %]
+                    <span class="glyphicon glyphicon-circle-arrow-right"></span>
+                [% ELSE %]
+                    <span class="glyphicon glyphicon-circle-arrow-left"></span>
+                [% END %]
+                [% return_link_text %]
+            </button>
+        </form>
+    [% ELSE %]
+        [% IF isRTL %]
+            <a id="[% return_link_id %]" href="[% return_link %]">
+                <span class="glyphicon glyphicon-circle-arrow-right"></span>
+                [% return_link_text %]
+            </a>
+        [% ELSE %]
+            <a id="[% return_link_id %]" href="[% return_link %]">
+                <span class="glyphicon glyphicon-circle-arrow-left"></span>
+                [% return_link_text %]
+            </a>
+        [% END %]
+    [% END %]
+</div>

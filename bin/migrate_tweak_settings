@@ -1,0 +1,200 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - bin/migrate_tweak_settings              Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package bin::migrate_tweak_settings;
+
+use strict;
+use warnings;
+
+use Cpanel::AdvConfig::dovecot    ();
+use Cpanel::ChildErrorStringifier ();
+use Cpanel::Config::FlushConfig   ();
+use Cpanel::Config::LoadConfig    ();
+use Cpanel::DataStore             ();
+use Cpanel::FileUtils::TouchFile  ();
+use Whostmgr::Mail::RBL           ();
+
+__PACKAGE__->script() unless caller();
+
+sub script {    ## no critic qw(Subroutines::ProhibitExcessComplexity)
+
+    # TODO: This modulino needs to have its core functionality moved to
+    # a module and have its test coverage improved.  Once done the
+    # install/* scripts should call the module directly instead of
+    # loading this modulino.
+    my $eximconf = Cpanel::Config::LoadConfig::loadConfig( '/etc/exim.conf.localopts', undef, '=', undef, undef, 1 );    # Allow undefined values
+    my $eximchanged;
+
+    if ( $eximconf->{'quotadiscard'} ) {
+        my $dovecot_conf_hr = Cpanel::AdvConfig::dovecot::get_config();
+        $dovecot_conf_hr->{'incoming_reached_quota'} = 'defer';
+        Cpanel::AdvConfig::dovecot::save_config();
+
+        system('/usr/local/cpanel/scripts/builddovecotconf') and do {
+            warn Cpanel::ChildErrorStringifier->new($?)->autopsy();
+        };
+
+        require Cpanel::ServerTasks;
+        Cpanel::ServerTasks::schedule_task( ['CpServicesTasks'], 1, "restartsrv dovecot" );
+
+        delete $eximconf->{'quotadiscard'};
+        $eximchanged = 1;
+    }
+
+    if ( ( $eximconf->{'acl_outgoing_spam_scan_over_int'} || $eximconf->{'acl_outgoing_spam_scan'} )
+        && !-e '/var/cpanel/outgoing_spam_scan' ) {
+        Cpanel::FileUtils::TouchFile::touchfile('/var/cpanel/outgoing_spam_scan');
+    }
+
+    if ( !$eximconf->{'filter_fail_spam_score_over_int'} ) {
+        my @fail_spam_score_over;
+
+        foreach my $key ( keys %{$eximconf} ) {
+            if ( $key =~ m{\Afilter_fail_spam_score_over_(\d+)\z} ) {
+                if ( $eximconf->{$key} ) {
+                    push @fail_spam_score_over, $1;
+                }
+                delete $eximconf->{$key};
+            }
+        }
+
+        my $min_fail_spam_score = ( sort @fail_spam_score_over )[0] || undef;
+
+        if ( defined $min_fail_spam_score ) {
+            $eximconf->{'filter_fail_spam_score_over_int'} = $min_fail_spam_score;
+        }
+        else {
+            $eximconf->{'filter_fail_spam_score_over_int'} = undef;
+        }
+
+        $eximchanged = 1;
+    }
+
+    if ( !$eximconf->{'acl_ratelimit_spam_score_over_int'} ) {
+        my @fail_spam_score_over;
+
+        foreach my $key ( keys %{$eximconf} ) {
+            if ( $key =~ m{\Aacl_ratelimit_spam_score_over_(\d+)\z} ) {
+                if ( $eximconf->{$key} ) {
+                    push @fail_spam_score_over, $1;
+                }
+                delete $eximconf->{$key};
+            }
+        }
+
+        my $min_fail_spam_score = ( sort @fail_spam_score_over )[0] || undef;
+        if ( defined $min_fail_spam_score ) {
+            $eximconf->{'acl_ratelimit_spam_score_over_int'} = $min_fail_spam_score;
+        }
+        else {
+            $eximconf->{'acl_ratelimit_spam_score_over_int'} = undef;
+        }
+
+        $eximchanged = 1;
+    }
+
+    if ( !$eximconf->{'acl_deny_spam_score_over_int'} ) {
+        my @fail_spam_score_over;
+
+        foreach my $key ( keys %{$eximconf} ) {
+            if ( $key =~ m{\Aacl_deny_spam_score_over_(\d+)\z} ) {
+                if ( $eximconf->{$key} ) {
+                    push @fail_spam_score_over, $1;
+                }
+                delete $eximconf->{$key};
+            }
+        }
+
+        my $min_fail_spam_score = ( sort @fail_spam_score_over )[0] || undef;
+        if ( defined $min_fail_spam_score ) {
+            $eximconf->{'acl_deny_spam_score_over_int'} = $min_fail_spam_score;
+        }
+        else {
+            $eximconf->{'acl_deny_spam_score_over_int'} = undef;
+        }
+
+        $eximchanged = 1;
+
+    }
+
+    if ( defined $eximconf->{'systemfilter'} && $eximconf->{'systemfilter'} eq q{} ) {
+        $eximconf->{'systemfilter'} = undef;
+        $eximchanged = 1;
+    }
+
+    if ( exists $eximconf->{'acl_spamhaus_spamcop_rbl'} ) {
+        if ( $eximconf->{'acl_spamhaus_spamcop_rbl'} ) {
+            @{$eximconf}{qw(acl_spamcop_rbl acl_spamhaus_rbl)} = ( 1, 1 );
+        }
+        delete $eximconf->{'acl_spamhaus_spamcop_rbl'};
+        $eximchanged = 1;
+    }
+
+    if ($eximchanged) {
+        Cpanel::Config::FlushConfig::flushConfig( '/etc/exim.conf.localopts', $eximconf, '=' );
+    }
+
+    #----------------------------------------------------------------------
+    if ( opendir my $dh, '/usr/local/cpanel/Whostmgr/TweakSettings/Mail' ) {
+        require Whostmgr::TweakSettings;
+
+        Whostmgr::TweakSettings::load_module('Mail');
+
+        $Whostmgr::TweakSettings::Mail::Conf{'RBLS'} ||= {};
+
+        foreach my $filename ( readdir $dh ) {
+            if ( $filename =~ m{\Arbl_.*\.pm\z} ) {
+                require "/usr/local/cpanel/Whostmgr/TweakSettings/Mail/$filename";    ## no critic qw(Modules::RequireBarewordIncludes)
+            }
+        }
+
+        my $rbls_ref = $Whostmgr::TweakSettings::Mail::Conf{'RBLS'};
+        my @rbl_keys = grep { m{\Aacl_} } keys %{$rbls_ref};
+
+        if ( !-d $Whostmgr::Mail::RBL::INFO_DIR ) {
+            mkdir $Whostmgr::Mail::RBL::INFO_DIR, 0700;
+        }
+
+        foreach my $rbl_key (@rbl_keys) {
+            my $safename = $rbl_key;
+            $safename =~ s{\Aacl_}{};
+            $safename =~ s{_rbl\z}{};
+
+            my $name = $rbls_ref->{$rbl_key}->{'name'};
+            $name =~ s{\A\s*.*\s*:\s*}{};
+
+            $rbls_ref->{$rbl_key}->{'help'} =~ m{href=['"]([^'"]+)};
+            my $url = $1;
+
+            my @dnslists;
+            if (
+                open my $exim_rbl_fh, '<',
+                "$Whostmgr::Mail::RBL::ACLS_DIR/${safename}_rbl"
+            ) {
+                local $/;
+                my $rbl_text = readline $exim_rbl_fh;
+                close $exim_rbl_fh;
+
+                $rbl_text =~ m{dnslists\s+=\s+([^\n]+)}m;
+                my $dnslists_joined = $1;
+                @dnslists = split m{\s*:\s*}, $dnslists_joined;
+            }
+
+            Cpanel::DataStore::store_ref(
+                "$Whostmgr::Mail::RBL::INFO_DIR/${safename}.yaml",
+                {
+                    'name'     => $name,
+                    'url'      => $url,
+                    'dnslists' => \@dnslists,
+                },
+            );
+        }
+
+        close $dh;
+    }
+    return;
+}

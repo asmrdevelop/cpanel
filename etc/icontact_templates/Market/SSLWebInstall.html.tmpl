@@ -1,0 +1,100 @@
+[%#
+Variables passed in:
+
+certificate     - instance of Cpanel::SSL::Objects::Certificate
+
+vhost_name      - the name of the vhost onto which the SSL cert is installed
+
+vhost_domains   - the (sorted) list of domains that point to the vhost
+
+For more information about how to customize notification templates, read our documentation at https://go.cpanel.net/notificationtemplates
+
+-%]
+
+[%
+    PROCESS "include/colors.tmpl";
+    PROCESS "include/styles.tmpl";
+    PROCESS 'include/zebra_table.tmpl';
+
+    PROCESS 'include/code_block.tmpl';
+
+    WRAPPER 'wrapper/main.html.tmpl';
+
+
+    NOTICE.email_reason =  CPANEL.locale.maketext('[_1]: [asis,SSL] certificate installed!', NOTICE.vhost_name);
+
+%]
+
+<p>
+    [% CPANEL.locale.maketext('The system has retrieved and installed an [output,abbr,SSL,Secure Sockets Layer] certificate that you ordered from “[_1]” in order “[_2]”, order item “[_3]”.', NOTICE.provider_display_name.html(), NOTICE.order_id.html(), NOTICE.order_item_id.html()) -%]
+    [% CPANEL.locale.maketext('The certificate is now active on the website for the following domain names:') %]
+</p>
+
+<ul>
+    [% FOR d = NOTICE.vhost_domains -%]
+        <li>
+            <a href="https://[% d.name.html() %]">[% d.name.html() %]</a>
+            [% IF !d.covered %]
+                [% not_every_domain_is_covered = 1; -%]
+                &#x26d4;
+            [% END %]
+        </li>
+    [% END -%]
+</ul>
+
+[% IF not_every_domain_is_covered -%]
+<p>
+[% CPANEL.locale.maketext('NOTE: “[_1]” marks domains that the newly-installed certificate does not include or secure. Visitors who access these domain names will see web browser security warnings.', '&#x26d4;') -%]
+</p>
+[% END -%]
+
+[% CPANEL.locale.maketext('The certificate has the following properties:') -%]
+
+[% MACRO distinguished_name BLOCK -%]
+    <dl class="distinguished-name" style="margin-bottom: 0">
+        [% FOR part = parts -%]
+            <dt>[% part.0.html() -%]</dt>
+            <dd>[% part.1.html() -%]</dd>
+        [% END -%]
+    </dl>[% END -%]
+
+[% MACRO domains_list BLOCK -%]
+    <ul class="domains-list" style="margin-bottom: 0">
+        [% FOR d = domains -%]
+            <li>[% d.html() -%]</li>
+        [% END -%]
+    </ul>[% END -%]
+
+[%
+zebra_table(
+    boldfirst => 1,
+    items => [
+        [
+            CPANEL.locale.maketext('Product Name:'),
+            NOTICE.product_name.html(),
+        ],
+        [
+            CPANEL.locale.maketext('Expiration:'),
+            CPANEL.locale.datetime( 1 + NOTICE.certificate.not_after(), 'datetime_format_full' ),
+        ],
+        [
+            CPANEL.locale.maketext('Domain Names:'),
+            domains_list( domains => NOTICE.certificate.domains() ),
+        ],
+        [
+            CPANEL.locale.maketext('Subject:'),
+            distinguished_name( parts => NOTICE.certificate.subject_list() ),
+        ],
+        [
+            CPANEL.locale.maketext('Issuer:'),
+            distinguished_name( parts => NOTICE.certificate.issuer_list() ),
+        ],
+    ],
+);
+-%]
+
+<p>[% CPANEL.locale.maketext('The certificate’s [output,abbr,PEM,Privacy-Enhanced Mail] representation is included below:') -%]
+<br>[% code_block( formatted_code => '<pre>' _ NOTICE.certificate.text() _ '</pre>' ) -%]<br>
+</p>
+
+[% END #wrapper %]

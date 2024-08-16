@@ -1,0 +1,17 @@
+[Unit]
+Description=cPanel Greylisting Daemon
+After=cpanel.service
+ConditionPathExists=!/var/cpanel/dnsonly
+
+[Service]
+Type=notify
+NotifyAccess=main
+PIDFile=/var/run/cpgreylistd.pid
+ExecStart=/usr/local/cpanel/scripts/restartsrv_cpgreylistd --notconfigured-ok --systemd-service=cpgreylistd
+ExecStop=/usr/local/cpanel/scripts/restartsrv_cpgreylistd --stop --notconfigured-ok --systemd-service=cpgreylistd
+ExecReload=/usr/local/cpanel/scripts/restartsrv_cpgreylistd --restart --notconfigured-ok --systemd-service=cpgreylistd
+KillMode=process
+TimeoutStopSec=10
+
+[Install]
+WantedBy=multi-user.target

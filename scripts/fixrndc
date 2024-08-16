@@ -1,0 +1,443 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/fixrndc                         Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+######[ This script will rebuild the rndc.key and rndc.conf files unless ]######
+######[ an existing, working config is found                             ]######
+
+use strict;
+use Cpanel::Config::LoadCpConf   ();
+use Cpanel::StringFunc::Count    ();
+use Cpanel::CommentKiller        ();
+use Cpanel::SafetyBits           ();
+use Cpanel::PwCache              ();
+use Cpanel::SafeRun::Errors      ();
+use Cpanel::SafeRun::Simple      ();
+use Cpanel::FileUtils::TouchFile ();
+use Cpanel::FindBin              ();
+
+use Getopt::Long ();
+
+umask 0022;
+
+######[ declare globals ]##########################################################################
+
+# default location of named.conf
+my $def_namedconf = '/etc/named.conf';
+
+my $needrndckey = 0;
+
+my $options = {};
+
+Getopt::Long::Configure("bundling");
+Getopt::Long::GetOptions(
+    'force|f'   => \$options->{force},
+    'verbose|v' => \$options->{verbose},
+
+    # If -s is passed as an arg, it's saying that fixrndc was started by rebuilddnsconfig and should not reinvoke its parent.
+    'rebuilddnsconfig|s' => \$options->{rebuilddnsconfig},
+    'html|h'             => \$options->{html},
+);
+
+# Verbose variable, if set to "1" actions are reported to STDOUT.
+my $cpverbose                    = $options->{verbose}          || 0;
+my $called_from_rebuilddnsconfig = $options->{rebuilddnsconfig} || 0;
+
+if ( !-e $def_namedconf || -z _ ) {
+    if ( !$called_from_rebuilddnsconfig ) {
+        print "The named configuration file is missing, running /usr/local/cpanel/scripts/rebuilddnsconfig to repair it.\n" if $cpverbose;
+        my $opts = $cpverbose ? '-fv' : '-f';
+        exec( '/usr/local/cpanel/scripts/rebuilddnsconfig', $opts );
+        exit 0;    #unreached
+    }
+    else {
+        print "WARNING: $def_namedconf appears to be invalid but the problem could not be corrected automatically!\n";
+        exit 1;
+    }
+}
+
+my $local_nameserver_type = Cpanel::Config::LoadCpConf::loadcpconf_not_copy()->{'local_nameserver_type'};
+if ( $local_nameserver_type ne 'bind' ) {
+    print "$local_nameserver_type is configured as the local nameserver.  RNDC key is not in use.\n" if $cpverbose;
+    exit;
+}
+
+require Cpanel::Services::Enabled;
+unless ( Cpanel::Services::Enabled::is_enabled('dns') ) {
+    print "Named is currently disabled.\n" if $cpverbose;
+    exit;
+}
+
+require Cpanel::DNSLib;
+my $dnslib = Cpanel::DNSLib->new( 'force' => ( $options->{'force'} ? 1 : 0 ) );
+
+######[ try to ensure named is actually running, fixrndc will always fail if not.                           ]######
+######[ try starting named, but always allow it to continue and try to force new keys even if we can't test ]######
+######[ this all does basically the same thing, but gives a little more information about problem so techs  ]######
+######[ can know where to start ]##################################################################################
+
+my @html_args = $options->{html} ? ('--html') : ();
+
+my $check_output = Cpanel::SafeRun::Errors::saferunallerrors( '/usr/local/cpanel/scripts/restartsrv_named', '--check', @html_args );
+my $status_code  = $?;
+
+# Try to restart
+if ( $status_code != 0 ) {
+    print "Named looks down but should be up.  Attempting restart...\n" if $cpverbose;
+    $check_output = Cpanel::SafeRun::Errors::saferunallerrors( '/usr/local/cpanel/scripts/restartsrv_named', @html_args );
+    print $check_output if $cpverbose;
+    for ( 1 .. 10 ) {
+        $check_output = Cpanel::SafeRun::Errors::saferunallerrors( '/usr/local/cpanel/scripts/restartsrv_named', '--check', @html_args );
+        $status_code  = $?;
+        last                                                   if $status_code == 0;
+        print "Waiting 5 seconds for named to start ($_/10)\n" if $cpverbose;
+        sleep(5);
+    }
+    if ( $status_code != 0 ) {
+        print "Named could not be restarted, any obvious config errors should show up below this line. \n";
+        my ( $ret_status, $status_info ) = $dnslib->checknamedconf($def_namedconf);
+        my $found_error = 0;
+        if ( $ret_status == 1 || $status_info =~ /rndc\.key/ ) {
+
+            #  No error was detected, needs manual inspection
+            my $rndckey_file  = $def_namedconf;
+            my $rndcconf_file = $def_namedconf;
+            $rndckey_file  =~ s/\/named\.conf$/\/rndc.key/;
+            $rndcconf_file =~ s/\/named\.conf$/\/rndc.conf/;
+            foreach my $key_loc_file ( $rndckey_file, $def_namedconf ) {
+                if ( -s $key_loc_file == 0 ) {
+                    print "Detected empty file at $key_loc_file \n";
+                    $needrndckey = 1;
+                    $found_error = 1;
+                    last;
+                }
+                if ( open( my $keyf, '<', $key_loc_file ) ) {
+                    while ( my $line = readline($keyf) ) {
+                        if ( $line =~ m/secret\s+\"(.*)\"/i ) {
+                            my $base64ok = is_base64($1);
+                            if ( $base64ok != 1 ) {
+                                print "There appears to be a problem with the base64 encoding of the rndckey in $key_loc_file .\n";
+                                print "Will try to rebuild those files, \"connection refused\" errors are to be expected. \n";
+                                $needrndckey = 1;
+                                $found_error = 1;
+                                last;
+                            }
+                        }
+                    }
+                    close($keyf);
+                }
+                else {
+                    print "Could not open $key_loc_file : $! \n";
+                    $needrndckey = 1;
+                }
+            }
+            if ( $found_error != 1 ) {
+                print "No critical problems found, will attempt to regenerate keys regardless.\n";
+                $needrndckey = 1;
+            }
+        }
+        elsif ( !$called_from_rebuilddnsconfig ) {
+            print "The named configuration appears to have errors:\n\t$status_info\n\nRunning /usr/local/cpanel/scripts/rebuilddnsconfig to repair it..\n";
+
+            # some config problem..  let's force a rebuild of named.conf and let it try again
+            my $opts = $cpverbose ? '-fv' : '-f';
+            exec( '/usr/local/cpanel/scripts/rebuilddnsconfig', $opts );
+            exit 0;    # unreached
+        }
+        else {
+            print "WARNING: $def_namedconf appears to contain errors which could not be corrected automatically!\n";
+            print $status_info . "\n";
+            print "Please correct these errors manually and rerun /usr/local/cpanel/scripts/fixrndc\n";
+            exit 1;
+        }
+    }
+}
+
+######[ fix rndc info if needed ]##################################################################
+
+# check if `rndc status` reports ok, fix if not or if -f flag is given to force it
+if ( !defined( $options->{'force'} ) ) {
+    if ($cpverbose) {
+        print "Checking rndc by querying status\n";
+    }
+
+    # If "rndc status" does not report a failed connection, exit
+    if ( $dnslib->checkrndc() ) {
+        if ($cpverbose) {
+            print '!' x 50 . "\n";
+            print "rndc reported success. No changes will be made.\nUse the \"-f\" flag to force a check.\n";
+            print '!' x 50 . "\n";
+        }
+        exit;
+    }
+}
+
+my $removenamedconfkey      = 0;
+my $neednamedconfcontrols   = 0;
+my $removenamedconfcontrols = 0;
+
+# rndc variables from rndc.conf
+my ( $r_secret, $r_keyname );
+my $rndcconf    = $dnslib->find_rndcconf();
+my $namedconf   = $dnslib->{'namedconf'};
+my $rndckeyfile = $dnslib->find_rndckey();
+my $chrootdir   = $dnslib->{'data'}{'chrootdir'};
+my $zonedir     = $dnslib->{'data'}{'zonefiledir'};
+my $binduser    = $dnslib->{'data'}{'binduser'};
+my $bindgrp     = $dnslib->{'data'}{'bindgroup'};
+my $binduid     = ( Cpanel::PwCache::getpwnam_noshadow($binduser) )[2];
+my $bindgid     = ( getgrnam($bindgrp) )[2];
+$dnslib->{'data'}{'cpverbose'} = 1;
+
+if ($zonedir) {
+    if ( !-e $zonedir . '/named.ca' ) {
+        system 'cp', '-fv', '/usr/local/cpanel/etc/named.ca', $zonedir . '/named.ca';
+        Cpanel::SafetyBits::safe_chown( $binduser, $bindgrp, $zonedir . '/named.ca' );
+        Cpanel::SafetyBits::safe_chmod( oct('0644'), $binduser, $zonedir . '/named.ca' );
+    }
+}
+
+# rndc variables from named.conf
+my $key      = 0;
+my $controls = 0;
+my ( $keykeyname, $keysecret, $inet, $allow, $controlskeyname, $rndc_include );
+my ( $confstatus, $confresult ) = $dnslib->checknamedconf($namedconf);
+
+######[ bail out if named.conf is currently fubar ]################################################
+
+# Only bypass this check if there's only one error line and it matches the
+# regex.
+if ( !$confstatus && $confresult !~ /^.*rndc[.-]key.*$/ ) {
+    print <<"EOM";
+
+!! fixrndc requires a syntactically correct $namedconf.
+!! No changes were made to $namedconf. Problem was:
+!! $confresult
+
+EOM
+    exit();
+}
+
+######[ Make sure chroot directory is created ]####################################################
+
+if ( $chrootdir ne '' ) {
+    print "Setting up chroot environment in $chrootdir\n" if $cpverbose;
+    $dnslib->setupbindchroot();
+}
+
+######[ Check rndc.conf for necessary settings ]###################################################
+
+if ($rndckeyfile) {
+    ( $r_secret, $r_keyname ) = $dnslib->loadrndckey();
+    if (   $r_secret eq ''
+        || $r_keyname eq '' ) {
+        $needrndckey = 1;
+    }
+}
+else {
+    $needrndckey = 1;
+}
+
+#my $namedconf = $def_namedconf;
+
+######[ Cannot proceed if named.conf is not located at this point ]################################
+
+if ( !-e $namedconf ) {
+    die "named.conf not found, exiting";
+}
+
+######[ Check in existing named.conf to rcs ]######################################################
+
+print "Checking in $namedconf to rcs system\n" if $cpverbose;
+
+######[ If rndc.key needs to be generated, remove settings from named.conf ]#######################
+
+if ($needrndckey) {
+    print "Need to create rndc.conf\n" if $cpverbose;
+
+    ( $key, $keykeyname, $keysecret, $controls, $inet, $allow, $controlskeyname, $rndc_include ) = $dnslib->getrndcsettings($rndckeyfile);
+
+    # include line may already exist
+    $removenamedconfkey = 1 unless $rndc_include;
+
+    # check for broken control section
+    if ( $controlskeyname ne 'rndc-key' || $inet ne '127.0.0.1' || $allow ne 'localhost' ) {
+        $removenamedconfcontrols = 1;
+        $neednamedconfcontrols   = 1;
+    }
+}
+else {
+
+    # Make sure named.conf rndc settings match
+    ( $key, $keykeyname, $keysecret, $controls, $inet, $allow, $controlskeyname, $rndc_include ) = $dnslib->getrndcsettings($rndckeyfile);
+
+    if ( $keykeyname && $keysecret ) {
+
+        # if keyname in rndc.conf does not match keyname in named.conf,
+        # redo key clause in named.conf
+        if ( $keykeyname ne $r_keyname || $keysecret ne $r_secret ) {
+            $removenamedconfkey = 1;
+        }
+    }
+    elsif ( !$rndc_include ) {
+        $removenamedconfkey = 1;
+    }
+
+    # Controls section is needed by default
+    if ( $controlskeyname ne $r_keyname ) {
+        $removenamedconfcontrols = 1;
+        $neednamedconfcontrols   = 1;
+        if ( $controlskeyname eq '' ) {
+            print "Controls section not found, adding ...\n" if $cpverbose;
+        }
+        else {
+            print "Controls keyname does not match rndc.conf keyname\n" if $cpverbose;
+        }
+    }
+}
+
+######[ Create rndc.key if needed ]###############################################################
+
+if ($needrndckey) {
+    print "Creating rndc.conf\n";
+
+    my $named = Cpanel::FindBin::findbin('named');
+    unless ($named) {
+        die "named not located on system, please check the Bind installation";
+    }
+
+    my $rndcconfgen = $dnslib->find_rndcconfgen();
+    if ( $rndcconfgen eq '' ) {
+        die "rndc-confgen not located on system, please check the Bind installation";
+    }
+
+    my @rndc_confgen_args = (
+        '-a',
+        '-c', $rndckeyfile,
+        '-k', 'rndc-key',
+        '-r', '/dev/urandom',
+    );
+
+    # Bind < 9.10 (CentOS 6) does not support alternate hashing functions for the rndc key.
+
+    if ( Cpanel::SafeRun::Simple::saferun( $named, "-v" ) =~ /^BIND\s(\d+)\.(\d+)/ ) {
+        if ( $1 >= 9 && $2 >= 10 ) {
+            push @rndc_confgen_args, ( '-A', 'hmac-sha256' );
+        }
+    }
+
+    Cpanel::SafeRun::Errors::saferunallerrors( $rndcconfgen, @rndc_confgen_args );
+    Cpanel::SafetyBits::safe_chown( $binduser, $bindgrp, $rndckeyfile );
+    Cpanel::SafetyBits::safe_chmod( oct('0660'), $binduser, $rndckeyfile );
+    ( $r_secret, $r_keyname ) = $dnslib->loadrndckey();
+}
+
+######[ Remove rndc.conf if needed ]################################################################
+
+unlink $rndcconf if length $rndcconf && -f $rndcconf;
+
+if ( $removenamedconfkey || $neednamedconfcontrols || $removenamedconfcontrols ) {
+
+    # open our tmp file to populate with rndc key controls and named.conf
+
+    open( NDF, ">", $namedconf . '.fixrndc' );
+    Cpanel::SafetyBits::safe_chown( $binduser, $bindgrp, "$namedconf.fixrndc" );
+
+    if ($removenamedconfkey) {
+        print "Including rndc key file to named.conf\n";
+        print NDF "include \"$rndckeyfile\"\;\n";
+    }
+
+    if ($neednamedconfcontrols) {
+        print "Adding controls clause\n";
+        print NDF "\ncontrols {\n";
+        print NDF "\tinet 127.0.0.1 allow { localhost; } keys { \"$r_keyname\"\; }\;\n";
+        print NDF "}\;\n\n";
+    }
+
+######[ append entire named.conf to tmp file ]#####################################################
+
+    open( my $cur_ndc, '<', $namedconf );
+    my $in_removed_section = 0;
+    my $numbrace           = 0;
+    my $commentkiller      = Cpanel::CommentKiller->new;
+    while ( readline($cur_ndc) ) {
+        if ( $removenamedconfcontrols || $removenamedconfkey ) {
+
+            # Remove broken controls or keys sections if necessary
+            my $parsed = $commentkiller->parse($_) or next;
+
+            if ($in_removed_section) {
+                $numbrace += Cpanel::StringFunc::Count::get_curly_brace_count($parsed);
+                if ( $numbrace <= 0 ) {
+                    $in_removed_section = 0;
+                }
+                next;
+            }
+            elsif ( $numbrace == 0 && ( ( $removenamedconfcontrols && $parsed =~ /^\s*controls/ ) || ( $removenamedconfkey && $parsed =~ /^\s*key/ ) ) ) {
+                $numbrace += Cpanel::StringFunc::Count::get_curly_brace_count($parsed);
+                $in_removed_section = 1;
+                next;
+            }
+            $numbrace += Cpanel::StringFunc::Count::get_curly_brace_count($parsed);
+        }
+        print NDF;
+    }
+    close($cur_ndc);
+    close(NDF);
+
+    if ( -e $namedconf . '.cache' ) {
+        unlink( $namedconf . '.cache' );
+        unlink( $namedconf . '.zonedir.cache' );
+    }
+
+######[ move the fixrndc tmp file into place now that it is complete (once verified as ok) ]#######
+
+    ( $confstatus, $confresult ) = $dnslib->checknamedconf( $namedconf . '.fixrndc' );
+    if ($confstatus) {
+        rename( $namedconf . '.fixrndc', $namedconf ) || print "Failed to copy $namedconf . '.fixrndc' to $namedconf : $!\n";
+    }
+    else {
+        print "New named.conf file does not pass syntax check.  Leaving old file in place.\n" if $cpverbose;
+    }
+}
+######[ check rndc status again, restart named if needed ]#########################################
+
+if ( $needrndckey || !$dnslib->checkrndc() ) {
+    print "Restarting named\n";
+    system( '/usr/local/cpanel/scripts/restartsrv_named', @html_args );
+
+    my $ok;
+    my $suspend = '/var/run/chkservd.suspend';
+    my $exists  = -e $suspend;
+
+    # Suspend chkservd temporarily in case this takes longer than 5 minutes so
+    # we don't end up in a restart-restart loop.
+    Cpanel::FileUtils::TouchFile::touchfile($suspend);
+    for ( 1 .. 300 ) {
+        sleep(2);
+        $ok = $dnslib->checkrndc();
+        last if $ok;
+    }
+    unlink $suspend unless $exists;
+    if ( !$ok ) {
+        print "/usr/local/cpanel/scripts/fixrndc failed to fix the rndc key (or named is otherwise broken), please investigate manually\n";
+        exit 1;
+    }
+}
+print "The rndc key has been fixed successfully!\n" if $cpverbose;
+exit;
+
+sub is_base64 {
+    my $string = shift;
+
+    # Bail out if string length isn't in mutiples of 4 ...
+    return if length($string) % 4;
+
+    # Or if the string contains any unpermitted characters ...
+    return if $string !~ /^[=\+\/a-z0-9]+$/i;
+    return 1;
+}

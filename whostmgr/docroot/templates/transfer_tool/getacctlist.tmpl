@@ -1,0 +1,385 @@
+[%
+# cpanel - whostmgr/docroot/templates/transfer_tool/getacctlist.tmpl
+#                                                  Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+    USE JSON;
+    USE Whostmgr;
+    USE CPUsername;
+    USE CpanelDB;
+    USE NVData;
+
+    SET locale_is_rtl = 0;
+
+    WRAPPER 'master_templates/master.tmpl'
+        header = data.header,
+        breadcrumburl = '/scripts5/account_copy_input',
+        stylesheets = [
+            '/css/whm_dynamic_notices.css',
+            Whostmgr.find_file_url('/libraries/chosen/1.5.1/chosen.min.css'),
+            Whostmgr.find_file_url('/templates/transfer_tool/getacctlist.min.css'),
+        ],
+        scripts = [],
+        theme = 'bootstrap';
+
+    PROCESS '_ajaxapp.tmpl';
+
+    SET MAJOR_VERSIONS_MATCH = 1;
+    IF data.remote.major_version && data.remote.major_version != data.local.major_version;
+        MAJOR_VERSIONS_MATCH = 0;
+    END;
+
+    SET ROUNDCUBE_DBTYPES_MATCH = 1;
+    IF data.remote.roundcube_dbtype && data.remote.roundcube_dbtype != data.local.roundcube_dbtype;
+        ROUNDCUBE_DBTYPES_MATCH = 0;
+    END;
+-%]
+
+<div id="content" ng-controller="MainController as main" ng-cloak>
+    <div id="callback_block"></div>
+    <section class="callout callout-[%- MAJOR_VERSIONS_MATCH ? "info" : "warning" -%]">
+        <div class="limit-info">
+            <p>
+              [% locale.maketext('Source: “[output,strong,_1]” version “[output,strong,_2]” …',  '{{ main.PAGE.remote.host }}', '{{main.PAGE.remote.display_version}}' ) %]
+            </p>
+            <p>
+              [% locale.maketext('Target: “[output,strong,_1]” version “[output,strong,_2]” …', '{{ main.PAGE.local.host }}', '{{main.PAGE.local.display_version}}' ) %]
+            </p>
+            [% IF !MAJOR_VERSIONS_MATCH %]
+              <p>
+                [% locale.maketext('The source server is not running the same major version as the target server.'); %]
+                [% locale.maketext('[asis,cPanel] highly recommends that the source server runs the same major version for at least 24 hours to ensure any data conversions have completed.') %]
+              </p>
+            [% END %]
+        </div>
+        <button class="btn btn-primary" id="reAnalyzeRemoteButton" type="button" title="Reanalyze {{main.PAGE.remote.host}}">
+            <span class="glyphicon glyphicon-download-alt"></span>
+            <span>[% locale.maketext("Rescan Source Server") %]</span>
+        </button>
+    </section>
+
+    [% IF data.hostname_err -%]
+        <section id="hostnameWarning" class="callout callout-warning hostname-warning">
+            <div id="hostnameWarningHeader" class="callout-heading">[% locale.maketext('[output,strong,Warning]: Hostname Lookup Error') %]</div>
+
+            <div>[% locale.maketext('The system failed to determine if its hostname ([_1]) resolves locally.', data.hostname.html()) %]</div>
+
+            <div>[% data.hostname_err.html() %]</div>
+        </section>
+    [% ELSIF !data.hostname_resolves -%]
+        <section id="hostnameWarning" class="callout callout-warning hostname-warning">
+            <div id="hostnameWarningHeader" class="callout-heading">[% locale.maketext('[output,strong,Warning]: Hostname Resolution Mismatch') %]</div>
+
+            <div>
+                [% locale.maketext('The system’s hostname ([_1]) does not resolve locally. Because of this, [output,url,_2,Live Transfers,target,_blank] are disabled.', data.hostname.html(), 'https://go.cpanel.net/livetransfers') %]
+            </div>
+            <div>
+                [% locale.maketext('Run the “[output,url,_1,_2,target,_blank]” script to assign your server an automatically-resolving hostname.', 'https://go.cpanel.net/cprapid', '/scripts/ensure_hostname_resolves') -%]
+            </div>
+        </section>
+    [% END -%]
+
+    <div class="row" ng-if="!main.PAGE.local.available_ips.length">
+        <div class="col-sm-6">
+            <div class="alert alert-warning">
+                <span class="glyphicon glyphicon-exclamation-sign"></span>
+                <div class="alert-message">
+                    [% locale.maketext('[output,strong,Warning]: You have no available [asis,IP] addresses on your local machine.') %]
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <uib-tabset class="server-configuration-tabset">
+        <uib-tab select="setAcctTabActive(true)">
+            <uib-tab-heading>
+                [% locale.maketext('Accounts') %]
+                <span ng-if="main.selectedAccounts.length" class="label label-info" ng-bind="main.selectedAccounts.length"></span>
+            </uib-tab-heading>
+            <div class="tab-content">
+                <section class="section-body">
+                    [% PROCESS "transfer_tool/_select_accounts.tmpl" %]
+                </section>
+            </div>
+        </uib-tab>
+        <uib-tab select="setAcctTabActive(false)">
+            <uib-tab-heading>
+                [% locale.maketext('Packages') %]
+                <span ng-if="main.selectedPackages.length" class="label label-info" ng-bind="main.selectedPackages.length"></span>
+            </uib-tab-heading>
+            <div class="tab-content">
+                <section class="section-body">
+                    [% PROCESS "transfer_tool/_select_packages.tmpl" %]
+                </section>
+            </div>
+        </uib-tab>
+        <uib-tab select="setAcctTabActive(false)">
+            <uib-tab-heading>
+                [% locale.maketext('Service Configurations') %]
+                <span ng-if="main.selectedConfigurations.length" class="label label-info" ng-bind="main.selectedConfigurations.length"></span>
+            </uib-tab-heading>
+            <div class="tab-content">
+                <section class="section-body">
+                    [% PROCESS "transfer_tool/_select_configurations.tmpl" %]
+                </section>
+            </div>
+        </uib-tab>
+    </uib-tabset>
+
+
+    <div class="row" ng-if="main.SERVER_MAX_USERS && (newSelectedUserList = (main.selectedAccounts | filter:main.overwriteIsDefault) ).length > main.REMAINING_ACCOUNT_SLOTS">
+        <div class="col-sm-12">
+            <div class="alert alert-danger">
+                <span class="glyphicon glyphicon-remove-sign"></span>
+                <div class="alert-message">
+                    <p>
+                        [% locale.maketext('[output,strong,Error]:') %]
+                        {{ main.licenseOverloadMessage() }}
+                    </p>
+                    <p ng-if="main.REMAINING_ACCOUNT_SLOTS > 0">{{ main.licenseOverloadCancelMessage(newSelectedUserList.length - main.REMAINING_ACCOUNT_SLOTS) }}</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="row" ng-if="(overwriteableUserList = (main.selectedAccounts | existingUsers:true | filter:main.noUsernameChange | filter:main.overwriteIsDefault)).length">
+        <div class="col-sm-12">
+            <div class="alert alert-danger">
+                <span class="glyphicon glyphicon-remove-sign"></span>
+                <div class="alert-message">
+                    <p>
+                        [% locale.maketext('[output,strong,Error]:') %]
+                        {{ main.accountConflictSelectedMessage(overwriteableUserList.length) }}
+                    </p>
+                    <ul>
+                        <li ng-repeat="acct in overwriteableUserList | orderBy:'localuser'">{{ main.getExistingUserMessage(acct); }}</li>
+                    </ul>
+                    <p>
+                        {{ main.accountOverwiteResolveMessage(overwriteableUserList.length) }}
+                    </p>
+                    <p><a href="" ng-click="main.toggleCheckAllAndReValidate(overwriteableUserList, 'overwrite_type', main.overwriteOptions[1]); main.updateSelectedAccounts()">
+                        {{ main.accountOverwriteConfirmMessage(overwriteableUserList.length) }}
+                    </a></p>
+                    <p><a href="" ng-click="main.toggleCheckAllAndReValidate(overwriteableUserList, 'selected', 0); main.updateSelectedAccounts()">
+                        {{ main.accountConflictCancelMessage(overwriteableUserList.length) }}
+                    </a></p>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="row" ng-if="(existingUserList = (main.selectedAccounts | existingUsers:false | filter:main.overwriteIsDefault)).length">
+        <div class="col-sm-12">
+            <div class="alert alert-danger">
+                <span class="glyphicon glyphicon-remove-sign"></span>
+                <div class="alert-message">
+                    <p>
+                        [% locale.maketext('[output,strong,Error]:') %]
+                        {{ main.accountConflictSelectedMessage(existingUserList.length) }}
+                    </p>
+                    <ul>
+                        <li ng-repeat="acct in existingUserList | orderBy:'localuser'">{{ main.getExistingUserMessage(acct); }}</li>
+                    </ul>
+                    <p>
+                        {{ main.accountConflictResolveMessage(existingUserList.length) }}
+                    </p>
+                    <p><a href="" ng-click="main.toggleCheckAllAndReValidate(existingUserList, 'selected', 0); main.updateSelectedAccounts()">
+                        {{ main.accountConflictCancelMessage(existingUserList.length) }}
+                    </a></p>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="row" ng-if="(reservedUserList = (main.selectedAccounts | filter:main.reservedUserFilter)).length">
+        <div class="col-sm-12">
+            <div class="alert alert-danger">
+                <span class="glyphicon glyphicon-remove-sign"></span>
+                <div class="alert-message">
+                    <p>
+                        [% locale.maketext('[output,strong,Error]:') %]
+                        {{ main.accountConflictSelectedResolveMessage(reservedUserList.length) }}
+                    </p>
+                    <p><a href="" ng-click="main.toggleCheckAllAndReValidate(reservedUserList, 'selected', 0); main.updateSelectedAccounts()">
+                        {{ main.accountConflictCancelMessage(reservedUserList.length) }}
+                    </a></p>
+                </div>
+            </div>
+        </div>
+    </div>
+     <div class="row" ng-if="(duplicateUserList = (main.selectedAccounts | filter:main.duplicateUserFilter)).length">
+        <div class="col-sm-12">
+            <div class="alert alert-danger">
+                <span class="glyphicon glyphicon-remove-sign"></span>
+                <div class="alert-message">
+                    <p>
+                        [% locale.maketext('[output,strong,Error]:') %]
+                        {{
+                            main.accountConflictNameResolveMessage(duplicateUserList.length)
+                        }}
+                        <ul>
+                            <li ng-repeat="user in duplicateUserList | orderBy:'localuser'">{{ main.accountRenameMessage(user.remote_user, user.localuser) }}</li>
+                        </ul>
+                    </p>
+                    <p><a href="" ng-click="main.toggleCheckAllAndReValidate(duplicateUserList, 'selected', 0); main.updateSelectedAccounts()">
+                        {{ main.accountConflictCancelMessage(duplicateUserList.length) }}
+                    </a></p>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="row" ng-if="(invalidUsernamesList = (main.selectedAccounts | filter:main.invalidUsernameFilter)).length">
+        <div class="col-sm-12">
+            <div class="alert alert-danger">
+                <span class="glyphicon glyphicon-remove-sign"></span>
+                <div class="alert-message">
+                    <p>
+                        [% locale.maketext('[output,strong,Error]:') %]
+                        {{ main.usernameValidationTitle(invalidUsernamesList.length) }}
+                        <ul>
+                            <li ng-repeat="user in invalidUsernamesList | orderBy:'localuser'">{{ user.localuser }}</li>
+                        </ul>
+                        {{ main.usenameValidationMessage(invalidUsernamesList.length) }}
+                    </p>
+                    <p><a href="" ng-click="main.toggleCheckAllAndReValidate(invalidUsernamesList, 'selected', 0); main.updateSelectedAccounts()">
+                        {{ main.usernameValidationAction(invalidUsernamesList.length) }}
+                    </a></p>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="row" ng-if="(invalidDomainList = (main.selectedAccounts | filter:main.invalidDomainFilter)).length">
+        <div class="col-sm-12">
+            <div class="alert alert-danger">
+                <span class="glyphicon glyphicon-remove-sign"></span>
+                <div class="alert-message">
+                    <p ng-bind-html="main.existingDomainWarning(invalidDomainList.length)"></p>
+                    <p><a href="" ng-click="main.toggleCheckAllAndReValidate(invalidDomainList, 'selected', 0); main.updateSelectedAccounts()">
+                        {{ main.accountConflictCancelMessage(invalidDomainList.length) }}
+                    </a></p>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="row" ng-if="(selectedAcctsWithNewDedicatedIp = (main.selectedAccounts | filter:main.newDedicatedIpFilter )).length > main.PAGE.local.available_ips.length">
+        <div class="col-sm-12">
+            <div class="alert alert-danger">
+                <span class="glyphicon glyphicon-remove-sign"></span>
+                <div class="alert-message">
+                    <p ng-bind-html="main.dedicatedIpAddrWarning(selectedAcctsWithNewDedicatedIp.length, main.PAGE.local.available_ips.length)"></p>
+                    <p><a href="" ng-click="main.toggleCheckAllAndReValidate(selectedAcctsWithNewDedicatedIp, 'dedicated_ip', 0)">
+                        {{ main.dedicatedIPDeselectAction(selectedAcctsWithNewDedicatedIp.length) }}
+                    </a></p>
+                    <p><a href="" ng-click="main.toggleCheckAllAndReValidate(selectedAcctsWithNewDedicatedIp, 'selected', 0); main.updateSelectedAccounts()">
+                        {{ main.accountConflictCancelMessage(selectedAcctsWithNewDedicatedIp.length) }}
+                    </a></p>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="row" ng-if="(acctsWithUnselectedIp = (main.selectedAccounts | filter:{existing_dedicated_ip:1, dedicated_ip:0} )).length">
+        <div class="col-sm-12">
+            <div class="alert alert-warning">
+                <span class="glyphicon glyphicon-exclamation-sign"></span>
+                <div class="alert-message">
+                    <p ng-bind-html="main.unusedDedicatedIpWarning(acctsWithUnselectedIp.length)"></p>
+                    <p><a href="" ng-click="main.toggleCheckAllAndReValidate(acctsWithUnselectedIp, 'dedicated_ip', 1)">
+                        {{ main.dedicatedIPReselectAction(acctsWithUnselectedIp.length) }}
+                    </a></p>
+                    <p><a href="" ng-click="main.toggleCheckAllAndReValidate(acctsWithUnselectedIp, 'selected', 0); main.updateSelectedAccounts()">
+                        {{ main.accountConflictCancelMessage(acctsWithUnselectedIp.length) }}
+                    </a></p>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="row" ng-if="(resellerNoCopyList = (main.selectedAccounts | filter:main.resellerNoCopyFilter )).length">
+        <div class="col-sm-12">
+            <div class="alert alert-warning">
+                <span class="glyphicon glyphicon-exclamation-sign"></span>
+                <div class="alert-message">
+                    <p>
+                        [% locale.maketext('[output,strong,Warning]:') %]
+                        {{ main.resellerNoCopyTitle(resellerNoCopyList.length) }}
+                    </p>
+                    <ul>
+                        <li ng-repeat="user in resellerNoCopyList | orderBy:'localuser'">{{ user.localuser }}</li>
+                    </ul>
+                    <p ng-bind-html="main.resellerNoCopyMessage(resellerNoCopyList.length)"></p>
+                    <p>
+                        <a href="" ng-if="!main.PAGE.restricted_restore" ng-click="main.toggleCheckAllAndReValidate(resellerNoCopyList, 'copy_reseller_privs', 1); main.updateSelectedAccounts()">
+                            {{ main.resellerNoCopyFixMessage(resellerNoCopyList.length) }}
+                        </a>
+                    </p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- summary -->
+    <div class="row" ng-if="(canSubmit = main.canSubmitForm([overwriteableUserList,existingUserList,reservedUserList,duplicateUserList,invalidUsernamesList,invalidDomainList],selectedAcctsWithNewDedicatedIp,newSelectedUserList))">
+        <div class="col-sm-12">
+            <div class="alert alert-info">
+                <div class="alert-message" ng-bind-html="main.submitSummaryMessage()"></div>
+            </div>
+        </div>
+    </div>
+
+    <form ng-if="showTable()" method=POST action="maincopy" name="secform" class="form">
+        <input type="hidden" name="transfer_session_id" value="{{main.PAGE.transfer_session_id}}">
+        <input type="hidden" name="transfer_accts" value="{{ main.selectedAccounts | json}}">
+        <input type="hidden" name="transfer_pkgs" value="{{ main.selectedPackages | json}}">
+        <input ng-repeat="(module_name, module) in main.PAGE.configuration_modules" type="hidden" name="{{ module_name + '_enable' }}" value="{{ module.selected ? 1 : 0 }}">
+        <button type="submit" class="btn btn-primary"
+                click-once
+                id="form_submit_button"
+                ng-disabled="!canSubmit" ng-bind="main.getCopyButtonLabel()">
+
+        </button>
+    </form>
+
+    <script id="directives/accountExpandPanel.ptt" type="text/ng-template">
+        [%- PROCESS "transfer_tool/directives/accountExpandPanel.ptt" -%]
+    </script>
+
+    <script id="overwriteWithDeleteDescription.ptt" type="text/ng-template">
+        [%- PROCESS "transfer_tool/overwriteWithDeleteDescription.ptt" -%]
+    </script>
+</div>
+<script type="text/javascript">
+    var PAGE = PAGE || {};
+
+    PAGE = [% JSON.stringify(data) %];
+    /* TODO: refactor to be stand-alone username js validation */
+    PAGE.local.reserved_username_patterns = [% JSON.stringify(CPUsername.get_reserved_username_patterns()) %];
+    PAGE.local.reserved_usernames = [% JSON.stringify(CPUsername.get_reserved_usernames()) %];
+    PAGE.USERNAME_UNIQUE_LENGTH = parseInt( [% JSON.stringify(CpanelDB.PREFIX_LENGTH) %], 10 );
+    PAGE.MAX_USERNAME_LENGTH = parseInt( [% JSON.stringify(CPUsername.get_max_username_length()) %], 10 );
+    PAGE.USERNAME_TRANSFER_REGEXP = [% JSON.stringify(CPUsername.make_strict_regexp_str(1)) %]
+    PAGE.USERNAME_REGEXP = [% JSON.stringify(CPUsername.make_strict_regexp_str(0)) %]
+    PAGE.UN_TRIM_REG_EXP = new RegExp("^\\s*(.{1," + PAGE.USERNAME_UNIQUE_LENGTH + "}).*$", "i");
+    PAGE.transfer_session_id = [% data.transfer_session_id.json(); %];
+    PAGE.configuration_modules = [% data.modules.json(); %];
+    PAGE.REMAINING_ACCOUNT_SLOTS = [% Whostmgr.get_max_users() - Whostmgr.get_users_count() %];
+    PAGE.SERVER_MAX_USERS = [% Whostmgr.get_max_users() %];
+    PAGE.all_possible_page_sizes = [
+        10,
+        50,
+        200,
+        500,
+        1000
+    ];
+    PAGE.locale_is_rtl = [% locale_is_rtl.json() %];
+    PAGE.liveTransfersNoticeIsDismissed = [% NVData.get('live_transfers_notice_is_dismissed') ? 'true' : 'false' %];
+    PAGE.liveTransfersPre90NoticeIsDismissed = [% NVData.get('live_transfers_pre_90_notice_is_dismissed') ? 'true' : 'false' %];
+    PAGE.disable_live_transfers = [% data.disable_live_transfers ? 'true' : 'false' %];
+    PAGE.restricted_restore = [% data.restricted_restore ? 'true' : 'false' %];
+</script>
+
+<!-- CPANEL-1946: The CPANEL.PAGE JSON.stringify can take a long time with a large account list.
+     We need to load angular after to ensure we avoid this race condition -->
+<!-- TODO: Once user finishes updating, make remote call to check if good then update accordingly-->
+[% PROCESS 'master_templates/cjt2_header_include.tt' %]
+
+
+[% END #wrapper -%]

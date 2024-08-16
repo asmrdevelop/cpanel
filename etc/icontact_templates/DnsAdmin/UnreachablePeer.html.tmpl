@@ -1,0 +1,44 @@
+[%#
+Variables passed in:
+
+down_hosts          - the status code of the error
+clustererror        - the textual representation of the error status code
+url_host            - the url to use for WHM access
+log_preview         - An array ref of the log previews for each failed host
+
+For more information about how to customize notification templates, read our documentation at https://go.cpanel.net/notificationtemplates
+
+-%]
+
+[%
+    PROCESS "include/colors.tmpl";
+    PROCESS "include/styles.tmpl";
+    PROCESS "include/code_block.tmpl";
+
+    WRAPPER 'wrapper/main.html.tmpl';
+
+    IF NOTICE.down_hosts.size > 1;
+      NOTICE.email_reason = CPANEL.locale.maketext('Unreachable [output,abbr,DNS,Domain Name Service] Cluster Members');
+    ELSE;
+      NOTICE.email_reason = CPANEL.locale.maketext('Unreachable [output,abbr,DNS,Domain Name Service] Cluster Member: [_1]', NOTICE.down_hosts.0);
+    END;
+%]
+
+<p>
+    [% CPANEL.locale.maketext("The [output,abbr,DNS,Domain Name Service] server on “[_1]” cannot reach the following [output,abbr,DNS,Domain Name Service] cluster members. This message includes the error log for each unreachable [output,abbr,DNS,Domain Name Service] cluster member.", NOTICE.host_server) %]
+</p>
+<p>
+    [% FOR host IN NOTICE.down_hosts %]
+        [% SET loop_index = loop.index; %]
+        [% code_block(formatted_code=NOTICE.log_preview.$loop_index, title=host) %]
+    [% END %]
+</p>
+<p>
+    [% CPANEL.locale.maketext("[output,abbr,DNS,Domain Name Service] commands for these servers are currently being queued.") %]
+    [% CPANEL.locale.maketext("If the [output,abbr,DNS,Domain Name Service] cluster members are unreachable because of a temporary network outage, the system will automatically process the queued commands when it reestablishes connectivity.") %]
+</p>
+<p>
+    [% CPANEL.locale.maketext('To check the [output,abbr,DNS,Domain Name Service] cluster settings or disable this notification, use the “[_1]” interface in [asis,WHM] at [output,url,_2,_2,target,_3].', CPANEL.locale.maketext('Configuration Cluster'), NOTICE.cluster_status_url, '_blank') %]
+</p>
+
+[% END %]

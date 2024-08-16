@@ -1,0 +1,248 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/synccpaddonswithsqlhost         Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+use warnings;
+use Carp;
+use File::Spec;
+
+use Cpanel::AccessIds ();
+use Cpanel::OS        ();
+use Cpanel::cPAddons  ();
+
+my %valid_addons;
+my $myhost;
+my $cpaddons_base = '/usr/local/cpanel/cpaddons';
+
+exit( run(@ARGV) // 0 ) unless caller;
+
+sub run {
+    my (@args) = @_;
+
+    unshift @INC, $cpaddons_base;
+
+    if ( !Cpanel::OS::supports_cpaddons() ) {
+        die qq[cPAddons are not supported on this distro.\n];
+    }
+
+    if ( -e q[/var/cpanel/cpaddons.disabled] ) {
+        die qq[cPAddons are disabled on this server.\n];
+    }
+
+    %valid_addons = map { $_ => 1 } list_cpaddons();
+    $myhost       = get_root_mysql_host();
+
+    print "Syncing Site Software installations with current MySQL host setting!\n\n";
+
+    for my $user ( @{ get_all_users_or_arg_ref() } ) {
+        process_user($user);
+    }
+
+    return;
+}
+
+sub process_user {
+    my ($user) = @_;
+    print "Processing $user...\n";
+
+    my $home = ( getpwnam($user) )[7];
+
+    if ( !defined $home ) {
+        carp "Could not determine home for $user";
+        return;
+    }
+
+    my @cpaddons;
+
+    if ( opendir my $cpaddons_dh, "$home/.cpaddons/" ) {
+        @cpaddons = grep { /\:\:/ } readdir $cpaddons_dh;
+        closedir $cpaddons_dh;
+    }
+    else {
+        carp "Can not read .cpaddons/ for $user, skipping: $!";
+        return;
+    }
+
+    my $cpaddons_processed = process_user_cpaddons( $user, $home, @cpaddons );
+
+    if ($cpaddons_processed) {
+        my $s = $cpaddons_processed == 1 ? '' : 's';
+        print "$user had $cpaddons_processed cpaddon$s synced\n";
+    }
+    else {
+        print "$user had no cpaddons needing their mysql host synced\n";
+    }
+    print "$user Done!\n\n";
+
+    return 1;
+}
+
+sub process_user_cpaddons {
+    my ( $user, $home, @cpaddons ) = @_;
+    my $cpaddons_processed = 0;
+
+    for my $aod (@cpaddons) {
+        print "\tChecking $aod...\n";
+
+        my $install_hashref = {};
+
+        if ( !Cpanel::cPAddons::_read_cache( "$home/.cpaddons/$aod", $install_hashref, $user ) ) {
+            carp "Could not read $aod: $!";
+            next;
+        }
+
+        my $mod = $aod;
+        $mod =~ s{\.yaml$}{};
+        $mod =~ s{\.\d+$}{};
+
+        if ( !exists( $valid_addons{$mod} ) ) {
+            carp "Skipping $aod, It does not appear that $mod is a valid or installed cPaddon.";
+            next;
+        }
+
+        my $mod_file = $mod;
+        $mod_file =~ s/::/\//g;
+        $mod_file = $mod_file . '.pm';
+        require $mod_file;
+
+        if ($@) {
+            carp "Skipping $aod, Could not get $mod info (is $mod installed?): $!";
+            next;
+        }
+        else {
+            no strict 'refs';
+            my $info_hr = ${"$mod\:\:meta_info"};
+            use strict 'refs';
+
+            for my $db ( @{ $info_hr->{'mysql'} } ) {
+
+                my $current_setting = $install_hashref->{"mysql.$db.sqlhost"} || '';
+                next if ( $myhost eq $current_setting )                       || ( !$myhost || !$current_setting );
+                print "\t\tDifference detected, syncing...\n";
+
+                for my $conf ( @{ $info_hr->{'config_files'} } ) {
+                    my $path = File::Spec->catdir( $install_hashref->{'installdir'}, $conf );
+                    print "\t\t\tProcessing $path...";
+                    process_user_config_file( $user, $current_setting, $myhost, $path );
+                    print "Done!\n";
+                }
+                $install_hashref->{"mysql.$db.sqlhost"} = $myhost;
+                $install_hashref->{'mysql'}{$db}{'sqlhost'} = $myhost;
+
+                if ( !Cpanel::cPAddons::_write_cache( "$home/.cpaddons/$aod", $install_hashref, $user ) ) {
+                    carp "Could not save $aod: $!";
+                    next;
+                }
+
+                print "\t\t$aod is done\n";
+                $cpaddons_processed++;
+            }
+        }
+    }
+
+    return;
+}
+
+sub process_user_config_file {
+    my ( $user, $current_setting, $host, $path ) = @_;
+
+    Cpanel::AccessIds::do_as_user(
+        $user,
+        sub {
+            if ( open( my $fh, '+<', $path ) ) {
+                my @lines = map { my $s = $_; $s =~ s/$current_setting/$myhost/g; $s } <$fh>;
+                seek $fh, 0, 0;
+                print {$fh} join( '', @lines );
+                truncate( $fh, tell $fh );
+                close($fh);
+            }
+            else {
+                carp "Failed to open '$path' for reading and writing: $!";
+            }
+        },
+    );
+
+    return;
+}
+
+sub get_root_mysql_host {
+    my $myhost = '';
+    open my $mycnf_fh, '<', '/root/.my.cnf'
+      or croak "Set MySQL root passwd: $!";
+    while (<$mycnf_fh>) {
+        if ( $_ =~ m/host\s*\=/ ) {
+            ($myhost) = $_ =~ m/host\s*\=\s*\"?([^\"\s]+)\"?/;
+            last;
+        }
+    }
+    close $mycnf_fh;
+    return $myhost || 'localhost';
+}
+
+sub get_all_users_or_arg_ref {
+    my $arg_location = shift || 0;
+    my $user_to_run  = defined $ARGV[$arg_location]
+      && $ARGV[$arg_location] ? $ARGV[$arg_location] : '';
+    my $user_lookup_ref = get_user_lookup_ref();
+
+    my @users_to_transform = keys %{$user_lookup_ref};
+
+    if ($user_to_run) {
+        if ( exists $user_lookup_ref->{$user_to_run} ) {
+            @users_to_transform = ($user_to_run);
+        }
+        else {
+            croak 'Unknown user';
+        }
+    }
+    return \@users_to_transform;
+}
+
+sub get_user_lookup_ref {
+    my $user_lookup = {};
+
+    open( my $TUD, '<', '/etc/trueuserdomains' ) or die "trueuserdomains failed: $!";
+    while (<$TUD>) {
+        my ($user) = $_ =~ m/\:\s+(\w+)/;
+        $user_lookup->{$user}++ if $user;
+    }
+    close $TUD;
+    return $user_lookup;
+}
+
+sub list_cpaddons {
+    my @cpaddons;
+
+    opendir( my $bdh, $cpaddons_base );
+    my @pals = grep !/^\.+$/, readdir $bdh;
+    closedir $bdh;
+
+    for my $pal (@pals) {
+        next if !-d "$cpaddons_base/$pal";
+
+        opendir( my $cdh, "$cpaddons_base/$pal" );
+        my @cats = grep !/^\.+$/, readdir $cdh;
+        closedir($cdh);
+
+        for my $cat (@cats) {
+            next if !-d "$cpaddons_base/$pal/$cat";
+
+            opendir( my $sdh, "$cpaddons_base/$pal/$cat" );
+            my @subs = grep /\.pm$/, readdir $sdh;
+            closedir($sdh);
+
+            for my $sub (@subs) {
+                $sub =~ s/\.pm$//;
+                push @cpaddons, "$pal\:\:$cat\:\:$sub";
+            }
+        }
+    }
+
+    return @cpaddons;
+}
+
+1;

@@ -1,0 +1,200 @@
+[%
+USE CPScalar;
+SET CPANEL.CPVAR.dprefix = "../";
+SET domain_config = execute('StatsManager', 'get_configuration', {});
+IF domain_config.status;
+    SET locked = domain_config.metadata.locked;
+    SET global_config = domain_config.metadata.analyzers;
+    SET analyzer_names = [];
+    FOREACH analyzer IN global_config;
+        IF locked || (!locked && analyzer.available_for_user);
+            analyzer_names.push(analyzer.name);
+        END;
+    END;
+END;
+%]
+
+[% js_code = PROCESS js_block %]
+[% css_code = PROCESS css_block %]
+[% WRAPPER '_assets/master.html.tt'
+    page_js = js_code
+    page_styles = css_code
+    page_scripts = [
+        'libraries/handlebars/handlebars.js',
+        'libraries/jquery/current/jquery.js',
+        'statmanager/index.js',
+    ]
+    app_key = 'metrics_editor'
+-%]
+<div class="body-content">
+    <p id="descMetricsEditor" class="description">
+    [% IF locked %]
+        [% locale.maketext("This interface shows what stats programs you will use when viewing site statistics.") %]
+    [% ELSE %]
+        [% locale.maketext("This interface allows you to choose which stats programs you will use when viewing site statistics.") %]
+    [% END %]
+    </p>
+    [% IF !domain_config.status %]
+    <div class="alert alert-danger" role="alert" id="api-error">
+        <span class="glyphicon glyphicon-remove-sign" aria-hidden="true"></span>
+        <div class="alert-message">
+            <strong class="alert-title">[% locale.maketext('Error:') %]</strong>
+            <span class="alert-body">
+                [% domain_config.errors.join(' ').html() %]
+            </span>
+        </div>
+    </div>
+    [% ELSE %]
+    [%   IF locked %]
+    <div class="alert alert-info" role="alert" id="lockedInfo">
+        <span class="glyphicon glyphicon-info-sign" aria-hidden="true"></span>
+        <div class="alert-message">
+            <strong class="alert-title">[% locale.maketext('Information:') %]</strong>
+            <span class="alert-body">
+            [% locale.maketext("The system administrator manages the stats programs.") %]
+            </span>
+        </div>
+    </div>
+    [%   END %]
+
+    <div class="section">
+        [% IF !locked %]
+        <form id="the_form">
+        [% END %]
+        <table class="table table-striped form-inline" id="statsmgr">
+            <thead>
+                <tr>
+                    <th>[% locale.maketext("Domain") %]</th>
+                    [% FOREACH analyzer IN global_config;
+                        IF locked || (!locked && analyzer.available_for_user) %]
+                    <th class="text-center">
+                        [% IF !locked %]
+                        <div class="checkbox">
+                            <label>
+                                <input type="checkbox"
+                                       class="check-all"
+                                       id="[% 'check-all-' _ analyzer.name.html() %]" >
+                                <strong>[% analyzer.name.ucfirst().html() %]</strong>
+                            </label>
+                        </div>
+                        [% ELSE %]
+                        <strong>[% analyzer.name.ucfirst().html() %]</strong>
+                        [% END %]
+                    </th>
+                        [% END %]
+                    [% END %]
+                </tr>
+            </thead>
+            <tbody>
+                [% FOREACH config IN domain_config.data %]
+                <tr>
+                    <td>
+                    [% config.domain.html().breakOn("[.]") %]
+                    </td>
+                    [% FOREACH analyzer IN config.analyzers %]
+                    <td align="center">
+                        [% IF locked %]
+                        <span>
+                            [%- IF analyzer.enabled -%]
+                                [%- locale.maketext('On') -%]
+                            [%- ELSE -%]
+                                [%- locale.maketext('Off') -%]
+                            [%- END -%]
+                        </span>
+                        [% ELSE %]
+                        <div class="checkbox">
+                            <input type="checkbox"
+                                   id="[% 'check-' _ config.domain.html() _ '-' _ analyzer.name.html() %]"
+                                   class="check-one [% "check-" _ analyzer.name.html() %]"
+                                   name="[% config.domain.html() _ '--' _ analyzer.name.html() %]"
+                                   [%- IF analyzer.enabled -%] checked="checked"[% END %]>
+                        </div>
+                        [% END %]
+                    </td>
+                    [% END %]
+                </tr>
+                [% END %]
+            </tbody>
+        </table>
+        [% IF !locked %]
+        <div class="row">
+            <div class="col-xs-12 col-sm-1">
+                <button id="save" type="submit" class="btn btn-primary">
+                    <i id="save-spinner" class="fas fa-spinner fa-1x fa-spin" style="display:none"></i>
+                    [% locale.maketext('Save') %]
+                </button>
+            </div>
+            <div class="col-xs-12 col-sm-11">
+                <div id="response" style="display: none">
+                </div>
+            </div>
+        </div>
+        </form>
+        [% END %]
+    </div>
+    [% END %]
+</div>
+[% END #wrapper -%]
+
+[% BLOCK js_block %]
+<script type="text/javascript">
+    [%
+    SET polyfills = [
+        theme_magic_url('libraries/promise/bluebird.core.min.js'),
+        theme_magic_url('libraries/fetch/fetch.umd.min.js'),
+    ];
+    %]
+
+    if (!PAGE) {
+        PAGE = {};
+    }
+
+    PAGE.saveSuccess    = [% locale.makevar('The configuration was successfully saved.').json() %];
+    PAGE.saveFailed     = [% locale.makevar('Failed to save the configuration.').json() %];
+    PAGE.networkFailed  = [% locale.makevar('Failed to save the configuration due to network errors.').json() %];
+
+    PAGE.analyzerNames   = [% analyzer_names.json() %];
+    PAGE.session         = [% CPANEL.ENV.cp_security_token.json() %];
+    PAGE.polyfills       = [% polyfills.json() %];
+</script>
+
+<script type="text/x-handlebars-template" id="success-template">
+    <div id="{{id}}" class="alert alert-success" role="alert">
+        <button id="{{id}}-close" type="button"
+            class="close" aria-label="[% locale.maketext('Close') %]">
+            <span aria-hidden="true">&times;</span>
+        </button>
+        <span class="glyphicon glyphicon-ok-sign" aria-hidden="true"></span>
+        <div class="alert-message">
+            <strong class="alert-title">[% locale.maketext('Success:') %]</strong>
+            <span class="alert-body"><span id="{{id}}-message">{{message}}</span></span>
+        </div>
+    </div>
+</script>
+
+<script type="text/x-handlebars-template" id="error-template">
+    <div id="{{id}}" class="alert alert-danger" role="alert">
+        <button id="{{id}}-close" type="button"
+            class="close" aria-label="[% locale.maketext('Close') %]">
+            <span aria-hidden="true">&times;</span>
+        </button>
+        <span class="glyphicon glyphicon-remove-sign" aria-hidden="true"></span>
+        <div class="alert-message">
+            <strong class="alert-title">[% locale.maketext('Error:') %]</strong>
+            <span class="alert-body"><span id="{{id}}-message">{{message}}</span></span>
+        </div>
+    </div>
+</script>
+[% END #js_block %]
+
+[% BLOCK css_block %]
+<style type="text/css">
+@media (max-width: 767px) {
+    #response {
+        margin-top: 10px;
+    }
+}
+</style>
+[% END #css_block %]
+
+

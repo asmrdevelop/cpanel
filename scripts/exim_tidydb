@@ -1,0 +1,87 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/exim_tidydb                     Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::exim_tidydb;
+
+use strict;
+use warnings;
+
+use File::Glob                           ();
+use File::Basename                       ();
+use Umask::Local                         ();
+use Cpanel::Autodie                      ();
+use Cpanel::FileUtils::TouchFile         ();
+use Cpanel::NameVariant                  ();
+use Cpanel::Time::ISO                    ();
+use Cpanel::Binaries                     ();
+use Cpanel::SafeRun::Object              ();
+use Cpanel::AccessIds::ReducedPrivileges ();
+
+our @exim_dirs = qw(/var/spool/exim_incoming /var/spool/exim);
+
+use constant VALID_STATIC_DB_NAMES => (
+    'retry',
+    'misc',
+    'callout',
+    'ratelimit',
+);
+
+__PACKAGE__->script() unless caller();
+
+sub script {
+
+    my $exim_tidydb = Cpanel::Binaries::path('exim_tidydb');
+    if ( !-x $exim_tidydb ) { die 'Cannot find exim_tidydb'; }
+
+    foreach my $dir (@exim_dirs) {
+        next if ( !-d $dir );
+        my @dbs = File::Glob::bsd_glob("$dir/db/*");
+        foreach my $db (@dbs) {
+            my $basedb = File::Basename::basename($db);
+            next if ( $basedb =~ /^\.|\.lock(file)?$/ );
+
+            # Valid database names = retry | misc | wait-<transport-name> | callout | ratelimit
+            my $is_valid = grep { $_ eq $basedb } VALID_STATIC_DB_NAMES();
+            $is_valid ||= $basedb =~ m{^wait-};
+            next if !$is_valid;
+
+            my $dbpath = "$dir/db/$basedb";
+            my $lock   = "$dbpath.lockfile";
+            unless ( -e $lock ) {
+                my $privs = Cpanel::AccessIds::ReducedPrivileges->new(qw/mailnull mail/);
+                my $umask = Umask::Local->new(027);
+                Cpanel::FileUtils::TouchFile::touchfile($lock);
+            }
+
+            my $run = Cpanel::SafeRun::Object->new(
+                'program' => $exim_tidydb,
+                'args'    => [ ( $basedb eq 'ratelimit' ? ( '-t', '1d' ) : () ), $dir, $basedb ]
+            );
+
+            print $run->stdout();
+
+            if ( $run->CHILD_ERROR() && $run->error_code() == 1 ) {
+                my $new_filename = Cpanel::NameVariant::find_name_variant(
+                    max_length => 254,
+                    name       => $dbpath . '.broken.' . Cpanel::Time::ISO::unix2iso(),
+                    test       => sub {
+                        Cpanel::Autodie::link_if_no_conflict( $dbpath, $_[0] );
+                    },
+                );
+
+                unlink $dbpath or warn "unlink($dbpath): $!";
+
+                print "Renamed corrupt “$dbpath” to “$new_filename”.\n";
+            }
+        }
+    }
+
+    Cpanel::SafeRun::Object->new( 'program' => '/usr/local/cpanel/scripts/cleanmsglog' );
+    return;
+}
+
+1;

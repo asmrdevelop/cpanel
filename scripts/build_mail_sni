@@ -1,0 +1,106 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/build_mail_sni                  Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::build_mail_sni;
+
+use strict;
+
+use Cpanel::Usage                     ();
+use Cpanel::Config::LoadCpConf        ();
+use Cpanel::MailUtils::SNI            ();
+use Cpanel::AdvConfig::dovecot::utils ();
+use Try::Tiny;
+
+exit run(@ARGV) unless caller();
+
+sub run {
+    my @cmdline_args = @_;
+    my $opts;
+
+    my $usage_args = {
+        'fix_ssl_perms'            => \$opts->{'fix_ssl_perms'},
+        'rebuild_dovecot_sni_conf' => \$opts->{'rebuild_dovecot_sni_conf'},
+        'restartsrvs'              => \$opts->{'restartsrvs'},
+        'verbose'                  => \$opts->{'verbose'},
+    };
+
+    Cpanel::Usage::wrap_options( \@cmdline_args, \&usage, $usage_args );
+    my $verbose        = delete $opts->{'verbose'};
+    my $dispatch_table = {
+        'fix_ssl_perms'            => \&fix_ssl_perms,
+        'rebuild_dovecot_sni_conf' => \&rebuild_dovecot_sni_conf,
+        'restartsrvs'              => \&restartsrvs,
+    };
+
+    foreach (qw( fix_ssl_perms rebuild_dovecot_sni_conf restartsrvs )) {
+        $dispatch_table->{$_}->($verbose) if $opts->{$_};
+    }
+    return;
+}
+
+sub rebuild_dovecot_sni_conf {
+    my $cpconf = Cpanel::Config::LoadCpConf::loadcpconf();
+    if ( $cpconf->{'mailserver'} ne 'dovecot' ) {
+        print "[!] Dovecot is not the configured mailserver. Rebuild of Dovecot SNI configuration skipped...\n";
+        return 1;
+    }
+
+    print "[*] Rebuilding Dovecot SNI configuration file...\n";
+    if ( !eval { Cpanel::MailUtils::SNI->rebuild_dovecot_sni_conf($Cpanel::MailUtils::SNI::CHECK_SYNTAX) } ) {
+        die "[!] Failed to build Dovecot SNI configuration: " . $@ . "\n";
+    }
+    print "[+] Successfully built Dovecot SNI configuration: " . Cpanel::AdvConfig::dovecot::utils::find_dovecot_sni_conf() . "\n";
+    return 1;
+}
+
+sub fix_ssl_perms {
+    my $verbose = shift;
+    $verbose = $verbose ? 'v' : '';
+
+    print "[*] Fixing SSL permissions...\n";
+    print "\n" if $verbose;
+    if ( -d '/var/cpanel/ssl/installed/certs' ) {
+        system 'chgrp', '-R' . $verbose, 'mail', '/var/cpanel/ssl/installed/certs';
+        system 'chmod', '-R' . $verbose, '640',  '/var/cpanel/ssl/installed/certs';
+        system 'chmod', '751',           '/var/cpanel/ssl/installed/certs';
+    }
+    if ( -d '/var/cpanel/ssl/installed/cabundles' ) {
+        system 'chgrp', '-R' . $verbose, 'mail', '/var/cpanel/ssl/installed/cabundles';
+        system 'chmod', '-R' . $verbose, '640',  '/var/cpanel/ssl/installed/cabundles';
+        system 'chmod', '751',           '/var/cpanel/ssl/installed/cabundles';
+    }
+    if ( -d '/var/cpanel/ssl/installed/keys' ) {
+        system 'chgrp', '-R' . $verbose, 'mail', '/var/cpanel/ssl/installed/keys';
+        system 'chmod', '-R' . $verbose, '640',  '/var/cpanel/ssl/installed/keys';
+        system 'chmod', '751',           '/var/cpanel/ssl/installed/keys';
+    }
+    print "\n" if $verbose;
+    print "[+] Fixed SSL permissions.\n";
+    return 1;
+}
+
+sub restartsrvs {
+    print "[*] Restarting mail services...\n\n";
+    system '/usr/local/cpanel/scripts/restartsrv', '--wait', 'exim';
+    system '/usr/local/cpanel/scripts/restartsrv', '--wait', 'imap';
+    print "\n[+] Restarted mail services.\n";
+    return 1;
+}
+
+sub usage {
+    my $prog = $0;
+    print <<USAGE;
+$0
+
+Utility to rebuild the SNI map file and configuration for mail services.
+
+    --fix_ssl_perms            => Fix permissions for the SSL files in the path: /var/cpanel/ssl/installed/
+    --rebuild_dovecot_sni_conf => Rebuild the dovecot SNI include file.
+    --restartsrvs              => Restart mail services (dovecot/exim).
+USAGE
+    exit 1;
+}

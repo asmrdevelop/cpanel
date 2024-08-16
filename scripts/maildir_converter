@@ -1,0 +1,194 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/maildir_converter               Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+use Cpanel::PwCache::PwEnt     ();
+use Cpanel::AccessIds::SetUids ();
+use Cpanel::Config::Users      ();
+use Cpanel::Binaries           ();
+use Cpanel::Usage              ();
+use Cpanel::SafeRun::Errors    ();
+use Cpanel::Sys::Setsid::Fast  ();
+
+$| = 1;
+
+my $do_conversion = 0;
+my $to_dovecot    = 0;
+my $to_courier    = 0;
+my $overwrite     = 0;
+
+# Argument processing
+my %opts = (
+    'forreal'    => \$do_conversion,
+    'overwrite'  => \$overwrite,
+    'to-dovecot' => \$to_dovecot,
+    'to-courier' => \$to_courier,
+);
+
+Cpanel::Usage::wrap_options( \@ARGV, \&usage, \%opts );
+
+if ( $to_dovecot && $to_courier ) {
+    print "Can not convert to dovecot and to courier at the same time!\n";
+    exit 1;
+}
+
+if ( $> != 0 ) {
+    die "Conversion process must be performed as root";
+}
+
+@ARGV = ( grep( !/^--/, @ARGV ) );
+
+my @users = Cpanel::Config::Users::getcpusers();
+my %USERS = map { $_ => 1 } @users;
+
+my @CARGS;
+push @CARGS, '--convert'    if ($do_conversion);
+push @CARGS, '--overwrite'  if ($overwrite);
+push @CARGS, '--to-dovecot' if ($to_dovecot);
+push @CARGS, '--to-courier' if ($to_courier);
+
+my $convertuser = $ARGV[0];
+
+my $now = time();
+
+unless ( -d '/var/cpanel/logs' ) {
+    mkdir '/var/cpanel/logs' || die "Couldn't create /var/cpanel/logs directory: $!";
+    chmod oct(700), '/var/cpanel/logs' || die "Couldn't set permissions on /var/cpanel/logs directory: $!";
+}
+
+my $old_umask = umask(0077);    # Case 92381: Logs should not be world-readable.
+open my $log_fh, '>', '/var/cpanel/logs/imap_conversion.log.' . $now;
+umask($old_umask);
+
+if ( !$log_fh ) {
+    die "Couldn't open log file: $!";
+}
+
+my @conversion_failures;
+
+$SIG{'INT'} = $SIG{'HUP'} = sub {
+    print "maildir_converter Ignoring signal to avoid mail corruption\n";
+    return;
+};
+
+my $quotaon_cmd  = Cpanel::Binaries::path('quotaon');
+my $quotaoff_cmd = Cpanel::Binaries::path('quotaoff');
+
+# Disable quotas
+if ( -x $quotaoff_cmd ) {
+    system $quotaoff_cmd, '-a';
+}
+
+Cpanel::PwCache::PwEnt::setpwent();
+while ( my @PW = Cpanel::PwCache::PwEnt::getpwent() ) {
+    my ( $user, $uid, $gid, $homedir ) = @PW[ 0, 2, 3, 7 ];
+    next if ( $convertuser && $user ne $convertuser );
+    next if ( !exists $USERS{$user} );
+
+    $homedir =~ /(.*)/;    # Untaint
+    $homedir = $1;
+
+    if ( !-d $homedir ) { next; }
+    my @maildirs = find_maildirs($homedir);
+    foreach my $dir (@maildirs) {
+        $dir =~ /(.*)/;
+        $dir = $1;
+        print "Converting $dir...";
+
+        if ( my $pid = fork() ) {
+
+            #parent
+            waitpid( $pid, 0 );
+            my $exitcode = $?;
+            if ($exitcode) {
+                print "failed\n";
+                push @conversion_failures, $user . ':' . $dir . ':' . $now . "\n";
+            }
+            else {
+                print "ok\n";
+            }
+        }
+        else {
+            Cpanel::Sys::Setsid::Fast::fast_setsid();
+            Cpanel::AccessIds::SetUids::setuids( $uid, $gid );
+            chdir $dir || exit 1;
+            my $output = Cpanel::SafeRun::Errors::saferunallerrors( '/usr/local/cpanel/bin/maildir-migrate', @CARGS, '--recursive' );
+            print $log_fh "\nDirectory: $dir\n";
+            print $log_fh join( ' ', '/usr/local/cpanel/bin/maildir-migrate', @CARGS, '--recursive' ) . "\n";
+            print $log_fh $output . "\n";
+            my $exitcode = $?;
+            exit $exitcode >> 8;
+        }
+    }
+}
+Cpanel::PwCache::PwEnt::endpwent();
+
+close $log_fh;
+
+# Restore quotas
+if ( -x $quotaon_cmd ) {
+    system $quotaon_cmd, '-a';
+}
+
+if ( scalar @conversion_failures ) {
+    my $old_umask = umask(0077);    # Case 92381: Logs should not be world-readable.
+    open my $failure_fh, '>>', '/var/cpanel/logs/imap_conversion_failures';
+    umask($old_umask);
+
+    if ( !$failure_fh ) {
+        die "Couldn't open log file: $!";
+    }
+
+    print $failure_fh @conversion_failures;
+    close $failure_fh;
+    print "\nSome failures were encountered during maildir conversion process.\n";
+    print "Full log available at: /var/cpanel/logs/imap_conversion.log.$now\n";
+    exit 1;
+}
+exit 0;
+
+sub find_maildirs {
+    my $homedir = shift;
+    my @maildirs;
+    if ( -d $homedir . '/mail/cur' && -d $homedir . '/mail/new' ) {
+        push @maildirs, $homedir . '/mail';
+        if ( opendir( my $base_dh, $homedir . '/mail' ) ) {
+            my @base_dirlist = readdir($base_dh);
+            closedir $base_dh;
+            foreach my $base_dir (@base_dirlist) {
+                next if ( $base_dir =~ /^(?:\.|cur\Z|tmp\Z|new\Z)/ );
+                next unless ( -d $homedir . '/mail/' . $base_dir );
+                if ( opendir( my $sub_dh, $homedir . '/mail/' . $base_dir ) ) {
+                    my @sub_dirlist = readdir($sub_dh);
+                    closedir $sub_dh;
+                    foreach my $sub_dir (@sub_dirlist) {
+                        next if ( $sub_dir =~ /^\./ );
+                        next unless ( -d $homedir . '/mail/' . $base_dir . '/' . $sub_dir . '/cur' && -d $homedir . '/mail/' . $base_dir . '/' . $sub_dir . '/new' );
+                        push @maildirs, $homedir . '/mail/' . $base_dir . '/' . $sub_dir;
+                    }
+                }
+            }
+        }
+    }
+    return @maildirs;
+}
+
+sub usage {
+    print "Usage: maildir_converter [options] [user]\n\n";
+    print "Options:\n";
+    print "    --forreal       Perform conversion\n";
+    print "    --overwrite     Overwrite existing files\n";
+    print "    --to-dovecot    Conversion is from Courier to Dovecot\n";
+    print "    --to-courier    Conversion is from Dovecot to Courier\n";
+    print "\n";
+    print "If no user is specified, maildirs for all accounts will be converted.\n";
+    print "\n";
+    print "When direction over conversion (dovecot/courier) is not specified\n";
+    print "maildir files will be updated based on relative timestamps.\n";
+
+    exit 0;
+}

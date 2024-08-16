@@ -1,0 +1,35 @@
+[%#
+Variables passed in:
+
+user              - The user that owns the mailbox that is nearing or at quota.
+mail_account_list - The quota status of the mailbox. This can be 'full', 'critical', 'warn'.
+sent_to_root      - A default boolean flag sent to all templates that indicates if the message was sent to 'root'
+
+For more information about how to customize notification templates, read our documentation at https://go.cpanel.net/notificationtemplates
+
+-%]
+
+[%
+    PROCESS "include/colors.tmpl";
+    PROCESS "include/styles.tmpl";
+
+    WRAPPER 'wrapper/main.html.tmpl';
+
+    NOTICE.email_reason = CPANEL.locale.maketext('Mail account quota notification for “[_1]”.', NOTICE.user);
+
+%]
+
+<p>
+    [%
+        CPANEL.locale.maketext('The following users are near to or have exceeded their individual mail quota:');
+        FOREACH email IN NOTICE.mail_account_list
+    %]
+        <ul>
+            <li>[%- email -%]</li>
+        </ul>
+    [%
+        END
+    %]
+</p>
+
+[% END %]

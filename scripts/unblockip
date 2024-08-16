@@ -1,0 +1,22 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/unblockip                       Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+print "What ip do you want to unblock? ";
+my $ip = <STDIN>;
+$ip =~ s/\n//g;
+
+open( HA, "/etc/hosts.deny" );
+my @HA = <HA>;
+close(HA);
+open( HA, ">/etc/hosts.deny" );
+foreach my $line (@HA) {
+    if ( $line !~ / ${ip}$/ ) {
+        print HA $line;
+    }
+}
+close(HA);
+system("/sbin/ip -4 route del $ip");

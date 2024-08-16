@@ -1,0 +1,100 @@
+[%
+SET breadcrumburl ='/scripts2/module_installers_chooser';
+
+PROCESS 'master_templates/_defheader.tmpl'
+    breadcrumburl = breadcrumburl
+    theme="yui"
+    stylesheets = [
+        '/themes/x/module_installers.css'
+    ]
+    scripts = [ '/js/sorttable.js' ]
+-%]
+<div class="body-content">
+
+<h1>[% data.name.html() %]</h1>
+
+<h2>
+[% IF data.item('settings-searchtype') %]
+    [% locale.maketext("Search Results for “[_1]”", data.searchterm.html()) %]
+[% ELSE %]
+    [% locale.maketext("Available for Installation") %]
+[% END %]
+</h2>
+<div id="search-module_top">
+<form action="../scripts2/module_installers_search" method="GET" class="search-form">
+    <label for="searchterm_top">[% locale.maketext('Search') %]</label>
+    <input type="hidden" name="lang" value="[% data.lang.html() %]" />
+    <input type="hidden" name="searchtype" value="1" />
+    [% IF data.is_ea4 && (data.lang == 'php-pear' || data.lang == 'php-pecl') %]
+    <input type="hidden" name="version" value="[% data.selected_php_version.html() %]" />
+    [% END %]
+    <input name="searchterm" id="searchterm_top" type="text" value="[% data.searchterm.html() %]" />
+    <input class="btn-secondary" type="submit" id="search_top" value="[% locale.maketext('Go') %]" />
+</form>
+[% IF data.item('settings-searchtype') %]
+<form action="../scripts2/module_installers_search" method="GET" class="search-form">
+    <input type="hidden" name="lang" value="[% data.lang.html() %]" />
+    <input type="hidden" name="searchtype" value="0" />
+    [% IF data.is_ea4 && (data.lang == 'php-pear' || data.lang == 'php-pecl') %]
+    <input type="hidden" name="version" value="[% data.selected_php_version.html() %]" />
+    [% END %]
+    <input class="btn-secondary" type="submit" id="clear_search_top" value="[% locale.maketext('Clear Search') %]" />
+</form>
+[% END %]
+</div>
+[% IF data.results.size() || data.results_raw.size() %]
+<table id="searchtbl" class="sortable" border="0" cellspacing="0" cellpadding="0">
+    <tr>
+        <th>[% locale.maketext("Module Name") %]</th>
+        <th>[% locale.maketext("Description") %]</th>
+        <th nonsortable="true">[% locale.maketext("Actions") %]</th>
+    </tr>
+    [% IF data.is_ea4 && (data.lang == 'php-pear' || data.lang == 'php-pecl') %]
+        [% FOR module = data.results_raw %]
+        <tr>
+            <td>[% module.module.html() %] [% IF module.latest; '(' _ module.latest.html() _ ')'; END; %]</td>
+            <td>[% module.info.html() %]</td>
+            <td nowrap>
+                <a href="[% cp_security_token _ '/scripts2/module_installers_live_install?lang=' _ data.lang.uri() _ '&version=' _ data.selected_php_version.uri() _ '&mod=' _ module.module.uri() %]" class="action-link">[% locale.maketext('Install') %]</a>
+                <a href="[% module.docurl %]" target="_blank" class="action-link">[% locale.maketext('Show Docs') %]</a>
+            </td>
+        </tr>
+        [% END %]
+    [% ELSE %]
+        [% FOR result = data.results %]
+            [% result %]
+        [% END %]
+    [% END %]
+</table>
+<div class="pagination">
+    [% IF data.paginator.size() %]
+        [% data.paginator.0 %]
+    [% END %]
+</div>
+[% ELSE %]
+<p class="search-results-isEmpty">[% locale.maketext('No results match your query.') %]</p>
+[% END %]
+
+<div id="search-module_bottom">
+<form action="../scripts2/module_installers_search" class="search-form" method="GET">
+    <label for="searchterm_bottom">[% locale.maketext('Search') %]</label>
+    <input type="hidden" name="lang" value="[% data.lang.html() %]" />
+    <input type="hidden" name="searchtype" value="1" />
+    [% IF data.is_ea4 && (data.lang == 'php-pear' || data.lang == 'php-pecl') %]
+    <input type="hidden" name="version" value="[% data.selected_php_version.html() %]" />
+    [% END %]
+    <input name="searchterm" id="searchterm_bottom" type="text" value="[% data.searchterm.html() %]" />
+    <input class="btn-secondary" type="submit" id="search_bottom" value="[% locale.maketext('Go') %]" />
+</form>
+</div>
+
+<div class="return-link">
+[% IF data.is_ea4 && (data.lang == 'php-pear' || data.lang == 'php-pecl') %]
+<b>[</b> <a href="../scripts2/module_installers_main?lang=[% data.lang.uri() %]&version=[% data.selected_php_version.uri() %]">[% locale.maketext('Go Back') %]</a><b> ]</b>
+[% ELSE %]
+<b>[</b> <a href="../scripts2/module_installers_main?lang=[% data.lang.uri() %]">[% locale.maketext('Go Back') %]</a><b> ]</b>
+[% END %]
+</div>
+
+</div>
+[% PROCESS 'master_templates/_deffooter.tmpl' theme="yui" %]

@@ -1,0 +1,184 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/email_archive_maintenance       Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::email_archive_maintenance;
+
+use strict;
+use warnings;
+
+use Cpanel::Config::LoadCpConf ();
+use Cpanel::PwCache::Helpers   ();
+use Cpanel::FileUtils::Write   ();
+use Cpanel::LoadFile           ();
+use Cpanel::Logger             ();
+use Cpanel::Usage              ();
+use Cpanel::Unix::PID::Tiny    ();
+
+use Try::Tiny;
+
+my $pidfile = '/var/run/email_archive_maintenance.pid';
+
+my $MAX_FAILURES_BEFORE_SKIP = 5;
+my $MAX_CFG_SIZE             = 32768;
+
+if ( !caller() ) {
+    run(@ARGV);
+}
+
+sub run {
+    my (@args) = @_;
+
+    my $debug   = 0;
+    my $verbose = 0;
+
+    my $opts = {
+        'debug'   => \$debug,
+        'verbose' => \$verbose,
+    };
+
+    Cpanel::Usage::wrap_options( \@args, \&usage, $opts );
+
+    my $upid = Cpanel::Unix::PID::Tiny->new();
+
+    if ( !$upid->pid_file($pidfile) ) {
+        my $pid = $upid->get_pid_from_pidfile($pidfile);
+        print "Another instance of $0 appears to be running at PID '$pid'.\n";
+        exit 1;
+    }
+
+    $Cpanel::Email::Archive::VERBOSE = 1 if $verbose;
+
+    my $maintenance = scripts::email_archive_maintenance->new();
+    $maintenance->{'opts'} = $opts;
+
+    $maintenance->script();
+
+    return;
+}
+
+sub usage {
+    my $prog = $0;
+    print <<USAGE;
+Usage: $prog
+Run email archive maintenance
+
+    --help      Display this documentation
+
+    --verbose   Show information about the archive maintenance
+
+Sample usages
+    Initiate maintenance processing of each user's email archive
+    > $prog
+USAGE
+    exit 1;
+}
+
+sub new {
+    my $self = bless {}, __PACKAGE__;
+
+    return $self;
+}
+
+sub script {
+    my $self = shift;
+
+    my $logger     = Cpanel::Logger->new();
+    my $cpconf_ref = Cpanel::Config::LoadCpConf::loadcpconf();
+    if ( !$cpconf_ref->{'emailarchive'} ) {
+        $logger->info('Email archiving is disabled per Tweak Settings.');
+        exit;
+    }
+
+    my $email_archive_last_run_fname = '/var/cpanel/email_archive_last_run';
+    my $email_archive_last_run;
+    if ( -e $email_archive_last_run_fname ) {
+        $email_archive_last_run = Cpanel::LoadFile::loadfile($email_archive_last_run_fname);
+        $email_archive_last_run =~ s/^\s+//;
+        $email_archive_last_run =~ s/\s+$//;
+    }
+
+    require Cpanel::IONice;
+    if ( Cpanel::IONice::ionice( 'best-effort', exists $cpconf_ref->{'ionice_email_archive_maintenance'} ? $cpconf_ref->{'ionice_email_archive_maintenance'} : 7 ) ) {
+        print "[email_archive_maintenance] Setting I/O priority to reduce system load: " . Cpanel::IONice::get_ionice() . "\n";
+    }
+
+    require Cpanel::OSSys;
+    Cpanel::OSSys::nice(10);
+
+    require Cpanel::UserIterator;
+    require Cpanel::AccessIds::ReducedPrivileges;
+    require Cpanel::Email::Archive;
+
+    {
+        no warnings 'once';
+        $Cpanel::Email::Archive::VERBOSE = 1;
+    }
+
+    Cpanel::PwCache::Helpers::no_uid_cache();    #uid cache only needed if we are going to make lots of getpwuid calls
+
+    my $userit = Cpanel::UserIterator->new( 'cpanel_only' => 1 );
+
+    my $email_archive_types_hashref = Cpanel::Email::Archive::fetch_email_archive_types();
+    my @email_archive_types         = sort keys %{$email_archive_types_hashref};
+
+    while ( my $pwref = $userit->pwref() ) {
+        my $user    = $userit->user();
+        my $homedir = $userit->homedir();
+        my @domains = @{ $userit->domains() };
+        my %archive_enabled;
+
+        print qq{Processing $user...\n} if $self->{'opts'}{'verbose'};
+
+        foreach my $domain (@domains) {
+            foreach my $archive_type (@email_archive_types) {
+                $archive_enabled{$domain}{$archive_type} = 1 if ( -e "$homedir/etc/$domain/archive/$archive_type" );
+            }
+        }
+        if ( keys %archive_enabled ) {
+            my $ret = Cpanel::AccessIds::ReducedPrivileges::call_as_user(
+                sub {
+                    for my $domain ( keys %archive_enabled ) {
+                        my %retention_periods;
+                        foreach my $archive_type (@email_archive_types) {
+                            if ( $archive_enabled{$domain}{$archive_type} ) {
+                                if ( open( my $cfg_fh, '<', "$homedir/etc/$domain/archive/$archive_type" ) ) {
+                                    my $data;
+                                    read( $cfg_fh, $data, $MAX_CFG_SIZE );
+                                    my %CFG = map { ( split( /:\s+/, $_, 2 ) )[ 0, 1 ] } split( /\n/, $data );
+                                    $retention_periods{$archive_type} = $CFG{'retention_period'};
+                                }
+                            }
+                        }
+
+                        try {
+                            Cpanel::Email::Archive::purge_archives_outside_retention_period( $user, $homedir, $domain, \%retention_periods ) if keys %retention_periods;
+                            Cpanel::Email::Archive::recalculate_disk_usage( $user, $homedir, $domain, $email_archive_last_run )              if keys %retention_periods;
+                        }
+                        catch {
+                            warn $_ if defined $_;
+                        };
+
+                        my ( $status, $statusmsg, $failcount, $failref ) = Cpanel::Email::Archive::create_archive_maildirs( $user, $homedir, $domain, \%retention_periods, $email_archive_last_run, undef, $MAX_FAILURES_BEFORE_SKIP );
+                        if ( $status == -1 ) {    #fatal event (disk quota exceeded usually)
+                            print "[$user/$domain]: $statusmsg\n" . ( $failref ? ( "\t" . join( "\n\t", @{$failref} ) . "\n" ) : '' );
+                            return [ $status, $statusmsg, $failcount ];
+                        }
+                    }
+                    return [ 1, "Completed" ];
+                },
+                $user
+            );
+        }
+        $userit->next();
+    }
+
+    Cpanel::FileUtils::Write::overwrite_no_exceptions( $email_archive_last_run_fname, time(), 0600 );
+
+    return;
+}
+
+1;

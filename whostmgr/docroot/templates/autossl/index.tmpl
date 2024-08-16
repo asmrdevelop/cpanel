@@ -1,0 +1,94 @@
+[%
+    USE Whostmgr;
+    USE JSON;
+
+    SET PAGE_BASE = '/scripts12/autossl/';
+    SET PAGE_NAME = Whostmgr.get_page_name_by_url(PAGE_BASE);
+
+    WRAPPER 'master_templates/master.tmpl'
+        app_key = 'manage_autossl'
+        breadcrumburl = PAGE_BASE,
+        base =  PAGE_BASE,
+        stylesheets = [
+            Whostmgr.find_file_url('/templates/autossl/index.min.css')
+        ],
+        theme='bootstrap';
+
+    SET REQUIRED_FEATURES = ['autossl'];
+%]
+
+<div id="content"
+    ng-controller="BaseController as base"
+    class="ng-cloak"
+    ng-cloak>
+
+    <p>[% locale.maketext('The [asis,AutoSSL] feature provides free [asis,SSL] certificates for your users’ domains. The system will periodically inspect users’ installed certificates and replace those that are about to expire or that are insufficient to provide a baseline level of security.') %]</p>
+
+    <p>[% locale.maketext('Users who do not have the [list_and_quoted,_1] [numerate,_2,feature,features] will not receive the free certificates.', REQUIRED_FEATURES, REQUIRED_FEATURES.size) %]</p>
+
+    <callout callout-type="information" ng-show="!!get_saved_provider_module_name()">
+        <p>
+            <strong>[% locale.maketext('Current Provider:') %]</strong>
+            {{ getCurrentProviderDisplayName() }}
+        </p>
+        <p ng-show="!!getSavedProviderAccountID()">
+            <strong>[% locale.maketext('Provider Account ID:') %]</strong>
+            {{ getSavedProviderAccountID() }}
+        </p>
+        <p ng-if="next_check_time_string()" ng-bind="next_check_time_string()"></p>
+        <p ng-if="!next_check_time_string()">
+            &nbsp;  <!-- Placeholder so that the UI doesn’t jerk
+                         when next_check_time_string() has information. -->
+        </p>
+        <button id="run_for_all_btn"
+            type="button"
+            spinner-id="spinnerDelete_runall"
+            cp-action="start_autossl_for_all_users()"
+        >[% locale.maketext('Run [asis,AutoSSL] For All Users') %]</button>
+    </callout>
+
+    <callout callout-type="warning" callout-heading="Warning" ng-show="current_provider_module === 'cPanel'">
+        <p>
+            [% locale.maketext('We have deprecated the [asis,Sectigo] [asis,AutoSSL] provider. It will no longer function at a future date.') %]
+            [% locale.maketext('[asis,AutoSSL] will be unable to provision new free [asis,SSL] certificates once the [asis,Sectigo] [asis,AutoSSL] provider no longer functions.') %]
+        </p>
+        <p>[% locale.maketext("For more information, read our [output,url,_1,cPanel Deprecation Plan documentation,target,_blank].", "https://go.cpanel.net/deprecation") %]</p>
+    </callout>
+
+    <callout callout-type="warning" callout-heading="Warning"  ng-show="current_provider_module === 'LetsEncrypt' && !getSavedProviderAccountID()">
+        <p>[% locale.maketext('The system lacks a saved account ID for this provider.') %]</p>
+        <p>[% locale.maketext('Please recreate your current registration.') %]</p>
+    </callout>
+
+    <uib-tabset active="currentTab">
+        <uib-tab ng-repeat="(key,tab) in activeTabs" ng-click="go(tab.path)" ng-hide="tab.is_hidden()">
+            <uib-tab-heading>
+                <span ng-if="loading && currentTab === key"><i class="fas fa-spinner fa-spin"></i></span>
+                {{ tab.label }}
+            </uib-tab-heading>
+        </uib-tab>
+    </uib-tabset>
+
+    <div ng-class="{'view-disabled': loading}" class="animate-view" ng-view></div>
+
+    <div growl></div>
+
+    <script type="text/ng-template" id="directives/starRating.phtml">
+    [% INSERT "autossl/directives/starRating.phtml" %]
+    </script>
+
+</div>
+<script type="text/javascript">
+    var PAGE = PAGE || {};
+    PAGE.provider_info = [% JSON.stringify(data.provider_info) %];
+    PAGE.logs_catalog = [% JSON.stringify(data.logs_catalog) %];
+    PAGE.users = [% JSON.stringify(data.users) %];
+    PAGE.metadata = [% JSON.stringify(data.metadata) %];
+    PAGE.constants = [% JSON.stringify(data.constants) %];
+    PAGE.currentAccountID = [% JSON.stringify(data.current_account_id) %];
+</script>
+
+[% PROCESS 'master_templates/cjt2_header_include.tt' %]
+
+[% END %]
+

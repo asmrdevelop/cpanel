@@ -1,0 +1,71 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/fixmailman                      Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+
+use Cpanel::Config::LoadCpConf ();
+use Cpanel::Mailman::Perms     ();
+use Cpanel::Mailman::Filesys   ();
+
+#############################################
+# Gotta check to see if mailman is disabled #
+#############################################
+
+my $cpconf = Cpanel::Config::LoadCpConf::loadcpconf();
+
+if ( $cpconf->{'skipmailman'} ) {
+    print "Mailman is disabled\n";
+    exit 0;
+}
+
+##################################################
+# Fix permissions for archives and mailing lists #
+##################################################
+
+my $mailman = Cpanel::Mailman::Perms->new();
+
+print "Setting mailman archive permissions.\n";
+
+$mailman->set_archive_perms();
+
+print "Setting mailman lists permissions.\n";
+my $MAILMAN_LIST_DIR = Cpanel::Mailman::Filesys::MAILING_LISTS_DIR();
+
+if ( opendir( my $list_dir, $MAILMAN_LIST_DIR ) ) {
+    while ( my $list = readdir($list_dir) ) {
+        next if ( $list !~ m/_/ && $list !~ m/mailman/ );
+
+        $mailman->set_perms_for_one_list($list);
+
+    }
+
+}
+else {
+    print "Failed to open: " . $MAILMAN_LIST_DIR . " ($!)\n";
+}
+
+##################################################################################################
+# Checking for files in /usr/local/cpanel/3rdparty/mailman/qfiles/out and removing if they exist #
+##################################################################################################
+
+print "Purging mailman queue.\n";
+
+my $qdir = '/usr/local/cpanel/3rdparty/mailman/qfiles/out';
+
+if ( opendir( my $dh, $qdir ) ) {
+    while ( my $qfile = readdir($dh) ) {
+        if ( $qfile !~ m/^\./ ) {
+            unlink("$qdir/$qfile") or print "Failed to unlink file $qdir/$qfile: $!\n";
+        }
+    }
+    closedir $dh;
+}
+else {
+    print "Unable to open directory $qdir: $!\n";
+}
+
+exit(0);

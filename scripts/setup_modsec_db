@@ -1,0 +1,46 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/setup_modsec_db                 Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::setup_modsec_db;
+
+use strict;
+
+use Cpanel::ModSecurity::DB ();
+use Cpanel::Logger          ();
+use Cpanel::Locale          ();
+
+if (@ARGV) {
+    die <<EOU;
+usage: $0
+
+Performs a non-destructive setup of the modsec database and hits table. (In other words,
+ensures that they are present, but doesn't wipe any existing data.)
+
+This script does not accept any arguments.
+EOU
+}
+
+exit run() unless caller;
+
+sub run {
+    my $logger = Cpanel::Logger->new();
+    my $lh     = Cpanel::Locale->new();
+
+    # Non-destructive setup of the database and table, in case they're not already set up.
+    eval { Cpanel::ModSecurity::DB::initialize_database() };
+    if ( my $exception = $@ ) {
+        $logger->warn( $lh->maketext( q{The system could not initialize the [asis,ModSecurity™] database: [_1]}, $exception ) );
+        exit 1;
+    }
+    else {
+        $logger->info( $lh->maketext(q{Initialized [asis,ModSecurity™] database.}) );
+    }
+
+    exit 0;
+}
+
+1;

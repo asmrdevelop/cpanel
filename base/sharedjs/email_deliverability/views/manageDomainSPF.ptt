@@ -1,0 +1,372 @@
+<div>
+    <div class="row">
+        <div class="col-xs-12 col-sm-11 col-md-9 retro-col-12">
+            <div class="row">
+                <!-- summary -->
+                <div class="col-sm-4 col-md-4 pull-right hidden-xs">
+                    <div class="section">
+                        <ng-include src="resourcesPanelTemplate"></ng-include>
+                    </div>
+                </div>
+                <!-- / summary -->
+
+                <!-- manage domain -->
+                <div class="col-xs-12 col-sm-8 col-md-8">
+                    <form id="customizeSPFRecordForm" name="customizeSPFRecordForm">
+                        <div class="panel panel-default">
+                            <div class="panel-heading">
+                                <div class="widget-title pull-left">
+                                    [% locale.maketext('Customize an [output,abbr,SPF,Sender Policy Framework] Record')%]
+                                </div>
+                                <div class="pull-right flip">
+                                    <button type="button"
+                                        class="btn btn-default btn-xs"
+                                        id="lnkshowHideHelp"
+                                        ng-click="toggleHelp()">
+                                        [% locale.maketext("Show/Hide Help") %]
+                                        <i class="far fa-question-circle form-info-sign"></i>
+                                    </button>
+                                </div>
+                                <div class="clearfix"></div>
+                            </div>
+                            <div class="panel-body">
+                                <div class="form-group">
+                                    <div class="row">
+                                        <div class="col-xs-12">
+                                            <p>[% locale.maketext("Customize the suggested [output,abbr,SPF,Sender Policy Framework] record for the “[_1]” domain.", "{{currentDomain.domain | htmlSafeString}}"); %]
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="form-group">
+                                    <callout callout-type="warning" callout-heading="[% locale.maketext("Warning") %]" ng-if="nonPassPrefixesExist">
+                                        <p>[% locale.maketext("Your domain‘s current [output,abbr,SPF,Sender Policy Framework] is more complex than what the interface supports. This interface only supports the addition of “Pass” mechanisms. The editor will attempt to preserve other mechanisms.") %]</p>
+                                    </callout>
+                                </div>
+                                <div class="form-group">
+                                    <div class="row">
+                                        <div class="col-xs-12">
+                                            <suggested-record-set
+                                                id="currentRecordSet"
+                                                record-type="spf"
+                                                hide-extras
+                                                record-zone-type="TXT"
+                                                domain="currentDomain"
+                                                always-current></suggested-record-set>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="form-group" ng-if="currentDomain.recordsLoaded">
+                                    <div class="row">
+                                        <div class="col-xs-12">
+                                            <suggested-record-set
+                                            id="suggestedRecordSet"
+                                            record-type="spf"
+                                            record-zone-type="TXT"
+                                            domain="currentDomain"
+                                            hide-extras
+                                            always-suggested></suggested-record-set>
+                                        </div>
+                                    </div>
+                                </div>
+                                <section class="form-section" ng-if="currentDomain.recordsLoaded">
+                                    <h4 class="widget-title">[% locale.maketext('Domain Settings') %]</h4>
+                                    <div class="form-group">
+                                        <div class="row">
+                                            <div class="col-xs-12">
+                                                <toggle-label-info
+                                                    for="additionalHosts"
+                                                    label-text="[% locale.maketext('Additional Hosts') %]"
+                                                    label-id="lblAdditionalHosts"
+                                                    info-icon-id="icoAdditionalHosts"
+                                                    info-block-id="txtAdditionalHosts"
+                                                    show-info-block="{{showAllHelp}}">
+                                                        [% locale.maketext('The server will approve all of the hosts that you define to send email. The server automatically includes your primary mail exchanger and any servers for which you created an [asis,MX] record.') %]
+                                                </toggle-label-info>
+                                            </div>
+                                        </div>
+                                        <div class="row">
+                                            <div class="col-xs-12">
+                                                <!-- Input Field-->
+                                                <multi-field-editor
+                                                    id="additionalHosts"
+                                                    add-new-label="[% locale.maketext('Add A New “[_1]” Item','Host (+a)') %]"
+                                                    ng-model="additionalHosts">
+                                                        <multi-field-editor-item
+                                                            ng-repeat="(key,value) in additionalHosts track by $index"
+                                                            label="+a:"
+                                                            label-for="additionalHosts_item_{{ :: key }}_input"
+                                                            index="key"
+                                                            id="additionalHosts_item_{{ :: key }}" >
+                                                                <input
+                                                                    id="additionalHosts_item_{{ :: key }}_input"
+                                                                    name="additionalHosts_item_{{ :: key }}_input"
+                                                                    type="text"
+                                                                    class="form-control"
+                                                                    placeholder="domain.com"
+                                                                    required
+                                                                    fqdn
+                                                                    size="100"
+                                                                    ng-model="additionalHosts[key]" />
+                                                        </multi-field-editor-item>
+                                                </multi-field-editor>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div class="form-group">
+                                        <div class="row">
+                                            <div class="col-xs-12">
+                                                <toggle-label-info
+                                                    for="additionalMXServers"
+                                                    label-text="[% locale.maketext('Additional [asis,MX] Servers') %]"
+                                                    label-id="lbladditionalMXServers"
+                                                    info-icon-id="icoadditionalMXServers"
+                                                    info-block-id="txtadditionalMXServers"
+                                                    show-info-block="{{showAllHelp}}">
+                                                        [% locale.maketext('This setting allows the server to approve all [asis,MX] entries for each domain that you specify to send email.') %]
+                                                </toggle-label-info>
+                                            </div>
+                                        </div>
+                                        <div class="row">
+                                            <div class="col-xs-12">
+                                                <!-- Input Field-->
+                                                <multi-field-editor
+                                                    id="additionalMXServers"
+                                                    add-new-label="[% locale.maketext('Add A New “[_1]” Item','+mx') %]"
+                                                    ng-model="additionalMXServers">
+                                                        <multi-field-editor-item
+                                                            ng-repeat="(key,value) in additionalMXServers track by $index"
+                                                            label="+mx:"
+                                                            label-for="additionalMXServers_item_{{ :: key }}_input"
+                                                            index="key"
+                                                            id="additionalMXServers_item_{{ :: key }}" >
+                                                                <input
+                                                                    id="additionalMXServers_item_{{ :: key }}_input"
+                                                                    name="additionalMXServers_item_{{ :: key }}_input"
+                                                                    type="text"
+                                                                    class="form-control"
+                                                                    placeholder="domain.com"
+                                                                    fqdn
+                                                                    required
+                                                                    size="100"
+                                                                    ng-model="additionalMXServers[key]" />
+                                                        </multi-field-editor-item>
+                                                </multi-field-editor>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </section>
+                                <section class="form-section" ng-if="currentDomain.recordsLoaded">
+                                    <h4 class="widget-title">[% locale.maketext('[output,abbr,IP,Internet Protocol] Address Settings') %]</h4>
+                                    <div class="form-group">
+                                        <div class="row">
+                                            <div class="col-xs-12">
+                                                <toggle-label-info
+                                                    for="additionalIPv4Addresses"
+                                                    label-text="[% locale.maketext('Additional [asis,IP] Address Blocks (IPv4)') %]"
+                                                    label-id="lbladditionalIPv4Addresses"
+                                                    info-icon-id="icoadditionalIPv4Addresses"
+                                                    info-block-id="txtadditionalIPv4Addresses"
+                                                    show-info-block="{{showAllHelp}}">
+                                                        [% locale.maketext('You [output,strong,must] specify the [output,abbr,IP,Internet Protocol] Address blocks in [output,abbr,CIDR,Classless Inter-Domain Routing] format or as an [output,abbr,IP,Internet Protocol] Address (for example, [asis,192.168.0.1] or [asis,127.0.0.1/32]).') %]
+                                                </toggle-label-info>
+                                            </div>
+                                        </div>
+                                        <div class="row">
+                                            <div class="col-xs-12">
+                                                <!-- Input Field-->
+                                                <multi-field-editor
+                                                    id="additionalIPv4Addresses"
+                                                    add-new-label="[% locale.maketext('Add A New “[_1]” Item','+ip4') %]"
+                                                    ng-model="additionalIPv4Addresses">
+                                                        <multi-field-editor-item
+                                                            ng-repeat="(key,value) in additionalIPv4Addresses track by $index"
+                                                            label="+ip4:"
+                                                            label-for="additionalIPv4Addresses_item_{{ :: key }}_input"
+                                                            index="key"
+                                                            id="additionalIPv4Addresses_item_{{ :: key }}" >
+                                                                <input
+                                                                    id="additionalIPv4Addresses_item_{{ :: key }}_input"
+                                                                    name="additionalIPv4Addresses_item_{{ :: key }}_input"
+                                                                    type="text"
+                                                                    class="form-control"
+                                                                    placeholder="192.168.0.1"
+                                                                    required
+                                                                    size="100"
+                                                                    ng-model="additionalIPv4Addresses[key]" />
+                                                        </multi-field-editor-item>
+                                                </multi-field-editor>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div class="form-group">
+                                        <div class="row">
+                                            <div class="col-xs-12">
+                                                <toggle-label-info
+                                                    for="additionalIPv6Addresses"
+                                                    label-text="[% locale.maketext('Additional [asis,IP] Address Blocks (IPv6)') %]"
+                                                    label-id="lbladditionalIPv6Addresses"
+                                                    info-icon-id="icoadditionalIPv6Addresses"
+                                                    info-block-id="txtadditionalIPv6Addresses"
+                                                    show-info-block="{{showAllHelp}}">
+                                                        [% locale.maketext('You [output,strong,must] specify the [output,abbr,IP,Internet Protocol] Address blocks in [output,abbr,CIDR,Classless Inter-Domain Routing] format or as an [output,abbr,IP,Internet Protocol] Address (for example, [asis,2001:DB8:1a34:56cf::7] or [asis,2001:DB8::/32]).') %]
+                                                </toggle-label-info>
+                                            </div>
+                                        </div>
+                                        <div class="row">
+                                            <div class="col-xs-12">
+                                                <!-- Input Field-->
+                                                <multi-field-editor
+                                                    id="additionalIPv6Addresses"
+                                                    add-new-label="[% locale.maketext('Add A New “[_1]” Item','+ip6') %]"
+                                                    ng-model="additionalIPv6Addresses">
+                                                        <multi-field-editor-item
+                                                            ng-repeat="(key,value) in additionalIPv6Addresses track by $index"
+                                                            label="+ip6:"
+                                                            label-for="additionalIPv6Addresses_item_{{ :: key }}_input"
+                                                            index="key"
+                                                            id="additionalIPv6Addresses_item_{{ :: key }}" >
+                                                                <input
+                                                                    id="additionalIPv6Addresses_item_{{ :: key }}_input"
+                                                                    name="additionalIPv6Addresses_item_{{ :: key }}_input"
+                                                                    type="text"
+                                                                    class="form-control"
+                                                                    placeholder="2001:db8:1a34:56cf::/64"
+                                                                    required
+                                                                    size="100"
+                                                                    ng-model="additionalIPv6Addresses[key]" />
+                                                        </multi-field-editor-item>
+                                                </multi-field-editor>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </section>
+                                <section class="form-section" ng-if="currentDomain.recordsLoaded">
+                                    <h4 class="widget-title">[% locale.maketext('Additional Settings') %]</h4>
+                                    <div class="form-group">
+                                        <div class="row">
+                                            <div class="col-xs-12">
+                                                <toggle-label-info
+                                                    for="additionalINCLUDEItems"
+                                                    label-text="[% locale.maketext('Include List (INCLUDE)') %]"
+                                                    label-id="lbladditionalINCLUDEItems"
+                                                    info-icon-id="icoadditionalINCLUDEItems"
+                                                    info-block-id="txtadditionalINCLUDEItems"
+                                                    show-info-block="{{showAllHelp}}">
+                                                        [% locale.maketext('The [output,abbr,SPF,Sender Policy Framework] settings for all hosts you specify in this list will be included with your SPF settings. This is useful if you will be sending mail though another service (e.g. mac.com, comcast.com, etc).') %]
+                                                </toggle-label-info>
+                                            </div>
+                                        </div>
+                                        <div class="row">
+                                            <div class="col-xs-12">
+                                                <!-- Input Field-->
+                                                <multi-field-editor
+                                                    id="additionalINCLUDEItems"
+                                                    add-new-label="[% locale.maketext('Add A New “[_1]” Item','+include') %]"
+                                                    ng-model="additionalINCLUDEItems">
+                                                        <multi-field-editor-item
+                                                            ng-repeat="(key,value) in additionalINCLUDEItems track by $index"
+                                                            label="+include:"
+                                                            label-for="additionalINCLUDEItems_item_{{ :: key }}_input"
+                                                            index="key"
+                                                            id="additionalINCLUDEItems_item_{{ :: key }}" >
+                                                                <input
+                                                                    id="additionalINCLUDEItems_item_{{ :: key }}_input"
+                                                                    name="additionalINCLUDEItems_item_{{ :: key }}_input"
+                                                                    type="text"
+                                                                    class="form-control"
+                                                                    placeholder="domain.com"
+                                                                    zone-name
+                                                                    required
+                                                                    size="100"
+                                                                    ng-model="additionalINCLUDEItems[key]" />
+                                                        </multi-field-editor-item>
+                                                </multi-field-editor>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div class="form-group">
+                                        <div class="row">
+                                            <div class="col-xs-12">
+                                                <toggle-label-info
+                                                    for="excludeAllOtherDomains"
+                                                    label-text="[% locale.maketext('Exclude All Other Hosts (“[asis,-all]” Entry)') %]"
+                                                    label-id="lblexcludeAllOtherDomains"
+                                                    info-icon-id="icoexcludeAllOtherDomains"
+                                                    info-block-id="txtexcludeAllOtherDomains"
+                                                    show-info-block="{{showAllHelp}}">
+                                                        [% locale.maketext('Select this checkbox to exclude all other hosts if you have entered all of the hosts that you wish to send mail for your domain.') %]
+                                                </toggle-label-info>
+                                            </div>
+                                        </div>
+                                        <div class="row">
+                                            <div class="col-xs-12">
+                                                <!-- Input Field-->
+                                                <label>
+                                                    <input type="checkbox" ng-click="toggleExcludeAllOtherDomains()" ng-model="excludeAllOtherDomains">
+                                                    <span>[% locale.maketext('Use the “[asis,-all]” Entry') %]</span>
+                                                </label>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </section>
+                                [%# Summary %]
+                                <section class="form-section" ng-if="currentDomain.recordsLoaded">
+                                    <h4 class="widget-title">[% locale.maketext('Preview of the Updated Record') %]</h4>
+                                    <p>[% locale.maketext('The current configurations will update the new record to the following:') %]</p>
+                                    <div class="form-group">
+                                        <div class="row" >
+                                            <div class="col-xs-12">
+                                                [%# Not Authoritative %]
+                                                <div callout callout-type="warning" ng-if="!hasNSAuthority('spf')">
+                                                    <div>
+                                                        <p ng-bind-html="noAuthorityMessage('spf')"></p>
+                                                    </div>
+                                                    <copy-field id="workingRecordCopyField" text="workingRecord"></copy-field>
+                                                </div>
+                                                [%# / Not Authoritative %]
+                                                [%# Authoritative %]
+                                                <div ng-if="hasNSAuthority('spf')">
+                                                    <copy-field id="workingRecordCopyField" text="workingRecord"></copy-field>
+                                                </div>
+                                                [%# / Authoritative %]
+                                            </div>
+                                        </div>
+                                    </div>
+                                </section>
+                            </div>
+                            <div class="panel-footer" >
+                                <div class="row">
+                                    <div class="col-xs-12 col-sm-12 col-md-12 col-lg-8">
+                                        <button cp-action="update()" ng-disabled="!customizeSPFRecordForm.$valid">
+                                            [% locale.maketext("Install a Customized [output,abbr,SPF,Sender Policy Framework] Record") %]
+                                        </button>
+                                    </div>
+                                    <div class="col-xs-12 col-sm-12 col-md-12 col-lg-4 text-right">
+                                        <a id="btnCancelUpdate"
+                                            type="button"
+                                            class="btn btn-link"
+                                            ng-href="#/manage?domain={{ :: currentDomain.domain | htmlSafeString }}"
+                                            title="[% locale.maketext('Return to Manage the Domain.') %]">
+                                            <i class="fas fa-arrow-left" aria-hidden="true"></i>
+                                            [% locale.maketext('Go Back') %]
+                                        </a>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </form>
+                </div>
+                <!-- / manage domain -->
+
+                <!-- summary -->
+
+                <div class="col-xs-12 hidden-sm hidden-lg hidden-md">
+                    <div class="section">
+                        <ng-include src="resourcesPanelTemplate"></ng-include>
+                    </div>
+                </div>
+                <!-- / summary -->
+            </div>
+        </div>
+    </div>
+</div>

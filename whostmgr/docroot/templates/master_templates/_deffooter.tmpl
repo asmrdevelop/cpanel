@@ -1,0 +1,78 @@
+[%
+
+#NOTE: Please do not remove this. Added so that processing of footer will still have access to Whostmgr methods. This is a fix for most of the cgi files and the pages that process footer independently to work.
+    USE Whostmgr;
+    USE JSON;
+    USE NVData;
+
+    DEFAULT app_key = 'home';
+
+    SET has_component_system = template_exists("/usr/local/cpanel/whostmgr/docroot/templates/master_templates/component.html.tt");
+    IF has_component_system;
+        USE Components;
+    END;
+
+    IF inside_frame_or_tab_or_popup;
+        SET skipheader = 1,
+            hide_header = 1,
+            hide_navigation = 1,
+            hide_license_warnings = 1,
+            skipbreadcrumb = 1,
+            skipsupport = 1;
+            skipfooter = 1;
+    END;
+
+    SET whm_variables = Whostmgr.template_vars;
+
+    IF has_component_system && Components.has_components_for('whostmgr', app_key, 'page-bottom');
+        PROCESS "master_templates/component.html.tt",
+            APP_KEY => app_key,
+            TAG     => 'div',
+            SLOT    => 'page-bottom';
+    END;
+%]
+                </div>
+                <!-- contentContainer End -->
+            </div>
+            <!-- pageContainer End -->
+        </div>
+        <!-- masterContainer End -->
+
+        <!-- FOOTER -->
+
+        [% IF !skipfooter %]
+        <footer class="cp-layout-footer" role="contentinfo">
+            <cp-footer id="cp-footer" version="[% Whostmgr.WHM_VERSION %]"></cp-footer>
+        </footer>
+        [% END %]
+
+        [%
+            #Load scripts from the template scripts parameter at the end of the body
+            IF theme == "bootstrap" || theme == "jupiter";
+                IF scripts;
+                    FOR src=scripts.list();
+                        PROCESS '_loadjs.tmpl';
+                    END;
+                END;
+                #Load page specific javascript from the js2 folder with the same name as the page if it exists
+                FOR src=Whostmgr.defheader_js2_urls();
+                    PROCESS '_loadjs.tmpl';
+                END;
+            ELSIF theme == "yui";
+                SET page_specifc_js = Whostmgr.get_page_js();
+                IF page_specifc_js;
+                    "<script>$page_specifc_js</script>";
+                END;
+            ELSE;
+                #Load page specific javascript from the js2 folder with the same name as the page if it exists
+                FOR src=Whostmgr.defheader_js2_urls();
+                    PROCESS '_loadjs.tmpl';
+                END;
+            END;
+        -%]
+
+        [% IF js_block %]
+        [%    js_block %]
+        [% END %]
+    </body>
+</html>

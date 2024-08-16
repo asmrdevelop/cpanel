@@ -1,0 +1,150 @@
+my %sender_recent_authed_mail_ips_address_cache;
+my $get_recent_authed_mail_ips_lookup_method;
+
+sub get_recent_authed_mail_ips_text_entry {
+    my ( $sender, $domain ) = get_recent_authed_mail_ips_entry(@_);
+    return join( '|', ( $sender || '' ), $domain );
+}
+
+sub popbeforesmtpwarn {
+    if ( my @possible_users = _get_possible_users_from_recent_authed_mail_ips_users() ) {
+        return ( "X-PopBeforeSMTPSenders: " . join( ",", @possible_users ) );
+    }
+    return '';
+}
+
+sub get_recent_authed_mail_ips_entry {
+    my $log = shift;
+
+    # SENDING OVER POP B4 SMTP or NOAUTH
+    # case 43151, case 43150
+    $get_recent_authed_mail_ips_lookup_method = '';
+
+    my $sender_host_address = Exim::expand_string('$sender_host_address');
+
+    # Exim::log_write("!DEBUG! get_recent_authed_mail_ips_entry sender_host_address=[$sender_host_address] log=[$log]");
+    my ( $sender, $domain );
+
+    if ( exists $sender_recent_authed_mail_ips_address_cache{$sender_host_address} ) {
+
+        # Exim::log_write("!DEBUG! get_recent_authed_mail_ips_entry sender_host_address=[$sender_host_address] USING CACHE");
+        ( $sender, $domain, $get_recent_authed_mail_ips_lookup_method ) = @{ $sender_recent_authed_mail_ips_address_cache{$sender_host_address} };
+        $get_recent_authed_mail_ips_lookup_method = "cached: " . $get_recent_authed_mail_ips_lookup_method;
+        $log                                      = 0;
+    }
+    else {
+        my $recent_authed_mail_ips_users_is_up_to_date = ( stat('/etc/recent_authed_mail_ips_users') )[9] + 7200 > time() ? 1 : 0;
+        my $sender_address_domain;
+
+        # Exim::log_write("!DEBUG! get_recent_authed_mail_ips_entry sender_host_address=[$sender_host_address] recent_authed_mail_ips_users_is_up_to_date= $recent_authed_mail_ips_users_is_up_to_date");
+
+        # If we have a recent_authed_mail_ips_users file that is up to date, we can verify the ip matches
+        if ($recent_authed_mail_ips_users_is_up_to_date) {
+
+            # This is what the user has claimed as the sender
+            my $sender_address   = Exim::expand_string('$sender_address');
+            my $from_h_domain    = Exim::expand_string('${domain:$h_from:}');
+            my $from_h_localpart = Exim::expand_string('${local_part:$h_from:}');
+            my $from_h           = "$from_h_localpart\@$from_h_domain";
+
+            # First we try to find the address in the recent_authed_mail_ips_users file (with a cached exim lookup)
+            if ( my @possible_users = _get_possible_users_from_recent_authed_mail_ips_users() ) {
+
+                if ( grep { tr/@// ? $from_h eq $_ : $from_h eq $_ . '@' . $primary_hostname } @possible_users ) {
+                    $sender                                   = $from_h;
+                    $domain                                   = getdomainfromaddress($from_h);
+                    $get_recent_authed_mail_ips_lookup_method = "full match of from_h in recent_authed_mail_ips_users";
+                }
+                elsif ( grep { tr/@// ? $sender_address eq $_ : $sender_address eq $_ . '@' . $primary_hostname } @possible_users ) {
+                    $sender                                   = $sender_address;
+                    $domain                                   = getdomainfromaddress($sender_address);
+                    $get_recent_authed_mail_ips_lookup_method = "full match of sender_address in recent_authed_mail_ips_users";
+                }
+                elsif ( ( $sender_address_domain = ( split( m/\@/, $sender_address ) )[1] ) && grep( m/\@\Q$sender_address_domain\E$/, @possible_users ) ) {
+                    $domain                                   = $sender_address_domain;
+                    $sender                                   = '-unknown-@' . $domain;
+                    $get_recent_authed_mail_ips_lookup_method = "match of sender_address_domain in recent_authed_mail_ips_users";
+                }
+                elsif ( grep { tr/@// ? ( $from_h eq $_ ) : ( $from_h_localpart eq $_ && ( !length $from_h_domain || $from_h_domain eq $primary_hostname ) ) } @possible_users ) {
+                    $sender                                   = $from_h;
+                    $domain                                   = $from_h_domain;
+                    $get_recent_authed_mail_ips_lookup_method = "full match of from_h in recent_authed_mail_ips_users";
+                }
+                elsif ( grep( m/\@\Q$from_h_domain\E$/, @possible_users ) ) {
+                    $domain                                   = $from_h_domain;
+                    $sender                                   = '-unknown-@' . $from_h_domain;
+                    $get_recent_authed_mail_ips_lookup_method = "match of from_h_domain in recent_authed_mail_ips_users";
+                }
+                elsif ( $possible_users[0] && $possible_users[0] eq '-alwaysrelay-' ) {
+                    if ($from_h_domain) {
+                        Exim::log_write("$sender_host_address in /etc/alwaysrelay trusting from_h_domain of: $from_h_domain and from_h_localpart: $from_h_localpart");
+                        $domain                                   = $from_h_domain;
+                        $sender                                   = $from_h;
+                        $get_recent_authed_mail_ips_lookup_method = "in alwaysrelay trusted from_h";
+                    }
+                    else {
+                        Exim::log_write("$sender_host_address in /etc/alwaysrelay trusting sender_address_domain of: $sender_address_domain");
+                        $domain                                   = $sender_address_domain;
+                        $sender                                   = $sender_address;
+                        $get_recent_authed_mail_ips_lookup_method = "in alwaysrelay trusted sender_address";
+                    }
+                }
+                else {
+
+                    # If none of them matched, we have to assume they authenticated in some we so we go with the first one
+                    $domain                                   = getdomainfromaddress( $possible_users[0] );
+                    $sender                                   = $possible_users[0];
+                    $get_recent_authed_mail_ips_lookup_method = "in recent_authed_mail_ips_users using first address";
+                }
+                if ( $sender =~ m/^\*/ ) {
+                    $sender =~ s/^\*/-unknown-/;
+                }
+                $sender_recent_authed_mail_ips_address_cache{$sender_host_address} = [ $sender, $domain, $get_recent_authed_mail_ips_lookup_method ];
+            }
+        }
+
+        # we need to check alwaysrelay since we don't require recentauthedmailiptracker to be enabled
+        if ( !$domain && -e '/etc/alwaysrelay' ) {
+            my $alwaysrelay_result = Exim::expand_string('${lookup{$sender_host_address}iplsearch{/etc/alwaysrelay}{$sender_host_address $value}}');
+            if ($alwaysrelay_result) {
+                my ( $alwaysrelay_ip, $alwaysrelay_user ) = split( /\s+/, $alwaysrelay_result );
+                if ($alwaysrelay_user) {
+                    $domain                                   = getdomainfromaddress($alwaysrelay_user);
+                    $sender                                   = $alwaysrelay_user;
+                    $get_recent_authed_mail_ips_lookup_method = "full match in alwaysrelay with recentauthedmailiptracker disabled";
+                    Exim::log_write("$sender_host_address in /etc/alwaysrelay using domain $domain from lookup of $alwaysrelay_user");
+                }
+                if ( !$domain ) {
+                    $domain = $sender_address_domain = ( split( /\@/, Exim::expand_string('$sender_address') ) )[1];
+                    $sender = "-unknown-\@$domain";
+                    $get_recent_authed_mail_ips_lookup_method = "in alwaysrelay with recentauthedmailiptracker disabled";
+                    Exim::log_write("$sender_host_address in /etc/alwaysrelay trusting sender_address_domain of: $sender_address_domain");
+                }
+            }
+
+            # no need to check /etc/alwaysrelay as they are automaticlly built into recent_authed_mail_ips_users
+        }
+    }
+    if ($domain) {
+        if ($log) {
+            my $message_exim_id                   = Exim::expand_string('$message_exim_id');
+            my $sender_host_name                  = Exim::expand_string('${if match_ip{$sender_host_address}{+loopback}{localhost}{$sender_host_name}}');
+            my $sender_host_port                  = Exim::expand_string('$sender_host_port');
+            my $recent_authed_mail_ips_local_user = getdomainowner($domain);
+            my $recent_authed_mail_ips_local_uid  = user2uid($recent_authed_mail_ips_local_user);
+            Exim::log_write("SMTP connection identification H=$sender_host_name A=$sender_host_address P=$sender_host_port U=$recent_authed_mail_ips_local_user ID=$recent_authed_mail_ips_local_uid S=$sender B=get_recent_authed_mail_ips_entry");
+        }
+        return ( $sender, $domain, $get_recent_authed_mail_ips_lookup_method );
+    }
+
+    return ( '', '', '' );
+}
+
+sub _get_possible_users_from_recent_authed_mail_ips_users {
+    my $recent_authed_mail_ips_users_result = Exim::expand_string('${lookup{$sender_host_address}lsearch{/etc/recent_authed_mail_ips_users}{$value}}');
+    return map {
+        s/\/.*$//g if tr/\///;
+        tr/+%:/@/;
+        $_;
+    } split( m/\s*\,\s*/, $recent_authed_mail_ips_users_result );
+}

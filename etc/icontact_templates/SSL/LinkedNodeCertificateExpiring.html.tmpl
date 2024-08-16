@@ -1,0 +1,29 @@
+[%#
+Varibles passed in:
+
+- linked_nodes - arrayref of hashrefs:
+    - alias
+    - hostname
+    - certificate (i.e., Cpanel::SSL::Objects::Certificate)
+    - validity_left_localized
+
+For more information about how to customize notification templates, read our documentation at https://go.cpanel.net/notificationtemplates
+-%]
+
+[%
+PROCESS "include/colors.tmpl";
+PROCESS "include/styles.tmpl";
+PROCESS "include/certificate_info_extended.tmpl";
+
+WRAPPER 'wrapper/main.html.tmpl';
+-%]
+
+<p>[% CPANEL.locale.maketext('“[_1]”’s [asis,TLS] certificate expires soon. Replace this certificate before [datetime,_2,date_format_full] to avoid service interruptions.', NOTICE.node_info.hostname, 1 + NOTICE.node_info.certificate.not_after()) %]</p>
+
+<h4>[% CPANEL.locale.maketext('Validity remaining: [_1]', NOTICE.node_info.validity_left_localized) %]</h4>
+
+<h4>[% CPANEL.locale.maketext('Certificate Details:') %]</h4>
+
+[% certificate_info_extended( certificate = NOTICE.node_info.certificate ) -%]
+
+[% END #wrapper -%]

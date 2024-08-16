@@ -1,0 +1,31 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/syslog_check                    Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use Cpanel::SafeRun::Errors ();
+
+alarm(120);    #prevent hang on total failure
+
+my $has_syslog;
+foreach my $service ( 'syslogd', 'rsyslogd' ) {
+    my $output = Cpanel::SafeRun::Errors::saferunallerrors( '/usr/local/cpanel/scripts/restartsrv_' . $service, '--check' );
+    if ( !$output ) {
+        print "syslog_check: passed\n";
+        $has_syslog = 1;
+        last;
+    }
+}
+
+exit if $has_syslog;
+
+require Sys::Syslog;
+import Sys::Syslog qw(:DEFAULT setlogsock);
+
+Sys::Syslog::openlog( 'cpanel_syslog_test', "ndelay,pid", "local0" )                                                                                                                                       || do { print "test_syslog: failed\n"; exit; };
+Sys::Syslog::syslog( 'info', 'This is a test message added by cPanel to ensure syslog is running.  Please disregard this message. For more information please see /usr/local/cpanel/scripts/' . __FILE__ ) || do { print "test_syslog: failed\n"; exit; };
+Sys::Syslog::closelog();
+
+print "syslog_check: passed\n";

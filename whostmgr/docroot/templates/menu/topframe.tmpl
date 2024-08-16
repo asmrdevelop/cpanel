@@ -1,0 +1,202 @@
+[% USE Whostmgr -%]
+[% USE JSON -%]
+[% SET whm_variables = Whostmgr.template_vars,
+             whm_env = Whostmgr.env,
+             shorthostname = Whostmgr.shorthostname(),
+             has_root_privileges =  Whostmgr.hasroot(),
+             show_reboot_banner = Whostmgr.check_flag('CPCONF=show_reboot_banner'),
+             cp_security_token = cp_security_token || '';
+%]
+    <div id="topFrameWrapper" class="topFrameWrapper">
+        <div class="informationWrapper">
+            <div class="infoContainer">
+                <ul class="serverInfo">
+                    <li>
+                        <span id="lblServerInfo"
+                            title="[% locale.maketext('Server Information') %]">
+                            [% whm_variables.BASEOS %] [% whm_variables.profile == "STANDARD" ? "" : whm_variables.profile %] [% whm_variables.envtype == "standard" ? "" : whm_variables.envtype %] [[% shorthostname %]]
+                        </span>
+                    </li>
+                    <li dir="ltr">
+                        [% IF has_root_privileges %]
+                        <a id="lnkWHMVersion"
+                            href="[% cp_security_token %]/scripts2/upcpform"
+                            title="[% locale.maketext('[asis,cPanel amp() WHM] Version') %]">
+                            v[% Whostmgr.WHM_VERSION %]
+                            [% IF whm_variables.test_build %]
+                                [TEST BUILD]
+                            [% END %]
+                        </a>
+                        [% ELSE %]
+                        <span id="lblWHMVersion"
+                            title="[% locale.maketext('[asis,cPanel amp() WHM] Version') %]">
+                            v[% Whostmgr.WHM_VERSION %]
+                        </span>
+                        [% END %]
+                    </li>
+                    <li class="lastChild">
+                        <a id="loadlive"
+                            class="hidden"
+                            [% IF !Whostmgr.dnsonly && has_root_privileges %]href="[% cp_security_token %]/scripts2/top"[% END %]
+                            title="[% locale.maketext('Your server’s one-minute, five-minute, and 15-minute load averages.') %]">
+                            [% locale.maketext('Load Averages:') %]
+                            <span id="lavg_one"></span>
+                            <span id="lavg_five"></span>
+                            <span id="lavg_fifteen"></span>
+                        </a>
+                    </li>
+                </ul>
+            </div>
+        </div>
+        <div class="navigationContainer">
+            <div class="navigation">
+                <ul class="navigationLinks">
+                    <li>
+                        <a id="lnkWHMLogo"
+                            href="[% cp_security_token %]/"
+                            title="[% locale.maketext_plain_context('[output,acronym,WHM,Web Host Manager]') %]">
+                            <img class="logo"
+                                src="[% Whostmgr.find_file_url('logo.svg') %]"
+                                alt="[% locale.maketext_plain_context('[output,acronym,WHM,Web Host Manager]') %]" />
+                        </a>
+                    </li>
+                    [% IF Whostmgr.dnsonly -%]
+                    <li id="lblDnsONLY" class="productTypeBreadcrumb">DNSOnly®</li>
+                    [% END -%]
+                    <li>
+                        <a id="lnkNews" class="navLink"
+                            href="[% cp_security_token %]/cgi/news.cgi"
+                            title="[%  locale.maketext('News') %]">
+                            [% locale.maketext('News') %]
+                        </a>
+                    </li>
+                    <li>
+                        <a id="lnkChangeLog" class="navLink"
+                            href="[% cp_security_token %]/cgi/changelog.cgi?version=[% vars.cpanel_version || '' %]"
+                            title="[% locale.maketext('Change Log') %]">
+                            [% locale.maketext('Change Log') %]
+                        </a>
+                    </li>
+                    <li>
+                        <a id="lnkLogout" class="navLink"
+                            href="/logout/?locale=[% locale.get_language_tag() %]"
+                            target="_top"
+                            title="[% locale.maketext('Log Out') %]">
+                            <span>[% locale.maketext('Log Out') %]</span><span> ([% whm_variables.remote_user %])</span>
+                        </a>
+                    </li>
+                </ul>
+                <div id="topFrameWarningsContainer">
+                    <div id="topFrameWarnings">
+                        [% IF !Whostmgr.dnsonly && has_root_privileges && !whm_variables.needs_reboot.quota %]
+                        <!-- Make me permanently disabled when we get the XHR rolling, it will toggle instead -->
+                        <div id="quotaDisabledWarning" class="updateblock quota_sensitive" style="display:none;">
+                            <span class="warnings">
+                                [% locale.maketext('Filesystem quotas are currently disabled.') %]
+                                <a id="lnkUpdateBlocker"
+                                    href="[% cp_security_token %]/scripts/dialog?dialog=quotas"
+                                    title="[% locale.maketext('Click to enable quotas.') %]">
+                                    [% locale.maketext('Click to enable.') %]
+                                </a>
+                            </span>
+                        </div>
+                        [% END %]
+                        [% IF !Whostmgr.dnsonly && has_root_privileges && !whm_variables.quota_broken %]
+                        <!-- Make me permanently disabled when we get the XHR rolling, it will toggle instead -->
+                        <div id="quotaBrokenWarning" class="updateblock quota_sensitive" style="display:none;">
+                            <span class="warnings">
+                                [% locale.maketext('Filesystem quotas are currently broken.') %]
+                                <a id="lnkBrokenQuota"
+                                    href="https://go.cpanel.net/fixquotas"
+                                    title="[% locale.maketext('Click for more information.') %]">
+                                    [% locale.maketext('Click for more information.') %]
+                                </a>
+                            </span>
+                        </div>
+                        [% END %]
+                        [% update_blocked_result = whm_variables.update_blocked %]
+                        [% IF update_blocked_result -%]
+                        <div id="reviewUpdateBlockerInfo" class="updateblock">
+                            <span class="warnings">
+                                [% locale.maketext('The last attempt to update [asis,cPanel amp() WHM] was blocked.') %]
+                                <a id="lnkUpdateBlocker"
+                                    href="[% cp_security_token %]/scripts7/review_upcp_blockers"
+                                    title="[% locale.maketext('Details') %]">
+                                    [% locale.maketext('Details') %]
+                                </a>
+                            </span>
+                        </div>
+                        [% ELSE -%]
+                        <div id="getUpdateAvailability" class="updateblock hidden">
+                            <span class="warnings">
+                                <span id="lblUpdateNewestVersion">
+                                    [% locale.maketext('Version “[_1]” is available.', "[PLACEHOLDER_VALUE_UPDATE_VERSION]"); %]
+                                </span>
+                                <a id="lnkUpdateNow"
+                                    href="[% cp_security_token %]/scripts2/upcpform"
+                                    title="[% locale.maketext('Update Now') %]">
+                                    [% locale.maketext('Update Now') %]
+                                </a>
+                            </span>
+                        </div>
+                        [% END -%]
+                        [% IF has_root_privileges && show_reboot_banner -%]
+                            [% needs_reboot_result = whm_variables.needs_reboot -%]
+                            [% IF needs_reboot_result %]
+                                <div class="updateblock">
+                                    <span class="warnings">
+                                        [%-
+                                            SET reboot_reasons = [];
+                                            IF needs_reboot_result.quota;
+                                                reboot_reasons.push( locale.maketext('[comment,part of a list; prefixed with “You must reboot the server to”]enable quotas') );
+                                            END;
+                                            IF needs_reboot_result.kernel;
+                                                reboot_reasons.push( locale.maketext('[comment,part of a list; prefixed with “You must reboot the server to”]apply kernel updates') );
+                                            END;
+                                            IF needs_reboot_result.updates;
+                                                reboot_reasons.push( locale.maketext('[comment,part of a list; prefixed with “You must reboot the server to”]apply software updates') );
+                                            END;
+
+                                            # Inserting a list of reboot_reasons likely only works well in
+                                            # English.  This should be refactored have more pre-set locale
+                                            # strings to be more friendly to translators.
+
+                                            # Performance:
+                                            # list_and will load Locales.pm so lets try to avoid it if we can
+                                            SET reboot_text =
+                                                reboot_reasons.size > 1
+                                                ? locale.maketext('You must reboot the server to [list_and,_1].[comment,a list of 2 or 3 word actions]', reboot_reasons )
+                                                : reboot_reasons.size == 1
+                                                ? locale.maketext('You must reboot the server to [_1].', reboot_reasons.0 )
+                                                : locale.maketext('You must reboot the server.');
+                                        -%]
+                                        <a id="lnkRebootRequired"
+                                            href="[% cp_security_token %]/scripts/graceful_reboot_landing?suggest=1"
+                                            title="[% reboot_text %]">
+                                            [% reboot_text %]
+                                        </a>
+                                    </span>
+                                </div>
+                            [% END -%]
+                        [% END -%]
+                        [% mysql_eol_warning = whm_variables.mysql_version_approaching_eol %]
+                        [% IF mysql_eol_warning -%]
+                        <div class="updateblock">
+                            <span class="warnings">
+                                [% locale.maketext('[_1][comment,a software name] [_2][comment,a software version] will reach [asis,EOL] soon.', mysql_eol_warning.display_name, mysql_eol_warning.version) -%]
+                                <a id="lnkUpdateMysql"
+                                    href="[% cp_security_token _ "/scripts/mysqlupgrade" %]"
+                                    title="[% locale.maketext('Upgrade Now') %]">
+                                    [% locale.maketext('Upgrade Now') %]
+                                </a>
+                            </span>
+                        </div>
+                        [% END -%]
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    <script type="text/javascript">
+    window.serverNeedsReboot = [% JSON.stringify(whm_variables.needs_reboot) %];
+    </script>

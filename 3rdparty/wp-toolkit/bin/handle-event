@@ -1,0 +1,33 @@
+#!/usr/bin/sw-engine
+<?php
+
+\date_default_timezone_set(@date_default_timezone_get());
+umask(0077);
+
+if (posix_getuid() === 0) {
+    $userInfo = posix_getpwnam('wp-toolkit');
+
+    if ($userInfo === false) {
+        throw new \Exception("Failed to get user info for 'wp-toolkit' user");
+    }
+
+    $initgroupsResult = posix_initgroups('wp-toolkit', $userInfo['gid']);
+    $setgidResult = posix_setgid($userInfo['gid']);
+    $setuidResult = posix_setuid($userInfo['uid']);
+
+    if ($initgroupsResult === false || $setgidResult === false || $setuidResult === false) {
+        throw new \Exception("Failed to impersonate under 'wp-toolkit' user");
+    }
+} else {
+    exit('Error: Permission denied: This command is allowed for root user only.' . PHP_EOL);
+}
+
+$scriptsDir = '/usr/local/cpanel/3rdparty/wp-toolkit/scripts';
+$chdirResult = chdir($scriptsDir);
+if ($chdirResult === false) {
+    throw new \Exception("Failed to change current directory to '{$scriptsDir}'");
+}
+
+$argv = array_slice($argv, 1);
+
+require 'handle-events.php';

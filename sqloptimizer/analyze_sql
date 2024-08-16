@@ -1,0 +1,184 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - sqloptimizer/analyze_sql                Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+#
+# This code (this file only) is subject to the GPL v2.
+#
+
+BEGIN { unshift @INC, '/usr/local/cpanel/sqloptimizer'; }
+
+use MysqlDumpSlow               ();
+use DBIx::MyParsePP             ();
+use Carp                        ();
+use Cpanel::SafeStorable        ();    # PPI USE OK -- use Storable
+use Cpanel::MysqlUtils::Connect ();
+
+use Try::Tiny;
+
+my $parser = DBIx::MyParsePP->new();
+
+my $logfile  = readline( \*STDIN );
+my $dbserver = readline( \*STDIN );
+my $dbpass   = readline( \*STDIN );
+
+chomp($logfile);
+chomp($dbserver);
+chomp($dbpass);
+
+my $dbh;
+try {
+    $dbh = Cpanel::MysqlUtils::Connect::get_dbi_handle(
+        'dbserver'   => $dbserver,
+        'dbpass'     => $dbpass,
+        'extra_args' => { 'RaiseError' => 0 },
+    );
+};
+if ( !$dbh ) { die "Could not connect to mysql"; }
+
+my %DB_KEYS;
+my %DB_TYPES;
+
+my $queries = MysqlDumpSlow::fetch_slow_queries($logfile);
+my $olddb;
+foreach ( keys %{$queries} ) {
+    next if ( !/^\s*select/i );
+    next if ( $queries->{$_}->{'c'} < 5 );
+    my $db      = $queries->{$_}->{'d'};
+    my $avgtime = $queries->{$_}->{'t'} / $queries->{$_}->{'c'};
+    if (/from\s+([^\.]+)\./) {
+        $db = $1;
+        s/from(\s+)[^\.]+\./from$1/;
+    }
+    if ( $db ne $olddb ) {
+        $dbh->do("use $db;");
+    }
+
+    $olddb = $db;
+
+    my $optables = get_optables($_);
+    next if ( scalar keys %$optables == 0 );
+
+    my $query  = $parser->parse($_);
+    my $tables = $query->getTables();
+    my $from   = $query->getFrom()->getFields();
+
+    my %INDEX;
+    foreach my $block (@$from) {
+        my $name = $block->name();
+        if ( $name eq 'simple_ident_q' ) {
+            my ( $table, $col ) = split( /\s*\.\s*/, $block->toString );
+            $table =~ s/\s//g;
+            $col   =~ s/\s//g;
+            $col = uc($col);
+            if ( !exists $INDEX{$table} ) { $INDEX{$table} = []; }
+            if ( !grep( /^\Q$col\E$/, @{ $INDEX{$table} } ) ) {
+                push @{ $INDEX{$table} }, $col;
+            }
+        }
+        elsif ( $name eq 'ident' ) {
+            my $table = $tables->[0]->toString;
+            my $col   = uc( $block->toString );
+            $table =~ s/\s//g;
+            $col   =~ s/\s//g;
+
+            if ( !exists $INDEX{$table} ) { $INDEX{$table} = []; }
+            if ( !grep( /^\Q$col\E$/, @{ $INDEX{$table} } ) ) {
+                push @{ $INDEX{$table} }, $col;
+            }
+
+        }
+    }
+
+    foreach my $table (@$tables) {
+        my $table_name = $table->toString;
+        $table_name =~ s/\s//g;
+        next if ( !$optables->{$table_name} );
+        next if ( exists $DB_KEYS{$db}->{$table_name} );
+
+        $DB_KEYS{$db}->{$table_name} = {};
+        my $expq = $dbh->prepare("describe $table_name;");
+        $expq->execute();
+        while ( my $data = $expq->fetchrow_hashref() ) {
+            if ( $data->{'Type'} ) {
+                $DB_TYPES{$db}->{$table_name}->{ $data->{'Field'} } = $data->{'Type'};
+
+            }
+            if ( $data->{'Key'} ) {
+                $DB_KEYS{$db}->{$table_name}->{ $data->{'Field'} } = $data->{'Key'};
+            }
+        }
+        $expq->finish();
+
+    }
+    my %NUM_ROWS;
+    my %KEYS;
+    my %TYPES;
+    foreach my $table ( keys %INDEX ) {
+        $KEYS{$table}  = $DB_KEYS{$db}->{$table};
+        $TYPES{$table} = $DB_TYPES{$db}->{$table};
+        next if ( !$optables->{$table} );
+        my @TESTCOLS = @{ $INDEX{$table} };
+        my @COLS;
+        foreach my $col (@TESTCOLS) {
+            if ( $TYPES{$table}->{$col} =~ /(text|blob)/i ) {
+                @COLS = ();
+                next;
+            }
+            else {
+                push @COLS, $col;
+            }
+        }
+        my $last_col = pop(@COLS);
+        $NUM_ROWS{$table}{$last_col} = get_num_rows( $table, $last_col );
+    }
+
+    Storable::nstore_fd(
+        {
+            'db'       => $db,
+            'query'    => $_,
+            'index'    => \%INDEX,
+            'keys'     => \%KEYS,
+            'types'    => \%TYPES,
+            'numrows'  => \%NUM_ROWS,
+            'avgtime'  => $avgtime,
+            'optables' => $optables
+        },
+        \*STDOUT
+    );
+
+}
+
+sub get_optables {
+    my $query = shift;
+    my $rowq  = $dbh->prepare("explain $query;");
+    $rowq->execute();
+    my %opt;
+    while ( my $data = $rowq->fetchrow_hashref() ) {
+        if ( $data->{'extra'} =~ /impossible/i ) {
+            return;
+        }
+        if ( $data->{'table'} && !$data->{'key'} ) {
+            $opt{ $data->{'table'} } = 1;
+        }
+    }
+
+    $rowq->finish();
+    return \%opt;
+}
+
+sub get_num_rows {
+    my $table = shift;
+    my $col   = shift;
+    my $rowq  = $dbh->prepare("explain select $col from $table;");
+    $rowq->execute();
+
+    my $data = $rowq->fetchrow_hashref();
+    $rowq->finish();
+    return $data->{'rows'};
+}
+
+__END__

@@ -1,0 +1,71 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/updatenameserverips             Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+# ignore our parent if it dies
+$SIG{'HUP'} = 'IGNORE';
+$SIG{'INT'} = 'IGNORE';
+
+use strict;
+
+use Getopt::Long ();
+
+use Cpanel::DnsUtils::NameServerIPs ();
+use Cpanel::Logger                  ();
+use Cpanel::PID                     ();
+
+my $logger = Cpanel::Logger->new();
+
+if ( $> != 0 ) {
+    $logger->die("This program can only be run as root");
+}
+
+my ( $debug, $help );
+if (
+    !Getopt::Long::GetOptions(
+        "debug!" => \$debug,
+        "help!"  => \$help
+    )
+) {
+    print_usage();
+    $logger->die("Invalid command line options");
+}
+
+if ($help) {
+    print_usage();
+    exit();
+}
+
+my $pid_obj = Cpanel::PID->new( { 'pid_file' => '/var/run/updatenameserverips.pid' } );
+unless ( $pid_obj->create_pid_file() > 0 ) {
+    print "Updatenameserverips appears to be running already.\n";
+    print "Please wait for the current update to finish before attempting another.\n";
+    exit 1;
+}
+
+eval { Cpanel::DnsUtils::NameServerIPs::updatenameserveriplist($debug); };
+
+if ($@) {
+    $logger->warn("An error occurred in building name server ip list: $@");
+}
+
+$pid_obj->remove_pid_file();
+exit();
+
+sub print_usage {
+    print <<"USAGE";
+
+$0 [ options ]
+
+    Generates a list of name servers and their ip addresses.
+
+    Options:
+
+        --debug     print extra debugging information
+        --help      print this message
+
+USAGE
+}

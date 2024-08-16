@@ -1,0 +1,19 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/ptycheck                        Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+my (
+    $dev,   $ino,   $mode,  $nlink,   $uid, $gid, $rdev, $size,
+    $atime, $mtime, $ctime, $blksize, $blocks
+) = stat("/dev/ptmx");
+
+my $humanmode = sprintf( "%04o", $mode & 07777 );
+
+if ( $humanmode ne "0666" ) {
+    print "/dev/ptmx has improper permissions\n";
+    chmod( 0666, "/dev/ptmx" );
+    print "Permissions on /dev/ptmx have been fixed\n";
+}

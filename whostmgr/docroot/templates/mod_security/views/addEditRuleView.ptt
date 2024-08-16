@@ -1,0 +1,156 @@
+
+    <div class="row">
+        <div class="col-xs-10" ng-show="!isEditor && !isCopy">
+            [% locale.maketext('Use the form to add new custom rules to the custom rules list for [asis,ModSecurity™]. This editor only supports [asis,SecRule] and [asis,SecAction] directives.') %]
+        </div>
+        <div class="col-xs-10" ng-show="!isEditor && isCopy">
+            [% locale.maketext('Use the form to create a copy of the selected rule. The system generates a new rule ID for the copied rule. This editor only supports [asis,SecRule] and [asis,SecAction] directives.') %]
+        </div>
+        <div class="col-xs-10" ng-show="isEditor">
+            [% locale.maketext('Use the form to edit an existing custom rule for [asis,ModSecurity™]. This editor only supports [asis,SecRule] and [asis,SecAction] directives.') %]
+        </div>
+    </div>
+
+    <h1 ng-if="!isEditor && !isCopy">
+        [% locale.maketext('Add a new custom [asis,ModSecurity™] rule.') %]
+    </h1>
+    <h1 ng-if="!isEditor && isCopy">
+        [% locale.maketext('Save a copy of an existing [asis,ModSecurity] rule.') %]
+    </h1>
+    <h1 ng-if="isEditor">
+        [% locale.maketext('Edit a custom [asis,ModSecurity™] rule.') %]
+    </h1>
+
+    <div class="callout callout-warning" ng-hide="!isCopy || originalRule.disabled">
+        <div>[% locale.maketext('Would you like to disable the original [asis,ModSecurity] rule? This change will not take effect until you restart [asis,Apache].') %]</div>
+        <button id="btnDisableOriginalRule"
+                type="button"
+                cp-action="disableOriginalRule(originalRule)"
+                button-class="btn btn-default">
+            [% locale.maketext('Disable Original Rule') %]
+        </button>
+    </div>
+
+    <div class="col-xs-12 col-sm-8 col-md-8 col-lg-8" ng-show="notice">
+        <div class="alert alert-info">
+            <span class="glyphicon glyphicon-info-sign"></span>
+            <div class="alert-message" id="ajax-notices">
+                <strong>[% locale.maketext('Processing:') %]</strong>
+                <span id="notice" ng-bind-html="notice | break"></span>
+            </div>
+        </div>
+    </div>
+
+    <form name="form" novalidate class="layout-medium ng-pristine ng-valid">
+        <div class="row" ng-if="isEditor">
+            <div class="col-xs-12 col-sm-12 col-md-9 col-lg-8">
+                <label for="txtId">[% locale.maketext('Original Id') %]</label>
+            </div>
+        </div>
+        <div class="row" ng-if="isEditor">
+            <div class="col-xs-12 col-sm-12 col-md-9 col-lg-8">
+                <input id="txtId" type="text" class="form-control" ng-model="id" readonly>
+            </div>
+        </div>
+        <div class="row">
+            <div class="col-xs-12 col-sm-12 col-md-9 col-lg-8">
+                <label>[% locale.maketext('Rule Text') %]</label>
+            </div>
+            <div class="hidden-xs hidden-sm col-md-3 col-lg-4">
+                <label>[% locale.maketext('References') %]</label>
+            </div>
+        </div>
+        <div class="row">
+            <div class="col-xs-12 col-sm-12 col-md-9 col-lg-8">
+                <textarea id="txtRuleText" class="form-control rule-editor" name="rule" ng-model="rule" auto-focus ng-disabled="isVendor || (isEditor && cantEdit)"></textarea>
+            </div>
+            <div class="col-xs-12 col-sm-12 col-md-3 col-lg-4">
+                <h2 class="visible-xs visible-sm">[% locale.maketext('References:') %]</h3>
+                <ul class="list-group">
+                    <li class="list-group-item">
+                        [% # Don't switch this to a go.cpanel.net redirect. See cases 117165, 117345.
+                           SET manual_url = 'https://github.com/SpiderLabs/ModSecurity/wiki/Reference-Manual-%28v2.x%29' %]
+                        <a id="ref-manual" href="[% manual_url %]" target="_blank">[% locale.maketext('[asis,ModSecurity™] Specification Reference') %] <span class="fas fa-external-link-alt"></span></a>
+                        <ul class="list-unstyled list-indent">
+                            <li>
+                                <a id="ref-SecRule" href="[% manual_url %]#SecRule" target="_blank">[% locale.maketext("[asis,SecRule] Reference") %] <span class="fas fa-external-link-alt"></span></a>
+                            </li>
+                            <li>
+                                <a id="ref-SecAction" href="[% manual_url %]#SecAction" target="_blank">[% locale.maketext("[asis,SecAction] Reference") %] <span class="fas fa-external-link-alt"></span></a>
+                            </li>
+                            <li>
+                                <a id="ref-Variables" href="[% manual_url %]#Variables" target="_blank">[% locale.maketext("[asis,Variables] Reference") %] <span class="fas fa-external-link-alt"></span></a>
+                            </li>
+                            <li>
+                                <a id="ref-Actions" href="[% manual_url %]#Actions" target="_blank">[% locale.maketext("[asis,Actions] Reference") %] <span class="fas fa-external-link-alt"></span></a>
+                            </li>
+                            <li>
+                                <a id="ref-Transforms" href="[% manual_url %]#Transformation_functions" target="_blank">[% locale.maketext("[asis,Transformations] Reference") %] <span class="fas fa-external-link-alt"></span></a>
+                            </li>
+                        </ul>
+                    </li>
+                    <li class="list-group-item">
+                        <a id="ref-FAQ" href="https://go.cpanel.net/ModSecurityReference-FAQ" target="_blank">[% locale.maketext('[asis,ModSecurity™] FAQ') %] <span class="fas fa-external-link-alt"></span></a>
+                    </li>
+                </ul>
+            </div>
+        </div>
+
+        <div class="row">
+            <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                <span class="help-block">
+                [% locale.maketext('If you enable the rule, it will be active when you deploy the configuration. Do you want to enable this rule?') %]
+                </span>
+                <div class="checkbox">
+                    <label>
+                        <input type="checkbox"
+                               id="chkEnabled"
+                               name="enabled"
+                               ng-model="enabled"
+                               ng-disabled="isEditor && cantEdit"
+                               ng-checked="enabled">
+                        <span id="chkLabel">[% locale.maketext('Enable Rule') %]</span>
+                    </label>
+                </div>
+            </div>
+
+        </div>
+
+        <div class="row">
+            <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                <span class="help-block">
+                [% locale.maketext('Do you want to deploy your rules and restart [asis,Apache]?') %]
+                </span>
+                <div class="checkbox">
+                    <label>
+                        <input type="checkbox"
+                               name="chkDeploy"
+                               id="chkDeploy"
+                               ng-model="deploy"
+                               ng-disabled="isEditor && cantEdit"
+                               ng-checked="deploy === true">
+                        <span id="chkLabel">[% locale.maketext('Deploy and Restart [asis,Apache]') %]</span>
+                    </label>
+                </div>
+                <span class="help-block">
+                [% locale.maketext('The system will deploy any other unpublished changes when you select this checkbox.') %]
+                </span>
+            </div>
+        </div>
+
+        <div class="row controls">
+            <div class="controls col-xs-12 col-sm-10 col-md-8 col-lg-6">
+                <button id="btnSaveBottom" class="btn  btn-primary" ng-disabled="disableSave(form)" ng-click="save(form, true)">[% locale.maketext('Save') %]</button>
+                <button id="btnSaveBottomAnother"
+                        class="btn btn-default"
+                        ng-show="!isEditor"
+                        ng-disabled="disableSave(form)"
+                        ng-click="save(form, false)">
+                    <span ng-show="isCopy">[% locale.maketext('Save and Copy Again') %]</span>
+                    <span ng-hide="isCopy">[% locale.maketext('Save and Add Another') %]</span>
+                </button>
+                <button id="btnCancel" class="btn  btn-link" ng-click="cancel()">[% locale.maketext('Cancel') %]</button>
+                <span spinner id="loadingSpinner" class="addSpinner" title="[% locale.maketext('Loading …') %]"></span>
+            </div>
+        </div>
+    </form>

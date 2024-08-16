@@ -1,0 +1,71 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/process_pending_cpanel_php_pear_registration
+#                                                  Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+# Exclusively for speeding up installs/upcp by processing these in the background.
+# Execution context is within scripts/maintenance
+package scripts::process_pending_cpanel_php_pear_registration;
+
+use strict;
+use warnings;
+
+use Cpanel::Binaries ();
+
+our %files_map = (
+    'deregistrations' => '/var/cpanel/.pending_pear_deregistrations',
+    'registrations'   => '/var/cpanel/.pending_pear_registrations',
+);
+
+# For mocking in tests
+our $ULC = '/usr/local/cpanel';
+
+exit __PACKAGE__->run() unless caller;
+
+sub run {
+    local $| = 1;
+    if ( scalar(@ARGV) ) {
+
+        # Only for satisfying cplint
+        my $wants_help   = grep { $_ eq '--help' } @ARGV;
+        my $print_handle = $wants_help ? *STDOUT : *STDERR;
+        print $print_handle "Usage:\n\n  This script doesn't accept arguments.\n\n  When ran it processes any pending PHP PEAR installs for cpanel-php packages.\n";
+        return $wants_help ? 0 : 1;
+    }
+
+    my $php_ver   = Cpanel::Binaries::get_php_version( 'flat' => 1 );
+    my $pear_dir  = "$ULC/3rdparty/php/$php_ver/lib/php";
+    my $pear_bin  = "$ULC/3rdparty/php/$php_ver/bin/pear";
+    die "Couldn't find the PHP pear executable! Please run /usr/local/cpanel/scripts/check_cpanel_pkgs --fix" if !-x $pear_bin;
+    my %args_map = (
+        'deregistrations' => [qw{uninstall --nodeps --ignore-errors --register-only}],
+        'registrations'   => [qw{install --nodeps --soft --force --register-only}],
+    );
+
+    # Do deregistrations first
+    foreach my $action (qw{deregistrations registrations}) {
+        next if !-f $files_map{$action} || !-s _;
+        open( my $fh, '<', $files_map{$action} ) || die "Can't open $files_map{$action} for reading: $!";
+        my @to_process = <$fh>;
+        close($fh);
+        @to_process = map { chomp( my $thing = $_ ); $thing } @to_process;
+        print "Now processing " . scalar(@to_process) . " pending pear $action...\n";
+        _system( $pear_bin, @{ $args_map{$action} }, @to_process ) && print STDERR "Some $action failed! This should never happen if the PEAR packages are packaged correctly!\n";
+        unlink( $files_map{$action} );
+    }
+
+    return 0;
+}
+
+# For mocking in tests
+sub _system {
+    if ( $ENV{'CPANEL_DEBUG_LEVEL'} ) {
+        print "[DEBUG][process_pending_cpanel_php_pear_registration][EXEC] " . join( " ", @_ ) . "\n";
+    }
+    return system(@_);
+}
+
+1;

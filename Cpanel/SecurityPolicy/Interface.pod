@@ -1,0 +1,241 @@
+
+# cpanel - Cpanel/SecurityPolicy/Interface.pod     Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+=head1 NAME
+
+Cpanel::SecurityPolicy::Interface - Describe the interface of SecurityPolicy plugins.
+
+
+=head1 SYNOPSIS
+
+All policies loaded by the Cpanel::SecurityPolicy module must conform to the
+interface described here in order to be used by the system.
+
+=head1 DESCRIPTION
+
+The L<Cpanel::SecurityPolicy> module implements an interface for a plugin-based
+security system. The individual policy modules are loaded and exercised through
+a defined API.
+
+To minimize the memory overhead of using the system, the code that executes the
+security policy is separated from the code that provides the UI portions of the
+policy. The separate portions of the interface are described in the respective
+method documentation.
+
+=head1 INTERFACE
+
+A SecurityPolicy plugin is implemented by a set of cooperating classes, spread
+across two or more modules. The core class of this plugin provides the test of
+the policy condition. This class also provides a method to access appropriate
+UI classes to interact with the user in case a policy was violated. The core
+class may also provide access to a class that can be used to set configuration
+information for the plugin.
+
+In order to be found by the SecurityPolicy system, all plugins must be located
+in the C<Cpanel::Security::Policy> namespace. The name of the main plugin
+module would then be C<Cpanel::Security::Policy::PolicyName> for the
+I<PolicyName> security policy.
+
+If you want to take advantage of the default behavior for loading User
+Interface code, you need to follow the naming convention for UI modules:
+C<Cpanel::Security::Policy::PolicyName::UI::UIType> where the I<PolicyName> is
+the policy name and the I<UIType> is the user interface type (HTML, Text,
+JsonApi, or XMLAPI).
+
+=over 4
+
+=item *
+
+Testing Policy Condition
+
+=item *
+
+User Interaction
+
+=item *
+
+Configuration
+
+=back
+
+The first piece of functionality is found in the module
+C<Cpanel::Security::Policy::PolicyName>, where I<PolicyName> is replaced with
+the name of the appropriate policy.
+
+The other two pieces of functionality are found in the modules
+C<Cpanel::Security::Policy::PolicyName::UI::UIType>, where I<PolicyName> is
+replaced with the name of the appropriate policy and I<UIType> is the
+appropriate User Interface type (HTML, Text, JsonApi, or XMLAPI). In general,
+the configuration should only be in the I<HTML> UI file.
+
+=head2 Main Security Policy Class
+
+The class C<Cpanel::Security::Policy::PolicyName> is loaded if the policy named
+I<PolicyName> is enabled. To simplify development, the class should derive from
+C<Cpanel::SecurityPolicy::Base>, which provides much of the interface. The derived
+class must implement the C<new> and C<fails> methods. There are also several other
+methods that are may optionally be supplied. For the full interface, see L<Cpanel::SecurityPolicy::Base>).
+
+=head3 new()
+
+The most basic version of the new method should call the class method
+C<Cpanel::SecurityPolicy::Base> to create and initialize the object. The
+simplest version of the method would be
+
+    sub new {
+        my ($class) = @_;
+
+        return Cpanel::SecurityPolicy::Base->init( __PACKAGE__, 9998 );
+    }
+
+If you need to extend the object, you can manipulate the object returned
+by the C<init> static method. The parameters to the C<init> method are the full
+package name for the policy class and the priority number which is used to
+determine the order in which policies are tested.
+
+=head3 $pol->fails( $sec_ctxt, $cpconf )
+
+=head3 $pol->bypass_page( $sec_ctxt, $cpconf )
+
+=head2 User Interaction
+
+A different UI module is loaded depending on which interface is being used to
+access the system. The supported UI types are I<HTML>, I<Text>, I<JsonApi>, and
+I<XMLAPI>. Of these, only I<HTML> is required. I<Text>, I<JsonApi>, and
+I<XMLAPI> have a default handler for the UI supplied by
+L<Cpanel::SecurityPolicy>.
+
+The UI module is loaded if the security policy check determines that the policy
+check failed. For example, L<Cpanel::Security::Policy::PasswordAge::UI::HTML> is
+loaded if the I<PasswordAge> policy is enabled, and its check failed. Each UI
+module must provide the following method:
+
+=head3 process( $acctref, $formref, $cpresult, $sec_ctxt, $cpconf )
+
+This method takes a set of parameters and provides the user interface needed to
+alert the user to the situation and potentially provide the ability for the user
+to resolve the issue. This method may be called again (depending on the resolution
+method) after a form submission to attempt to actually resolve the issue.
+
+The parameters to the method are as follows:
+
+=over 4
+
+=item C<$formref>
+
+A reference to a hash containing form parameters that may be used in resolving
+the security issue. This hash is created from the form supplied by the UI module.
+
+=item C<$sec_ctxt>
+
+A reference to a hash of security-specific account information for the current
+user.
+
+=item C<$cpconf>
+
+A reference to the hash of Cpanel Configuration information. This information
+comes straight from the F</var/cpanel/cpanel.config> file.
+
+=back
+
+Returns a hash ref containing result information. TODO : more docs.
+
+=head2 Configuration
+
+The module C<Cpanel::Security::Policy::PolicyName::UI::HTML> may also be loaded if
+I<PolicyName> is enabled to configure the configuration parameters for the policy.
+For configuration, the UI module can provide one optional method, as follows:
+
+=head3 config( $formref, $cpconf, $is_save )
+
+This method returns information describing the form entries that are needed to
+configure this policy. If the C<$is_save> parameter is true, the appropriate
+values from C<$form_ref> are placed in the C<$cpconf> hash.
+
+The return value from this method is a hashref containing the following data:
+
+=over 4
+
+=item header
+
+The value associated with this key is a string properly prepared for writing to
+the UI. This string is a description of the set of parameters this policy configures.
+
+=item error
+
+This optional key is used to report an error message if the parameters to save
+are invalid in some way. This string should already be localized before it is
+returned.
+
+=item fields
+
+The value for this key is an arrayref containing a set of hashrefs which describe the
+individual data fields. Each of these hashes contains the following:
+
+=over 4
+
+=item label
+
+A printable label descibing this parameter in user terms.
+
+=item id
+
+The string to be used as the key in C<$formref> when when a value for this parameter
+is returned.
+
+=item value
+
+The current value for this parameter.
+
+=item minval
+
+The minimum value allowed for numeric values. (optional)
+
+=item maxval
+
+The maximum value allowed for numeric values. (optional)
+
+=item type
+
+An optional key specifying the type of control. If not specified, the field is
+a simple text input. If the type has the value C<slider>, a slider control is
+used with a range between C<minval> and C<maxval>.
+
+=back
+
+=back
+
+The parameters for this method are as follows:
+
+=over 4
+
+=item C<$formref>
+
+This hashref contains the values returned from the configuration form.
+
+=item C<$cpconf>
+
+The hashref contianing the Cpanel configuration data.
+
+=item C<$is_save>
+
+The boolean parameter is true if we have data from the form to put in the
+configuration hash. It is false if we have not accessed the form.
+
+=back
+
+=head1 CONFIGURATION AND ENVIRONMENT
+
+Cpanel::SecurityPolicy::Interface requires no configuration files or environment variables.
+
+=head1 AUTHOR
+
+G. Wade Johnson  C<< wade@cpanel.net >>
+
+=head1 LICENSE AND COPYRIGHT
+
+Copyright (c) 2011, cPanel, Inc. All rights reserved.
+This code is subject to the cPanel license. Unauthorized copying is prohibited

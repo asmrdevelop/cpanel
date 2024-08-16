@@ -1,0 +1,76 @@
+[%#
+Variables passed in:
+
+user                    - The username that was being brute forced.
+origin                  - the system component from which the action originated
+ip_address              - the IP address from which the action originated
+current_failures        - The number of login failures
+max_allowed_failures    - The maximum allowed login failures before triggering this protection
+report                  - Information identifiing the host attempting to login
+host_server             - This server's hostname
+whitelist_ips           - List of links to add an ip or range to the whitelist
+blacklist_ips           - List of links to add an ip or range to the blacklist
+sent_to_root            - A default boolean flag sent to all templates that indicates if the message was sent to 'root'
+
+For more information about how to customize notification templates, read our documentation at https://go.cpanel.net/notificationtemplates
+
+-%]
+
+[%
+    PROCESS "include/colors.tmpl";
+    PROCESS "include/styles.tmpl";
+    PROCESS "include/blacklist_whitelist_links.tmpl";
+
+    WRAPPER 'wrapper/main.html.tmpl';
+
+    NOTICE.email_reason = CPANEL.locale.maketext('Brute Force attempt against “[_1]”.', NOTICE.user);
+
+%]
+
+<p>
+    [% CPANEL.locale.maketext('A device at the “[_1]” [output,abbr,IP,Internet Protocol] address has made a large number of invalid login attempts against the account “[_2]”.', NOTICE.ip_address, NOTICE.user ) %]
+    [% CPANEL.locale.maketext('This brute force attempt has exceeded the maximum number of failed login attempts that the system allows.') %]
+    [% CPANEL.locale.maketext('For security purposes, the system has temporarily blocked this [output,abbr,IP,Internet Protocol] address in order to prevent further attempts.') %]
+</p>
+
+<table>
+    <tbody>
+        <tr>
+            [% FOREACH item IN NOTICE.report %]
+                <tr>
+                    <th align="right">
+                        [% item.name %]:
+                    </th>
+                    <td align="left">
+                        [% item.value %]
+                    </td>
+                </tr>
+            [% END %]
+            <th align="right">
+                Number of authentication failures:
+            </th>
+            <td align="left">
+                [% NOTICE.current_failures %]
+            </td>
+        </tr>
+        <tr>
+            <th align="right">
+                Maximum number allowed:
+            </th>
+            <td align="left">
+                [% NOTICE.max_allowed_failures %]
+            </td>
+        </tr>
+    </tbody>
+</table>
+
+<p>
+    [% blacklist_whitelist_table(blacklist_ips=NOTICE.blacklist_ips, whitelist_ips=NOTICE.whitelist_ips); %]
+</p>
+
+<p>
+[% CPANEL.locale.maketext('If the system blocked this user in error, you can whitelist this [output,abbr,IP,Internet Protocol] address in [asis,WHM]’s [_1] interface at: [output,url,_2,_2,target,_3]', CPANEL.locale.maketext('cPHulk Brute Force Protection'), CPANEL.assemble_whm_url("scripts7/cphulk/config"),'_blank') %]
+</p>
+
+
+[% END %]

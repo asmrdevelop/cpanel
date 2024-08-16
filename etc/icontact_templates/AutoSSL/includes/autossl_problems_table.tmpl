@@ -1,0 +1,60 @@
+[%#
+This expects two parameters:
+
+    - ssl_tls_status_url
+    - autossl_problems
+
+“autossl_problems” is an array of hashes.
+Each hash is:
+
+{
+    domain (string)
+    problem (string)
+    time (ISO/Zulu time)
+}
+
+----------------------------------------------------------------------
+autossl_problems_table_plain - no preamble/postscript text
+
+autossl_problems_table - has preamble text about not getting a new cert
+and a postscript link to the SSL/TLS status page.
+-%]
+
+[% MACRO autossl_problems_table_plain BLOCK;
+    IF autossl_problems && autossl_problems.size;
+        PROCESS "include/icons.tmpl";
+        '<p>';
+
+        autossl_problems_table_preamble;
+
+        FOREACH problem IN autossl_problems;
+            SET problem_domain = problem.domain;
+
+            IF autossl_filter_domains && !autossl_filter_domains.$problem_domain;
+                NEXT;
+            END;
+    -%]
+
+        <div style="margin:10px;border:1px solid #000; ">
+            <div style="padding:5px;border-bottom:1px solid #000;background-color: [% medium_gray %]">
+                <strong>[% get_icon(icon='error') %] [% problem_domain %]</strong>
+                <span style="font-size:11px">([%- CPANEL.locale.maketext("checked on [datetime,_1,date_format_medium] at [datetime,_1,time_format_medium] [asis,UTC]", problem.time ) -%])</span>
+            </div>
+            <div><pre style="white-space:pre-wrap; margin:5px;">[% problem.problem.html() %]</pre></div>
+        </div>
+[%-
+        END;
+        '</p>';
+
+        autossl_problems_table_postscript;
+    END;
+END; -%]
+
+[%
+MACRO autossl_problems_table BLOCK;
+    SET autossl_problems_table_preamble = CPANEL.locale.maketext('The “[_1]” [asis,AutoSSL] provider could [output,strong,not] renew the [asis,SSL] certificate without a reduction of coverage because of the following [numerate,_2,problem,problems]:', autossl_provider, autossl_problems.size);
+
+    SET autossl_problems_table_postscript = '<p>' _ CPANEL.locale.maketext('For the most current status, navigate to the “[output,url,_1,SSL/TLS Status]” interface. You can also exclude domains from future renewal attempts, which would cease future notifications.', ssl_tls_status_url) _ '</p>';
+
+    autossl_problems_table_plain();
+END %]

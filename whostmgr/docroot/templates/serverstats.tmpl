@@ -1,0 +1,61 @@
+[%
+    labels = {
+        'vendor' => 'Vendor',
+        'name' => 'Name',
+        'speed' => 'Speed',
+        'cache' => 'Cache',
+    }
+-%]
+[% WRAPPER 'master_templates/master.tmpl' theme="yui"
+app_key='server_information' -%]
+<div class='brickcontainer'><div class='brickcontainer2'>
+[% PROCESS '_brickstart.tmpl' bricktitle='Processor Information' -%]
+[% IF ! data.processors.exists('error') %]
+Total processors: [% data.processors.keys.size %]
+[% FOR proc_index=data.processors.keys.nsort -%]
+[% data.processors.$proc_index.speed = data.processors.$proc_index.speed _ ' MHz' -%]
+<dl class='processors'>
+<dt>Processor #[% loop.index + 1 %]</dt>
+[% FOR label=['vendor','name','speed','cache'] -%]
+[% IF data.processors.$proc_index.$label;
+	"<dd><dl><dt>${labels.$label}</dt><dd>${data.processors.$proc_index.$label}</dd></dl></dd>";
+END -%]
+</dl>
+[% END -%]
+[% END -%]
+[% ELSE %]
+[% data.processors.error %]
+[% END -%]
+[% PROCESS '_brickend.tmpl' -%]
+<br />
+[% PROCESS '_brickstart.tmpl' bricktitle='Memory Information' -%]
+<pre>
+[% data.memory -%]
+</pre>
+[% PROCESS '_brickend.tmpl' -%]
+<br />
+[% PROCESS '_brickstart.tmpl' bricktitle='System Information' -%]
+<pre>
+[% data.system -%]
+</pre>
+[% PROCESS '_brickend.tmpl' -%]
+<br />
+[% PROCESS '_brickstart.tmpl' bricktitle='Physical Disks' -%]
+<pre>
+[% data.disks %]
+</pre>
+[% PROCESS '_brickend.tmpl' -%]
+<br />
+[% PROCESS '_brickstart.tmpl' bricktitle='Current Memory Usage' -%]
+<pre>
+[% data.memory_usage -%]
+</pre>
+[% PROCESS '_brickend.tmpl' -%]
+<br />
+[% PROCESS '_brickstart.tmpl' bricktitle='Current Disk Usage' -%]
+<pre>
+[% data.disk_usage -%]
+</pre>
+[% PROCESS '_brickend.tmpl' -%]
+</div></div>
+[% END #wrapper -%]

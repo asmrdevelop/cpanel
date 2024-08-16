@@ -1,0 +1,45 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/cpanelsync_postprocessor        Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+use Cpanel::Binaries ();
+use Cpanel::LoadFile ();
+
+my $saferoot = $ARGV[0];
+
+if ( $saferoot =~ /^\/usr\/local\/cpanel$/ ) {
+    if ( -e $saferoot . '/.cpanelsync.new' && -s _ ) {
+        my $newfiles = Cpanel::LoadFile::loadfile( $saferoot . '/.cpanelsync.new' );
+        my @OPT      = ();
+        if ( $newfiles =~ /Cpanel/ )      { push @OPT, '/usr/local/cpanel/Cpanel'; }
+        if ( $newfiles =~ /unprotected/ ) { push @OPT, '/usr/local/cpanel/base/unprotected'; }
+        if ( $newfiles =~ /yui/ )         { push @OPT, '/usr/local/cpanel/base/yui'; }
+        if ( $newfiles =~ /cjt/ )         { push @OPT, '/usr/local/cpanel/base/cjt'; }
+
+        _chattr(@OPT) if (@OPT);
+    }
+}
+if ( $saferoot =~ /^\/(?:scripts|usr\/local\/cpanel\/bin|usr\/local\/cpanel\/bin)$/ ) {
+    if ( -e $saferoot . '/.cpanelsync.new' && -s _ ) {
+        _chattr($saferoot);
+    }
+}
+elsif ( $saferoot =~ /^\/usr\/local\/cpanel\/base\/frontend/ ) {
+    if ( -e $saferoot . '/.cpanelsync.new' && -s _ ) {
+
+        _chattr($saferoot);
+    }
+}
+
+sub _chattr {
+    my @dirs       = @_;
+    my $chattr_bin = Cpanel::Binaries::path('chattr');
+    -x $chattr_bin or exit;
+    print "Optimizing File Access in " . join( ',', @dirs ) . "....";
+    system $chattr_bin, '-R', '+A', @dirs;
+    print "Done\n";
+}

@@ -1,0 +1,148 @@
+[%
+    USE JSON;
+
+    # Currently the only two modes are debug and release, but this
+    # might be expanded in the future.
+    IF CPANEL.is_debug_mode_enabled();
+        SET mode = 'debug';
+        SET optimized = 0;
+        SET cache_bust = 0; # turn off cache busting to use the browser debugger reliably on reloads
+    ELSE;
+        SET mode = 'release';
+        SET optimized = 1;
+    END;
+
+    # A developer might want to test the minified version while still
+    # using the cache buster, so this allows that configuration and
+    # defaults to optimized if not specified. This feature is not
+    # currently implemented and this just propagates the correct value.
+    IF CPANEL.FORM.optimized || CPANEL.CPVAR.optimized;
+        SET optimized = 1;
+    ELSIF CPANEL.FORM.exists('optimized') || CPANEL.CPVAR.exists('optimized');
+        SET optimized = 0;
+    ELSIF !optimized.defined;
+        SET optimized = 1;
+    END;
+
+    # Server-side vs client-side cache busting is a developer preference,
+    # so we give them an option to disable it in debug mode. Currently
+    # it is not suported to use server-side cache busting if optimized.
+    IF CPANEL.FORM.cache_bust || CPANEL.CPVAR.cache_bust;
+        SET cache_bust = 1;
+    ELSIF CPANEL.FORM.exists('cache_bust') || CPANEL.CPVAR.exists('cache_bust');
+        SET cache_bust = 0;
+    ELSIF !cache_bust.defined;
+        SET cache_bust = 0;
+    END;
+
+    # When e2e testing is running, it should set either a query string e2e=1, the CPVAR.e2e
+    # to 1, or the environment variable e2e to 1 to switch the framework into e2e mode.
+    # This mode is used to simplify the behaviors of the UI in such a way to make writing
+    # end to end tests simpler by disabling animations and other unexpected behaviors.
+    IF CPANEL.FORM.e2e;
+        SET is_e2e = 1;
+    ELSE;
+        SET is_e2e = 0;
+    END;
+
+    # Determine what application alias to use in the require line below.
+    IF use_master_bootstrap == 1;
+        alias = 'master';
+    ELSE;
+        alias = 'app';
+    END;
+
+    # Ensure we have an app_name
+    IF !app_name;
+        SET app_name = 'whostmgr';
+    END;
+
+    # Use the app_name to derive the angular module information for the parent app. WHM
+    # is the one case where we can't use the APP_NAME directly for the CJT2 module name
+    # and path.
+    IF app_name == 'whostmgr';
+        SET angular_module_name = "cjt2.whm";
+        SET modules_dependency_path = "cjt/modules.whm";
+    ELSE;
+        SET angular_module_name = "cjt2.$app_name";
+        SET modules_dependency_path = "cjt/modules.$app_name";
+    END;
+
+%]
+<script>
+/**
+ * Helper method to extend any existing PAGE object with the standard props.
+ * Needed before we load dependencies so it's used in an IIFE here.
+ * @param  {Object} destination Object to extend
+ * @param  {Object} source      New methods and properties to add
+ * @return {Object}             Extended object. To make chaining easier.
+ */
+var PAGE = (function(destination, source) {
+    for (var k in source) {
+        if (source.hasOwnProperty(k)) {
+            destination[k] = source[k];
+        }
+    }
+    return destination;
+})(PAGE || {}, {
+    [%- IF page_theme_path %]
+    THEME_PATH : [% page_theme_path %],
+    [%- END %]
+    [%- IF page_master_path %]
+    masterPath : [% page_master_path %],
+    [%- END %]
+    IS_PROXY: [% IF is_proxy %]true[% ELSE %]false[% END %],
+    APP_NAME: [% app_name.json() %],
+    CJT2_ANGULAR_MODULE_NAME: [% angular_module_name.json() %],
+    CJT2_MODULES_DEPENDENCY_PATH: [% modules_dependency_path.json() %],
+    IS_E2E: [% IF is_e2e %]true[% ELSE %]false[% END %],
+    APP_PATH: [% app.json() %],
+    MODE: [% mode.json() %],
+    CACHE_BUST: [% IF cache_bust %]true[% ELSE %]false[% END %],
+    OPTIMIZED: [% IF optimized %]true[% ELSE %]false[% END %],
+    currentLocale: [% locale.get_language_tag().json() %],
+    MAGIC: [% MagicRevision('/').json() %],
+    BUILDREVISION: [% calculate_magic_mtime('/usr/local/cpanel/version').json() %],
+    LOCALEREVISION: [% calculate_magic_lex_mtime(locale.get_language_tag()).json() %]
+});
+
+[%
+IF mode == 'debug';
+    SET requirejs_url = (requirejs_url_base || '') _ '/libraries/requirejs/source/require.js';
+    SET file = file _ '.devel';
+
+    # use INSERT not INCLUDE to avoid it being
+    # processed as a template
+    INSERT 'libraries/cjt2/config.debug.js' + 'libraries/cjt2/polyfills/CustomEvent.js';
+ELSE;
+    SET requirejs_url = (requirejs_url_base || '') _ '/libraries/requirejs/optimized/require.min.js';
+    IF optimized;
+        SET file = file _ '.dist';
+    ELSE;
+        SET file = file _ '.devel';
+    END;
+    # use INSERT not INCLUDE to avoid it being
+    # processed as a template
+    TRY;
+        INSERT 'libraries/cjt2-dist/config.js' + 'libraries/cjt2-dist/polyfills/CustomEvent.js';
+    CATCH;
+        INSERT 'libraries/cjt2/config.js' + 'libraries/cjt2/polyfills/CustomEvent.js';
+    END;
+END;
+%]
+
+    window.__cjt2__requirejsLoaded = function __cjt2__requirejsLoaded() { // eslint-disable-line camelcase
+        var event = new CustomEvent("library-loaded", {
+            detail: {
+                library: "requirejs"
+            }
+        });
+        window.dispatchEvent(event);
+    };
+</script>
+
+<script defer
+        [% IF use_master_bootstrap != 1; %] data-main="[% alias %]/[% file %]" [% END %]
+        src="[% MagicRevision(requirejs_url) %]"
+        onload="window.__cjt2__requirejsLoaded();">
+</script>

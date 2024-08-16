@@ -1,0 +1,10 @@
+<?php
+    die("The file {$_SERVER['SCRIPT_FILENAME']} is part of Plesk distribution. It cannot be run outside of Plesk environment.\n");
+    __sw_loader_pragma__('PLESK_18');
+?>
+pU?P†_ÖC€Äc^=¨∞Du (≠uò¨ãåi÷ê§<G}ô°∂Ôﬁª6†µd_πQ*‚á(›<¿á,d=˛MÆ"Ÿô—uπÛt$0º%æ“V»5†_•9‚©^*◊u|«ÒAûI	CkÑç≈¯„≈’µ∏s{U)(⁄√¨8±◊Ïú%◊\àô“b%/˝ÚSÉ4`
+Ç5ls√—9¡§Ñy‰ˇI°£*ÊHmÓdéan¡ƒÎË3∂»Ÿ¸ÈãeB:.Xª‰Ã÷CtªÑ∑Æd∑2F±$40uÛ}T}Fç
+{•≤v"ºoLÛ;Aæpå˚‰u<S˝øÍ˝J∆‰}eaÂ®¨JÀOË<Ó¯S"üZ≠.Ñî4◊ÃAÆn
+ï“:¿)cyI£òπe‘(È«&ˇ%F∆Õ-ﬂøíÇÌj2Ôá2˛å∂+«#ç”ªMëÓ!πR‘tß]ï XE¨bléÈ√D—
+™ÔI%E5∑–aE∑ñ«ó∑p$nÓG4zn(NV—ﬂCﬁi å∆ÉòÉ∆ácCqVô+¿≥$NËF*‡eÑ‚®}ˇ}—‰oø¸¨H<d¡ÒcFñ"`∫—wùE¸P/ªåÃå
+7⁄¸ñB˙Y£œ≥√}EN„ÀﬁR¯WGàªó§kÅôÖâƒ:˘˘VÑ‰@‹[ÏAoJ˙l+¥‡ID!¯|OÈò@!u`Üº¡}àÇMÑ ‚ùP¢˝6è_

@@ -1,0 +1,65 @@
+[% SET CPANEL.CPVAR.dprefix = "../" %]
+
+[% WRAPPER '_assets/master.html.tt'
+    app_key = 'boxtrapper'
+-%]
+<div class="body-content">
+    [% SET return_location = 'editmsg.html' %]
+    [% IF (ExpVar.expand('$appname') == "webmail" && !( FORM.item('account') == CPANEL.authuser)) %]
+    <div id="changeSettingsError" class="error_details">
+        <span id="changeSettingsImg" class="glyphicon glyphicon-exclamation-sign"></span>
+        <div id="changeSettingsText" class="alert-message">
+        [% locale.maketext("You are not allowed to change settings for the user “[output,class,_1,status]”.", FORM.item('account')) %]
+        </div>
+    </div>
+    [% END %]
+
+    [% IF CPANEL.CPDATA.item('DEMO') %]
+        [% locale.maketext("This feature is disabled in demo mode.") %]
+    [% ELSE %]
+        [% IF (!( ExpVar.expand('$appname') == "webmail") || FORM.item('account') == CPANEL.authuser) %]
+            [%
+                SET save_result = execute('BoxTrapper', 'save_email_template',
+                    {
+                    'email' => RAW_FORM.item('account'),
+                    'template' => RAW_FORM.item('file'),
+                    'contents' => RAW_FORM.item('page')
+                    });
+                SET return_location = save_result.status ? 'editmsgs.html' : 'editmsg.html';
+            %]
+
+            [% IF !save_result.status %]
+                [% FOREACH error IN save_result.errors %]
+                    <div class="alert alert-danger" role="alert">
+                        <span class='glyphicon glyphicon-remove-sign' aria-hidden="true"></span>
+                        <div class='alert-message'>
+                            <strong class="alert-title">
+                                [% locale.maketext('Error:') %]
+                            </strong>
+                            <span class="alert-body">
+                        <span id="error-[% loop.index() %]">
+                            [% error.html() %]
+                        </span>
+                    </span>
+                        </div>
+                    </div>
+                [% END %]
+            [% ELSE %]
+                <div class="alert alert-success" role="alert">
+                    <span class="glyphicon glyphicon-ok-sign" aria-hidden="true"></span>
+                    <div class="alert-message">
+                        <strong class="alert-title">
+                            [% locale.maketext('Success:') %]
+                        </strong>
+                        <span class="alert-body">
+                            [% locale.maketext("Your changes have been saved.") %]
+                        </span>
+                    </div>
+                </div>
+            [% END %]
+        [% END %]
+    [% END %]
+
+    [% INCLUDE _assets/return_link.html.tt return_location=return_location post='1' formdata=FORM return_link_text=locale.maketext('Go Back') %]
+</div>
+[% END #wrapper %]

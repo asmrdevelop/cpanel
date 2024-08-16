@@ -1,0 +1,38 @@
+[%#
+    Variables passed in:
+
+
+    origin                  - the system component from which the request originated
+    has_plaintext_authentication - 0 or 1 depending if password may be passed in plaintext of an insecure connection.
+    from_archiving               - 1 if an archive user
+
+    All the params from Cpanel::Email::AutoConfig::Settings::client_settings (as mail_client_settings)
+
+  For more information about how to customize notification templates, read our documentation at https://go.cpanel.net/notificationtemplates
+
+-%]
+
+[%
+    PROCESS "include/colors.tmpl";
+    PROCESS "include/styles.tmpl";
+    PROCESS "include/code_block.tmpl";
+
+    WRAPPER 'wrapper/main.html.tmpl';
+
+        NOTICE.email_reason = CPANEL.locale.maketext('Client Configuration settings for “[_1]”.', NOTICE.account);
+
+        # Compat for including cPanel template below
+        locale = CPANEL.locale;
+        mail_client_settings = NOTICE;
+        in_html_email = 1;
+
+        # Now, let's go through each service they requested instructions for.
+        IF mail_client_settings.selected_account_services.email;
+            PROCESS "Mail/includes/clientconf_email_manual_settings_include.html.tt";
+        END;
+        IF mail_client_settings.selected_account_services.caldav || mail_client_settings.selected_account_services.carddav;
+            PROCESS "Mail/includes/clientconf_cal_contact_manual_settings_include.html.tt";
+        END;
+        PROCESS "Mail/includes/clientconf_ios_mobileconfig_include.html.tt";
+    END;
+%]

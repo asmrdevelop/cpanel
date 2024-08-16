@@ -1,0 +1,34 @@
+[%#
+Variables passed in:
+
+origin                  - the system component from which the notification was requested.
+services                - list of services that are unmonitored. list contains hashes that get converted below [ [{'service'=>'cpsrvd','description'=>'cPanel Service Daemon'}], ... ]
+
+For more information about how to customize notification templates, read our documentation at https://go.cpanel.net/notificationtemplates
+
+-%]
+
+[%
+    PROCESS "include/colors.tmpl";
+    PROCESS "include/styles.tmpl";
+    PROCESS "include/zebra_table.tmpl";
+%]
+
+
+[%
+
+WRAPPER 'wrapper/main.html.tmpl';
+
+    IF NOTICE.highest_notice_type == 8;
+        NOTICE.email_reason = CPANEL.locale.maketext('New Security Advisor notifications with High importance');
+    ELSIF NOTICE.highest_notice_type == 4;
+        NOTICE.email_reason = CPANEL.locale.maketext('New Security Advisor notifications with Medium importance');
+    ELSIF NOTICE.highest_notice_type == 2;
+        NOTICE.email_reason = CPANEL.locale.maketext('New Security Advisor notifications');
+    END;
+
+   PROCESS "Check/includes/SecurityAdvisorStateChange.body.html.tmpl";
+
+END;
+
+ %]

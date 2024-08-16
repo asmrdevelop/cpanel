@@ -1,0 +1,192 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/userdata_wildcard_cleanup       Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::userdata_wildcard_cleanup;
+
+use strict;
+
+use Cpanel                              ();
+use Cpanel::Config::userdata::Constants ();
+use Cpanel::Config::userdata::Guard     ();
+use Cpanel::FileUtils::TouchFile        ();
+use Cpanel::SafeRun::Errors             ();
+use Cpanel::ServerTasks                 ();
+use Cpanel::WildcardDomain              ();
+use Cpanel::WildcardDomain::Tiny        ();
+
+use File::Basename ();
+
+BEGIN { unshift @INC, '/usr/local/cpanel'; }
+
+my @ssl_userdata_parts = qw(
+  sslcertificatefile
+  sslcertificatekeyfile
+  sslcacertificatefile
+);
+
+our $TOUCH_FILE = '/var/cpanel/ssl/wildcard_cleanup_complete';
+
+__PACKAGE__->script(@ARGV) unless caller();
+
+########################################################################
+# This script was created to fix an issue documented in case 67341
+########################################################################
+
+sub script {
+    my ( $class, @argv ) = @_;
+
+    my ( $rebuild_apache, $forced );
+    for my $arg (@argv) {
+        if ( $arg eq '--rebuildapache' ) {
+            $rebuild_apache = 1;
+        }
+        if ( $arg eq '--force' ) {
+            $forced = 1;
+        }
+    }
+
+    return if -e $TOUCH_FILE && !$forced;
+
+    my ( $httpd_conf_rebuild_needed, @migrated_servernames, @migrated_nobody_domains );
+
+    @migrated_servernames      = _migrate_wildcard_encoded_userdata_files();
+    @migrated_nobody_domains   = _migrate_nobody_userdata_files();
+    $httpd_conf_rebuild_needed = 1 if @migrated_servernames || @migrated_nobody_domains;
+
+    #Rebuild apache because previous rebuilds might have accidentally
+    #deleted the wildcard SSL vhosts from being unable to find their
+    #userdata files.
+    if ($httpd_conf_rebuild_needed) {
+        if ($rebuild_apache) {
+            print "Rebuilding Apache\n";
+            my $output = Cpanel::SafeRun::Errors::saferunallerrors("$Cpanel::root/bin/build_apache_conf");
+            if ( $output !~ /OK$/ ) {
+                warn "Error rebuilding the apache configuration: $output\n";
+            }
+            Cpanel::ServerTasks::queue_task( ['ApacheTasks'], 'apache_restart' );
+        }
+        else {
+            print "Skipping Apache Rebuild\n";
+        }
+    }
+
+    Cpanel::FileUtils::TouchFile::touchfile($TOUCH_FILE);
+
+    return;
+}
+
+sub _migrate_nobody_userdata_files {
+    my $userDir = $Cpanel::Config::userdata::Constants::USERDATA_DIR . "/nobody";
+    if ( !-e $userDir ) {
+        return;
+    }
+    my @domains_processed = ();
+
+    {
+        my $main_guard = Cpanel::Config::userdata::Guard->new( 'nobody', 'main' );
+        my $maindata   = $main_guard->data();
+        for my $domain ( $maindata->{'main_domain'}, @{ $maindata->{'sub_domains'} } ) {
+            if ( !$domain || !Cpanel::WildcardDomain::Tiny::is_wildcard_domain($domain) || !-e $userDir . "/${domain}_SSL" ) {
+                next;
+            }
+
+            my $guard    = Cpanel::Config::userdata::Guard->new( 'nobody', $domain . '_SSL' );
+            my $userdata = $guard->data();
+
+            _fix_userdata($userdata);
+
+            push @domains_processed, $userdata->{'servername'};
+
+            $guard->save();
+        }
+
+        $main_guard->abort();
+    }
+
+    return;
+}
+
+sub _migrate_wildcard_encoded_userdata_files {
+    my @migrated_servernames            = ();
+    my @wildcard_encoded_userdata_files = glob("$Cpanel::Config::userdata::Constants::USERDATA_DIR/*/_wildcard_*");
+
+    for my $old_file (@wildcard_encoded_userdata_files) {
+        next if !-f $old_file;
+
+        if ( $old_file =~ m{\.cache\z} ) {
+            unlink $old_file;
+            next;
+        }
+
+        my ( $ok, %ret ) = _migrate_userdata_file($old_file);
+        next if $ret{'deleted'};
+
+        my $new_file = $old_file;
+
+        #We *shouldn't* need the fussiness of anchoring this substitution
+        #with / and \z, but just in case.
+        $new_file =~ s{/_wildcard_([^/]+)\z}{/*$1};
+
+        if ( !-f $new_file ) {
+            if ( !rename( $old_file, $new_file ) ) {
+                warn "The system failed to rename $old_file to $new_file because of an error: $!";
+                next;
+            }
+            push @migrated_servernames, $ret{'servername'};
+        }
+    }
+
+    return @migrated_servernames;
+}
+
+sub _migrate_userdata_file {
+    my ($file) = @_;
+
+    my ( $filename, $path, undef ) = File::Basename::fileparse($file);
+    my $user        = File::Basename::basename($path);
+    my %return_data = ();
+
+    {
+        my $guard    = Cpanel::Config::userdata::Guard->new( $user, $filename );
+        my $userdata = $guard->data();
+        if ( exists $userdata->{'servername'} ) {
+            for my $ssl_part (@ssl_userdata_parts) {
+                next if !$userdata->{$ssl_part};
+
+                if ( !-e $userdata->{$ssl_part} ) {
+                    $guard->abort();
+                    unlink $file;
+                    return ( 1, 'deleted' => 1 );
+                }
+            }
+
+            _fix_userdata($userdata);
+
+            $return_data{'servername'} = $userdata->{'servername'};
+
+            $guard->save();
+        }
+        else {
+            $guard->abort();
+        }
+    }
+
+    return ( 1, %return_data );
+}
+
+sub _fix_userdata {
+    my ($userdata) = @_;
+
+    # Decodes wildcard encoded domains
+    $userdata->{'servername'} = Cpanel::WildcardDomain::decode_wildcard_domain( $userdata->{'servername'} );
+    $userdata->{'serveradmin'} =~ s{(\@)_wildcard_\.}{$1};
+    $userdata->{'serveralias'} = $userdata->{'servername'};
+
+    return;
+}
+
+1;

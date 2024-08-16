@@ -1,0 +1,76 @@
+[% SET CPANEL.CPVAR.dprefix = "../" %]
+[% SET listwebalizer =  execute("Stats", "list_sites", {'engine' => 'webalizer', 'traffic' => 'http'} ); %]
+
+[% WRAPPER '_assets/master.html.tt'
+    app_key = 'webalizer'
+-%]
+
+<div class="body-content">
+    <p id="descWebalizer" class="description">
+        [% locale.maketext("Webalizer is a complex stats program that produces a variety of charts and graphs about who has visited your site.") %]
+    </p>
+    <div class="section">
+        <h2 id="hdrSelectDomain">
+            [% locale.maketext("Select a Domain") %]
+        </h2>
+        <table id="tblDomainList" class="sortable table table-striped">
+            <thead>
+                <tr>
+                    <th id="theadDomain">
+                        [% locale.maketext("Domain") %]
+                    </th>
+                    <th id="theadView" nowrap nonsortable="true">
+                        [% locale.maketext("Actions") %]
+                    </th>
+                </tr>
+            </thead>
+            <tbody>
+                [% IF listwebalizer.data.size() %]
+                    [% FOREACH hashref IN listwebalizer.data; %]
+                    [%
+                        SET domainName = hashref.domain.html();
+                        SET alt = locale.maketext('View the statistics for “[_1]”.', hashref.domain).remove('"');
+                    %]
+                    <tr id="row_[% domainName %]">
+                        <td id="domain_[% domainName %]">[% domainName %] [% IF hashref.ssl %] <strong>SSL</strong> [% END %]</td>
+                        <td>
+                            <a target="_blank" id="lnkViewStats_[% domainName %]"
+                                href="[% CPANEL.ENV.cp_security_token _ hashref.path %]"
+                                alt="[% alt %]" title="[% alt %]"
+                                class="btn btn-link">
+                                <span id="imgViewStats_[% domainName %]" class="glyphicon glyphicon-search" title="[% alt %]" alt="[% alt %]"></span>
+                                [% locale.maketext("View") %]
+                            </a>
+                        </td>
+                    </tr>
+                    [% END %]
+                [% ELSE %]
+                    [% IF listwebalizer.errors.size %]
+                        [% FOREACH error IN listwebalizer.errors %]
+                            <div class="alert alert-danger" role="alert">
+                                <span class='glyphicon glyphicon-remove-sign' aria-hidden="true"></span>
+                                <div class='alert-message'>
+                                    <strong class="alert-title">
+                                        [% locale.maketext('Error:') %]
+                                    </strong>
+                                    <span class="alert-body">
+                                <span id="error-[% loop.index() %]">
+                                    [% error.html() %]
+                                </span>
+                            </span>
+                                </div>
+                            </div>
+                        [% END %]
+                    [% ELSE %]
+                        <tr id="tblrowErrors">
+                            <td class="errors" colspan="2">
+                                [% locale.maketext("There are no domains which have [asis,Webalizer] stats to display.") %]
+                            </td>
+                        </tr>
+                    [% END %]
+                [% END %]
+            </tbody>
+        </table>
+    </div>
+</div>
+[% END #wrapper -%]

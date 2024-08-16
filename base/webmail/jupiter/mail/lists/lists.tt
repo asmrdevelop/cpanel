@@ -1,0 +1,123 @@
+[%
+    USE Uapi;
+    USE JSON;
+    SET domain = RAW_FORM.domain;
+%]
+
+<h2>[% locale.maketext('Current Lists') %]</h2>
+
+<cp-alert-list></cp-alert-list>
+<div ng-cloak class="ng-cloak">
+<section class="ng-cloak sg-example" ng-controller="mainController as main">
+    <div class="list-container">
+        <div class="row search-page-container">
+            <div class="col-xs-4 col-sm-4 col-md-4 col-lg-4" id="topSearchBox">
+                <search id="search_box" ng-model="main.model.filterValue"></search>
+            </div>
+            <div class="col-xs-1">
+                <span spinner
+                    id="tableDataSpinner"
+                    class="headerSpinner"
+                    title="[% locale.maketext('Loading …') %]"></span>
+                </div>
+            <div class="col-xs-7 col-sm-7 col-md-7 col-lg-7" >
+                <div class="pagination-container">
+                    <page-size
+                        id="DEFAULT-page-itemsperpage"
+                        total-items="main.model.totalResults"
+                        show-all="true"
+                        ng-model="main.model.pageSize">
+                    </page-size>
+                    <div id="topPager"
+                        uib-pagination
+                        ng-if="main.model.pageSize > 0 && main.model.totalResults > main.model.pageSize"
+                        ng-change="main.model.selectPage(page)"
+                        ng-model="main.model.page"
+                        items-per-page="main.model.pageSize"
+                        total-items="main.model.totalResults"
+                        max-size="2"
+                        boundary-links="true"
+                        previous-text="<" next-text=">" first-text="<<" last-text=">>"
+                        class="pagination-small">
+                    </div>
+                </div>
+            </div>
+        </div>
+        <table id="mailingListsTable" class="table table-striped responsive-table ng-cloak" ng-controller="mailingListsController as listsController">
+            <thead>
+                <tr>
+                    <th ng-repeat="column in listsController.getHeaders()" class="lists-col-header lists-col-header-{{column.key}}">
+                        <span toggle-sort
+                            id="toggleSort_{{column.key | qaSafeID}}"
+                            ng-if="column.key != 'functions'"
+                            onsort="main.model.dataSorted"
+                            sort-meta="main.model.meta.sort"
+                            sort-field="{{column.key}}">{{column.name}}</span>
+                        <span ng-if="column.key == 'functions'">{{column.name}}</span>
+                    </th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr id="datarow_{{list.list | qaSafeID}}" ng-if="listsController.getLists().length" ng-repeat="list in listsController.getLists()" class='lists-row'>
+                    <td data-title="{{column.name}}" ng-repeat-start="column in listsController.getHeaders()" data-title="{{column.name}}" ng-if="column.key != 'functions' && column.key != 'listadmin'" ng-repeat-start class="list-column-{{column.key}}">
+                        <p class="truncate" ng-bind="list.getAttribute(column.key)" title="{{list.getAttribute(column.key)}}"></p>
+                    </td>
+                    <td data-title="{{column.name}}" ng-if="column.key == 'functions'" class='lists-function-cell'>
+                        <a id="datarow_{{list.list | qaSafeID}}_manage_btn" class="btn btn-link" target="_blank" href="loginlist.html?email={{list.list | escape}}&amp;domain={{listsController.domain | escape}}">
+                            <span class="glyphicon glyphicon-pencil"></span>
+                            [% locale.maketext('Manage') %]
+                        </a>
+                    </td>
+                    <td data-title="{{column.name}}" ng-if="column.key == 'listadmin'" ng-repeat-end>
+                        <span
+                            ng-bind-html='list.formatListAdmins({maxCols:30,maxItems:3,separator:"<br />"})'
+                            title='{{list.formatListAdmins({maxItems:3,separator:"\n"})}}'></span>
+                    </td>
+                </tr >
+                <tr ng-if="!listsController.getLists().length && !main.model.loading" class="info empty-row">
+                    <td colspan="{{listsController.getHeaders().length}}">No results found ...</td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+</section>
+</div>
+<!-- table -->
+
+[%
+    USE JSON;
+
+    SET application_dir  = ExpVar.expand('$basedir') _ "/lists";
+    SET file = ExpVar.expand('$basefilename');
+
+    SET requirejs_url_base = '/webmail/' _ CPANEL.CPDATA.RS;
+
+    SET listlists = execute('Email', 'list_lists', {
+        domain => domain,
+        'api.paginate_start' => 1,
+        'api.paginate_size' => CPANEL.CPVAR.itemsperpage,
+    } );
+%]
+
+<script>
+    var PAGE = {
+        THEME_PATH : [% requirejs_url_base.json() %],
+        initData : {
+            lists: [% JSON.stringify(listlists.data) -%],
+            totalPages: [% listlists.metadata.paginate.total_pages.json() -%],
+            totalResults: [% listlists.metadata.paginate.total_results.json() -%],
+            resultsPerPage: [% CPANEL.CPVAR.itemsperpage.json() -%]
+        }
+    };
+
+    window.PAGE = PAGE;
+</script>
+
+<script type="text/javascript">
+    CPANEL.namespace("CPANEL.PAGE");
+    CPANEL.PAGE.domain = [% domain.json() %];
+</script>
+
+[% PROCESS '_assets/cjt2_header_include.tt' %]
+
+<!-- end body-content -->

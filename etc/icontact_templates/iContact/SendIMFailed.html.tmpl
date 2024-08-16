@@ -1,0 +1,30 @@
+[%#
+Variables passed in:
+
+error              - the reason for the failure
+original_message   - the original message
+original_subject   - the original subject
+original_recipient - the original recipient
+
+For more information about how to customize notification templates, read our documentation at https://go.cpanel.net/notificationtemplates
+
+-%]
+
+[%
+    PROCESS "include/colors.tmpl";
+    PROCESS "include/styles.tmpl";
+    PROCESS "include/code_block.tmpl";
+
+    WRAPPER 'wrapper/main.html.tmpl';
+
+    NOTICE.email_reason =  CPANEL.locale.maketext('The system failed to send an instant message to “[_1]” because of an error: [_2]', NOTICE.original_recipient, NOTICE.original_subject);
+
+%]
+
+<p>
+    [% CPANEL.locale.maketext('The system was unable to send the message because of an error: [_1]', NOTICE.error); %]
+</p>
+<p>[% CPANEL.locale.maketext('The original message:'); %]</p>
+<p>[% code_block(formatted_code=CPANEL.format_text_as_html(NOTICE.original_message)); %]</p>
+
+[% END %]

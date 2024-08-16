@@ -1,0 +1,146 @@
+<?php
+
+/*
+ * CardDAV client library for PHP ("PHP-CardDavClient").
+ *
+ * Copyright (c) 2020-2021 Michael Stilkerich <ms@mike2k.de>
+ * Licensed under the MIT license. See COPYING file in the project root for details.
+ */
+
+declare(strict_types=1);
+
+namespace MStilkerich\Tests\CardDavClient\Interop;
+
+/**
+ * @psalm-import-type TestAccount from TestInfrastructureSrv
+ * @psalm-import-type TestAddressbook from TestInfrastructureSrv
+ */
+final class AccountData
+{
+    /** @var array<string, TestAccount> */
+    public const ACCOUNTS = [
+        /*
+        "Google" => [
+            "username" => "%GOOGLE_USER%",
+            "password" => "%GOOGLE_PASSWORD%",
+            "discoveryUri" => "gmail.com",
+            "syncAllowExtraChanges" => true,
+            "featureSet" => TestInfrastructureSrv::SRVFEATS_GOOGLE,
+        ],
+        */
+        "iCloud" => [
+            "username" => "%ICLOUD_USER%",
+            "password" => "%ICLOUD_PASSWORD%",
+            "discoveryUri" => "icloud.com",
+
+            // For providers that report extra changes or deleted cards between two syncs, set this to true to limit the
+            // sync tests to check whether all known changes are actually reported, without raising an error on any
+            // additional changes that the server reports. (Google has been observed to behave like this)
+            "syncAllowExtraChanges" => true,
+
+            // known/expected features
+            "featureSet" => TestInfrastructureSrv::SRVFEATS_ICLOUD,
+        ],
+        "Davical" => [
+            "username" => "admin",
+            "password" => "admin",
+            "discoveryUri" => "http://localhost:8088/",
+            "syncAllowExtraChanges" => false,
+            "featureSet" => TestInfrastructureSrv::SRVFEATS_DAVICAL,
+        ],
+        "Nextcloud" => [
+            "username" => "ncadm",
+            "password" => "ncadmPassw0rd",
+            "discoveryUri" => "http://localhost:8080/remote.php/dav/",
+            "syncAllowExtraChanges" => false,
+            // Nextcloud 21 (oldest still supported) uses Sabre 4.1.4 which still contains the reported issues, so we
+            // need to exclude some tests until 21 is EOL
+            "featureSet" => TestInfrastructureSrv::SRVFEATS_SABRE,
+        ],
+        "Radicale" => [
+            "username" => "citest",
+            "password" => "citest",
+            "httpOptions" => [
+                "preemptive_basic_auth" => true,
+            ],
+            "discoveryUri" => "http://localhost:5232/",
+            "syncAllowExtraChanges" => false,
+            "featureSet" => TestInfrastructureSrv::SRVFEATS_RADICALE,
+        ],
+        "Owncloud" => [
+            "username" => "admin",
+            "password" => "admin",
+            "discoveryUri" => "http://localhost:8080/remote.php/dav/",
+            "syncAllowExtraChanges" => false,
+            // Owncloud as of 10.9 uses Sabre 4.2.0, which has the bugs reported for sabre/dav fixed
+            "featureSet" => TestInfrastructureSrv::SRVFEATSONLY_SABRE,
+        ],
+        "Baikal" => [
+            "username" => "citest",
+            "password" => "citest",
+            "discoveryUri" => "http://localhost:8080/",
+            "syncAllowExtraChanges" => false,
+              // as of Baikal 0.8.0, the shipped Sabre/DAV version 4.1.4 still does not contain the fix for this bug
+              // Bug is fixed in Sabre/DAV 4.1.5
+            "featureSet" => TestInfrastructureSrv::SRVFEATS_SABRE,
+        ],
+    ];
+
+    /** @var array<string, TestAddressbook> */
+    public const ADDRESSBOOKS = [
+        /*
+        "Google" => [
+            "account" => "Google",
+            "url" => "%GOOGLE_URL_ABOOK0%",
+            "displayname" => "Address Book",
+            "description" => 'My Contacts',
+        ],
+        */
+        "iCloud" => [
+            "account" => "iCloud",
+            "url" => "%ICLOUD_URL_ABOOK0%",
+            "displayname" => null,
+            "description" => null,
+        ],
+        "Davical_0" => [
+            "account" => "Davical",
+            "url" => "http://localhost:8088/caldav.php/admin/book1/",
+            "displayname" => "Test addressbook",
+            "description" => "Davical test addresses",
+        ],
+        "Nextcloud" => [
+            "account" => "Nextcloud",
+            "url" => "http://localhost:8080/remote.php/dav/addressbooks/users/ncadm/contacts/",
+            "displayname" => "Contacts",
+            "description" => null,
+            "readonly" => false,
+        ],
+        "Radicale_0" => [
+            "account" => "Radicale",
+            "url" => "http://localhost:5232/citest/book1/",
+            "displayname" => "Book 1",
+            "description" => "First addressbook",
+        ],
+        "Radicale_1" => [
+            "account" => "Radicale",
+            "url" => "http://localhost:5232/citest/book2/",
+            "displayname" => "Book 2",
+            "description" => "Second addressbook",
+            "readonly" => true,
+        ],
+        "Owncloud" => [
+            "account" => "Owncloud",
+            "url" => "http://localhost:8080/remote.php/dav/addressbooks/users/admin/contacts/",
+            "displayname" => "Contacts",
+            "description" => null,
+        ],
+        "Baikal_0" => [
+            "account" => "Baikal",
+            "url" => "http://localhost:8080/dav.php/addressbooks/citest/default/",
+            "displayname" => "Default Address Book",
+            "description" => "Default Address Book for citest",
+        ],
+    ];
+}
+
+// vim: ts=4:sw=4:expandtab:fenc=utf8:ff=unix:tw=120:ft=php

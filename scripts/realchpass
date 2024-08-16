@@ -1,0 +1,113 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/realchpass                      Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+#----------------------------------------------------------------------
+# TODO: Make this script print errors to STDERR rather than STDOUT.
+#----------------------------------------------------------------------
+use strict;
+use warnings;
+
+BEGIN {
+    $ENV{'LANG'} = 'C';
+}
+
+use Crypt::Passwd::XS            ();
+use Cpanel::AcctUtils::Suspended ();
+use Cpanel::Auth::Generate       ();
+use Cpanel::Auth::Shadow         ();
+use Cpanel::AcctUtils::Account   ();
+use Cpanel::Locale               ();
+use Cpanel::Logger               ();
+
+# Prevent html from leaking out when called from wwwacct binary
+eval {
+    no warnings 'once';
+    local $SIG{'__DIE__'};
+    require Whostmgr::UI;
+    $Whostmgr::UI::nohtml = 1;
+};
+
+my $logger = Cpanel::Logger->new();
+
+my @DASH_ARGV = grep( m/^-/, @ARGV );
+@ARGV = grep( !m/^-/, @ARGV );
+
+my $opt_raw    = grep( m/raw/, @DASH_ARGV ) ? 1 : 0;
+my $opt_locale = ( grep( m/locale=([A-Za-z0-9-_]+)/, @DASH_ARGV ) )[0];
+my $locale_key = ( $opt_locale && $opt_locale =~ m/=([A-Za-z0-9-_]+)/ ) ? $1 : 'en';
+my $locale     = Cpanel::Locale->get_handle($locale_key);
+
+my $user = shift @ARGV;
+my $pass = shift @ARGV;
+
+if ($pass) {
+    $logger->warn( $locale->maketext("Insecure passing of password on ARGV.") );
+}
+
+unless ( exists $ENV{'ALLOW_PASSWORD_CHANGE'} && $ENV{'ALLOW_PASSWORD_CHANGE'} ) {
+    my $str = <<EOM;
+ERROR: $0
+Invocation changes only the system
+password and does not have any effect
+on other services associated with your
+cPanel account, including FTP, SSH,
+and WebDAV.  It is strongly
+encouraged for you to change the
+password via the WHM & cPanel
+interface. You can force a password
+change through this script by setting
+the environment variable
+'ALLOW_PASSWORD_CHANGE=1'.
+EOM
+    print $str;
+
+    #XXX: Should this be an error status??
+    exit;
+}
+
+if ( !$user ) {
+    ( $user, $pass ) = split( m/ /, <STDIN>, 2 );
+    chomp($pass);
+}
+
+$user =~ s/\///g;
+
+if ( !length $user ) {
+    exception( $locale->maketext("No user specified.") );
+}
+
+if ( !Cpanel::AcctUtils::Account::accountexists($user) ) {
+    exception( $locale->maketext( "“[_1]” does not exist, so the password cannot be changed!", $user ) );
+}
+elsif ( Cpanel::AcctUtils::Suspended::is_suspended($user) ) {
+    exception( $locale->maketext( "“[_1]” is suspended. Changing the password would unsuspend the account!", $user ) );
+}
+elsif ( !$pass ) {
+    exception( $locale->maketext("You cannot set a blank password!") );
+}
+
+my $crypted_password = ( $opt_raw ? $pass : Cpanel::Auth::Generate::generate_password_hash($pass) );
+
+my ( $status, $statusmsg ) = Cpanel::Auth::Shadow::update_shadow( $user, $crypted_password );
+
+if ($status) {
+    print $locale->maketext( "Password for “[_1]” has been changed.", $user ) . "\n";
+    exit 0;
+}
+else {
+    exception( $locale->maketext( "Failed to change password for “[_1]”: [_2]", $user, $statusmsg ) );
+}
+
+sub exception {
+    my ($msg) = @_;
+
+    $logger->warn($msg);
+
+    print $msg . "\n";
+
+    exit 1;
+}

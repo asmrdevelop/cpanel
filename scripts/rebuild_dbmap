@@ -1,0 +1,197 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/rebuild_dbmap                   Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::rebuild_dbmap;
+
+use strict;
+use warnings;
+
+use autodie;
+
+use Getopt::Long qw(:config auto_help);
+use Pod::Usage;
+
+use YAML::Syck ();
+
+use Cpanel::Autodie                      ();
+use Cpanel::DB::Map                      ();
+use Cpanel::DB::Map::Path                ();
+use Cpanel::DB::Map::Rebuild::Mysql      ();    # PPI USE OK - dynamic usage
+use Cpanel::DB::Map::Rebuild::Postgresql ();    # PPI USE OK - dynamic usage
+use Cpanel::DB::Map::Remove              ();
+use Cpanel::Time                         ();
+use Cpanel::Config::HasCpUserFile        ();
+use Cpanel::Services::Enabled            ();
+
+my %pretty_engine_name = qw(
+  MYSQL   MariaDB/MySQL
+  PGSQL   PostgreSQL
+);
+
+my %engine_name_module = qw(
+  MYSQL   Mysql
+  PGSQL   Postgresql
+);
+
+my %engine_name_service = qw(
+  MYSQL   mysql
+  PGSQL   postgresql
+);
+
+script(@ARGV) if !caller;
+
+sub script {
+    my @script_args = @_;
+
+    local $| = 1;
+
+    my $noop = 0;
+    Getopt::Long::GetOptionsFromArray( \@script_args, 'noop' => \$noop );
+
+    my ($username) = @script_args;
+
+    pod2usage(1) if !length $username || !Cpanel::Config::HasCpUserFile::has_cpuser_file($username);
+
+    if ($noop) {
+        print "Operating in no-op mode; no changes will be made to your system.\n\n";
+    }
+
+    print "Reading access rights for the cPanel user “$username” from live data:\n";
+
+    my %new_data;
+    for my $engine ( sort keys %pretty_engine_name ) {
+        print " $pretty_engine_name{$engine} …";
+
+        if ( !Cpanel::Services::Enabled::is_provided( $engine_name_service{$engine} ) ) {
+            print " $pretty_engine_name{$engine} is disabled, skipping …\n";
+            next;
+        }
+
+        my $module = "Cpanel::DB::Map::Rebuild::$engine_name_module{$engine}";
+        $new_data{$engine} = $module->can('read_dbmap_data')->($username);
+    }
+
+    print " Done.\n\n";
+
+    if ( !scalar keys %new_data ) {
+        print "No active database engines were found, DB map will not be re-written.\n";
+        return;
+    }
+
+    if ($noop) {
+        print "Without the “--noop” flag, this script would generate and install\n";
+        print "the following database map data:\n\n";
+        print YAML::Syck::Dump( \%new_data );
+    }
+    else {
+        my $path = Cpanel::DB::Map::Path::data_file_for_username($username);
+
+        if ( -e $path ) {
+            my $timestamp = sprintf(
+                '%d-%02d-%02d_%02d:%02d:%02d_%d',
+                reverse( ( Cpanel::Time::localtime() )[ 0 .. 5 ] ),
+                $$,
+            );
+
+            my $backup_path = $path;
+            $backup_path =~ s<[.][^./]+\z><>;    #strip off last extension in the filename
+            $backup_path = "${backup_path}_backup_${timestamp}.json";
+
+            Cpanel::Autodie::link( $path, $backup_path );
+
+            print "Old DB map file backed up at:\n\t$backup_path\n\n";
+
+            Cpanel::DB::Map::Remove::remove_cpuser($username);
+
+            print "Old DB map file removed.\n\n";
+        }
+
+        print "Saving:";
+
+        for my $engine ( sort keys %new_data ) {
+            print " $pretty_engine_name{$engine} …";
+
+            my $map   = Cpanel::DB::Map->new_allow_create( { db => $engine, cpuser => $username } );
+            my $owner = $map->get_owner();
+
+            for my $db ( keys %{ $new_data{$engine} } ) {
+                $owner->add_db($db);
+                for my $dbuser ( @{ $new_data{$engine}{$db} } ) {
+                    $owner->add_dbuser( { dbuser => $dbuser } );
+                    $owner->add_db_for_dbuser( $db, $dbuser );
+                }
+            }
+
+            $map->save();
+        }
+        print " Done!\n\n";
+
+        print "Rebuild complete.\n";
+    }
+
+    return;
+}
+
+=pod
+
+=encoding utf-8
+
+=head1 NAME
+
+rebuild_dbmap - rebuild the database map
+
+=head1 SYNOPSIS
+
+    rebuild_dbmap [options] username
+
+    Options:
+
+        --noop   Print the DB map that this would create
+                 without actually changing anything.
+
+        --help   Print this message.
+
+    NOTE: This script is EXPERIMENTAL. Use with caution!
+
+=head1 DESCRIPTION
+
+!!!! EXPERIMENTAL !!!!
+
+B<rebuild_dbmap> will query the active database cluster(s) for the
+currently active access rights, then (normally) write those to a
+new database map file after having backed up the old one in
+the operator’s home directory.
+
+This should correctly restore the mapping of all databases with their
+cPanel user and DB users. It does so by “harvesting” the databases to which
+the cPanel user has access, then assigning other DB users who can access
+those databases as the cPanel user’s DB users.
+
+CAVEATS
+
+=over 4
+
+=item * This cannot recover DB users that don’t have access to at least one
+database. Those DB users will still exist in the actual database,
+of course, but the cPanel user will no longer have control of them via
+cPanel or WHM.
+
+=item * If, for some reason, two DB users, owned by B<different> cPanel users,
+have access to a given database, and this script restores one of those
+cPanel users’ DB maps, then the newly-restored DB map will indicate ownership
+of BOTH DB users. For example: “cpuser1” has a DB user “john” who can
+access “cpuser1”’s DB “stuff”. “cpuser2” has a DB user “jane” to whom you
+have manually given access to “stuff” within the DB engine itself. (NOTE:
+cPanel and WHM do not support this!) If, then, you run this script on
+“cpuser1”, then “cpuser1” will own BOTH “john” and “jane”, since both of
+those DB users have access to “cpuser1”’s DB “stuff”.
+
+=back
+
+=cut
+
+1;

@@ -1,0 +1,213 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - bin/set-tls-settings                    Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package bin::set_tls_settings;
+
+use 5.024;
+
+use strict;
+use warnings;
+
+use Cpanel::AdvConfig             ();
+use Cpanel::Config::LoadConfig    ();
+use Cpanel::Config::FlushConfig   ();
+use Cpanel::SSL::Defaults         ();
+use Cpanel::ServiceConfig::cpdavd ();
+use Cpanel::ServiceConfig::cpsrvd ();
+use Cpanel::SafeRun::Errors       ();
+
+use Getopt::Long ();
+use IO::Handle   ();
+
+exit __PACKAGE__->script(@ARGV) unless caller;
+
+sub script {
+    my ( $class, @args ) = @_;
+
+    my %options;
+    Getopt::Long::GetOptionsFromArray(
+        \@args,
+        \%options,
+        'help',
+        'verbose',
+        'if-missing',
+        'restart',
+        'all',
+        'cipher-suites=s',
+        'protocols=s',
+    ) or return $class->usage(1);
+    return $class->usage(1) unless $options{'all'} || @args;
+    return $class->usage(0) if $options{'help'};
+
+    my $self = $class->new( \%options, \@args );
+    return !$self->set;
+}
+
+sub usage {
+    my ( $class, $retval ) = @_;
+    my $fh = $retval ? \*STDERR : \*STDOUT;
+    $fh->print(<<EOM);
+Usage:
+set-tls-settings [--verbose] [--if-missing] [--cipher-suites=SUITES]
+                 [--protocols=PROTOCOLS] [--restart] { --all | SERVICES }
+
+Set the SSL/TLS cipher suites (if specified) to SUITES and SSL/TLS protocols (if
+specified) to PROTOCOLS for the specified services (or all supported services,
+with --all).
+
+If --if-missing is specified, only set the setting if no existing setting exists.
+
+If --restart is provided, restart the services; otherwise, only set
+configuration parameters and rebuild the configuration files.
+
+SUITES should be a standard OpenSSL cipher suite string.
+PROTOCOLS should be a colon-separated string of one or more of the following
+protocols:
+* SSLv2
+* SSLv3
+* TLSv1
+* TLSv1.1
+* TLSv1.2
+
+The following services are supported:
+EOM
+    foreach my $services ( sort keys $class->services->%* ) {
+        $fh->print("* $services\n");
+    }
+    return $retval;
+}
+
+sub services {
+    return { map { $_ => 1 } qw/cpsrvd cpdavd dovecot exim/ };
+}
+
+sub split {
+    my ( $class, $options ) = @_;
+    return undef unless defined $options;
+    return [ split /:/, $options ];
+}
+
+sub new {
+    my ( $class, $options, $args ) = @_;
+
+    my $self = {
+        params => {
+            suites    => $options->{'cipher-suites'},
+            protocols => $class->split( $options->{'protocols'} ),
+        },
+        services     => [ $args->@* ? $args->@* : keys $class->services->%* ],
+        verbose      => $options->{'verbose'},
+        restart      => $options->{'restart'},
+        missing_only => $options->{'if-missing'},
+    };
+    $self = bless $self, $class;
+    $self->check_services();
+    return $self;
+}
+
+sub check_services {
+    my ($self)    = @_;
+    my $available = $self->services;
+    my @missing   = grep { !$available->{$_} } $self->{'services'}->@*;
+    return unless @missing;
+    die "set-tls-settings doesn't know how to handle the following services: @missing\n";
+}
+
+sub note {
+    my ( $self, $message ) = @_;
+    return unless $self->{'verbose'};
+    print "$message\n";
+    return;
+}
+
+sub set {
+    my ($self) = @_;
+    foreach my $service ( $self->{'services'}->@* ) {
+        $self->note("Setting parameters for $service");
+        my $func = $self->can("set_$service");
+        $self->$func( $self->{'params'}{'protocols'}, $self->{'params'}{'suites'} );
+        $self->restart($service) if $self->{'restart'};
+    }
+    return 1;
+}
+
+sub restart {
+    my ( $self, $service ) = @_;
+    $self->note("Restarting $service");
+    system( '/usr/local/cpanel/scripts/restartsrv', $service );
+    return;
+}
+
+sub set_element {
+    my ( $self, $hr, $element, $setting ) = @_;
+    return unless length $setting;
+    my $old = $hr->{$element};
+    my $set = 1;
+    if ( $self->{'missing_only'} ) {
+        $set = 0 if defined $old;
+        $hr->{$element} //= $setting;
+    }
+    else {
+        $hr->{$element} = $setting;
+    }
+    if ($set) {
+        my $text = $old ? "'$old'" : "unset";
+        $self->note("Setting configuration option $element to '$setting' (was $text)");
+    }
+    else {
+        $self->note("Not modifying $element (set to '$old')");
+    }
+    return;
+}
+
+sub set_cpanel_service {
+    my ( $self, $config, $protocols, $suites ) = @_;
+    my $settings = $config->load_datastore;
+    $self->set_element( $settings, 'SSLVersion',    Cpanel::SSL::Defaults::format_protocol_list( $protocols, { type => 'negative', delimiter => ':', 'negation' => '!', separator => '_' } ) ) if $protocols;
+    $self->set_element( $settings, 'SSLCipherList', $suites )                                                                                                                                  if $suites;
+    $config->validate($settings) or die "Settings for " . $config->{'datastore_name'} . " were not valid.\n";
+    $config->save_datastore($settings);
+    $config->update_config($settings);
+    return;
+}
+
+sub set_cpsrvd {
+    my ( $self, $protocols, $suites ) = @_;
+    my $config = Cpanel::ServiceConfig::cpsrvd->new;
+    $self->set_cpanel_service( $config, $protocols, $suites );
+    return;
+}
+
+sub set_cpdavd {
+    my ( $self, $protocols, $suites ) = @_;
+    require Cpanel::ServiceConfig::cpdavd;
+    my $config = Cpanel::ServiceConfig::cpdavd->new;
+    $self->set_cpanel_service( $config, $protocols, $suites );
+    return;
+}
+
+sub set_dovecot {
+    my ( $self, $protocols, $suites ) = @_;
+    my $data = Cpanel::AdvConfig::load_app_conf('dovecot') // {};
+    $self->set_element( $data, 'ssl_protocols',   Cpanel::SSL::Defaults::format_protocol_list( $protocols, { type => 'positive', delimiter => ' ' } ) ) if $protocols;
+    $self->set_element( $data, 'ssl_cipher_list', $suites )                                                                                             if $suites;
+    Cpanel::AdvConfig::save_app_conf( 'dovecot', 0, $data );
+    Cpanel::SafeRun::Errors::saferunallerrors('/usr/local/cpanel/scripts/builddovecotconf');
+    return;
+}
+
+sub set_exim {
+    my ( $self, $protocols, $suites ) = @_;
+    my $config = '/etc/exim.conf.localopts';
+    $self->note("Creating absent file $config") unless -f $config;
+    my $data = Cpanel::Config::LoadConfig::loadConfig( $config, undef, '=' ) // {};
+    $self->set_element( $data, 'openssl_options',     lc Cpanel::SSL::Defaults::format_protocol_list( $protocols, { type => 'negative', delimiter => ' ', negation => '+no_', all => '', separator => '_' } ) ) if $protocols;
+    $self->set_element( $data, 'tls_require_ciphers', $suites )                                                                                                                                                 if $suites;
+    Cpanel::Config::FlushConfig::flushConfig( $config, $data, '=', undef, { sort => 1 } );
+    Cpanel::SafeRun::Errors::saferunallerrors('/usr/local/cpanel/scripts/buildeximmconf');
+    return;
+}

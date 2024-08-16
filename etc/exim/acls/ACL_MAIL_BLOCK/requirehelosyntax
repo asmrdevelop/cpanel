@@ -1,0 +1,18 @@
+
+drop
+    condition   = ${if isip{$sender_helo_name}}
+    message     = Access denied - Invalid HELO name (See RFC2821 4.1.3)
+
+drop
+    # Required because "[IPv6:<address>]" will have no .s
+    condition   = ${if match{$sender_helo_name}{\N^\[\N}{no}{yes}}
+    condition   = ${if match{$sender_helo_name}{\N\.\N}{no}{yes}}
+    message     = Access denied - Invalid HELO name (See RFC2821 4.1.1.1)
+
+drop
+    condition   = ${if match{$sender_helo_name}{\N\.$\N}}
+    message     = Access denied - Invalid HELO name (See RFC2821 4.1.1.1)
+
+drop
+    condition   = ${if match{$sender_helo_name}{\N\.\.\N}}
+    message     = Access denied - Invalid HELO name (See RFC2821 4.1.1.1)

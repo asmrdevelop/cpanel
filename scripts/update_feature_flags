@@ -1,0 +1,41 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/update_feature_flags            Copyright 2023 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::update_feature_flags;
+
+use cPstrict;
+
+=head1 NAME
+
+F<update_feature_flags>
+
+=head1 USAGE
+
+    update_feature_flags [--help]
+
+=head1 DESCRIPTION
+
+Updates the feature flags on the system based on changes since
+the last update.
+
+=cut
+
+use parent qw(Cpanel::HelpfulScript);
+use constant _OPTIONS => ();
+
+use Cpanel::FeatureFlags;
+use Cpanel::FeatureFlags::Migrate;
+
+exit( __PACKAGE__->new(@ARGV)->run() ) if !caller;
+
+sub run ($self) {
+    Cpanel::FeatureFlags::update();
+    Cpanel::FeatureFlags::Migrate::migrate_experimental_system();
+    return 0;    # shell exit value
+}
+
+1;

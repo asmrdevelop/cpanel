@@ -1,0 +1,82 @@
+[%
+  WRAPPER 'master_templates/master.tmpl'
+      app_key = 'legacy_restore_backups'
+      theme = 'bootstrap';
+-%]
+
+<p class="alert alert-info">
+  [% locale.maketext("[asis,cPanel amp() WHM] will deprecate the Legacy Backup system in the near future. We [output,strong,strongly] recommend that you upgrade to the new Backup system.") %]
+</p>
+
+[% USE Postgresql -%]
+[% IF data.disabled -%]
+<h3 class="simpleheading">[% locale.maketext('Backup is not enabled.') %] [% locale.maketext('If you are trying to restore a crashed system, please set backup to “[_1]”.', locale.maketext('Restore Only')); %]</h3>
+[% ELSIF ! data.restoretype -%]
+[% IF data.backupdirs.size == 0 -%]
+<span class="b2">Sorry, there are no backups located at [% data.backupbase FILTER html %].</span>
+[% ELSE -%]
+
+[% INCLUDE _pending_transfers.tmpl %]
+
+[% locale.maketext('Please select which type of backup to restore:') %]
+<form action="[% cp_security_token %]/scripts5/backuprestore">
+[% FOR backupdir = data.backupdirs.sort() -%]
+<input type="submit" class="btn btn-primary" name="restoretype" value="[% backupdir FILTER html %]" />
+[% END -%]
+</form>
+[% END -%]
+[% ELSE -%]
+
+<form action="[% cp_security_token %]/scripts5/checkdboverwrite">
+  <h3>[% locale.maketext('Restoring a “[_1]” backup …', data.restoretype.html() ) %]</h3>
+      <input type="hidden" name="restoretype" value="[% data.restoretype FILTER html %]" />
+      <div>
+          <h4>[% locale.maketext('User Selection') %]</h4>
+          <ul>
+            <li style="list-style:none">
+              <select size="7" name="user">
+              [% FOR user = data.users.sort() -%]
+                <option value="[% user FILTER html %]">[% user FILTER html %]</option>
+              [% END -%]
+              </select>
+            </li>
+          </ul>
+        <div>
+      <div>
+        <h4>[% locale.maketext('Restore Options') %]</h4>
+        <ul>
+            <li style="list-style:none"><input type="checkbox" id="restoreip" name="restoreip" value="1"> <label for="restoreip">[% locale.maketext('Dedicated IP Address (only if recreating)') %]</label></li>
+            <li style="list-style:none"><input type="checkbox" id="restoresubs" name="restoresubs" value="1" checked="checked"> <label for="restoresubs">[% locale.maketext('Restore SubDomain Entries') %]</label></li>
+            <li style="list-style:none"><input type="checkbox" id="restoremail" name="restoremail" checked="checked" value="1"> <label for="restoremail">[% locale.maketext('Restore Mail Config') %]</label></li>
+            <li style="list-style:none"><input type="checkbox" id="restorebwdata" name="restorebwdata" checked="checked" value="1"> <label for="restorebwdata">[% locale.maketext('Restore Bandwidth Data') %]</label></li>
+            <li style="list-style:none"><input type="checkbox" id="restoremysql" name="restoremysql" checked="checked" value="1"> <label for="restoremysql">[% locale.maketext('Restore MySQL Databases') %]</label></li>
+            [% IF Postgresql.is_configured -%]
+            <li style="list-style:none"><input type="checkbox" id="restorepsql" name="restorepsql" checked="checked" value="1"> <label for="restorepsql">[% locale.maketext('Restore PostgreSQL Databases') %]</label></li>
+            [% END %]
+        </ul>
+      </div>
+
+      <div>
+        <h4>[% locale.maketext('Database Restore Options') %]</h4>
+        <ul>
+          <li style="list-style:none"><input type="radio" checked="checked" id="db_restore_method-overwrite_sameowner" name="db_restore_method" value="overwrite_sameowner"> <label for="db_restore_method-overwrite_sameowner">[% locale.maketext('Overwrite local databases only if they have the same owner.') %]</label></li>
+          <li style="list-style:none"><input type="radio" id="db_restore_method-overwrite_all" name="db_restore_method" value="overwrite_all"> <label for="db_restore_method-overwrite_all">[% locale.maketext('Overwrite local databases regardless of owner.') %]</label></li>
+          <li style="list-style:none"><input type="radio" id="db_restore_method-select" name="db_restore_method" value="select"> <label for="db_restore_method-select">[% locale.maketext('Manually select which databases to restore.') %]</label></li>
+        </ul>
+      </div>
+
+      <div>
+        <h4>[% locale.maketext('Database User Restore Options') %]</h4>
+        <ul>
+          <li style="list-style:none"><input type="radio" checked="checked" id="dbuser_restore_method-overwrite_sameowner" name="dbuser_restore_method" value="overwrite_sameowner"> <label for="dbuser_restore_method-overwrite_sameowner">[% locale.maketext('Overwrite local database users only if they have the same owner.') %]</label></li>
+          <li style="list-style:none"><input type="radio" id="dbuser_restore_method-overwrite_all" name="dbuser_restore_method" value="overwrite_all"> <label for="dbuser_restore_method-overwrite_all">[% locale.maketext('Overwrite local database users regardless of owner.') %]</label></li>
+        </ul>
+      </div>
+
+      <input type="submit" class="btn btn-primary" value="Start Restore">
+</form>
+[% END -%]
+
+[% INCLUDE _transfer_api_info.tmpl %]
+
+[% END -%]

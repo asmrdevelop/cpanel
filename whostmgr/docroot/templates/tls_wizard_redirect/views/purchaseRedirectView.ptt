@@ -1,0 +1,122 @@
+<div class="list-container">
+    <div class="row search-page-container">
+        <div class="col-xs-12 col-sm-12 col-md-4 col-lg-4">
+            <search ng-model="meta.filterValue" ng-change="searchList()"></search>
+        </div>
+        <div class="col-xs-12 col-sm-12 col-md-8 col-lg-8">
+            <div class="pagination-container hidden-xs hidden-sm">
+                <page-size id="pageSize"
+                    allowed-sizes="meta.pageSizes"
+                    total-items="meta.totalItems"
+                    ng-model="meta.pageSize"
+                    show-all="true"
+                    ng-show="showPager"
+                    ng-change="selectPageSize()">
+                </page-size>
+                <uib-pagination id="paginateItems"
+                    total-items="meta.totalItems"
+                    ng-model="meta.currentPage"
+                    max-size="0"
+                    boundary-links="true"
+                    rotate="false"
+                    previous-text="<"
+                    next-text=">"
+                    first-text="<<"
+                    last-text=">>"
+                    items-per-page="meta.pageSize"
+                    ng-show="showPager"
+                    ng-change="selectPage()">
+                </uib-pagination>
+            </div>
+        </div>
+    </div>
+    <div class="row hidden-xs hidden-sm">
+        <div class="col-xs-4">
+            <div class="page-stats pull-right">
+                <span class="title">{{ get_pagination_msg() }}</span>
+            </div>
+        </div>
+    </div>
+    <table class="table table-striped responsive-table">
+        <thead>
+            <tr>
+                <th class="col-xs-3 col-sm-3 col-md-2 col-lg-2">
+                    <span toggle-sort id="sortUsername" sort-meta="meta"
+                              sort-field="username"
+                              onSort="sortList">
+                        [% locale.maketext('Username') %]
+                    </span>
+                </th>
+                <th class="col-xs-7 col-sm-7 col-md-8 col-lg-8">
+                    <span toggle-sort id="sortDomain" sort-meta="meta"
+                              sort-field="domain"
+                              onSort="sortList">
+                        [% locale.maketext('Domain') %]
+                    </span>
+                </th>
+                <th class="col-xs-2 col-sm-2 col-md-2 col-lg-2"></th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr ng-repeat="account in filteredAccounts">
+                <td data-title="[% locale.maketext('Username') %]">
+                    {{ account.username }}
+                </td>
+                <td data-title="[% locale.maketext('Domain') %]">
+                    {{ account.domain }}
+                </td>
+                <td>
+                    <button id="action-{{account.username}}"
+                            type="button"
+                            spinner-id="spinner-action-{{account.username}}"
+                            cp-action="process_user_and_generate_login_url(account.username, account.domain)">
+                        [% locale.maketext('Go to [asis,cPanel]') %]
+                    </button>
+                </td>
+            </tr>
+            <tr ng-if="accounts" ng-hide="filteredAccounts.length" class="info empty-row">
+                <td colspan="3">[% locale.maketext('No results match.') %]</td>
+            </tr>
+            <tr ng-hide="accounts.length" class="info empty-row">
+                <td colspan="3">[% locale.maketext('No users.') %]</td>
+            </tr>
+        </tbody>
+    </table>
+    <div class="row hidden-md hidden-lg">
+        <div class="col-xs-8 pull-right">
+            <div class="page-stats pull-right">
+                <span class="title">{{ get_pagination_msg() }}</span>
+            </div>
+        </div>
+    </div>
+    <div class="row search-page-container visible-sm-block visible-xs-block hidden-lg hidden-md">
+        <div class="col-xs-12 col-sm-12">
+            <div class="pagination-container">
+                <page-size id="pageSize"
+                    allowed-sizes="meta.pageSizes"
+                    total-items="meta.totalItems"
+                    ng-model="meta.pageSize"
+                    show-all="true"
+                    ng-show="showPager"
+                    ng-change="selectPageSize()">
+                </page-size>
+                <uib-pagination id="paginateItems"
+                    total-items="meta.totalItems"
+                    ng-model="meta.currentPage"
+                    max-size="0"
+                    boundary-links="true"
+                    rotate="false"
+                    previous-text="<"
+                    next-text=">"
+                    first-text="<<"
+                    last-text=">>"
+                    items-per-page="meta.pageSize"
+                    ng-show="showPager"
+                    ng-change="selectPage()">
+                </uib-pagination>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div growl></div>

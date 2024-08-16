@@ -1,0 +1,84 @@
+[% WRAPPER 'master_templates/master.tmpl' theme="yui"
+    app_key = defheader.app_key
+    breadcrumburl = defheader.breadcrumburl
+    extrastyle = '
+       .dialog-content {
+            color: #333333;
+        }
+       .dialog-submit {
+            margin-top: 20px;
+            text-align: right;
+        }
+        .dialog-box {
+            background-color: #F3F3F3;
+            border: 1px solid #DCDFE3;
+            width: 60%;
+            margin: 10px 0 10px 0;
+            padding: 10px;
+        }
+        .cjt-pagenotice-container {
+            display:none;
+        }
+        .hide {
+            display: none!important;
+        }
+        .show {
+            display: block;
+        }
+'
+%]
+[% TRY %]
+[% PROCESS "$data.header" %]
+[% CATCH file %]
+[% END %]
+[% IF data.pageActionResultOutputsOnPage %]
+    <div class="dialog-box">
+        <div>
+            <div class="dialog-content">
+                [% data.msg %]
+            </div>
+            <div class="dialog-submit">
+                <input id="proceedBtn" type="submit" class="btn-primary" value="Proceed &gt;&gt;" onclick="performAction();">
+            </div>
+        </div>
+    </div>
+    <div id="cjt_static_notice_container" class="cjt-pagenotice-container cjt-notice-container">
+        <div class="yui-module cjt-notice cjt-pagenotice cjt-notice-success">
+            <div class="bd">
+                <div id="actionMsgForced" class="cjt-notice-content hide">[% locale.maketext("A forced reboot is now in progress …") %]</div>
+                <div id="actionMsg" class="cjt-notice-content hide">[% locale.maketext("A reboot is now in progress …") %]</div>
+            </div>
+        </div>
+    </div>
+    <script>
+    function performAction(){
+        var dialogType = '[% data.dialogType %]';
+        var xmlhttp = new XMLHttpRequest();
+
+        xmlhttp.open("GET","[% data.action %]",true);
+        xmlhttp.send();
+        document.getElementById("proceedBtn").setAttribute("disabled",true);
+
+        if(dialogType === "forcereboot"){
+            document.getElementById("actionMsgForced").classList.remove("hide");
+            document.getElementById("actionMsgForced").className += " show";
+        }else{
+            document.getElementById("actionMsg").classList.remove("hide");
+            document.getElementById("actionMsg").className += " show";
+        }
+        document.getElementById("cjt_static_notice_container").className += " show";
+    }
+    </script>
+[% ELSE %]
+    <div class="dialog-box">
+        <form action="[% data.action %]" name="mainform">
+            <div class="dialog-content">
+                [% data.msg %]
+            </div>
+            <div class="dialog-submit">
+                <input type="submit" class="btn-primary" value="Proceed &gt;&gt;">
+            </div>
+        </form>
+    </div>
+[% END %]
+[% END -%]

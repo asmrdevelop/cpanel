@@ -1,0 +1,60 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/set_mailman_archive_perms       Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+use warnings;
+
+use Cpanel::Mailman::Perms    ();
+use Cpanel::ProcessCheck      ();
+use Cpanel::IONice            ();
+use Cpanel::CloseFDs          ();
+use Cpanel::Sys::Setsid::Fast ();
+
+__PACKAGE__->script(@ARGV) unless caller();
+
+sub script {
+    my (@args) = @_;
+
+    my %pids = Cpanel::ProcessCheck::previouspids( 'process' => 'set_mailman_archive_perms' );
+
+    if ( scalar keys %pids ) {
+        print "[$0] Terminating previous running copies with pids: " . join( ', ', keys %pids ) . ".\n";
+        kill 9, keys %pids;
+    }
+
+    if ( Cpanel::IONice::ionice( 'best-effort', 6 ) ) {
+        print "[$0] Setting I/O priority to reduce system load: " . Cpanel::IONice::get_ionice() . "\n";
+    }
+
+    setpriority( 0, 0, 19 );    # nice 19
+
+    print "[$0] Setting mailman archive permissions\n";
+
+    if ( grep ( m/-+background/, @args ) ) {
+        print "[$0] Continuing in the background\n";
+        if ( fork() ) { exit(); }
+
+        open( STDERR, '>>', '/usr/local/cpanel/logs/error_log' ) || warn "Failed to open /usr/local/cpanel/logs/error_log: $!";
+        Cpanel::Sys::Setsid::Fast::fast_setsid();
+        Cpanel::CloseFDs::fast_daemonclosefds();
+
+    }
+
+    my $perms_obj = Cpanel::Mailman::Perms->new();
+
+    # Set the outer archive directory permissions
+    $perms_obj->set_perms();
+
+    # Set per-list permissions
+    if ( $perms_obj->set_archive_perms() ) {
+        exit(0);
+    }
+
+    exit(1);
+}
+
+1;

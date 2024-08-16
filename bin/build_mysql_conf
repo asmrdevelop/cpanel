@@ -1,0 +1,496 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - bin/build_mysql_conf                    Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package bin::build_mysql_conf;
+
+use strict;
+## no critic qw(TestingAndDebugging::RequireUseWarnings)
+
+BEGIN {
+
+    # not used but auto loaded
+    $INC{'IO/Socket/UNIX.pm'} = '__FAKEOUT__';    ## no critic qw(Variables::RequireLocalizedPunctuationVars)
+}
+
+use Cpanel::LoadFile                   ();
+use Cpanel::DbUtils                    ();
+use Cpanel::ConfigFiles                ();
+use Cpanel::MysqlUtils::Compat         ();
+use Cpanel::MysqlUtils::MyCnf::Basic   ();
+use Cpanel::MysqlUtils::MyCnf::Migrate ();
+use Cpanel::MysqlUtils::Restart        ();
+use Cpanel::MysqlUtils::Connect        ();
+use Cpanel::MysqlUtils::Quote          ();
+use Cpanel::MysqlUtils::Version        ();
+use Cpanel::MysqlUtils::Dir            ();
+use Cpanel::MysqlUtils::Secure         ();
+use Cpanel::PwCache                    ();
+use Cpanel::SafeRun::Object            ();
+use Cpanel::Selinux                    ();
+use Cpanel::Umask                      ();
+use Cpanel::MysqlUtils::Running        ();
+use Cpanel::Version::Compare           ();
+use Cpanel::Pkgr                       ();
+use Cpanel::RestartSrv                 ();
+use Cpanel::FileUtils::Write           ();
+use Cpanel::Services::Enabled          ();
+use Cpanel::ProcessCheck::Running      ();
+use Cpanel::Finally                    ();
+
+use constant _SELINUX_CONTEXT => 'system_u:object_r:sbin_t';
+
+my $PID_FILE      = '/var/run/build_mysql_conf.pid';
+my $MAX_WAIT_TIME = 120;
+
+# Must exit(0) to avoid mysql upgrade aborting
+exit( run(@ARGV) ) unless caller();
+
+sub run {
+    my (@argv) = @_;
+
+    local $| = 1;
+
+    # usually an EA4 update
+    my $invoked_as_hook = index( $0, 'universal-hooks' ) > -1;
+    if ($invoked_as_hook) {
+
+        # On base cPanel install this script will have already run. Running it again will cause the
+        # ea4 install to take significantly longer than expected.
+        if ( _base_install_is_in_progress() ) {
+
+            print STDERR "“$0” refuses to run during a cPanel installation.\n";
+            return;
+        }
+
+        # need to run in the background to prevent a pkg
+        # update from increasing the size of the window
+        # of brokeness.
+
+        _daemonize();
+    }
+    elsif ( grep ( m/^-+daemonize/, @argv ) ) {
+        _daemonize();
+    }
+
+    #else We WILL run if called as a non-hook; e.g. ./bin/build_mysql_conf
+
+    # only root can run it
+    die "Insufficient permissions to update MySQL.\n" if $> != 0;
+
+    return if !_check_for_previous_run_ok();
+
+    Cpanel::FileUtils::Write::overwrite( $PID_FILE, $$, 0644 );
+
+    my $pid_removal = Cpanel::Finally->new( sub { unlink($PID_FILE); } );
+
+    if ( grep { m/^--fix-my-cnf/ } @argv ) {
+
+        # mysql can restart when updating my.cnf
+        update_mysql_conf();
+    }
+    else {
+        autofix(@argv);
+    }
+
+    return 0;
+}
+
+sub update_mysql_conf {
+    my $mysql_version = Cpanel::MysqlUtils::Version::uncached_mysqlversion();
+    Cpanel::MysqlUtils::MyCnf::Migrate::migrate_my_cnf_file( $Cpanel::ConfigFiles::MYSQL_CNF, $mysql_version );
+
+    return;
+}
+
+sub autofix {
+    my (@argv) = @_;
+
+    # Ideally we only (re)start MySQL once, so we hijack Cpanel::MysqlUtils::Restart::restart
+    # However, calls to mysqlconnectioncheck may restart MySQL more depending on the MySQL connection
+    # status. In a broken state, more than one restart is expected.
+    my $restart_function = \&Cpanel::MysqlUtils::Restart::restart;
+    no warnings 'redefine';
+    local *Cpanel::MysqlUtils::Restart::restart = sub { return; };
+
+    update_mysql_conf();
+
+    my @NAM = Cpanel::PwCache::getpwuid($<);
+    local $ENV{'HOME'} = $NAM[7];
+    local $ENV{'USER'} = $NAM[0];
+
+    my $is_enabled = Cpanel::Services::Enabled::is_enabled("mysql");
+
+    my $mysql_was_online_at_start;
+
+    if ($is_enabled) {
+
+        _install_mysql_db_if_missing();
+
+        $mysql_was_online_at_start = Cpanel::MysqlUtils::Running::is_mysql_running();
+        if ( !$mysql_was_online_at_start ) {
+
+            # only restart MySQL one time during the process in best case (mysqlconnectioncheck may restart more)
+            $restart_function->();
+        }
+
+        _ensure_mysql_dir_permissions();
+
+        # If this fails this is ok as mysqlconnectioncheck should fix it
+        _ensure_my_cnf_has_initial_password();
+
+        _mysqlconnectioncheck_if_cannot_get_handle();
+
+        # Ideally we would make this a --upgrade flag, however
+        # the mysql spec files for 56 and lower expect it to do this
+        if ( !( grep { m/^--no-upgrade/ } @argv ) ) {
+
+            # mysqlconnectioncheck is run before this to make sure mysql_upgrade can connect
+            my $mysql_upgrade = Cpanel::DbUtils::find_mysql_upgrade();
+            _run_binary($mysql_upgrade);
+
+            _mysqlconnectioncheck_if_cannot_get_handle();
+        }
+    }
+
+    _handle_selinux(@argv);
+
+    my $formatter_coderef = sub {
+        my ($msg) = @_;
+        print $msg;
+        return;
+    };
+
+    if ($is_enabled) {
+        my $mysql_version = Cpanel::MysqlUtils::Version::mysqlversion();
+        if ( -x '/usr/local/cpanel/scripts/fix_innodb_tables' && $mysql_version < 5.5 ) {
+
+            print "Fixing innodb tables.\n";
+
+            # we need to repair innodb tables for MySQL versions 5.1 and below during
+            # an upgrade, but it is safe to run it on a fresh install as well.
+            _run_binary("/usr/local/cpanel/scripts/fix_innodb_tables");
+        }
+
+        my $dbh;
+        local $@;
+        eval { $dbh = Cpanel::MysqlUtils::Connect::get_dbi_handle(); };
+        warn if $@;
+
+        print "Running perform_secure_actions.\n";
+        if ($dbh) {
+            my $actions_hr = {
+                'securemycnf'        => 1,
+                'removeanon'         => 1,
+                'removetestdb'       => 1,
+                'removelockntmp'     => 1,
+                'removepublicgrants' => 1,
+            };
+            my $verbose = 0;
+            local $@;
+            eval { Cpanel::MysqlUtils::Secure::perform_secure_actions( $dbh, $actions_hr, $verbose ); };
+            warn if $@;
+        }
+
+        print "Working around common mysql problems.\n";
+        _setup_mysql_workarounds();
+
+        # Ideally we would make this a --restart flag, however
+        # the mysql spec files for 56 and lower expect it to do this
+        if ( $mysql_was_online_at_start && !( grep { m/^--no-restart/ } @argv ) ) {
+            print "Restarting MySQL/MariaDB.\n";
+
+            # Callers may expect mysql to be available right away after
+            # calling build_mysql_conf so we cannot do an async restart
+            $restart_function->();
+        }
+
+    }
+
+    return;
+}
+
+sub _handle_selinux {
+    my (@argv) = @_;
+
+    if ( !( grep { m/^--no-selinux/ } @argv ) && Cpanel::Selinux::is_enabled() ) {
+        my @binaries;
+
+        for my $mysql_bin ( _mysql_binaries() ) {
+            if ( -x $mysql_bin ) {
+                push @binaries, $mysql_bin;
+            }
+            elsif ( -e _ ) {
+                warn "WARNING: “$mysql_bin” exists but is not executable.\n";
+            }
+            elsif ( !$!{'ENOENT'} ) {
+                warn "WARNING: stat($mysql_bin): $!";
+            }
+        }
+
+        if (@binaries) {
+            print "Setting SELinux context: @binaries\n";
+            warn if !eval { Cpanel::Selinux::set_context( _SELINUX_CONTEXT(), @binaries ); };
+        }
+    }
+
+    return;
+}
+
+sub _run_binary {
+    my ( $binary, @args ) = @_;
+
+    print "Running $binary.\n";
+
+    my $saferun_obj = Cpanel::SafeRun::Object->new(
+        'program' => $binary,
+        ( scalar @args ? ( 'args' => \@args ) : () )
+    );
+
+    # mysql_upgrade exits 2 if an upgrade isn't necessary.
+    # This is expected behavior and not necessarily an error.
+    return if $saferun_obj->error_code() == 2;
+
+    if ( my $stdout = $saferun_obj->stdout() ) {
+        print join( "\n", map { "[$binary] " . $_ } split( m{\n}, $stdout ) ) . "\n";
+    }
+    if ( $saferun_obj->CHILD_ERROR() ) {
+        warn "Error while running “$binary”: " . $saferun_obj->stderr() . ": " . $saferun_obj->autopsy();
+    }
+
+    return;
+}
+
+sub _mysql_binaries {
+    return ( '/usr/sbin/mysqld', '/usr/libexec/mysqld' );
+}
+
+sub get_mysql_selinux_context {
+
+    my $version = Cpanel::Pkgr::get_package_version('policycoreutils');
+
+    # need to add level information on c7 and more modern os
+    my $needs_level = Cpanel::Version::Compare::compare( $version, '>=', '2.2' ) ? 1 : 0;
+
+    my $context = 'system_u:object_r:sbin_t';
+    $context .= ':s0' if $needs_level;
+
+    my @selinux_context;
+    foreach my $bin ( _mysql_binaries() ) {
+
+        # only cares about existing binaries
+        next unless -x $bin;
+        push @selinux_context, [ $bin, '--', $context ];
+    }
+
+    return unless scalar @selinux_context;
+
+    # stringify the content
+    my $str = join( "\n", ( map { join "\t", @{$_} } @selinux_context ), '' );
+    return $str;
+}
+
+sub _sleep {
+    return sleep $_[0];
+}
+
+sub _install_mysql_db_if_missing {
+
+    my $mysql_dir = Cpanel::MysqlUtils::Dir::getmysqldir();
+    if (
+           !-e "$mysql_dir/mysql/user.frm"
+        && !-e "$mysql_dir/mysql/user.MYD"
+        && !-e "$mysql_dir/mysql/user.MYI"
+        && !Cpanel::RestartSrv::check_service( 'service' => 'mysqld', 'user' => 'mysql' )
+
+        # We use a check to see if the process is running, not that the process is working
+        # since mysql_install_db will hang even if it just up
+    ) {
+        # MySQL 5.7 needs mysqld --initialize
+        if ( my $mysqld_supports_initialize = Cpanel::MysqlUtils::Compat::mysqld_supports_initialize() ) {
+            print "The mysql.user table is missing, mysqld --initialize is handled by the startup scripts.\n";
+        }
+        else {
+            print "The mysql.user table is missing, mysql_install_db will be called to recreate it.\n";
+            my $mysql_install_db = Cpanel::DbUtils::find_mysql_install_db();
+            _run_binary( $mysql_install_db, '--user=mysql', "--datadir=$mysql_dir" );
+        }
+    }
+
+    return 1;
+}
+
+sub _ensure_mysql_dir_permissions {
+
+    my $mysql_dir = Cpanel::MysqlUtils::Dir::getmysqldir();
+
+    if ( my $mode = ( stat($mysql_dir) )[2] ) {
+
+        # Set to a minimum of 0711
+        if ( ( $mode | 0711 ) != $mode ) {
+            $mode |= 0711;
+            my $umask = Cpanel::Umask->new(0);
+            chmod $mode, $mysql_dir or warn sprintf( "chmod( %03o, $mysql_dir ) failed: $!", $mode );
+        }
+    }
+
+    return;
+}
+
+sub _base_install_is_in_progress {
+    my $base_install_file_exists = -e $Cpanel::ConfigFiles::BASE_INSTALL_IN_PROGRESS_FILE;
+
+    return 0 if !$base_install_file_exists;
+
+    my $modified_time_sec = ( stat(_) )[9];
+    my $file_age_sec      = time() - $modified_time_sec;
+    my $one_day_sec       = 86400;
+
+    # if modify time is somehow in the future, then file age will be negative
+    # and we'll interpret that as "within last day"
+    my $modified_within_last_day = $file_age_sec < $one_day_sec;
+
+    return $modified_within_last_day;
+}
+
+sub _daemonize {
+    print STDERR "$0: running in the background.\n";
+    require Cpanel::Daemonizer::Simple;
+    Cpanel::Daemonizer::Simple::daemonize();
+    return;
+}
+
+sub _check_for_previous_run_ok {
+    my $previous_pid;
+    my $waited = 0;
+
+    while (
+        ( $previous_pid = Cpanel::LoadFile::loadfile($PID_FILE) )    # we have a previous pid file
+                                                                     # and its still running ...
+        && eval { Cpanel::ProcessCheck::Running->new( 'user' => 'root', 'pid' => $previous_pid, 'pattern' => qr<build_mysql_conf> )->check_all() }
+    ) {
+        print STDERR "“build_mysql_conf” is already running with PID “$previous_pid”, waiting for it to complete.\n";
+        _sleep(1);
+        if ( $waited++ > $MAX_WAIT_TIME ) {
+            print STDERR "“build_mysql_conf” is already running with PID “$previous_pid” appears to be stuck, exiting.\n";
+            return 0;
+        }
+    }
+
+    return 1;
+}
+
+sub _setup_mysql_workarounds {
+    require Whostmgr::Mysql::Workarounds;
+    my $worked_around = Whostmgr::Mysql::Workarounds::disable_password_validation_plugin();
+    print "Disabled validate_password Plugin\n" if $worked_around;
+    return 1;
+}
+
+sub _scrape_password_from_error_log {
+    my ($logfile) = @_;
+
+    # Yes it really works this way
+    # See https://dev.mysql.com/doc/refman/8.0/en/default-privileges.html
+    # 2019-03-20T18:14:16.441377Z 1 [Note] A temporary password is generated for root@localhost: L#:b#rcpd83q
+    #
+    my $linecount = 0;
+    if ( open( my $fh, '<', $logfile ) ) {
+        while ( readline($fh) ) {
+            if (m{temporary password.*root\@.*: (\S+)}) {
+                return $1;
+            }
+            last if $linecount++ > 10000;
+        }
+
+    }
+    return;
+}
+
+# This only works on MySQL 5.7 and MySQL 8.0+
+sub _ensure_my_cnf_has_initial_password {
+    my $dbpassword = Cpanel::MysqlUtils::MyCnf::Basic::getmydbpass('root');
+    return if length $dbpassword;
+
+    require Cpanel::MysqlUtils::Variables;
+    my $log_error_file = eval { Cpanel::MysqlUtils::Variables::get_mysql_variable('log-error'); } || '/var/log/mysqld.log';
+    print "Checking the log file “$log_error_file” for the initial password\n";
+    if ( my $inital_password = _scrape_password_from_error_log($log_error_file) ) {
+        eval {
+            require Cpanel::MysqlUtils::RootPassword;
+            require Cpanel::MysqlUtils::ResetRootPassword;
+            #
+            # Now we populate .my.cnf
+            #
+
+            print "Populating .my.cnf with the initial password.\n";
+            Cpanel::MysqlUtils::RootPassword::update_mysql_root_password_in_configuration($inital_password);
+            #
+            # Now we need to change it since the inital password is always expired
+            #
+            my $newpass = Cpanel::MysqlUtils::ResetRootPassword::get_root_password_that_meets_password_strength_requirements();
+
+            print "Setting the root password to a strong password.\n";
+            _set_password_using_mysql_client_that_supports_expired_passwords($newpass);
+
+            print "Populating .my.cnf with the new strong password.\n";
+            Cpanel::MysqlUtils::RootPassword::update_mysql_root_password_in_configuration($newpass);
+        };
+        if ($@) {
+            warn "The password could not be set using the initial password";
+            return;
+        }
+
+        return 1;
+    }
+
+    warn "The system could not determine the inital mysql root password";
+    return;
+
+}
+
+# We cannot use DBI here since it does not supported expired password
+# (Your password has expired. To log in you must change it using a client that supports expired passwords.)
+#
+sub _set_password_using_mysql_client_that_supports_expired_passwords {
+    my ($newpass) = @_;
+
+    my $mysql         = Cpanel::DbUtils::find_mysql();
+    my $mysql_version = Cpanel::MysqlUtils::Version::mysqlversion();
+
+    my $quoted_password = Cpanel::MysqlUtils::Quote::quote($newpass);
+    my $stdin           = "SET PASSWORD = PASSWORD($quoted_password);\n";
+    if ( Cpanel::MysqlUtils::Version::is_at_least( $mysql_version, '8.0' ) ) {
+
+        # PASSWORD() syntax is deprecated as of MySQL 5.7.6 and does not exist in 8.0
+        # https://dev.mysql.com/doc/refman/5.7/en/set-password.html
+        $stdin = "ALTER USER CURRENT_USER() IDENTIFIED BY $quoted_password;\n";
+    }
+    $stdin .= "FLUSH PRIVILEGES;\n";
+
+    my $run = Cpanel::SafeRun::Object->new( 'program' => $mysql, 'args' => ['--connect-expired-password'], 'stdin' => $stdin );
+    if ( $run->CHILD_ERROR() ) {
+        warn "Error while running “$mysql”: " . $run->stdout() . ": " . $run->stderr() . ": " . $run->autopsy();
+        return 0;
+    }
+
+    return 1;
+}
+
+sub _mysqlconnectioncheck_if_cannot_get_handle {
+
+    # Must sure a mysql root password is set
+    # if we do not have an initial password
+    local $@;
+    eval { Cpanel::MysqlUtils::Connect::get_dbi_handle(); };
+    if ( $@ || !Cpanel::MysqlUtils::MyCnf::Basic::getmydbpass('root') ) {
+
+        _run_binary('/usr/local/cpanel/scripts/mysqlconnectioncheck');
+    }
+    return;
+}
+
+1;

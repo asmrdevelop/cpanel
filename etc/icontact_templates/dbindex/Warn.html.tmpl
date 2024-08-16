@@ -1,0 +1,32 @@
+[%#
+Variables passed in:
+
+origin               - the system component that originated the action
+cache_file_path      - the path to the cache file that is out of date
+dbindex_path         - the path to the dbindex executable
+update_db_cache_path - the path to the update_db_cache executable
+
+For more information about how to customize notification templates, read our documentation at https://go.cpanel.net/notificationtemplates
+
+-%]
+
+[%
+    PROCESS "include/colors.tmpl";
+    PROCESS "include/styles.tmpl";
+    PROCESS "include/code_standout.tmpl";
+    PROCESS "include/code_inline.tmpl";
+
+    WRAPPER 'wrapper/main.html.tmpl';
+
+    NOTICE.email_reason = CPANEL.locale.maketext('The [asis,dbindex] cache file is out of date.');
+
+%]
+
+<p>
+    [% CPANEL.locale.maketext( 'The [asis,dbindex] cache file [_1] is out of date by more than four hours.', code_inline(term=NOTICE.cache_file_path) ) %]
+</p>
+<p>
+    [% CPANEL.locale.maketext( 'To resolve this issue, run the [_1] script to update the index and fix the [asis,cron] job, and then run the [_2] script to rebuild the database cache.', code_inline(term=NOTICE.dbindex_path), code_inline(term=NOTICE.update_db_cache_path) ) %]
+</p>
+
+[% END %]

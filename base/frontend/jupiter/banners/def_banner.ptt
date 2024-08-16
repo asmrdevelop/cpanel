@@ -1,0 +1,122 @@
+[%
+    SET banner_id = 'banner_' _ banner.key;
+    SET deps_not_met = banner.insufficiencies.size > 0;
+    SET show_again_in = banner.show_again_in.defined ? banner.show_again_in : 0;
+%]
+
+<!-- Inherit classes -->
+[% IF banner.include_default_css %]
+<link type="text/css" rel="stylesheet" href="[% theme_magic_url( 'banners/banner.css' ) %]" >
+[% END %]
+[% IF banner.css.defined && banner.key.defined %]
+<link type="text/css" rel="stylesheet" href="[% theme_magic_url( 'banners/' _ banner.key _ '/banner.css' ) %]">
+[% END %]
+
+<div class="row banner" id="[% banner_id.html() %]" style="display: none">
+    <div id="mainBanner" class="col-xs-12 col-sm-12 col-md-9 col-lg-9">
+        [% IF banner.dismissible %]
+            <i class="dismiss_banner fas fa-times" aria-label="[% locale.maketext('Dismiss the banner.') %]"></i>
+        [% END %]
+        <div id="infoContainer">
+        [% IF banner.image %]
+            <div id="bannerLogo">
+                <img id="productLogo" src="[% theme_magic_url('banners/' _ banner.key _ '/' _ banner.image) %]" alt="logo" />
+            </div>
+        [% END %]
+            <div id="bannerText">
+                <div id="bannerTextInner">
+                    [% IF banner.titletext %]
+                    <h1>[% banner.titletext.html() %]</h1>
+                    [% END %]
+                    <div id="infoText">
+                        <span id="detailText">[% banner.infotext.html() %]</span>
+                        [% IF banner.infoLink %]
+                        <a id="infoLink" href="[% banner.infoLink.html() %]" target="_blank">
+                        [% locale.maketext("Learn More »") %]
+                        </a>
+                        [% END %]
+                    </div>
+                    [% IF banner.purchasetext %]
+                    <div id="priceText"><em>[% banner.purchasetext.html() %]</em></div>
+                    [% END %]
+                </div>
+            </div>
+            [% IF banner.purchaselink && banner.purchase_button_text %]
+            <div id="bannerPurchaseAction">
+                [% IF deps_not_met %]
+                <a href="#" class="dismiss_banner">
+                    <div id="dismissLink" class="btn btn-glass shadowed">
+                        [% locale.maketext('Close') %]
+                    </div>
+                </a>
+                [% ELSE %]
+                <a href="[% cp_security_token %]/[% banner.purchaselink.html() %]" target="_blank" >
+                    <div id="purchaseLink" class="btn btn-glass shadowed">
+                        [% banner.purchase_button_text.html() %]
+                    </div>
+                </a>
+                [% END %]
+            </div>
+            [% END %]
+
+            <div id="responsiveText">
+                <div><em>[% banner.purchasetext.html() %]</em></div>
+                <a id="infoLink" href="[% banner.infoLink.html() %]" target="learn_more">
+                    [% locale.maketext("Learn More »") %]
+                </a>
+            </div>
+            <div id="bannerCart">
+                [% IF deps_not_met %]
+                <a id="cartLink" href="#" class="dismiss_banner">
+                [% ELSE %]
+                <a id="cartLink" href="[% cp_security_token %]/[% banner.purchaselink.html() %]" target="_blank">
+                [% END %]
+                    <i class="fas fa-shopping-cart" aria-hidden="true"></i>
+                </a>
+            </div>
+        </div>
+    </div>
+</div>
+
+[% IF banner.show_insufficiencies_when_detected && deps_not_met %]
+<div class="callout callout-warning" id="troubleModal">
+    <h1 class="the-title">
+        <i class="fas fa-exclamation-triangle"></i>
+    </h1>
+    <div class="modal-stuff">
+        [% FOREACH insufficiency IN banner.insufficiencies %]
+        <p>[% insufficiency %]</p>
+        [% END %]
+
+        <p>
+            <strong>
+                [% locale.maketext("Contact your provider for more information.") %]
+            </strong>
+        </p>
+
+        <button type="button" class="btn btn-secondary shadowed dismiss_banner">
+            [% locale.maketext("Cancel") %]
+        </button>
+        <button type="button" class="btn btn-primary shadowed proceed_to_purchase">
+            [% locale.maketext("Proceed") %]
+        </button>
+    </div>
+</div>
+[% END %]
+
+<script>
+    var BANNER = {
+        id:    [% banner_id.json() %],
+        token: [% cp_security_token.json() %],
+        info:  [% banner.json() %],
+    };
+[%
+    SET theme_banners_path = '/usr/local/cpanel/base/frontend/jupiter/banners';
+    IF banner.include_default_script;
+        INCLUDE "${theme_banners_path}/banner.js";
+    END;
+    IF banner.script.defined && banner.key.defined;
+        INCLUDE "${theme_banners_path}/${banner.key}/${banner.script}";
+    END;
+%]
+</script>

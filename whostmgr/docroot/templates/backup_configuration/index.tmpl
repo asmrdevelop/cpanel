@@ -1,0 +1,117 @@
+[%
+    USE Whostmgr;
+    USE JSON;
+
+    SET stylesheet_includes = [
+        Whostmgr.find_file_url('/templates/backup_configuration/index.min.css')
+    ];
+
+    SET jb_logo = Whostmgr.find_file_url('/images/jetbackup.svg');
+
+    SET PAGE_BASE = '/scripts/backup_configuration/';
+    SET PAGE_NAME = Whostmgr.get_page_name_by_url(PAGE_BASE);
+
+    SET PAGE_DATA = {
+        MAIN_TITLE               => PAGE_NAME, # common parent of all views (untranslated)
+    };
+
+    WRAPPER 'master_templates/master.tmpl'
+        header         = locale.makevar(PAGE_NAME),
+        breadcrumburl  = PAGE_BASE,
+        base           = PAGE_BASE,
+        stylesheets    = stylesheet_includes,
+        CJT2_EXCLUSIVE = 1,
+        theme          = 'bootstrap',
+        app_key        = 'backup_configuration';
+%]
+
+[% IF data.show_jetbackup %]
+    [% PROCESS 'backup_configuration/views/jet_backup.ptt' %]
+[% END %]
+
+<cp-alert-list id="configuration-alert-list"></cp-alert-list>
+<div id="content"
+     ng-controller="BaseController"
+     class="ng-cloak"
+     ng-cloak>
+    <div id="tabContainer">
+        <ul class="nav nav-tabs">
+            <li ng-class="{active: currentRoute === '/settings'}"><a href="config">[% locale.maketext('Backup Settings') %]</a></li>
+            <li ng-class="{active: currentRoute === '/destinations'}"><a href="destinations">[% locale.maketext('Additional Destinations') %]</a></li>
+            <li ng-class="{active: currentRoute === '/validation'}"><a href="validation">[% locale.maketext('Validation Results') %]</a></li>
+        </ul>
+        <div class="tab-content" ng-view></div>
+    </div>
+</div>
+
+[% port_validation_message = locale.maketext('The port number must be between [numf,1] and [numf,65535].') -%]
+[% std_timeout_validation_message = locale.maketext('You must enter a timeout value between [numf,30] and [numf,300] seconds.') %]
+[% std_timeout_number_message = locale.maketext('You must enter a positive integer for the timeout value.') %]
+
+<script type="text/javascript">
+    var PAGE = [% PAGE_DATA.json() %];
+</script>
+
+<!-- load the main templates into $templateCache first -->
+
+<script id="views/destinations.ptt" type="text/ng-template">
+    [% PROCESS 'backup_configuration/views/destinations.ptt' %]
+</script>
+
+<script id="views/config.ptt" type="text/ng-template">
+    [% PROCESS 'backup_configuration/views/config.ptt' %]
+</script>
+
+<script id="views/validationResults.ptt" type="text/ng-template">
+    [% PROCESS 'backup_configuration/views/validationResults.ptt' %]
+</script>
+
+<!-- load additional destination (transport) forms -->
+
+<script id="views/customTransport.ptt" type="text/ng-template">
+    [% PROCESS 'backup_configuration/views/customTransport.ptt' %]
+</script>
+
+<script id="views/FTPTransport.ptt" type="text/ng-template">
+    [% PROCESS 'backup_configuration/views/FTPTransport.ptt' %]
+</script>
+
+<script id="views/GoogleTransport.ptt" type="text/ng-template">
+    [% PROCESS 'backup_configuration/views/GoogleTransport.ptt' %]
+</script>
+
+<script id="views/LocalTransport.ptt" type="text/ng-template">
+    [% PROCESS 'backup_configuration/views/LocalTransport.ptt' %]
+</script>
+
+<script id="views/SFTPTransport.ptt" type="text/ng-template">
+    [% PROCESS 'backup_configuration/views/SFTPTransport.ptt' %]
+</script>
+
+<script id="views/SSHKeyGen.ptt" type="text/ng-template">
+    [% PROCESS 'backup_configuration/views/SSHKeyGen.ptt' %]
+</script>
+
+<script id="views/AmazonS3Transport.ptt" type="text/ng-template">
+    [% PROCESS 'backup_configuration/views/AmazonS3Transport.ptt' %]
+</script>
+
+<script id="views/RsyncTransport.ptt" type="text/ng-template">
+    [% PROCESS 'backup_configuration/views/RsyncTransport.ptt' %]
+</script>
+
+<script id="views/WebDAVTransport.ptt" type="text/ng-template">
+    [% PROCESS 'backup_configuration/views/WebDAVTransport.ptt' %]
+</script>
+
+<script id="views/S3CompatibleTransport.ptt" type="text/ng-template">
+    [% PROCESS 'backup_configuration/views/S3CompatibleTransport.ptt' %]
+</script>
+
+<script id="views/B2.ptt" type="text/ng-template">
+    [% PROCESS 'backup_configuration/views/B2.ptt' %]
+</script>
+
+[% PROCESS 'master_templates/cjt2_header_include.tt' %]
+
+[% END %]

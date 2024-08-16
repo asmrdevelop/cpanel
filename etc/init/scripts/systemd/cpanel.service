@@ -1,0 +1,17 @@
+[Unit]
+Description=cPanel services
+After=network.target network-online.target
+Wants=cpanellogd.service cpdavd.service cpanel_php_fpm.service cpgreylistd.service cphulkd.service dnsadmin.service mailman.service p0f.service smtpmailgidonly.service queueprocd.service tailwatchd.service network-online.target
+ConditionPathExists=!/etc/cpsrvddisable
+
+[Service]
+Type=notify
+NotifyAccess=main
+PIDFile=/var/run/cpsrvd.pid
+ExecStart=/usr/local/cpanel/scripts/restartsrv_cpsrvd --no-verbose --notconfigured-ok --systemd-service=cpanel
+ExecStop=/usr/local/cpanel/scripts/restartsrv_cpsrvd --no-verbose --stop --notconfigured-ok --systemd-service=cpanel
+KillMode=process
+TimeoutStopSec=10
+
+[Install]
+WantedBy=multi-user.target

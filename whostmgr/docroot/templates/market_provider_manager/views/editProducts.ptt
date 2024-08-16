@@ -1,0 +1,197 @@
+<div class="description" ng-cloak >
+    <div class="list-container">
+        <table class="table table-striped">
+            <thead>
+                <tr>
+                    <th class="col-xs-1 col-sm-1 col-md-1 col-lg-1">
+                        [% locale.maketext('Recommended') %]
+                    </th>
+                    <th>
+                        [% locale.maketext('Provider') %]
+                    </th>
+                    <th class="col-xs-12 col-sm-4 col-md-4 col-lg-4">
+                        [% locale.maketext('Product Name') %]
+                    </th>
+                    <th class="col-xs-12 col-sm-2 col-md-2 col-lg-2">
+                        [% locale.maketext('Status') %]
+                    </th>
+                    <th>[% locale.maketext('Price') %] <i class="icon-arrow-up"></i></th>
+                    <th>[% locale.maketext('Wildcard Price') %]</th>
+                    <th>[% locale.maketext('Commission') %]</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr ng-repeat="product in products | orderBy: product_orderBy_sorter" ng-if="product.display_name">
+                    <td>
+                        <a href="javascript:void(0)" ng-click="product_group_changing[product.product_group] ? null : set_recommended(product, !product.recommended)"
+                            style="display:inline-block"
+                            title="{{ get_recommended_tooltip(product) }}"
+                            ng-class="{'disabled': product_metadata.product_metadata[product.provider_name][product.product_id].attributes['recommended'].read_only}"><span
+
+                            class="fa-2x fa-fw recommended"
+                            ng-class="{'group_changing': product_group_changing[product.product_group], 'fa-spin': product.recommended_is_changing, 'far fa-star': !product.recommended, 'fas fa-star': product.recommended}"
+                        ></span><span
+                            class="fas fa-2x fa-fw recommended fa-star"
+                            style="visibility:hidden"
+
+                        ></span></a>
+                    </td>
+                    <td>
+                        <span ng-bind="product.provider_display_name || '([% locale.maketext('Unknown') %])'"></span>
+                    </td>
+                    <td>
+                        <img ng-if="product.icon" ng-src="data:{{ product.icon_mime_type }};base64,{{ product.icon }}" width="40" height="40">
+                        <span ng-bind="product.display_name"></span>
+                    </td>
+                    <td data-title="">
+                        <toggle-switch
+                            id="{{product.display_name}}_toggle"
+                            ng-model="product.enabled"
+                            on-toggle="set_product(product, !product.enabled)"
+                            enabled-label ="[% locale.maketext('Enabled') %]"
+                            disabled-label="[% locale.maketext('Disabled') %]"
+                        ></toggle-switch>
+                    </td>
+                    <td>
+                        <a href="javascript:void(0)" ng-if="!product._price_is_read_only" class="clickable" ng-click="editProductPrice(product)">
+                            ${{ format_dollars( product[product._pricing_attribute] ) }} {{product.price_unit}}
+                            <span class='glyphicon glyphicon-pencil'></span>
+                        </a>
+                        <span ng-if="product._price_is_read_only">
+                            ${{ format_dollars( product[product._pricing_attribute] ) }} {{product.price_unit}}
+                        </span>
+                        <div ng-if="product.x_ssl_per_domain_pricing">[% locale.maketext('per domain') %]</div>
+                    </td>
+                    <td>
+                        <div ng-if="product._wildcard_pricing_attribute">
+                            <a href="javascript:void(0)" ng-if="!product._price_is_read_only" class="clickable" ng-click="editProductPrice(product, true)">
+                                ${{ format_dollars( product[product._wildcard_pricing_attribute] ) }} {{product.price_unit}}
+                                <span class='glyphicon glyphicon-pencil'></span>
+                            </a>
+                            <span ng-if="product._price_is_read_only">
+                                ${{ format_dollars( product[product._wildcard_pricing_attribute] ) }} {{product.price_unit}}
+                            </span>
+                            <div ng-if="product.x_ssl_per_domain_pricing">[% locale.maketext('per domain') %]</div>
+                        </div>
+                        <em ng-if="!product._wildcard_pricing_attribute">[% locale.maketext('Not Applicable') %]</em>
+                    </td>
+                    <td>
+                        <span ng-if="provider_commission[product.provider_name]">
+                            ${{ format_dollars( get_product_commission(product) ) || '[% locale.maketext('N/A') %]' }} USD
+                        </span>
+                        <span ng-if="!provider_commission[product.provider_name]">
+                            [% locale.maketext('N/A') %]
+                        </span>
+                    </td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<script id="product-price-modal" type="text/template">
+    <div class="product-container"
+        ng-if="product">
+        <div class="panel panel-default">
+            <form class="simple-form" name="priceForm">
+                <fieldset ng-disabled="product.settingPrice">
+                    <div class="panel-heading">
+                        <h3 class="panel-title" ng-bind="editingDescription"></h3>
+                    </div>
+
+                    <div class="panel-body">
+                        <div ng-if="product.providerCommissionMessage" ng-bind="providerCommissionMessage"></div>
+                        <div ng-if="product.price.minimumMessage" ng-bind="product.price.minimumMessage"></div>
+                        <div ng-if="product.price.maximumMessage" ng-bind="product.price.maximumMessage"></div>
+
+                        <div class="input-group">
+                            <span class="input-group-addon">$</span>
+                            <input id="newPrice" name="newPrice" required type="text" class="form-control new-price-input-field" ng-model="new_price"
+                            num-greater-than-equal="{{product.price.minimum}}"
+                            num-less-than-equal="{{product.price.maximum}}"
+                            is-dollar-amount
+                            num-is-multiple-of="{{product.price.multipleOf}}" >
+                            <span class="input-group-addon">{{product.price.unit}}</span>
+                        </div>
+                        <ul validation-container field-name="newPrice">
+                            <validation-item
+                                field-name="newPrice"
+                                validation-name="required">
+                                [% locale.maketext("This field is required.") %]</validation-item>
+                        </ul>
+                    </div>
+                    <div class="btn-group panel-btn-group">
+                        <button type="button" class="btn btn-default col-xs-6 col-sm-6 col-md-6 col-lg-6"
+                            ng-click="cancel_change_price()">
+                            [% locale.maketext('Cancel') %]
+                        </button>
+                        <button cp-action="set_price(new_price, priceForm)" type="submit" ng-disabled="!priceForm.$valid || priceForm.$pristine" class="btn btn-default btn-primary col-xs-6 col-sm-6 col-md-6 col-lg-6">
+                            [% locale.maketext('Save') %]
+                        </button>
+                    </div>
+                </fieldset>
+            </form>
+        </div>
+    </div>
+</script>
+
+
+<style>
+    .recommended.group_changing {
+        cursor: not-allowed;
+    }
+
+    /* Every <a> should be clickable, but for some reason the <a> elements
+    on this page aren’t showing that. */
+    a.clickable {
+        cursor: pointer;
+    }
+
+    .recommended {
+        cursor: pointer;
+    }
+    .recommended:hover,
+    .recommended:focus,
+    .recommended:active {
+        text-decoration: none;
+    }
+    .recommended.fa-star {
+        color: #F6C342;
+    }
+
+    .panel-btn-group {
+        width: 100%;
+    }
+
+    .panel-btn-group .btn {
+        border-radius: 0 0 4px 4px;
+    }
+
+    .panel-btn-group>.btn:first-child {
+        border-left: 0;
+    }
+
+    .panel-btn-group>.btn:last-child {
+        margin-left: 0;
+        border-right: 0;
+        border-left: 0;
+    }
+
+    .panel-body input[type="text"] {
+        text-align: center;
+        font-size: 2em;
+        height: 2em;
+        line-height: 2em;
+    }
+
+    .panel-body .input-group-addon {
+        font-size: 2em;
+        line-height: 1.5em;
+    }
+
+    .product-container .panel {
+        margin: 0;
+        border: 0;
+    }
+
+</style>

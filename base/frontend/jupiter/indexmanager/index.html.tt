@@ -1,0 +1,339 @@
+
+[% SET CPANEL.CPVAR.dprefix="../";
+
+SET index_nvdata = execute( 'NVData', 'get', { 'names' => 'optionselect_index' } );
+
+SET directory = RAW_FORM.dir;
+
+SET default_dir = "";
+
+Api2.pre_exec("Email", "listmaildomains");
+SET domains_list =  Api2.exec("Email", "listmaildomains", {} );
+Api2.post_exec("Email", "listmaildomains");
+
+IF index_nvdata.status;
+    SET nvdata_value = index_nvdata.data.0.value,
+        value = nvdata_value.split(':'),
+        selected_option = value.0,
+        domain = value.1,
+        always_open_dir = value.2;
+
+    IF always_open_dir == 1;
+        IF selected_option == 'home';
+            default_dir = CPANEL.homedir;
+        ELSIF selected_option == 'webroot';
+            default_dir = CPANEL.homedir _ '/public_html';
+        ELSIF selected_option ==  'domainrootselect';
+             default_dir = Api2.exec("DomainLookup" , "getdocroot" , {"domain" => domain}).0.docroot;
+        ELSE;
+            default_dir = CPANEL.homedir _ '/public_html'
+            selected_option = 'webroot';
+        END;
+    END;
+END;
+
+directory = directory || default_dir || CPANEL.homedir;
+
+SET directories = execute("DirectoryIndexes", "list_directories", {
+        dir => directory,
+    });
+%]
+
+[% WRAPPER '_assets/master.html.tt'
+    app_key = 'indexes'
+    page_stylesheets = [
+        'cpanelpro/imagemanager.css',
+        'indexmanager/index.css',
+    ]
+    use_master_bootstrap = 0
+ -%]
+
+[% PROCESS '_assets/cjt2_header_include.tt' %]
+
+<div class="body-content">
+    <p class="description">
+        [% locale.maketext("The “[_1]” allows you to customize the way a directory appears when no index files reside in a directory.", locale.maketext('Index Manager')) %]
+        [% locale.maketext("Click a directory’s icon or name to navigate the file system. To select a folder, click “[output,em,_1]”.", locale.maketext('Edit')) %]
+        <a id="toggle-example-index-files">[% locale.maketext("Show example index files.") %]</a>
+        <div id="example-index-files" class="hidden callout callout-info">
+            <h4>[% locale.maketext('Example Index Files') %]</h4>
+            <ul>
+                <li>index.php</li>
+                <li>index.php5</li>
+                <li>index.php4</li>
+                <li>index.php3</li>
+                <li>index.perl</li>
+                <li>index.pl</li>
+                <li>index.plx</li>
+                <li>index.ppl</li>
+                <li>index.cgi</li>
+                <li>index.jsp</li>
+                <li>index.jp</li>
+                <li>index.phtml</li>
+                <li>index.shtml</li>
+                <li>index.xhtml</li>
+                <li>index.html</li>
+                <li>index.htm</li>
+                <li>index.wml</li>
+                <li>Default.html</li>
+                <li>Default.htm</li>
+                <li>default.html</li>
+                <li>default.htm</li>
+                <li>home.html</li>
+                <li>home.htm</li>
+                <li>index.js</li>
+            </ul>
+        </div>
+    </p>
+    <div class="box">
+        <div class="row row-controls">
+            <div class="col-xs-12">
+                <ul class="list-inline">
+                    <li>
+                        <a id="home" href="?dir=[% directories.data.home.path.uri().html() || '/' %]" class="btn btn-default btn-sm">
+                            <i class="fas fa-home"></i>
+                            [% locale.maketext('Home') %]
+                        </a>
+                    </li>
+                    [% IF directories.data.parent.path != directories.data.current.path %]
+                    <li>
+                        <a id="up-one" href="?dir=[% directories.data.parent.path.uri().html() %]" class="btn btn-default btn-sm">
+                            <i class="fas fa-level-up-alt"></i>
+                            [% locale.maketext('Up One Level') %]
+                        </a>
+                    </li>
+                    [% END %]
+                    <li class="pull-right">
+                        <a id="btnSettings"
+                           class="btn btn-default btn-sm"
+                           data-toggle="modal"
+                           data-target="#modalSettings">
+                            <i class='fas fa-cog' aria-hidden="true"></i>
+                            <span class="hidden-xs">[% locale.maketext('Settings') %]</span>
+                        </a>
+                    </li>
+                </ul>
+            </div>
+        </div>
+        <div class="row row-list">
+            [%
+                IF directories.status;
+                    SET crumbs = directories.data.current.path.remove(directories.data.home.path).split('/');
+                    CALL crumbs.shift();
+            %]
+            <div class="col-xs-12">
+                <table id="files" class="table table-striped">
+                    <thead>
+                        <tr>
+                            <th>
+                                [% locale.maketext('Current Directory') %]
+                            </th>
+                            <th class="text-left">
+                                [% locale.maketext('Index Type') %]
+                            </th>
+                            <th class="text-center">
+                                [% locale.maketext('Actions') %]
+                            </th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td>
+                                <ul class="breadcrumb">
+                                    <li>
+                                        <a href="index.html?dir=[% directories.data.home.path.uri().html() %]">
+                                            <i class="fas fa-home"></i>
+                                        </a>
+                                    </li>
+                                    [%
+                                    SET base = directories.data.home.path;
+                                    FOREACH crumb IN crumbs;
+                                        SET path = base _ '/' _ crumb;
+                                        IF !loop.last(); %]
+                                    <li>
+                                        <a href="index.html?dir=[% path.uri().html() %]">
+                                            [% crumb.html().replace('[.]', '.<wbr>') %]
+                                        </a>
+                                    </li>
+                                    [%  ELSE %]
+                                    <li>
+                                        [% crumb.html().replace('[.]', '.<wbr>')  %]
+                                    </li>
+                                    [%  END;
+                                        base = path;
+                                    END;
+                                    %]
+                                </ul>
+                            </td>
+                            <td class="text-left" >
+                                <div class="current-privacy">
+                                [% SWITCH directories.data.current.state.index_type %]
+                                [%   CASE 'inherit' %]
+                                    [%locale.maketext('Inherit')%]
+                                [%   CASE 'disabled' %]
+                                    [%locale.maketext('No Indexing')%]
+                                [%   CASE 'standard' %]
+                                    [%locale.maketext('Filename Only')%]
+                                [%   CASE 'fancy' %]
+                                    [%locale.maketext('Filename and Description')%]
+                                [%   CASE %]
+                                    [% directories.data.current.state.index_type.html() %]
+                                [% END %]
+                                </div>
+                            </td>
+                            <td class="text-center">
+                                <a id="edit-current"
+                                   href="dohtaccess.html?is_parent=1&dir=[% directories.data.current.path.uri().html() %]"
+                                   class="btn btn-outline-primary btn-sm file-select-button"
+                                   alt="[%locale.maketext('Edit “[_1]”', directories.data.current.path.html())%]">
+                                    <i class="fas fa-pencil-alt" aria-hidden="true"></i>
+                                    <span class="current-label">[% locale.maketext('Edit') %]</span>
+                                </a>
+                            </td>
+                        </tr>
+                        [% FOREACH directory IN directories.data.children.list %]
+                            <tr>
+                                <td class="child">
+                                    <a href="index.html?dir=[% directory.path.uri().html() %]" id="navigate-[% directory.path.slugify() %]">
+                                        <span class="dirstack fa-stack">
+                                            <i class="diricon fas fa-folder fa-lg" aria-hidden="true"></i>
+                                        </span>
+                                        [% directory.path.split("/").pop().html().replace('[.]', '.<wbr>') %]
+                                    </a>
+                                </td>
+                                <td class="text-left">
+                                    [% SWITCH directory.state.index_type %]
+                                    [%   CASE 'inherit' %]
+                                        [%locale.maketext('Inherit')%]
+                                    [%   CASE 'disabled' %]
+                                        [%locale.maketext('No Indexing')%]
+                                    [%   CASE 'standard' %]
+                                        [%locale.maketext('Filename Only')%]
+                                    [%   CASE 'fancy' %]
+                                        [%locale.maketext('Filename and Description')%]
+                                    [%   CASE %]
+                                        [% directory.state.index_type.html() %]
+                                    [% END %]
+                                </td>
+                                <td class="text-center">
+                                    <a id="edit-[% directory.path.slugify() %]"
+                                       href="dohtaccess.html?dir=[% directory.path.uri().html() %]"
+                                       class="btn btn-outline-primary btn-sm file-select-button"
+                                       alt="[%locale.maketext('Edit “[_1]”', directory.path.html())%]" >
+                                        <i class="fas fa-pencil-alt" aria-hidden="true"></i>
+                                        [% locale.maketext('Edit') %]
+                                    </a>
+                                </td>
+                            </tr>
+                        [% END %]
+                        [% IF directories.data.children.size() == 0 %]
+                            <tr class="empty-directory">
+                                <td colspan="3">
+                                    <div class="alert alert-info" role="alert">
+                                        <span class="glyphicon glyphicon-info-sign" aria-hidden="true"></span>
+                                        <div class="alert-message">
+                                            <strong class="alert-title">
+                                                [% locale.maketext('Notice:') %]
+                                            </strong>
+                                            <span class="alert-body">
+                                                <span id="error-no-child">
+                                                    [% locale.maketext("There are no folders in this path.") %]
+                                                </span>
+                                            </span>
+                                        </div>
+                                    </div>
+                                </td>
+                            </tr>
+                        [% END %]
+                    </tbody>
+                </table>
+            </div>
+            [% ELSE %]
+            <div class="alert alert-danger" role="alert">
+                <span class="glyphicon glyphicon-remove-sign" aria-hidden="true"></span>
+                <div class="alert-message">
+                    <strong class="alert-title">
+                        [% locale.maketext('Error:') %]
+                    </strong>
+                    <span class="alert-body">
+                        <span id="error-directories">
+                            [% directories.errors_as_string().html() %]
+                        </span>
+                    </span>
+                </div>
+            </div>
+            [% END %]
+        </div>
+    </div>
+</div>
+
+<!-- Modal -->
+<div class="modal fade" id="modalSettings" tabindex="-1" role="dialog" aria-labelledby="lblModalLabel">
+    <div class="modal-dialog" role="document">
+        <div class="modal-content">
+            <form>
+                <div class="modal-header">
+                    <button id="btnHeaderSettingsClose" type="button" class="close" data-dismiss="modal" aria-label="Close">
+                        <span aria-hidden="true">&times;</span>
+                    </button>
+                    <h4 class="modal-title" id="lblModalLabel">
+                    [% locale.maketext("Indexes") %]
+                    </h4>
+                </div>
+                <div class="modal-body">
+                    <div class="radio" id="settings_home">
+                        <label for="dirselect_home">
+                          <input type="radio" name="dirselect" value="home" id="dirselect_home" [% selected_option == 'home' || !selected_option ? ' checked' : '' %]/>
+                          [% locale.maketext("Home") %]
+                        </label>
+                    </div>
+                    <div class="radio" id="settings_webroot">
+                        <label for="dirselect_webroot">
+                          <input type="radio" name="dirselect" value="webroot" id="dirselect_webroot" [% selected_option == 'webroot' ? ' checked' : '' %]/>
+                          [% locale.maketext("Web Root ([asis,public_html or www])") %]
+                        </label>
+                    </div>
+                    <div class="radio" id="settings_domainroot">
+                        <label for="optionselect_domainrootselect_radio">
+                          <input  type="radio" name="dirselect" id="optionselect_domainrootselect_radio" value="domainrootselect" [% selected_option == 'domainrootselect' ? ' checked' : '' %]/>
+                          [% locale.maketext("Document Root for:") %]
+                        </label>
+                        <select id="ddlDomainSelect" name="domainselect" class="form-control option-directory-select" [% selected_option == 'domainrootselect' ? '' : 'disabled' %]>
+                            [% IF domains_list.size(); %]
+                               [% FOREACH item IN domains_list; %]
+                                    <option value="[%  item.domain.html() %]" [% IF selected_option == 'domainrootselect' AND domain == item.domain;%] selected="true"[% END %]>
+                                        [%  item.domain.html() %]
+                                    </option>
+                                [% END %]
+                            [% END %]
+                        </select>
+                    </div>
+
+                    <div class="settings-select-extras">
+                        <div class="checkbox">
+                            <label for="settings_saved">
+                                <input type="checkbox" id="settings_saved" name="saveoption" [% always_open_dir == "1" ? 'checked': "" %] />
+                                <span id="lblOpenDirectoryTxt">
+                                    [% locale.maketext("Always open this directory in the future") %]
+                                </span>
+                            </label>
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button id="btnSettingsCancel" type="button" class="btn btn-default" data-dismiss="modal">[% locale.maketext('Close') %]</button>
+                    <button id="btnSettingsSave" type="submit" class="btn btn-primary">[% locale.maketext('Save changes') %]</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+<script>
+var PAGE = {
+    showLabel: [% locale.maketext("Show example index files.").json() %],
+    hideLabel: [% locale.maketext("Hide example index files.").json() %],
+    homeFolder: [% CPANEL.homedir.json() %],
+    pubHtmlFolder: [% SET pub_html_dir = CPANEL.homedir _ '/public_html'; pub_html_dir.json() %]
+};
+</script>
+[% END #wrapper -%]

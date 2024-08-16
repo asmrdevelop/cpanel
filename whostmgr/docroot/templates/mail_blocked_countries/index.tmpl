@@ -1,0 +1,49 @@
+[%
+    USE Whostmgr;
+    USE JSON;
+
+    SET APP_KEY = "mail_blocked_countries";
+    SET PAGE_BASE = "/scripts12/$APP_KEY";
+    SET PAGE_NAME = locale.maketext("Filter Incoming Emails by Country");
+
+    SET templates = [
+        "views/countries.phtml",
+        "directives/countryCodesTable.ptt"
+    ];
+
+    WRAPPER 'master_templates/master.tmpl'
+        header = PAGE_NAME,
+        stylesheets = [
+            Whostmgr.find_file_url('/templates/mail_blocked_countries/index.min.css')
+        ],
+        breadcrumburl  = "$PAGE_BASE",
+        base           = "$PAGE_BASE/",
+        theme          = 'bootstrap',
+        CJT2_EXCLUSIVE = 1,
+        warn_linked_nodes => 1,
+        app_key        = APP_KEY;
+%]
+<div id="content" ng-controller="BaseController" class="ng-cloak" ng-cloak>
+
+    <cp-alert-list></cp-alert-list>
+
+    <p>[% locale.maketext("Specify whether users in a particular country can send email to your server.") %]</p>
+    <div ng-view ng-class="{'view-disabled':loading}"></div>
+
+    [% FOREACH ptt IN templates %]
+    <script id="[% ptt %]" type="text/ng-template">
+        [%- PROCESS "$APP_KEY/$ptt" -%]
+    </script>
+    [% END %]
+</div>
+
+<script type="text/javascript">
+    var PAGE = PAGE || {};
+    PAGE.blocked_incoming_email_countries = [% data.blocked_incoming_email_countries.json() %];
+    PAGE.countries_with_known_ip_ranges = [% data.countries_with_known_ip_ranges.json() %];
+    PAGE.security_token = [% cp_security_token.json() %];
+</script>
+
+[% PROCESS 'master_templates/cjt2_header_include.tt' %]
+
+[% END %]

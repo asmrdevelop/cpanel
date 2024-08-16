@@ -1,0 +1,69 @@
+[% IF done -%]
+[% WRAPPER 'master_templates/master.tmpl' theme="yui", app_key='reset_account_bandwidth_limit' -%]
+Bandwidth limit for [% data.user %] ([% data.domain %]) has been reset to the default for
+[% IF data.plan -%]
+package "[% data.plan %]"
+[% ELSE -%]
+the default package
+[% END -%]
+([% data.bwlimit || 'unlimited' %] MB).
+[% END -%]
+[% ELSE %]
+
+
+
+[% USE CPMath -%]
+[% WRAPPER 'master_templates/master.tmpl' theme="yui"
+    app_key='reset_account_bandwidth_limit'
+    scripts = ['/js/sorttable.js']
+    extrastyle = '
+td {
+    padding: 3px ! important;
+}
+tr.unchanged td {
+    font-style: italic;
+}
+'
+-%]
+<p>This function will show every account where the bandwidth limit has been changed from the package default and will let you easily reset it to the limit that the package has.</p>
+[% IF data.userdata.size > 0 -%]
+<table id=resettbl border="0" class="sortable">
+<tr>
+    <th class="heavybg">Domain</td>
+    <th class="heavybg">User</td>
+    <th class="heavybg">Package</td>
+    <th class="heavybg">Package Bandwidth Limit</td>
+    <th class="heavybg">Current Bandwidth Limit</td>
+    <th class="heavybg">Reset</td>
+</tr>
+[%
+FOR userdata = data.userdata;
+    SET planlimit = data.planlimits.${userdata.plan} || 'unlimited';
+    SET userlimit = userdata.bwlimit || 'unlimited';
+
+    SET changed = userlimit != planlimit;
+-%]
+<tr class="[% loop.index % 2 ? 'tdshade2' : 'tdshade1' %]">
+    <td>[% userdata.domain %]</td>
+    <td>[% userdata.user %]</td>
+    <td>[% userdata.plan %]</td>
+    <td>[% planlimit %] MB</td>
+    <td>[% userlimit %] MB</td>
+[% IF changed -%]
+    <td>
+        <form method="post">
+            <input type="hidden" name="user" value="[% userdata.user %]">
+            <input type="submit" value="Reset to Package Bandwidth Limit">
+        </form>
+    </td>
+[% ELSE %]
+    <td>(Bandwidth limit is unchanged.)</td>
+[% END -%]
+</tr>
+[% END -%]
+</table>
+[% ELSE -%]
+<p>Every account on this system has its Package Bandwith Limit.</p>
+[% END -%]
+[% END -%]
+[% END -%]

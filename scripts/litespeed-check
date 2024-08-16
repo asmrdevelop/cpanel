@@ -1,0 +1,109 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/litespeed-check                 Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+use warnings;
+
+use Whostmgr::LiteSpeed ();
+
+# Make sure we get exactly the args we want, with a little flexibility for calling --help, -h, -HELP, etc.
+exit script() unless caller;
+
+sub script {
+    my $args_ok = 0;
+    foreach my $arg (@ARGV) {
+        if ( $arg =~ m/^-{1,2}h/i ) {
+            show_usage();
+            return 0;
+        }
+        elsif ( $arg eq '--run' ) {
+            $args_ok = 1;
+        }
+        else {
+            print "Unknown arguments passed.\n";
+            show_usage(1);
+            return 1;
+        }
+    }
+    if ( $args_ok != 1 ) {
+        show_usage();
+        return 1;
+    }
+
+    # Allow for manual override of this automated check
+    my $disable_touchfile = '/var/cpanel/disable_auto_lsws';
+
+    if ( -e $disable_touchfile ) {
+        print "Skipping automatic check for LiteSpeed Web Server license due to existence of $disable_touchfile\n";
+        return 0;
+    }
+
+    my $handler            = Whostmgr::LiteSpeed->new();
+    my $has_active_license = 0;
+
+    # Retrieve the license from the store server
+    my ( $rc, $serial_no ) = $handler->get_litespeed_license();
+
+    # If there is no active license available, there is no need to continue, otherwise we'll save the serial number from the license server
+    if ( $rc == 1 ) {
+        $has_active_license = 1;
+    }
+    else {
+        # No active license exists, no need to carry on
+        print "No license found for LiteSpeed Web Server in cPanel Store.\n";
+        return 0;
+    }
+
+    # If it's installed (at least in some fashion) we need to check to see if it's using the right license.
+    # For example, if they are using a TRIAL key, or expired key, we want to replace it with the latest available
+    # If it's not installed and we have a valid serial, install LS with the serial
+    my $is_installed = $handler->is_litespeed_installed();
+    if ($is_installed) {
+        my ( $rc, $stdout, $stderr ) = $handler->ensure_using_latest_license($serial_no);
+        if ( $rc == 1 ) {
+            print "Successfully installed new license on existing install:\n$stdout\n";
+            my ( $rc2, $stdout2, $stderr2 ) = $handler->lsws_cmd('SWITCH_TO_LSWS');
+            if ( $rc2 == 1 ) {
+                print "Successfully ensured LiteSpeed Web Server is the default.\n";
+            }
+            else {
+                print "There was a problem trying to enable LiteSpeed Web Server:\n$stdout2\n$stderr2\n";
+            }
+        }
+        elsif ( $rc == 2 ) {
+            print "Valid license already in place on existing install\n";
+        }
+        else {
+            print "Failed to install new license on existing install:\n$stdout\n$stderr\n";
+        }
+    }
+    else {
+        if ( $handler->install_litespeed( { 'quiet' => 1, 'license_key' => $serial_no } ) ) {
+            print "Successfully installed LiteSpeed Web Server with new license.\n";
+        }
+    }
+    return 0;
+}
+###[ Functions ]########################################################################################################
+
+sub show_usage {
+    my ($use_stderr) = @_;
+    my $out_fh = ( $use_stderr ? \*STDERR : \*STDOUT );
+    print $out_fh <<EOF;
+This script checks to see if there is a LiteSpeed license available for the server it is run on in the cPanel Store,
+and if so, ensures LiteSpeed is installed and running with a valid paid license, using the one from the store if not
+already in place.
+
+Usage:
+    scripts/litespeed-check <--help|--run>
+
+    --help  : Show this output
+    --run   : Actually run the check for LiteSpeed license and installation
+
+EOF
+    return;
+}

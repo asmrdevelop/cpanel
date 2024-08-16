@@ -1,0 +1,73 @@
+[%
+    USE Whostmgr;
+    USE JSON;
+
+    SET PAGE_BASE = '/scripts2/market_provider/';
+    SET PAGE_NAME = Whostmgr.get_page_name_by_url(PAGE_BASE);
+
+    WRAPPER 'master_templates/master.tmpl'
+        app_key = 'market_provider_manager'
+        header = locale.maketext('Market Provider Manager'),
+        breadcrumburl = PAGE_BASE,
+        base =  PAGE_BASE,
+        theme='bootstrap',
+        CJT2_EXCLUSIVE = 1;
+%]
+    <div id="content"
+        ng-controller="BaseController as base"
+        class="ng-cloak"
+        ng-cloak>
+        <div class="callout callout-info">
+            <p>
+                [% locale.maketext("This feature allows you to manage products that users may purchase via the [asis,cPanel] interface.") %]
+            </p>
+            <p>[% locale.maketext("For more information about how to create your own provider modules, read our [output,url,_1,SDK documentation,target,_blank].", 'https://go.cpanel.net/custommarketproviderwizard'); %]
+            </p>
+        </div>
+
+        <uib-tabset active="activeTabIndex">
+            <uib-tab select="go('',0)">
+                <uib-tab-heading>
+                    [% locale.maketext('Providers') %]
+                    <span ng-show="loading && active_path==''"><i class="fas fa-spinner fa-spin"></i></span>
+                </uib-tab-heading>
+            </uib-tab>
+            <uib-tab select="go('edit_products',1)">
+                <uib-tab-heading>
+                    [% locale.maketext('Products') %]
+                    <span ng-show="loading && active_path=='edit_products'"><i class="fas fa-spinner fa-spin"></i></span>
+                </uib-tab-heading>
+            </uib-tab>
+            <uib-tab select="go('edit_cpstore_config',2)">
+                <uib-tab-heading>
+                    [% locale.maketext('[asis,cPanel Store] Configuration') %]
+                    <span ng-show="loading && active_path=='edit_cpstore_config'"><i class="fas fa-spinner fa-spin"></i></span>
+                </uib-tab-heading>
+            </uib-tab>
+        </uib-tabset>
+        <div ng-class="{'view-disabled': loading}" class="animate-view" ng-view></div>
+        <div growl></div>
+    </div>
+
+[% PROCESS 'master_templates/cjt2_header_include.tt' %]
+
+<script type="text/javascript">
+    var PAGE = PAGE || {};
+
+    PAGE.providers = [% data.providers.json() %]
+</script>
+
+<style>
+    .no-animations {
+        transition: none !important;
+        -webkit-transition: none !important;
+    }
+
+    /* need to override line-height for ie11 because the line-height is larger than the height */
+    .new-price-input-field {
+        line-height:42px !important;
+    }
+</style>
+
+
+[% END %]

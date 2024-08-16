@@ -1,0 +1,247 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/mainipcheck                     Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+use warnings;
+
+package scripts::mainipcheck;
+
+use Cpanel::IP::LocalCheck   ();
+use Cpanel::IP::Loopback     ();
+use Cpanel::Linux::RtNetlink ();
+use Cpanel::LoadModule       ();
+use Cpanel::Logger           ();
+use Cpanel::NAT::Object      ();
+use Cpanel::SafeRun::Object  ();
+use Cpanel::FileUtils::Write ();
+use Cpanel::LoadFile         ();
+use Cpanel::DIp::LicensedIP  ();
+use Cpanel::Exception        ();
+use Socket                   ();
+
+use Try::Tiny;
+
+use Getopt::Long qw(GetOptionsFromArray);
+
+our $MAINIP_FILE = '/var/cpanel/mainip';
+
+exit( __PACKAGE__->script( \@ARGV ) ) unless caller();
+
+sub script {
+    my ( $class, $argv ) = @_;
+
+    my $remote_check;
+    GetOptionsFromArray(
+        $argv,
+        'remote-check' => \$remote_check,
+    ) if defined $argv and ref $argv eq 'ARRAY';
+
+    my $logger = Cpanel::Logger->new();
+
+    my $mainip_file_contents = eval { Cpanel::LoadFile::loadfile($MAINIP_FILE) // '' };
+    my $mainip               = $mainip_file_contents =~ s/\s+//gr;
+    my $myip_url             = Cpanel::DIp::LicensedIP::myip_url();
+    my $cpIP                 = Cpanel::DIp::LicensedIP::get_license_ip($myip_url);
+    my $default_route_ip;
+    my $update_mainip      = $mainip ne $mainip_file_contents;    # Clean up formatting of the file if true
+    my $mainip_file_exists = -e $MAINIP_FILE;                     # No sense in stat-ing the file twice like we used to in certain scenarioes
+
+    # Needed for NAT awareness, is NO-OP on non-NAT to these values (thus local and public IP values would be the same on non-nat systems).
+    my $NAT_obj      = Cpanel::NAT::Object->new();
+    my $NAT_local_ip = $NAT_obj->get_local_ip($cpIP);
+
+    if ($remote_check) {
+        print "$cpIP\n";
+        return 0;
+    }
+
+    eval { $default_route_ip = get_ip_from_netlink() || get_ip_from_default_route(); };
+    if ( my $error_message = $@ ) {
+        chomp $error_message;
+        $logger->warn("Encountered an error while determining the main IP from the default route: $error_message");
+        ($mainip_file_exists) ? die "/var/cpanel/mainip exists. Bailing out..." : $logger->info("Proceeding with main IP check assuming that the IP address from $myip_url is the main IP address.");
+        $default_route_ip = $mainip;    # XXX Should we keep going even here? I'm not sure.
+    }
+    my $NAT_public_ip = $NAT_obj->get_public_ip($default_route_ip);
+
+    my $canonical_main_ip = $default_route_ip || $NAT_local_ip;
+    if ( !$mainip_file_exists ) {
+        $update_mainip = 1;             # I'm somewhat curious as to whether we'd wanna update SPF records here too, honestly.
+    }
+    elsif ( $canonical_main_ip ne $mainip ) {
+        $update_mainip = 1;
+        $logger->info("The Server's main IP address has changed from $mainip to $canonical_main_ip.");
+
+        # At one point, the below condition turned $default_route_ip into $cpIP, causing logger warns to actually get suppressed
+        # when they would normally be spuriously reported for NATted systems.
+        # This is because all the check for the logger warn below used to be if $default_route_ip ne $cpIP.
+        # This would never be true when we had to update the mainip previously.
+        if ( !Cpanel::IP::LocalCheck::ip_is_on_local_server($cpIP) ) {
+            $logger->warn("$cpIP is not bound to an interface on the system! Please verify your network configuration.");
+
+            # This can trigger pretty trivially on NAT setups if your cpnat configuration is not built or in fact insane.
+            # Just make /var/cpanel/cpnat contain non-ip strings as if they were a key=>value nat IP pair separated
+            # by spaces if you want to see this in action.
+        }
+
+        # Ensure the license system has what it needs? Not sure how it gets the updated mainip or if it even needs it?
+        _reprovision_license_authn();
+
+        require Cpanel::ServerTasks;
+
+        # Update SPF records, as we've changed to a new mainip
+        Cpanel::ServerTasks::schedule_task( ['SPFTasks'], 5, 'update_all_users_spf_records' );
+        $logger->info("Scheduled SPF record update");
+    }
+
+    if ($update_mainip) {
+        Cpanel::FileUtils::Write::overwrite( $MAINIP_FILE, $canonical_main_ip, 0644 );
+    }
+
+    if ( !$NAT_obj->enabled && $default_route_ip ne $cpIP ) {
+        $logger->warn("$myip_url detects system IP as $cpIP and system local IP detected as $default_route_ip. Please verify your network configuration.");
+    }
+    elsif ( $NAT_obj->enabled && $NAT_public_ip ne $cpIP && $NAT_local_ip ne $default_route_ip ) {
+
+        # Entertaingly enough, in this instance, $NAT_local_ip always equals $cpIP and vice versa. Conveniently enough, it also catches all invalid NAT configs.
+        $logger->warn("$myip_url detects a system IP address of $cpIP and system local IP address of $default_route_ip.");
+        $logger->warn("This looks like a NAT setup, but these IP addresses do not correspond to values listed in /var/cpanel/cpnat.");
+        $logger->info("The system will now rebuild your cpnat configuration to ensure system sanity.");
+        _system('/usr/local/cpanel/scripts/build_cpnat');
+    }
+
+    return 0;
+}
+
+# For mocking in tests -- don't remove the 'uncoverable' comments below, as this impacts Devel::Cover reporting.
+sub _system {
+
+    # uncoverable subroutine
+    return system @_;    # uncoverable statement
+}
+
+# Pick a testing IP and see how the kernel proposes routing it, then look up and return the source address which would be used.
+sub get_ip_from_netlink {
+    my $TEST_IP   = '208.74.123.2';    # TODO: Better way of picking an IP with high probability of not being routed specially?
+    my $result_ip = '';
+
+    try {
+        my $routes_ar = Cpanel::Linux::RtNetlink::get_route_to( 'AF_INET', $TEST_IP );
+        foreach my $route_info_hr (@$routes_ar) {
+            if ( defined $route_info_hr->{'rta_dst'} && $route_info_hr->{'rta_dst'} eq $TEST_IP ) {
+                $result_ip = $route_info_hr->{'rta_prefsrc'};
+                last;
+            }
+        }
+    }
+    catch {
+        Cpanel::Logger->new()->warn( 'Failed to retrieve IP via Netlink: ' . Cpanel::Exception::get_string_no_id($_) . "\nFalling back to reading /proc/net/route." );
+    };
+
+    return $result_ip;
+}
+
+# Get interface associated with default route and use socket() to get IP
+sub get_ip_from_default_route {
+    my $proc_route_path = shift || '/proc/net/route';    # For unit testing, mostly
+    my %interfaces;
+
+    if ( open my $proc_fh, '<', $proc_route_path ) {
+        while ( my $line = readline $proc_fh ) {
+            chomp $line;
+            if ( $line =~ m/^(.+?)\s*0{8}\s.*?(\d+)\s+0{8}\s*(?:\d+\s*){3}$/ ) {
+                my ( $interface, $metric ) = ( $1, $2 );
+                push @{ $interfaces{$metric} }, $interface;
+            }
+        }
+        close($proc_fh);
+    }
+    else {
+        die("Unable to open $proc_route_path: $!");
+    }
+
+    my $lowest_metric = ( sort keys %interfaces )[0];
+    my $interface     = $interfaces{$lowest_metric}[0];
+    my $ip            = get_ip_from_interface($interface);
+
+    # VPS issues
+    if ( Cpanel::IP::Loopback::is_loopback($ip) && $interface =~ /^venet0?$/ ) {
+        return get_ip_from_interface('venet0:0');
+    }
+
+    return $ip;
+}
+
+sub get_ip_from_interface {
+    my $interface   = shift;
+    my $SIOCGIFADDR = 0x8915;
+    my $proto       = getprotobyname('ip');
+    socket( my $socket_fh, &Socket::PF_INET, &Socket::SOCK_DGRAM, $proto ) or die("Socket error: $!");
+
+    # struct ifreq is 16 bytes of name, null-padded, followed by 16 bytes of answer.
+    my $ifreq = pack( 'a32', $interface );
+    ioctl( $socket_fh, $SIOCGIFADDR, $ifreq ) or die("Error in ioctl: $!");
+    my ( $if,   $sin )  = unpack( 'a16 a16', $ifreq );
+    my ( $port, $addr ) = Socket::sockaddr_in($sin);
+    my $ip;
+    foreach my $family ( &Socket::AF_INET, &Socket::AF_INET6 ) {
+        last if $ip;
+
+        # Generally we'll favor ipv4 addresses over ipv6, but we should use the v6 if it is the only one available.
+        $ip = Socket::inet_ntop( $family, $addr );
+    }
+    return $ip;
+}
+
+sub _reprovision_license_authn {
+
+    Cpanel::LoadModule::load_perl_module('Cpanel::Market');
+    Cpanel::Market::set_cpstore_is_in_sync_flag(0);
+    #
+    # This will cause the system to get new LicenseAuthn
+    # credentials so we can connect to various cPanel systems
+    # that require license-based authentication.
+    #
+    my $run = Cpanel::SafeRun::Object->new( 'program' => '/usr/local/cpanel/cpkeyclt' );
+    warn $run->autopsy() if $run->CHILD_ERROR;
+
+    #
+    #  cpkeyclt will auto re-provision on the second run
+    #  if the id changes
+    #
+    $run = Cpanel::SafeRun::Object->new(
+        'program' => '/usr/local/cpanel/scripts/try-later',
+        'args'    => [
+            '--action',      '/usr/local/cpanel/cpkeyclt --quiet',
+            '--check',       '/bin/sh -c exit 1',
+            '--delay',       11,                                     # We only allow updates every 10 minutes so wait 11
+            '--max-retries', 1,
+            '--skip-first'
+        ]
+    );
+    warn $run->autopsy() if $run->CHILD_ERROR;
+
+    #
+    #  If they changed the ip for the license in manage2 they keep the
+    #  same liscid so we need to check after the license update has
+    #  happened the second time
+    #
+    $run = Cpanel::SafeRun::Object->new(
+        'program' => '/usr/local/cpanel/scripts/try-later',
+        'args'    => [
+            '--action',      '/usr/local/cpanel/bin/check_cpstore_in_sync_with_local_storage',
+            '--check',       '/bin/sh -c exit 1',
+            '--delay',       15,                                                                 # Must happen after the second license update
+            '--max-retries', 1,
+            '--skip-first'
+        ]
+    );
+    warn $run->autopsy() if $run->CHILD_ERROR;
+
+    return 1;
+
+}

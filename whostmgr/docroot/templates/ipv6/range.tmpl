@@ -1,0 +1,174 @@
+[%
+    USE Whostmgr;
+    USE JSON;
+    WRAPPER 'master_templates/master.tmpl'
+        app_key = 'ipv6_ranges'
+        header = locale.maketext('IPv6 Address Ranges')
+        breadcrumburl = '/scripts/ipv6range'
+        stylesheets = [
+            Whostmgr.find_file_url('/templates/ipv6/range.min.css')
+        ]
+        theme = 'bootstrap'
+        include_legacy_stylesheets = 1
+        scripts = [
+            Whostmgr.find_file_url('/libraries/jquery/current/jquery.min.js'),
+            Whostmgr.find_file_url('/libraries/angularjs/1.4.4/angular.min.js'),
+            Whostmgr.find_file_url('/templates/ipv6/api.min.js'),
+            Whostmgr.find_file_url('/templates/ipv6/form.min.js'),
+            Whostmgr.find_file_url('/templates/ipv6/range.min.js')
+        ];
+    SET spinner64 = MagicRevision('/images/loading-arrows-64.gif');
+-%]
+
+<div id="content" ng-app="ipv6RangesApp" ng-controller="RangeList">
+    [% IF data.ipslocked %]
+    <div id="cjt_static_notice_container" class="cjt-pagenotice-container cjt-notice-container">
+        <div class="yui-module cjt-notice cjt-pagenotice cjt-notice-warn">
+            <div class="bd">
+                <div class="cjt-notice-content">[% locale.maketext('IPv6 addresses must be added on the host node') %]</div>
+            <div>[% locale.maketext("You must add IPv6 addresses on the [asis,Virtuozzo] or [asis,OpenVZ] host node before you can add them using this interface.") %]</div>
+        </div>
+    </div>
+    [% END %]
+    <div class="description help-block">
+        [% locale.maketext('This feature allows you to add, edit, and delete an IPv6 address range. An IPv6 address range is a group of several IPv6 addresses and uses the following format:') %]
+        <ul>
+            <li>[% locale.maketext('The range should be a shortened IPv6 address that ends with a slash (/), followed by a number which indicates the network portion of the IPv6 address range.') %]</li>
+            <li>[% locale.maketext('The most common network portion will be /64. The network portion might be as low as /48, or as high as /128, which would be a single IPv6 address.') %]</li>
+            <li>[% locale.maketext('For example: 2001:db8:1a34:56cf::/64') %]</li>
+        </ul>
+        [% locale.maketext('When you assign an IPv6 address to a user, you will choose a range that you added here.') %]
+    </div>
+    <div id="page_loader">
+        <img src="[% spinner64 %]" />
+        <form name="range" id="range_form" class="closed-form" ng-submit="addRange()" novalidate>
+            <div class="form-container">
+                <h4>[% locale.maketext('Add a Range') %]</h4>
+                <div class="row">
+                    <div class="col-xs-12 col-sm-6">
+                        <div class="form-group">
+                            <label for="range_name">[% locale.maketext('Range Name') %]</label>
+                            <input type="text" name="name" id="range_name" class="input-name form-control" ng-model="rangeName" ng-maxlength="64" required />
+                        </div>
+                    </div>
+                    <div class="col-xs-12 col-sm-6">
+                        <div class="field-extra">
+                            <ul class="error-messages"
+                                ng-show="range.name.$dirty && range.name.$invalid">
+                                <li ng-show="range.name.$error.required">[% locale.maketext("Range name required") %]</li>
+                                <li ng-show="range.name.$error.maxlength">[% locale.maketext("Range name cannot exceed 64 characters.") %]</li>
+                            </ul>
+                        </div>
+                    </div>
+                </div>
+                <div class="row">
+                    <div class="col-xs-12 col-sm-6">
+                        <div class="form-group">
+                            <label for="range_cidr">[% locale.maketext('Range') %]</label>
+                            <input type="text" name="cidr" id="range_cidr" class="input-cidr form-control" ng-model="rangeCIDR" ipv6cidr required />
+                        </div>
+                    </div>
+                    <div class="col-xs-12 col-sm-6">
+                        <div class="field-extra">
+                            <ul class="error-messages"
+                                ng-show="range.cidr.$dirty && range.cidr.$invalid">
+                                <li ng-class="ipv6Collapsed">[% locale.maketext("Cannot have multiple collapsed groups") %]</li>
+                                <li ng-class="ipv6Address">[% locale.maketext("Must follow IPv6 syntax") %]</li>
+                                <li ng-class="ipv6Characters">[% locale.maketext("Can only include hexidecimal characters (0-9 a-f)") %]</li>
+                                <li ng-class="ipv6SegmentLength">[% locale.maketext("Each section must be 4 characters or fewer") %]</li>
+                                <li ng-class="ipv6Range">[% locale.maketext("Must include / and the network portion") %]</li>
+                            </ul>
+                        </div>
+                    </div>
+                </div>
+                <div class="row">
+                    <div class="col-xs-12 col-sm-6">
+                        <div class="radio">
+                            <label>
+                                <input type="radio" name="enabled" id="range_enabled" ng-model="rangeEnabled" value="1" checked />
+                                [% locale.maketext( "Available - addresses can be assigned") %]
+                            </label>
+                        </div>
+                        <div class="radio">
+                            <label>
+                                <input type="radio" name="enabled" id="range_disabled" ng-model="rangeEnabled" value="0" />
+                                [% locale.maketext( "Reserved - addresses cannot be assigned") %]
+                            </label>
+                        </div>
+                    </div>
+                </div>
+                <div class="row">
+                    <div class="col-xs-12 col-sm-6">
+                        <div class="form-group">
+                            <label for="range_note">[% locale.maketext('Range Notes') %]</label>
+                            <textarea name="note" id="range_note" class="input-note form-control" ng-model="rangeNote" ng-maxlength="250"></textarea>
+                        </div>
+                    </div>
+                    <div class="col-xs-12 col-sm-6">
+                        <div class="field-extra">
+                            <ul class="error-messages"
+                                ng-show="range.note.$dirty && range.note.$invalid">
+                                <li ng-show="range.note.$error.maxlength">[% locale.maketext("Range note cannot exceed 250 characters.") %]</li>
+                            </ul>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="button-container">
+                <input type="submit" class="btn btn-primary" value="[% locale.maketext('Add Range') %]" ng-click="closeNotice()" openform>
+                <input type="button" class="btn btn-link" value="[% locale.maketext('Cancel') %]" ng-click="clearRangeForm()" closeform>
+            </div>
+            <div class="below-form-container cjt-pagenotice-container cjt-notice-container">
+            </div>
+        </form>
+
+        <div class="cjt-pagenotice-container cjt-notice-container">
+            <div ng-show="notice.message" class="yui-module cjt-notice cjt-pagenotice cjt-notice-{{notice.type}}">
+                <div class="close" ng-click="closeNotice()">×</div>
+                <div class="bd">
+                    <div class="cjt-notice-content">{{notice.message}}</div>
+                </div>
+            </div>
+        </div>
+
+        <table class="table">
+            <thead>
+                <tr>
+                    <th class="range-info-header">
+                        <h3>[% locale.maketext('IP Range Details') %]</h3>
+                    </th>
+                    <th class="range-actions-header">
+                        <h3>[% locale.maketext('Actions') %]</h3>
+                    </th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr ng-repeat="range in ranges | orderBy:'CIDR'" class="group">
+                    <td class="range-info">
+                        <span class="range-type-{{range.enabled}}">[% locale.maketext('Reserved') %]</span>
+                        <span class="range-name" ng-if="range.name != 'SHARED'"><strong>{{range.name}}</strong></span>
+                        <span class="range-name" ng-if="range.name == 'SHARED'"><strong>[% locale.maketext("The system’s shared IPv6 address.") %]</strong></span>
+                        <span class="range-value">{{range.CIDR}}</span>
+                        <span class="range-note">{{range.note}}</span>
+                    </td>
+                    <td class="range-actions">
+                        <button type="button"
+                                title="[% locale.maketext('Delete Range') %]"
+                                class="range-edit btn btn-default"
+                                ng-disabled="range.name === 'SHARED'"
+                                ng-click="deleteRange(range)">
+                            [% locale.maketext('Delete Range') %]
+                        </button>
+                    </td>
+                </tr>
+                <tr ng-hide="ranges.length" class="group">
+                    <td colspan="2" class="info empty-row">
+                        <span>[% locale.maketext('There are currently no ranges.') %]</span>
+                    </td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+</div>
+
+[% END #wrapper -%]

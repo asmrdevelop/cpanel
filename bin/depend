@@ -1,0 +1,96 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - bin/depend                              Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+use warnings;
+
+use Getopt::Long;
+use lib '/usr/local/cpanel/build-tools';
+use Cpanel::ModuleDeps ();
+
+my @incdir;
+my @excludes;
+my $verbose     = 0;
+my $enable_sort = 0;
+my $requires    = 0;
+my $noscript    = 0;
+
+GetOptions(
+    "verbose!"   => \$verbose,
+    "dir=s@"     => \@incdir,
+    "exclude=s@" => \@excludes,
+    "sort!"      => \$enable_sort,
+    "requires!"  => \$requires,
+    "noscript!"  => \$noscript,
+) or do { usage(); exit 1; };
+
+my $mods = Cpanel::ModuleDeps->new(
+    'incdir'  => \@incdir,
+    'exclude' => \@excludes,
+    'sorted'  => $enable_sort,
+    'filter'  => ( $requires ? 'modules' : 'use' ),
+);
+
+unless (@ARGV) {
+    die "Nothing specified for dependency checking.\n";
+}
+
+if ( !$noscript ) {    # scripts were passed in.
+    $mods->build_script_dependency_tree(@ARGV);
+
+    foreach my $script (@ARGV) {
+        my @deps = $mods->list_dependencies($script);
+        next unless @deps;
+
+        print $script, ': ', join( ' ', map { file_from_module( \@incdir, $_ ) } @deps ), "\n";
+    }
+
+}
+else {    # Walk a module not a script.
+    $mods->build_dependency_tree(@ARGV);
+    foreach (@ARGV) {
+        print "$_: " . join( ", ", sort( $mods->list_dependencies($_) ) ) . "\n";
+    }
+}
+
+exit;
+
+# Generate a file name from the include directory list, from the supplied module name
+sub file_from_module {
+    my ( $incdir, $mod ) = @_;
+    return $mod if -f $mod;
+    ( my $file = $mod ) =~ s{::}{/}g;
+    $file .= '.pm';
+    foreach my $dir ( '', map { "$_/" } @{$incdir} ) {
+        if ( -f "$dir$file" ) {
+            return "$dir$file";
+        }
+    }
+    return $file;
+}
+
+sub usage {
+    print <<EOU;
+$0 [options] script ...
+
+options:
+
+  --verbose     Display messages for missing files
+  --dir dir     The option specifies a directory to search for modules. May be
+                specified more than once to add multiple directories.
+  --exclude module
+                This option specifies a module that should be ignored in the
+                dependency checks. May be specified more than once to ignore
+                multiple modules.
+  --requires    Report both use and require dependencies.
+  --noscript    Instead of a script, walk a perl module's dependencies.
+
+The rest of the command line supplies a list of scripts or compiled scripts for
+which we want to find the dependencies.
+EOU
+    return;
+}

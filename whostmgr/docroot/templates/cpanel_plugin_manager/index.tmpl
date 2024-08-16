@@ -1,0 +1,34 @@
+[%
+    USE Whostmgr;
+    USE JSON;
+
+    WRAPPER 'master_templates/master.tmpl'
+        app_key = 'cpanel_plugin_file_generator'
+        header = locale.maketext('[asis,cPanel] Plugin File Generator'),
+        breadcrumburl = '/scripts/cpanel_plugin_generator',
+        base = '/scripts/cpanel_plugin_generator/',
+        stylesheets = [
+            Whostmgr.find_file_url('/templates/cpanel_plugin_manager/index.min.css'),
+            Whostmgr.find_file_url('templates/cPanel/customization.min.css')
+        ],
+        theme='bootstrap'
+        CJT2_EXCLUSIVE = 1;
+%]
+
+<div ng-controller="applicationController">
+    <div id="content"
+         class="ng-cloak"
+         ng-view
+         ng-cloak></div>
+</div>
+
+<script type="text/javascript">
+    var PAGE = PAGE || {};
+
+    PAGE.pluginList = [% data.plugin_tarballs.json() %];
+    PAGE.groups = [% data.groups.json() %];
+    PAGE.itemIds = [% data.item_ids.json() %];
+</script>
+
+[% PROCESS 'master_templates/cjt2_header_include.tt' %]
+[% END %]

@@ -1,0 +1,143 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/suspendmysqlusers               Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::suspendmysqlusers;
+
+use strict;
+use warnings;
+
+use Cpanel::DB::Map::Reader     ();
+use Cpanel::DB::Utils           ();
+use Cpanel::Mysql::Passwd       ();
+use Cpanel::MysqlUtils::Command ();
+use Cpanel::MysqlUtils::Quote   ();
+use Cpanel::MysqlUtils::Compat  ();
+use Cpanel::Logger              ();
+use Cpanel::MysqlUtils::Connect ();
+use Cpanel::MysqlUtils::Version ();
+
+if ( !caller() ) {
+
+    my ( $user, $team ) = @ARGV;
+
+    if ( !$user ) {
+        print "USAGE: $0 <user>\n";
+        exit 1;
+    }
+    suspend( $user, $team );
+}
+
+sub suspend {
+    my ( $cpuser, $team ) = @_;
+
+    my $logger = Cpanel::Logger->new();
+    my ( $team_owner, $team_user, $mysql_team_user );
+
+    # suspend the team-user mysql account alone
+    if ( defined $team ) {
+        ( $team_owner, $team_user ) = split /_/, $cpuser;
+        $mysql_team_user = $cpuser;
+        $cpuser          = $team_owner;
+    }
+    my $map = Cpanel::DB::Map::Reader->new( 'cpuser' => $cpuser, engine => 'mysql' );
+
+    my @user_list = $map->get_dbusers_plus_cpses();
+
+    # Case48428 - Need to include the parent user associated with the database and not just virtual users
+    # when suspending accounts in MySQL.
+    # Also, the DB map datastore might have a different owner name associated with the user
+    # account which the databases are tied to.
+    my @db_owner = (
+        $cpuser,
+        Cpanel::DB::Utils::username_to_dbowner($cpuser),
+    );
+    push @user_list, @db_owner;
+
+    my $user_list = !defined $team ? join ',', map { Cpanel::MysqlUtils::Quote::quote($_) } @user_list : Cpanel::MysqlUtils::Quote::quote($mysql_team_user);
+
+    Cpanel::MysqlUtils::Connect::connect();
+
+    my $row_name = Cpanel::MysqlUtils::Compat::get_mysql_user_auth_field();
+
+    my $result = Cpanel::MysqlUtils::Command::sqlcmd("SELECT User, Host, $row_name from mysql.user WHERE user IN ($user_list)") || '';
+
+    my @lines = split /\n/, $result;
+    my %result;
+    foreach my $line (@lines) {
+        my ( $user, $host, $pass ) = split /\s+/, $line, 3;
+
+        if ( !$pass ) {
+            $logger->info("MySQL user $user\@$host has a blank password!");
+            $result{$user}{$host} = '*' x 41;
+        }
+        else {
+            $result{$user}{$host} = $pass;
+        }
+    }
+
+    foreach my $user ( keys %result ) {
+        foreach my $host ( keys %{ $result{$user} } ) {
+            if ( $result{$user}{$host} =~ m/^\*/ ) {
+                $result{$user}{$host} =~ s/^\*//;
+                $result{$user}{$host} = reverse $result{$user}{$host};
+                $result{$user}{$host} = '-' . $result{$user}{$host};
+            }
+            else {    # Case 76857
+                $result{$user}{$host} =~ s/^([0-9a-f]{16})$/ ( '!' x 25 ) . reverse($1) /e;
+            }
+        }
+    }
+
+    my $mysql = Cpanel::Mysql::Passwd->new( { cpuser => $cpuser } );
+
+    my @sql_cmds;
+    foreach my $user ( keys %result ) {
+        foreach my $host ( keys %{ $result{$user} } ) {
+            my $pass = $result{$user}{$host};
+
+            my $mysql_version = _long_mysql_version_or_default();
+
+            # Per docs on MySQL 5.7.6 - https://dev.mysql.com/doc/refman/5.7/en/grant.html
+            # We can no longer use GRANT statements to change the password.
+            # However, since 5.7 ships with Account Locking capabilities, we will utilize that instead to lock the accounts.
+            if ( Cpanel::MysqlUtils::Version::is_at_least( $mysql_version, '5.7.6' )
+                && !Cpanel::MysqlUtils::Version::is_at_least( $mysql_version, '10.0.0' ) ) {
+
+                push @sql_cmds, 'ALTER USER ' . Cpanel::MysqlUtils::Quote::quote($user) . '@' . Cpanel::MysqlUtils::Quote::quote($host) . ' ACCOUNT LOCK;';
+
+            }
+            else {
+
+                # Passing in 1 to specify a password change
+                $mysql->passwduser_hash( $user => $pass, 1 );
+            }
+        }
+    }
+
+    # This must be done in the foreground or pkgacct will break.
+    push @sql_cmds, 'FLUSH PRIVILEGES';
+    Cpanel::MysqlUtils::Command::sqlcmd( \@sql_cmds );
+
+    return 1;
+
+}
+
+sub _long_mysql_version_or_default {
+    local $@;
+    my $long_version = eval { Cpanel::MysqlUtils::Version::current_mysql_version()->{'long'} };
+
+    if ($@) {
+
+        # current_mysql_version has extensive logic to determine the current
+        # version.  If it fails, MySQL is likely beyond repair and we need to reinstall.
+        return $Cpanel::MysqlUtils::Version::DEFAULT_MYSQL_RELEASE_TO_ASSUME_IS_INSTALLED;
+    }
+
+    return $long_version;
+}
+
+1;

@@ -1,0 +1,67 @@
+[%
+SET reset_url = "/resetpass";
+IF !https;
+USE ApplicationUrl;
+SET secure_url = ApplicationUrl.get_secure_url(
+    host            => SERVER_NAME,
+    port            => SERVER_PORT,
+    proxysubdomains => cpconf.proxysubdomains);
+SET reset_url = secure_url _ reset_url;
+END;
+%]
+<div id="reset-forms">
+    [% IF !https %]
+    <form id="reload_form" action="[% reset_url %]">
+        [% IF CPANEL.is_debug_mode_enabled() %]
+            <input type="hidden" name="debug" value="1">
+        [% END %]
+        <input type="hidden" name="start" value="1">
+        <div class="alert alert-warning">
+            <span class="fas fa-2x fa-exclamation-triangle" aria-hidden="true"></span>
+            <div class="alert-message">
+                <strong>[% locale.maketext('Warning:') %]</strong>
+                [% locale.maketext('The Reset Password feature only supports the [asis,HTTPS] protocol.') %]
+            </div>
+        </div>
+        <div class="controls">
+            <div class="login-btn">
+                <input id="login" type="submit" value="[% locale.maketext('Reload with [asis,HTTPS]') %]">
+            </div>
+        </div>
+        <div class="controls">
+            <div class="reset-pw">
+                <a href="/">[% locale.maketext('Cancel') %]</a>
+            </div>
+        </div>
+        <div class="clear"></div>
+    </form>
+    [% ELSE %]
+    <form id="reset_form" action="/resetpass" method="POST">
+        <!-- Prevent submit via Enter if submit button is disabled -->
+        <input style="display:none" />
+
+        [% IF CPANEL.is_debug_mode_enabled() %]
+            <input type="hidden" name="debug" value="1">
+        [% END %]
+
+        <div class="input-req-login">
+            <label for="username">[% locale.maketext('Username') %]</label>
+        </div>
+        <div class="input-field-login icon username-container">
+            <input name="user" id="username" placeholder="[% locale.maketext('Enter your username.') %]" type="text"  autocomplete="off" class="std_textbox" tabindex="1" required autofocus >
+        </div>
+        <div class="controls">
+            <div class="login-btn">
+                <input name="login" type="submit" id="login" value="[% locale.maketext('Reset Password') %]" >
+            </div>
+        </div>
+        <div class="controls">
+            <div class="reset-pw">
+                <a href="/">[% locale.maketext('Cancel') %]</a>
+            </div>
+        </div>
+        <div class="clear"></div>
+    </form>
+    [% END %]
+    <span id="resetpass-no-user">[%# marker for testing%]</span>
+</div>

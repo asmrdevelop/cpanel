@@ -1,0 +1,43 @@
+[% WRAPPER 'master_templates/master.tmpl' theme="yui"
+    app_key = 'setup_edit_domain_forwarding'
+    header = locale.maketext('Setup/Edit Domain Forwarding')
+    breadcrumburl = '/scripts/domainfwd'
+%]
+[% IF data.ip == '' %]
+No Domain Forwarder has been setup!<br><br>
+           <form action="[% cp_security_token %]/scripts/createdomainfwd">
+<input type="submit" class="btn-primary" value="Click to Create" /></form>
+           <br /><br />
+[% ELSIF data.invalid_ip %]
+Bad Domain Forwarder detected!<br><br>The previous domain forwarder IP appeared to have been invalid and was removed.<br>
+            Please create a new domain forwarder.<br>
+            <form action="[% cp_security_token %]/scripts/createdomainfwd">
+<input type="submit" class="btn-primary" value="Click to Create"></form>
+            <br /><br />
+[% ELSE %]
+The domain forwarder is currently using the IP address <b>[% data.ip %]</b>.
+All domains that you want to be forwarded should resolve to this IP.<br />
+        Domains resolving to any IP other than <b>[% data.ip %]</b> will not be forwarded. <br />
+        <form action="[% cp_security_token %]/scripts2/killdomainfwd">
+<input type='submit' class="btn-secondary" value="Click to remove domain forwarder" /></form>
+
+<form method=POST action=[% cp_security_token %]/scripts/savedomainfwd><h3>Redirection Map</h3><table>
+<tr><td><b>Domain (*.cpanel.net is acceptable)</b></td><td><b>Redirection URL</b></td></tr>
+[% FOR domain_data=data.domainurls.sort('domain') %]
+<tr>
+	<td><input type='text' name='line-[% loop.index + 1 %]-1' value='[% domain_data.domain FILTER html %]' size='20' /></td>
+	<td><input type='text' name='line-[% loop.index + 1 %]-2' value='[% domain_data.url FILTER html %]' size='60' /></td>
+</tr>
+[% END %]
+[% FOR i=[ 1 .. 5 ] %]
+<tr>
+	<td><input type='text' name='line-[% data.domainurls.size + i %]-1' value='' size='20' /></td>
+	<td><input type='text' name='line-[% data.domainurls.size + i %]-2' value='http://' size='60' /></td>
+</tr>
+[% END %]
+</table>
+<input type='hidden' name='lines' value='[% data.domainurls.size + 5 %]' />
+<input type='submit' class='btn-primary' value='Save Map' />
+</form>
+[% END %]
+[% END -%]

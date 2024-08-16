@@ -1,0 +1,530 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/suspendacct                     Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::suspendacct;
+
+use strict;
+## no critic qw(TestingAndDebugging::RequireUseWarnings) -- suspendacct is not yet warnings safe
+
+use Try::Tiny;
+
+use Whostmgr::ACLS                             ();
+use Cpanel::Auth::Digest::DB::Manage           ();
+use Cpanel::Auth::Shadow                       ();
+use Cpanel::AcctUtils::AccountingLog           ();
+use Cpanel::AcctUtils::DomainOwner::Tiny       ();
+use Cpanel::AcctUtils::Owner                   ();
+use Cpanel::AcctUtils::Domain                  ();
+use Cpanel::Config::LoadCpUserFile             ();
+use Cpanel::PwCache::Clear                     ();
+use Cpanel::Validate::Domain::Tiny             ();
+use Cpanel::Encoder::Tiny                      ();
+use Cpanel::Exception                          ();
+use Cpanel::Dovecot::Action                    ();
+use Cpanel::AccessIds::ReducedPrivileges       ();
+use Cpanel::AcctUtils::Suspended               ();
+use Cpanel::SafetyBits                         ();
+use Cpanel::Config::CpUserGuard                ();
+use Cpanel::ConfigFiles                        ();
+use Cpanel::FileUtils::Copy                    ();
+use Cpanel::FileUtils::Match                   ();
+use Cpanel::FileUtils::Write                   ();
+use Cpanel::Hooks                              ();
+use Cpanel::Hostname                           ();
+use Cpanel::IP::Remote                         ();
+use Cpanel::MysqlUtils::Suspension             ();
+use Cpanel::SafeFile                           ();
+use Cpanel::Sys::Kill                          ();
+use Cpanel::OS                                 ();
+use Cpanel::Passwd::Shell                      ();
+use Cpanel::ServerTasks                        ();
+use Cpanel::Services::Enabled                  ();
+use Cpanel::Session::SinglePurge               ();
+use Cpanel::PwCache                            ();
+use Cpanel::Validate::Username                 ();
+use Cpanel::Validate::Domain::Normalize        ();
+use Cpanel::Quota::Temp                        ();
+use Whostmgr::Accounts::Suspend                ();
+use Whostmgr::Accounts::Email                  ();
+use Whostmgr::Accounts::SuspensionData::Writer ();
+use AcctLock                                   ();
+use Cpanel::Notify                             ();
+use Getopt::Long                               ();
+use Cpanel::Team::Constants                    ();
+use Cpanel::Team::Config                       ();
+
+exit( run(@ARGV) ) unless caller;
+
+sub run {    ## no critic qw(Subroutines::ProhibitExcessComplexity)
+    my (@args) = @_;
+
+    my $leave_ftp_enabled = 0;
+    my $usage             = 0;
+    my $force             = 0;
+    my $child_ok          = 0;
+    return usage(1) if !@args;
+
+    Getopt::Long::GetOptionsFromArray(
+        \@args,
+        'leave-ftp-accts-enabled' => \$leave_ftp_enabled,
+        'help|usage'              => \$usage,
+        'force'                   => \$force,
+        'child-ok'                => \$child_ok,
+    );
+
+    my $user = $args[0];
+    $user =~ s/\///g;
+    my $reason = Cpanel::Encoder::Tiny::safe_html_decode_str( $args[1] // '' );
+    $reason =~ s/[=\n\0]//g;
+    my $prevent_reseller_unsuspend = $args[2] // 0;
+
+    return usage(0) if $usage;
+    return usage(1) if ( !$user || is_forbidden_user($user) );
+
+    local $ENV{'USER'}        = $ENV{'USER'};
+    local $ENV{'REMOTE_USER'} = $ENV{'REMOTE_USER'};
+
+    if ( ( !$ENV{'USER'} || !$ENV{'REMOTE_USER'} ) && $> == 0 ) {
+        $ENV{'REMOTE_USER'} = 'root';
+        $ENV{'USER'}        = 'root';
+    }
+
+    # Needed for changing quotas.
+    Whostmgr::ACLS::init_acls();
+
+    return usage( 1, "Invalid user $user\n" ) if !is_valid_user($user);
+
+    if ( $prevent_reseller_unsuspend && !Whostmgr::ACLS::hasroot() ) {
+        print "Can not prevent resellers from unsuspending this account without the 'all' ACL.\n";
+        return 1;
+    }
+
+    if ( $leave_ftp_enabled && !Whostmgr::ACLS::hasroot() ) {
+        print "Can not leave FTP accounts enabled without the 'all' ACL.\n";
+        return 1;
+    }
+
+    if ( Cpanel::AcctUtils::Suspended::is_suspended($user) && !$force ) {
+        print "User '$user' is already suspended. Provide '--force' argument if you wish to do this.\n";
+        return 1;
+    }
+
+    if ( !$child_ok ) {
+        my $cpuser_obj = Cpanel::Config::LoadCpUserFile::load_or_die($user);
+        if ( $cpuser_obj->child_workloads() ) {
+            print "To suspend “$user”, do so on the account’s parent node.\n";
+            return 1;
+        }
+    }
+
+    # this one doesn't seem to exist
+    if ( !do_hook( $user, $reason, $prevent_reseller_unsuspend, 'pre' ) ) {
+        print "Pre-suspend hook script returned failure.\n";
+        return 1;
+    }
+    system '/usr/local/cpanel/scripts/presuspendacct', @args if -x '/usr/local/cpanel/scripts/presuspendacct';
+
+    $ENV{'REMOTE_USER'} ||= 'root';
+    Whostmgr::ACLS::init_acls();
+
+    my ( $pass, $homedir, $shell ) = ( Cpanel::PwCache::getpwnam($user) )[ 1, 7, 8 ];
+    my $host;
+
+    AcctLock::acctlock();
+    print "Changing Shell to /bin/false...";
+    try {
+        Cpanel::Passwd::Shell::update_shell_without_acctlock( 'user' => $user, 'shell' => '/bin/false' );
+    }
+    catch {
+        print Cpanel::Exception::get_string($_);
+    };
+    print "Done\n";
+
+    print "Locking Password...";
+    my ( $status, $statusmsg ) = Cpanel::Auth::Shadow::update_shadow_without_acctlock( $user, '!!' . ( Cpanel::PwCache::getpwnam($user) )[1] );
+    print $statusmsg if !$status;
+    print "Done\n";
+    AcctLock::acctunlock();
+
+    Cpanel::Auth::Digest::DB::Manage::lock($user) if Cpanel::Auth::Digest::DB::Manage::has_entry($user);
+
+    my $owner = Cpanel::AcctUtils::Owner::getowner($user);
+    $owner =~ s/\n//g;
+
+    my $domain = Cpanel::AcctUtils::Domain::getdomain($user);
+
+    if ( $owner eq '' || $owner eq 'root' || $user eq $owner ) {
+        $host = Cpanel::Hostname::gethostname();
+    }
+    else {
+        $host = $domain;
+    }
+    if ( !$host ) {
+        $host = Cpanel::Hostname::gethostname();
+    }
+
+    my $susp_info_hr = {
+        'shell'                   => $shell,
+        'leave-ftp-accts-enabled' => $leave_ftp_enabled,
+    };
+
+    my $suspend_data = Whostmgr::Accounts::SuspensionData::Writer->new();
+
+    if ( $prevent_reseller_unsuspend == 1 ) {
+        $suspend_data->suspend_locked( $user, $reason // q<>, $susp_info_hr );
+    }
+    else {
+        $suspend_data->suspend_unlocked( $user, $reason // q<>, $susp_info_hr );
+    }
+
+    # session deletion and then
+    # kill -9 must be done after the suspendfile is created
+    # to ensure cpsrvd will not allow any more processes
+    # to be created as the user.  this also avoids having to check
+    # each cpsrvd request
+    Cpanel::Session::SinglePurge::purge_user( $user, 'suspend' );
+    Cpanel::Sys::Kill::kill_pids_owned_by( $user, '-9' );
+
+    my $cpuser_guard = Cpanel::Config::CpUserGuard->new($user);
+    my $cpuser_data  = $cpuser_guard->{'data'};
+    my @DNS          = ( $cpuser_data->{'DOMAIN'} );
+    if ( exists $cpuser_data->{'DOMAINS'} ) {
+        push @DNS, @{ $cpuser_data->{'DOMAINS'} };
+    }
+
+    mkdir( "$Cpanel::ConfigFiles::MAILMAN_ROOT/suspended.lists", 0755 );
+
+    {
+        my $tempquota = Cpanel::Quota::Temp->new( user => $user );
+        $tempquota->disable();
+
+        if ( -f "$homedir/etc/webdav/shadow" && !-l "$homedir/etc/webdav/shadow" ) {
+            print "Suspending webdav users\n";
+            suspendshadowfile( $user, "$homedir/etc/webdav/shadow" );
+        }
+
+        foreach my $dns (@DNS) {
+            $dns = Cpanel::Validate::Domain::Normalize::normalize( $dns, 1 );
+            next if !Cpanel::Validate::Domain::Tiny::validdomainname($dns);
+            if ( -f "${homedir}/etc/${dns}/shadow"
+                && !-l "${homedir}/etc/${dns}/shadow" ) {
+                print "Suspending email account logins for ${dns} .... ";
+                suspendshadowfile( $user, "${homedir}/etc/${dns}/shadow" );
+                print "Done\n";
+            }
+        }
+
+        #This will recreate the files in the user homedir,
+        #so we want to do it under a quota-lift.
+        Cpanel::Dovecot::Action::flush_all_auth_caches_for_user($user);
+    }
+
+    # Suspend team_user's if exists.
+    if ( -e "$Cpanel::Team::Constants::TEAM_CONFIG_DIR/$user" ) {
+        print "Suspending team account ... ";
+        eval { Cpanel::Team::Config->new($user)->suspend_team(); };
+        $@ ? warn "Unable to suspend Team Account" : print "Done\n";
+    }
+
+    my $dns_list   = join( '|', map { quotemeta($_) } @DNS );
+    my $list_files = Cpanel::FileUtils::Match::get_matching_files( "$Cpanel::ConfigFiles::MAILMAN_ROOT/lists", "_(?:$dns_list)" . '$' );
+    foreach my $list ( @{$list_files} ) {
+        my ($list_name) = $list =~ m{^.*/([^/]+)$};
+        $list_name =~ tr{_}{@};
+        print "Suspending mailing list for $list_name\n";
+
+        my $suspended_list = $list;
+        $suspended_list =~ s/\/lists\//\/suspended.lists\//;
+        if ( -e $suspended_list ) { rename( $suspended_list, $suspended_list . '.' . time() ) }
+        rename( $list, $suspended_list );
+    }
+
+    if ( Cpanel::Services::Enabled::are_provided('mysql') ) {
+        print "Suspending mysql users\n";
+        Cpanel::MysqlUtils::Suspension::suspend_mysql_users($user);
+    }
+
+    # FIXME: Everything in this script should eventually be done via
+    # this function call (or similar logic).
+    try {
+        Whostmgr::Accounts::Suspend->new(
+            $user,
+            reason                     => $reason,
+            prevent_reseller_unsuspend => $prevent_reseller_unsuspend,
+        );
+    }
+    catch {
+        warn Cpanel::Exception::get_string($_);
+    };
+
+    my %account_creation_notification = (
+        'user'              => $user,
+        'user_domain'       => $domain,
+        'reason'            => $reason,
+        'env_remote_user'   => $ENV{'REMOTE_USER'},
+        'env_user'          => $ENV{'USER'},
+        'host_server'       => $host,
+        'origin'            => 'Suspend Account',
+        'source_ip_address' => Cpanel::IP::Remote::get_current_remote_ip(),
+    );
+
+    # send root notification
+
+    Cpanel::Notify::notification_class(
+        'class'            => 'suspendacct::Notify',
+        'application'      => 'suspendacct::Notify',
+        'constructor_args' => [%account_creation_notification]
+    );
+
+    # send one to account reseller as well as long as they are not root
+    if ( $owner ne 'root' ) {
+        Cpanel::Notify::notification_class(
+            'class'            => 'suspendacct::Notify',
+            'application'      => 'suspendacct::Notify',
+            'constructor_args' => [ %account_creation_notification, 'to' => $owner, 'username' => $owner ]
+        );
+    }
+
+    if ( $pass =~ /^\!/ || $pass =~ /^\*/ ) {
+        print "Account previously suspended (password was locked).\n";
+    }
+
+    $cpuser_data->{'SUSPENDTIME'} = time();
+    $cpuser_data->{'SUSPENDED'}   = 1;
+    $cpuser_guard->save();
+
+    my $user_crontab_dir = Cpanel::OS::user_crontab_dir();
+    if ( !-e "$user_crontab_dir.suspended" ) {
+        mkdir( "$user_crontab_dir.suspended", 0700 );
+    }
+
+    if ( -f "$user_crontab_dir/${user}" ) {
+        link( "$user_crontab_dir/${user}", "$user_crontab_dir.suspended/${user}" );
+        unlink("$user_crontab_dir/${user}");
+    }
+
+    Cpanel::SafetyBits::safe_chmod( 0000, $user, "${homedir}/public_ftp" );
+
+    my $tempquota = Cpanel::Quota::Temp->new( user => $user );
+    $tempquota->disable();
+    print "Suspending websites...\n";
+
+    _generate_account_suspension_include($user);
+
+    $tempquota->restore();
+
+    _suspend_ftp($user) if not $leave_ftp_enabled;
+
+    Cpanel::ServerTasks::schedule_task( ['CpDBTasks'], 10, "ftpupdate" );
+
+    print "Suspending outgoing email....";
+    Whostmgr::Accounts::Email::suspend_outgoing_email( 'user' => $user );
+    print "Done\n";
+
+    print ${user} . "'s account has been suspended\n";
+
+    Cpanel::AcctUtils::AccountingLog::append_entry( 'SUSPEND', [ $user, $domain, $reason ] );
+
+    Cpanel::PwCache::Clear::clear_global_cache();
+
+    do_hook( $user, $reason, $prevent_reseller_unsuspend, 'post' );
+    system '/usr/local/cpanel/scripts/postsuspendacct', @args if -x '/usr/local/cpanel/scripts/postsuspendacct';
+
+    return;
+}
+
+# TODO: Refactor this function (along with the unsuspension logic)
+# to a Whostmgr::Accounts::Suspension::* module.
+sub _suspend_ftp {
+    my ($username) = @_;
+
+    my $ftpfile = "$Cpanel::ConfigFiles::FTP_PASSWD_DIR/$username";
+    my $ftplock = Cpanel::SafeFile::safelock($ftpfile);               # Manipulation of these files isn't thread safe.
+
+    if ( -e $ftpfile && !-e $ftpfile . '.suspended' && -e "/var/cpanel/suspended/$username" ) {
+        print "Suspending FTP accounts...\n";
+        my ( $ok, $err ) = Cpanel::FileUtils::Copy::copy( $ftpfile, qq{$ftpfile.suspended} );
+
+        if ($err) {
+            warn "Could not copy $ftpfile to $ftpfile.suspended: $err";
+        }
+        else {
+            Cpanel::FileUtils::Write::overwrite_no_exceptions( $ftpfile, '# Account suspended', 0640 );
+        }
+    }
+
+    Cpanel::SafeFile::safeunlock($ftplock);
+
+    return;
+}
+
+sub is_valid_user {
+    my $user = shift;
+
+    my $pass = ( Cpanel::PwCache::getpwnam_noshadow($user) )[1];
+    if ( !defined $pass ) {
+        $user = Cpanel::AcctUtils::DomainOwner::Tiny::getdomainowner( $user, { 'default' => '' } );
+        return 0 if !$user;
+
+        $pass = ( Cpanel::PwCache::getpwnam_noshadow($user) )[1];
+        return 0 if !defined $pass;
+    }
+
+    return is_forbidden_user($user) ? 0 : 1;
+}
+
+sub is_forbidden_user {
+    my ($user) = @_;
+
+    return ( grep { $user eq $_ } Cpanel::Validate::Username::list_reserved_usernames() ) ? 1 : 0;
+}
+
+# helpers
+sub suspendshadowfile {
+    my ( $user, $file ) = @_;
+
+    # user cannot be root, tested previously
+    # we should not write file as root in the user's home directory...
+    my $access_ids = Cpanel::AccessIds::ReducedPrivileges->new($user);
+    return _suspendshadowfile($file);
+}
+
+sub _suspendshadowfile {
+    my ($file) = @_;
+
+    my @shadow_file;
+    my $shadowlock = Cpanel::SafeFile::safeopen( \*SHF, '<', $file );
+    if ($shadowlock) {
+        @shadow_file = <SHF>;
+        Cpanel::SafeFile::safeclose( \*SHF, $shadowlock );
+        undef $shadowlock;
+    }
+    else {
+        if ( -e $file ) {
+            warn "Failed to read $file: $!";
+            return;
+        }
+        else {
+            return 1;
+        }
+    }
+
+    if (@shadow_file) {
+        $shadowlock = Cpanel::SafeFile::safeopen( \*SHF, '>', $file );
+
+        if ($shadowlock) {
+            foreach (@shadow_file) {
+                chomp;
+                next if $_ !~ m{\S};    # ensure we're not processing a blank line.
+                my @DC = split( /:/, $_ );
+                foreach my $field ( 1, 8 ) {
+                    $DC[$field] = '' unless defined $DC[$field];
+                    if ( $DC[$field] !~ m/^\*LOCKED\*/ ) {
+                        $DC[$field] = "*LOCKED*" . $DC[$field];
+                    }
+                }
+                print SHF join( ':', map { defined $_ ? $_ : '' } @DC ) . "\n";
+            }
+            truncate( SHF, tell(SHF) );
+            Cpanel::SafeFile::safeclose( \*SHF, $shadowlock );
+        }
+        else {
+            warn "Failed to update $file: $!";
+            return;
+        }
+        return 1;
+    }
+    else {
+        return 1;
+    }
+}
+
+sub do_hook {
+    my ( $user, $reason, $prevent_reseller_unsuspend, $stage ) = @_;
+    my ( $result, $hooks_msgs ) = Cpanel::Hooks::hook(
+        {
+            'category'      => 'Whostmgr',
+            'event'         => 'Accounts::suspendacct',
+            'stage'         => $stage,
+            'escalateprivs' => 1,
+        },
+        {
+            'args' => {
+                'user'       => $user,
+                'reason'     => $reason,
+                'disallowun' => $prevent_reseller_unsuspend,
+            },
+            'result' => 1,
+            'user'   => 'root',
+        },
+    );
+    if ( ref $hooks_msgs eq 'ARRAY' && @$hooks_msgs != 0 ) {
+        foreach my $error ( @{$hooks_msgs} ) {
+            print $error;
+        }
+        return 0;
+    }
+    return 1;
+}
+
+sub _generate_account_suspension_include {
+    require "/usr/local/cpanel/scripts/generate_account_suspension_include";    ## no critic qw(Modules::RequireBarewordIncludes) -- refactoring this is too large
+    generate_account_suspension_include::update_include_and_restart_httpd();
+    return 1;
+}
+
+sub usage {
+    my ( $retval, $msg ) = @_;
+    my $fh = $retval ? \*STDERR : \*STDOUT;
+
+    my $p = $0;
+    $p =~ s{^.+/(.+)$}{$1};
+
+    if ( !defined $msg ) {
+        $msg = <<EOF;
+Usage: $p user [reason] [disallow] [--leave-ftp-accts-enabled] [--child-ok] [--force] [--usage | --help]
+
+Suspend a user's account with possibly a more stringent
+suspension as determined by disallow.
+
+where
+    user -- is a valid user name (required)
+
+    reason -- is a quote bound description for the suspension
+    and is written into the /var/cpanel/suspended/<user> file
+    (optional)
+
+    disallow -- is for additionally generating a user.lock file
+    in /var/cpanel/suspended and to issue this the argument needs to
+    be 1 (optional)
+
+    Note that the order of user, reason and disallow must be maintained.
+
+    Users with reserved usernames (e.g. root and nobody) cannot be suspended.
+
+    --leave-ftp-accts-enabled -- FTP accounts associated with the
+    cPanel account are left enabled. **WARNING** Do not use this flag unless
+    you have considered the security implications. This will allow suspended
+    users continued access to the server.
+
+    The --force argument will allow for the suspension process to be run against an
+    already suspended account.
+
+    The --child-ok argument defeats the usual protection against
+    suspending distributed accounts on child nodes. Ordinarily you should
+    suspend and unsuspend distributed accounts on their parent nodes.
+    Use of this flag is UNSUPPORTED.
+
+    Now supports driving instructions via --help, --usage
+EOF
+    }
+
+    print {$fh} $msg;
+    return $retval;
+}
+
+1;

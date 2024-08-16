@@ -1,0 +1,100 @@
+[%-
+USE Whostmgr;
+IF start;
+    PROCESS 'master_templates/_defheader.tmpl'
+        breadcrumburl = '/scripts2/tweaksettings'
+        theme="yui"
+        extrastyle = '.setting_label { font-weight: bold }'
+    ;
+    '<h3 class="simpleheading">Updating tweak settings...</h3>';
+    '<br />';
+ELSIF saved;
+    FOREACH key = rejects.keys.sort();
+        SET setting_data = ts_conf.$key;
+
+        SET value_text = rejects.defined( key )
+            ? "${rejects.$key}"
+            : 'undefined'
+        ;
+
+        SET reason_text = reject_reasons.defined( key )
+            ? reject_reasons.$key
+            : 'unknown reason'
+        ;
+
+        SET value_text = value_text.html;
+        SET esc_key = key.html;
+        SET reason_text = reason_text.html;
+
+        "<p>Invalid value for “${esc_key}”: “${value_text}” - ${reason_text}. This setting will not be updated.</p>";
+    END;
+    '<span class="b2">Your changes have been saved.</span><br />';
+    '<br />';
+    '<span class="b2">Restarting cPanel daemons...</span>';
+ELSIF restarted;
+    '<span class="b2">done.</span><br />';
+    '<br />';
+    '<span class="b2">Updating your system to reflect any changes...</span><br />';
+    '<pre>';
+ELSIF updating;
+    IF newvalue.defined;
+        IF setting_data.type == 'password';
+            SET newvalue = '**********';
+        ELSIF setting_data.type == 'binary';
+            SET newvalue = newvalue ? 'On' : 'Off';
+        ELSIF setting_data.type == 'inversebinary';
+            SET newvalue = newvalue ? 'Off' : 'On';
+        ELSIF optionlabels && optionlabels.defined( newvalue );
+            SET newvalue = optionlabels.$newvalue;
+        ELSE;
+            SET newvalue = "${newvalue}";
+        END;
+    ELSE;
+        SET newvalue = undef_label || 'ERROR';
+    END;
+
+    SET newvalue = newvalue.html;
+
+    IF is_new_setting;
+        "Creating new setting for <span class=\"setting_label\">“${label}”</span> of “${newvalue}”. ";
+    ELSE;
+        IF oldvalue.defined;
+            IF setting_data.type == 'password';
+              SET oldvalue = '**********';
+            ELSIF setting_data.type == 'binary';
+                SET oldvalue = oldvalue ? 'On' : 'Off';
+            ELSIF setting_data.type == 'inversebinary';
+                SET oldvalue = oldvalue ? 'Off' : 'On';
+            ELSIF optionlabels && optionlabels.defined( oldvalue );
+                SET oldvalue = optionlabels.$oldvalue;
+            ELSE;
+                SET oldvalue = "${oldvalue}";
+            END;
+        ELSE;
+            SET oldvalue = undef_label || 'ERROR';
+        END;
+
+        SET oldvalue = oldvalue.html;
+
+        "Updating <span class=\"setting_label\">“${label}”</span> from “$oldvalue” to “${newvalue}”.\n";
+    END;
+ELSIF post_action.defined();
+    "Processing post action for <span class=\"setting_label\">$label</span>:\n";
+ELSIF is_ok.defined();
+    IF is_ok;
+        "<span class=\"setting_label\">“$label”</span> was updated.\n";
+    ELSE;
+        IF changed_value;
+            "There was an error updating “$label”: $error\n";
+        ELSE;
+            SET esc_key = key.html;
+            "While trying to rectify your configuration for “${esc_key}” an error was encountered: $error\n";
+        END;
+    END;
+ELSIF done;
+    '</pre>';
+    '<span class="b2">Done.</span>';
+ELSIF not_saved;
+    "Error encountered while applying new settings.  Changes were not saved.\n";
+END;
+-%]

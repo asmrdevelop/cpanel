@@ -1,0 +1,458 @@
+[%
+USE Api2;
+USE Master;
+USE CPBranding;
+USE Apache;
+USE VarCache;
+USE Content_Includes;
+USE NVData;
+USE Team;
+
+SET has_component_system = file_test('f', "/usr/local/cpanel/base/frontend/jupiter/_assets/component.html.tt");
+IF has_component_system;
+    USE Components;
+END;
+
+SET CPANEL.CPVAR.indexpage = "1";
+
+SET homeDir = CPANEL.homedir,
+    isReseller = ExpVar.expand('$isresellerlogin'),
+    domain = CPANEL.CPDATA.DNS,
+    user_theme = CPANEL.CPDATA.RS,
+    user = CPANEL.user,
+    display_user = CPANEL.display_user,
+    isTeamUser = CPANEL.is_team_user;
+
+IF isTeamUser;
+    SET teamOwner = CPANEL.team_owner;
+END;
+
+SET embeded_styles_list = ["tools/dashboard.css"];
+SET page_styles_list = [];
+
+IF !CPANEL.ua_is_mobile;
+    embeded_styles_list.push("css/angular-chosen-spinner.css");
+    page_styles_list.push("libraries/chosen/1.5.1/chosen.min.css");
+END;
+
+SET applist = ["tls_status"];
+SET apps = {};
+
+FOREACH applist_item IN applist;
+    apps.$applist_item = CPBranding.get_application_from_available_applications(varcache.available_applications, applist_item);
+END;
+
+SET upgradeUrl = CPANEL.CPVAR.dprefix _ CPBranding.get_implementer_from_available_applications(
+        varcache.available_applications,
+        'upgrade',
+    ).url;
+SET wpToolkitUrl = CPANEL.CPVAR.dprefix _ CPBranding.get_application_from_available_applications(
+        varcache.available_applications,
+        'wp-toolkit',
+    ).url;
+
+# Set NGINX variables.
+SET nginx_caching_enabled       = 0; # hard coded default
+SET nginx_is_installed = !file_test("e", "/etc/nginx/ea-nginx/enable.standalone") && file_test("e", "/etc/nginx/ea-nginx/cache.json");
+
+IF isTeamUser;
+    SET team_user_expire_date = Team.get_team_user_expire_date(teamOwner, display_user);
+END;
+
+IF nginx_is_installed;
+    SET nginx_caching_userconf_path = "/var/cpanel/userdata/" _ user _ "/nginx-cache.json";
+
+    SET nginx_caching_global = JSON.loadfile("/etc/nginx/ea-nginx/cache.json");
+    IF nginx_caching_global.exists("enabled");
+        nginx_caching_enabled = nginx_caching_global.item("enabled");
+    END;
+
+    IF file_test("e", nginx_caching_userconf_path);
+        SET nginx_caching_user = JSON.loadfile(nginx_caching_userconf_path);
+        IF nginx_caching_user.exists("enabled");
+            nginx_caching_enabled = nginx_caching_user.item("enabled");
+        END;
+    END;
+END;
+
+SET display_welcome_panel = varcache.display_welcome_panel;
+varcache.set('migrated_to_jupiter', to_boolean(NVData.get('migrated_to_jupiter').trim));
+varcache.set('migration_modal_dismissed', to_boolean(NVData.get('cp-migration-panel_dismissed').trim));
+varcache.set('cp_feature_showcase_dismissed', to_boolean(NVData.get('cp-feature-showcase_dismissed').trim));
+
+SET display_cpanel_promotions = ExpVar.expand('$display_cpanel_promotions');
+%]
+
+[% js_code_first = PROCESS js_block_first %]
+
+[% js_page_first = PROCESS register_nvdata %]
+
+[% WRAPPER '_assets/master.html.tt'
+    page_title = locale.maketext("Tools")
+    page_js_top = js_code_first
+    page_js = js_page_first
+    include_legacy_stylesheets = 0
+    include_legacy_scripts = 0
+    include_cjt = 0
+    embed_stylesheets = embeded_styles_list
+    page_stylesheets = page_styles_list
+    hide_page_heading = 0
+    app_key = "tools"
+    use_master_bootstrap = 0
+    focus_feature_search = 1
+-%]
+
+<div growl limit-messages="1"></div>
+
+<!-- NOTE: leave the alert-group in single quotes -->
+<cp-alert-list></cp-alert-list>
+
+<div class="row">
+    <div id="main" class="col-xs-12 col-sm-12 col-md-9 col-lg-9">
+    [% IF !varcache.cp_feature_showcase_dismissed && display_cpanel_promotions -%]
+        <cp-feature-showcase></cp-feature-showcase>
+    [% END -%]
+        [%
+        IF has_component_system && Components.has_components_for('cpanel', 'tools', 'before-menu');
+            PROCESS "_assets/component.html.tt",
+                APP_KEY => 'tools',
+                TAG     => 'div',
+                SLOT    => 'before-menu';
+        END;
+        %]
+
+        [% PROCESS tools/views/applicationList.html.tt %]
+        [%
+        IF has_component_system && Components.has_components_for('cpanel', 'tools', 'after-menu');
+            PROCESS "_assets/component.html.tt",
+                APP_KEY => 'tools',
+                TAG     => 'div',
+                SLOT    => 'after-menu';
+        END;
+        %]
+
+    </div><!-- end main -->
+
+    <div id="stats" class="col-xs-12 col-sm-12 col-md-3 col-lg-3">
+        <!-- Content Include point: before general information section -->
+        [% Content_Includes.render("cpanel_jupiter_tools_general_information_before.html.tt") %]
+        <!-- End: Content Include point -->
+        <div id="generalInfoSection" class="panel panel-widget">
+            <div id="generalInfoHeaderSection" class="panel-heading widget-heading">
+                <span role="heading" aria-level="3">[% locale.maketext("General Information") %]</span>
+            </div>
+            <table class="table">
+                <tbody>
+                    <tr>
+                        <td colspan="2" ng-controller="accountsController">
+                            <label id="lblUserName" class="general-info-label updating-elements">[% locale.maketext("Current User") %]</label>
+                            [% IF isReseller && !isTeamUser %]
+                                <span id="resellerSpinner" class="fas fa-spinner fa-spin updating-elements" title="[% locale.maketext('Loading …') %]" ng-hide="updated"></span>
+                                [% IF !CPANEL.ua_is_mobile %]
+                                    <select width="'98%'"
+                                        id="ddlAccounts"
+                                        class="form-control ng-hide ng-cloak"
+                                        search_contains="true"
+                                        chosen
+                                        ng-class="{ 'chosen-rtl': isRTL }"
+                                        ng-options="item as item.accountLabel for item in accounts track by item.user"
+                                        ng-model="selectedAccount"
+                                        ng-change="accountChanged()">
+                                    </select>
+                                [% ELSE %]
+                                    <select id="ddlAccounts"
+                                        class="form-control ng-cloak"
+                                        ng-options="item as item.accountLabel for item in accounts track by item.user"
+                                        ng-model="selectedAccount"
+                                        ng-change="accountChanged()">
+                                    </select>
+                                [% END %]
+                            [% ELSE %]
+                                <span id="txtUserName" class="general-info-value">[% display_user %]</span>
+                            [% END %]
+                        </td>
+                    </tr>
+
+                [% IF isTeamUser %]
+                    <tr>
+                        <td colspan="2">
+                            <label id="teamOwnerLabel" class="general-info-label">[% locale.maketext("Team Owner") %]</label>
+                            <span id="teamOwner" class="general-info-value">[% teamOwner %]</span>
+                        </td>
+                    </tr>
+
+                    [% IF team_user_expire_date %]
+                    <tr>
+                        <td colspan="2">
+                            <label id="teamUserExpireDateLabel" class="general-info-label">[% locale.maketext("Expire Date") %]</label>
+                            <span id="teamUserExpireDate" class="general-info-value">[%-
+                                locale.maketext("[local_datetime,_1,date_format_medium][comment,this is needed to convert the date to a localized format]", (team_user_expire_date))
+                            -%]</span>
+                        </td>
+                    </tr>
+                    [% END %]
+                [% END %]
+
+                    [% IF apps.tls_status %]
+                    <tr id="domainNameRow" ng-controller="sslStatusController" ng-init="primaryDomain = '[% domain %]'; " ng-class="{'warning':sslStatusLoaded && !sslSecured}" class="app-stat-row">
+                        <td class="app-stat-data">
+                            <label id="lblDomainName" class="general-info-label">
+                                [% locale.maketext("Primary Domain") %]
+                                <span ng-if="sslStatusString" ng-cloak class="ng-cloak" ng-class="statusColorClasses">
+                                    <span id="sslStatusToolTip" ng-if="certHasErrors">
+                                    <i uib-tooltip="{{certErrorsMessage}}" class="ri-1x ri-error-warning-line ssl-error-icon" aria-hidden="true"></i>
+                                    <span class="sr-only">{{certErrorsMessage}}</span>
+                                    </span>
+                                </span>
+                            </label>
+                            <div id="txtDomainName" class="general-info-value">
+                                <span uib-tooltip="{{expandedSslStatusString}}" ng-class="sslValidationIconClasses" class="fas fa-spinner fa-spin"></span>
+                                <a ng-href="{{ domainLink }}" target="_blank" title="[% locale.maketext('Preview “[_1]”', domain) %]">
+                                    [% domain %]
+                                    <i class="ri-1x ri-external-link-line" aria-hidden="true"></i>
+                                </a>
+                            </div>
+                            <div class="ssl-link-container" ng-cloak ng-if="certHasErrors">
+                                <a id="glass_lnkMaintain_DomainName" class="link-button" href="[% CPANEL.CPVAR.dprefix _ apps.tls_status.url %]#/?domain=[% domain %]">
+                                    <i class="ri-1x ri-bar-chart-grouped-line"></i>
+                                    [% locale.maketext("SSL/TLS Status") %]
+                                </a>
+                            </div>
+                        </td>
+                    </tr>
+                    [% ELSE %]
+                    <tr id="domainNameRow">
+                        <td class="app-stat-data" colspan="2" >
+                            <label id="lblDomainName" class="general-info-label">
+                                [% locale.maketext("Primary Domain") %]
+                            </label>
+                            <div id="txtDomainName" class="general-info-value">
+                                <a href="https://[% domain | html %]" target="_blank" title="[% locale.maketext('Preview “[_1]”', domain) %]">
+                                    [% domain %]
+                                    <i class="fas fa-external-link-alt" aria-hidden="true"></i>
+                                </a>
+                            </div>
+                        </td>
+                    </tr>
+                    [% END %]
+                    <tr>
+                        <td colspan="2">
+                            [%# Loading StatsBar has significant overhead so ExpVar.expand is used here %]
+                            [% IF ExpVar.expand('$hasdedicatedip') %]
+                            <label id="lblIPAddress" class="general-info-label">[% locale.maketext("Dedicated [asis,IP] Address") %]</label>
+                            [% ELSE %]
+                            <label id="lblIPAddress" class="general-info-label">[% locale.maketext("Shared [asis,IP] Address") %]</label>
+                            [% END %]
+                            <span id="txtIPAddress" class="general-info-value">[% ExpVar.expand('$ip') %]</span>
+                        </td>
+                    </tr>
+                    <tr>
+                        <td colspan="2">
+                            <label id="lblHomeDirectory" class="general-info-label">[% locale.maketext("Home Directory") %]</label>
+                            <span id="txtHomeDirectory" class="general-info-value">[% homeDir %]</span>
+                        </td>
+                    </tr>
+                    <tr>
+                        <td colspan="2">
+                            <label id="lblLastLogin" class="general-info-label">[% locale.maketext("Last Login [asis,IP] Address") %]</label>
+                            <span id="txtLastLogin" class="general-info-value">[% execute( 'LastLogin', 'get_last_or_current_logged_in_ip' ).data %]</span>
+                        </td>
+                    </tr>
+                    <tr>
+                        <td colspan="2">
+                            <div class="gen-info__title_row">
+                                <label id="lblAcctUuid" class="general-info-label gen-info__details-title">[% locale.maketext("User Analytics ID") %]</label>
+                                <span id="copyMsgContainer" class="copy-msg-container label label-success">
+                                    [% locale.maketext('Copied') %]
+                                </span>
+                            </div>
+                            <div id="acctUuidContainer" class="general-info-value uuid-copy-container">
+                                <i id="iconCopyUuid" class="ri-1x ri-file-copy-fill" title="[% locale.maketext('Click to copy the user analytics ID.') %]" aria-hidden="true"></i>
+                                <a id="linkCopyUuid" href="javascript:void(0);" title="[% locale.maketext('Click to copy the user analytics ID.') %]">
+                                    <span id="txtAcctUuid" class="general-info-value long-text-fade-overflow">[% CPANEL.CPDATA.UUID %]</span>
+                                </a>
+                            </div>
+                        </td>
+                    </tr>
+                    <tr>
+                        <td colspan="2" ng-controller="themesController">
+                            <label id="lblTheme" class="general-info-label updating-elements">[% locale.maketext("Theme") %]</label>
+                            [% IF CPANEL.feature("theme-switch") %]
+                                <span id="themeSpinner" class="fas fa-spinner fa-spin updating-elements" title="[% locale.maketext('Loading …') %]" ng-hide="updated"></span>
+                                [% IF !CPANEL.ua_is_mobile %]
+                                <select chosen width="'98%'"
+                                    id="ddlThemes"
+                                    class="form-control ng-hide ng-cloak"
+                                    ng-class="{ 'chosen-rtl': isRTL }"
+                                    ng-options="item for item in themes"
+                                    ng-model="selectedTheme"
+                                    ng-change="themeChanged()">
+                                </select>
+                                [% ELSE %]
+                                <select id="ddlThemes"
+                                    class="form-control ng-cloak"
+                                    ng-options="item for item in themes"
+                                    ng-model="selectedTheme"
+                                    ng-change="themeChanged()">
+                                </select>
+                                [% END %]
+                            [% ELSE %]
+                                <span id="txtTheme" class="general-info-value">[% user_theme %]</span>
+                            [% END %]
+                        </td>
+                    </tr>
+                [% IF nginx_is_installed %]
+                    <tr>
+                        <td colspan="2">
+                            <label id="lblNginxCached" class="general-info-label">[% locale.maketext("NGINX Caching") %]</label>
+                            <div id="nginxContainer" class="general-info-value nginx-caching-info" ng-controller="nginxController">
+                                [% IF CPANEL.feature("toggle_nginx_caching") %]
+                                <toggle-switch
+                                    id="switchGeneralNginxCaching"
+                                    ng-model="nginxCachingIsEnabled"
+                                    on-toggle="toggleNginxCachingStatus()"
+                                    enabled-label ="[% locale.maketext('Active') %]"
+                                    disabled-label="[% locale.maketext('Inactive') %]">
+                                </toggle-switch>
+                                [% ELSE %]
+                                <span id="txtNginxCached" class="general-info-value">
+                                    [%
+                                        IF nginx_caching_enabled;
+                                            locale.maketext("Active");
+                                        ELSE;
+                                            locale.maketext('Inactive');
+                                        END;
+                                    %]
+                                </span>
+                                [% END %]
+                                <button type="button" id="btnClearNGINXCache"
+                                    ng-cloak
+                                    button-ng-class="::showClearCacheButton()"
+                                    button-class="btn-default btn-sm btn-block"
+                                    title="[% locale.maketext("Clear Cache") | html %]"
+                                    spinner-id="spinnerClearNGINXCache"
+                                    cp-action="nginxClearCache()">
+                                    [% locale.maketext("Clear Cache") %]
+                                </button>
+                            </div>
+                        </td>
+                    </tr>
+                [% END %]
+                    <tr>
+                        <td colspan="2">
+                            <a href="[% CPANEL.CPVAR.dprefix _ 'tools/status.html' %]" id="lnkServerInfo"
+                                alt='[% locale.maketext("Server Information") %]'>
+                                <span> [% locale.maketext("Server Information") %] </span>
+                            </a>
+                        </td>
+                    </tr>
+
+                </tbody>
+            </table>
+        </div>
+        <!-- Content Include point: before stats section -->
+        [% Content_Includes.render("cpanel_jupiter_tools_stats_before.html.tt") %]
+        <!-- End: Content Include point -->
+        <div id="statsSection" class="panel panel-widget" ng-controller="statisticsController" ng-cloak>
+            <div id="statsHeaderSection" class="panel-heading widget-heading">
+                <span role="heading" aria-level="3">[% locale.maketext("Statistics") %]</span>
+                <span spinner id="loadingStatsSpinner" glyph-class="fas fa-spinner" class="pull-right" title="[% locale.maketext('Loading …') %]"></span>
+            </div>
+
+            <table class="table">
+                <tbody>
+                    <tr id="row_{{::app.id}}" ng-repeat="app in ::statistics | orderBy:'-percent' track by app.id" ng-class="::getStatStatus(app.percent, app.error)" class="app-stat-row">
+                        <td class="app-stat-data">
+                            <span id="lblStatsName_{{::app.id}}" class="app-name">{{::app.description}}</span>
+                            <div ng-if="!app.error">
+                                <div ng-if="app.formatter === 'percent'">
+                                    <span dir="ltr">{{::app.formattedPercent}}%</span>
+                                </div>
+                                <div class="limits-wrapper">
+                                    <div class="limits-data" ng-if="app.formatter !== 'percent'">
+                                        <span id="lblstats_{{::app.id}}_count">{{::app.formattedUsage}}</span>
+                                        <span ng-if="::app.formattedMaximum">
+                                            /
+                                            <span id="lblstats_{{::app.id}}">{{::app.formattedMaximum}}</span>
+                                        </span>
+                                        <span class="stats-parenthetical-percentage" ng-if="::app.showPercent" dir="ltr">({{::app.formattedPercent}}%)</span>
+                                    </div>
+                                    <div ng-if="::app.showWarning">
+                                        <i uib-tooltip="{{app.warningTooltip}}" id="stats-error-icon_{{::app.id}}" class="ri-error-warning-line stats-fix-icon" aria-hidden="true" ng-class="::glassGetStatStatus(app.percent)"></i>
+                                        <span class="sr-only">{{app.warningTooltip}}</span>
+                                    </div>
+                                </div> <!-- end limits-wrapper -->
+                                <div ng-if="::app.showActionButton">
+                                    [% IF upgradeUrl -%]
+                                        <div>
+                                            <a id="lnkupgrade_{{::app.id}}" class="link-button" href="[% upgradeUrl | html %]">
+                                                [% locale.maketext('Upgrade') %]
+                                            </a>
+                                        </div>
+                                    [% ELSE %]
+                                        <div>
+                                            <a id="lnkMaintain_{{::app.id}}" ng-if="::app.url" class="link-button" href="{{::app.url}}">
+                                                [% locale.maketext('Manage') %]
+                                            </a>
+                                        </div>
+                                    [% END %]
+                                </div>
+                            </div>
+
+                            <div class="error-wrapper" ng-if="app.error" ng-cloak class="ng-cloak">
+                                <span id="lblStatsName_{{::app.id}}" class="error-name">
+                                    [% locale.maketext('Data Unavailable') %]
+                                </span>
+                                <span id="statError_{{::app.id}}">
+                                    <i uib-tooltip="{{app.error}}" class="fas fa-exclamation-triangle stats-error-icon" aria-hidden="true"></i>
+                                </span>
+                            </div>
+                        </td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </div><!-- end stats -->
+</div>
+
+<!-- Initial Experience Modal -->
+[% IF display_welcome_panel %]
+<cp-welcome-modal opened="true" migrated-to-jupiter="[% varcache.migrated_to_jupiter ? 'true' : 'false' %]"></cp-welcome-modal>
+[% ELSIF varcache.migrated_to_jupiter && !varcache.migration_modal_dismissed %]
+<cp-migration-modal opened="true"></cp-migration-modal>
+[% END %]
+
+[%
+    SET application_dir  = ExpVar.expand('$basedir') _ "/tools/";
+    SET file = ExpVar.expand('$basefilename');
+    SET requirejs_url_base = '/frontend/' _ user_theme;
+%]
+
+[% PROCESS '_assets/cjt2_header_include.tt' %]
+[% END #wrapper -%]
+
+
+[% BLOCK js_block_first %]
+
+<script type="text/javascript">
+    var DEFAULT_BOX_ORDER = [% varcache.available_applications.grouporder.json %];
+    PAGE.isRTL = document.getElementsByTagName("HTML")[0].getAttribute("dir") === "rtl";
+    PAGE.currentTheme = [% user_theme.json %];
+    PAGE.securityToken = [% cp_security_token.json %];
+    PAGE.userName = [% user.json %];
+    PAGE.domain = [% domain.json %];
+    PAGE.dprefix = [% JSON.stringify(CPANEL.CPVAR.dprefix) %];
+    PAGE.isNginxCachingEnabled = ([% nginx_caching_enabled %]) ? true : false;
+    PAGE.wpToolkitUrl = [% JSON.stringify(wpToolkitUrl) %];
+</script>
+
+[% PROCESS tools/views/applicationListHeader.html.tt %]
+
+[% END %]
+
+[% BLOCK register_nvdata %]
+<script type="text/javascript">
+    register_interfacecfg_nvdata('xmainrollstatus');
+    register_interfacecfg_nvdata('xmaingroupsorder');
+</script>
+[% END %]

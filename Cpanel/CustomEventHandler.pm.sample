@@ -1,0 +1,71 @@
+package Cpanel::CustomEventHandler;
+
+# cpanel - Cpanel/CustomEventHandler.pm.sample     Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+use Cpanel::Logger ();
+
+# api_version = api_version
+# type = pre,post
+# module = Cpanel::<modname>
+# event = the event ie addpop
+# cfg ref is a hash of the conf variables passed to the event. If its a legacy event, the hash keys are numbered, newer events have names.
+# dataref = the data returned from the event (post events only)
+sub event {
+    my ( $api_version, $type, $module, $func, $cfgref, $dataref ) = @_;
+    ## UAPI note: $api_version will be '3', and the method signature becomes the similar:
+    ##   my ( $api_version, $type, $module, $func, $args, $result ) = @_;
+
+    if ($module eq 'ftp') {
+        if ($func eq 'addftp') {
+# do something with ftp
+        } elsif ($func eq 'delftp') {
+
+        }
+    } elsif ($module eq 'email') {
+        if ($func eq 'addpop' && $type eq 'post') {
+            my $hdata = $dataref->[0];
+            my $domain = $hdata->{'domain'};
+            my $homedir = $Cpanel::homedir;
+            my $emailuser = $hdata->{'user'};
+
+            my $junkdir = "$homedir/mail/$domain/$emailuser/.Junk";
+            unless (-e $junkdir) {
+                system("mkdir -p $junkdir");
+            }
+
+            my $yaml_template = '/usr/local/cpanel/src/templates/exim/filter.yaml.default';
+            if ( open my $yaml_in, '<', $yaml_template ) {
+                my $yaml = do { local $/; <$yaml_in>; };
+
+                my %TEMPVARS = ( '__JUNKDIR__' => $junkdir );
+                foreach my $key ( keys %TEMPVARS ) {
+                    $yaml =~ s/$key/$TEMPVARS{$key}/g;
+                }
+
+                my $account = sprintf("%s@%s", $emailuser, $domain);
+
+                require Cpanel::YAML::Syck;
+                my $fstore = ( YAML::Syck::Load($yaml) )[0];
+
+                require Cpanel::Email::Filter;
+                my $storefile = Cpanel::Email::Filter::_fetchfilterstore($account);
+
+                require Cpanel::DataStore;
+                Cpanel::DataStore::store_ref( $storefile, $fstore );
+
+                my($ok, $result) = Cpanel::Email::Filter::_store_exim_filter($account, $fstore);
+            }
+        }
+
+    }
+
+
+
+    return 1;
+}
+
+1;

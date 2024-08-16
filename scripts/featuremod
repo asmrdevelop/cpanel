@@ -1,0 +1,66 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/featuremod                      Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+use Cpanel::Usage    ();
+use Cpanel::Features ();
+
+if ( $> != 0 ) {
+    die "Insufficient permissions to modify feature lists.\n";
+}
+
+my $list;
+my $feature;
+my $value;
+Cpanel::Usage::wrap_options( \@ARGV, \&usage, { 'list' => \$list, 'feature' => \$feature, 'value' => \$value } );
+
+if ( !$feature ) {
+    print STDERR "Invalid feature provided\n\n";
+    usage();
+    exit 1;
+}
+elsif ( !$value || ( $value !~ m/^enable$/i && $value !~ m/^disable$/i ) ) {
+    print STDERR "Invalid feature value provided. Expected enable or disable\n\n";
+    usage();
+    exit 1;
+}
+else {
+    $value = $value =~ m/^enable$/i ? 1 : 0;
+}
+
+if ( $list && !Cpanel::Features::is_feature_list($list) ) {
+    print "Sorry, specified feature list does not exist.\n";
+    exit 1;
+}
+
+unless ( grep { $feature eq $_ } Cpanel::Features::load_feature_names() ) {
+    print "Sorry '$feature' is not a recognized feature.\n";
+    exit 1;
+}
+
+Cpanel::Features::modify_feature(
+    'feature' => $feature, 'value' => $value, 'verbose' => 1,
+    ( $list ? ( list => $list ) : () ),
+);
+
+sub usage {
+    print <<"EOM";
+This utility will enable or disable a feature in all (non-default) feature lists
+or only the provided feature list. To modify the default feature list, you must
+request it explicitly.
+
+Usage: $0 --feature {name} --value {enable|disable}
+
+  Options:
+     --help             Brief help message
+     --list {listname}  Modify specified feature list only
+     --feature {name}   The feature tag text.
+     --value {val}      Dictates that feature will be 'enabled' or 'disabled' in all feature lists
+
+EOM
+    return;
+}

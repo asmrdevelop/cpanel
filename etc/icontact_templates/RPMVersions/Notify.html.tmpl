@@ -1,0 +1,57 @@
+[%#
+Variables passed in:
+
+origin              - the system component that originated the action
+versions_directory  - the directory where local.versions is stored
+local_keys          - the keys associated to app names that are unmanaged for the specified reason
+
+update_local_rpm_versions_script_path - the path to the update_local_rpm_versions script
+
+For more information about how to customize notification templates, read our documentation at https://go.cpanel.net/notificationtemplates
+
+-%]
+
+[%
+    PROCESS "include/colors.tmpl";
+    PROCESS "include/styles.tmpl";
+    PROCESS "include/code_standout.tmpl";
+    PROCESS "include/code_inline.tmpl";
+
+    WRAPPER 'wrapper/main.html.tmpl';
+
+    NOTICE.email_reason = CPANEL.locale.maketext('Services set to unmanaged.');
+
+    SET first_service = NOTICE.local_keys.0;
+
+%]
+
+<p>
+    [% CPANEL.locale.maketext( 'The system automatically set the following services to unmanaged in your [_1] file:', code_inline(term=NOTICE.versions_directory _ '/local.versions') ) %]
+</p>
+<ul>
+[% FOREACH item IN NOTICE.local_keys %]
+    <li>
+        [% item %]
+    </li>
+[% END %]
+</ul>
+<p>
+    [% CPANEL.locale.maketext('These changes are due to [_1] settings in [_2] or the presence of [_3] touchfiles in [_4].', code_inline(term='=never'), code_inline(term=NOTICE.cpupdate_conf_path), code_inline(term="*updisable"), code_inline(term='/etc')  ) %]
+</p>
+<p>
+    [% CPANEL.locale.maketext( 'We recommend that you use the [_1] file to disable updates. [asis,cPanel] [output,amp] [asis,WHM] does not check [_2] for those settings, and the use of [_3] touchfiles in [_4] has been deprecated.', code_inline(term='local.versions'), code_inline(term='cpupdate.conf'), code_inline(term='*updisable'), code_inline(term='/etc') ) %]
+</p>
+<p>
+    [% CPANEL.locale.maketext('If this was not your intention, you should remove this from [_1].', code_inline(term='local.versions')) %]
+</p>
+<p>
+    [% CPANEL.locale.maketext('For example, in order to re-enable updates for [_1], run the following command:', code_inline(term=first_service)) %]
+</p>
+<p>
+    [% code_standout(command=NOTICE.update_local_rpm_versions_script_path _ ' -del target_settings.' _ first_service); %]
+</p>
+<p>
+    [% CPANEL.locale.maketext('For more information, see: [output,url,_1,_1,target,_2]', 'https://go.cpanel.net/rpmversions','_blank'); %]
+</p>
+
+[% END %]

@@ -1,0 +1,38 @@
+
+  warn
+     # Remove spam headers from outside sources
+     condition = ${perl{spamd_is_available}}
+     !hosts = +skipsmtpcheck_hosts
+     remove_header  = x-spam-subject : x-spam-status : x-spam-score : x-spam-bar : x-spam-report : x-spam-flag : x-ham-report
+
+
+  warn
+    condition = ${perl{spamd_is_available}}
+    condition = ${if eq {${acl_m0}}{1}{1}{0}}
+    spam =  ${acl_m1}/defer_ok
+    # Always make sure cPanel support mail can get through
+    !hosts = : +trustedmailhosts : +cpanel_mail_netblocks
+    log_message = "SpamAssassin as ${acl_m1} detected message as spam ($spam_score)"
+    add_header = X-Spam-Subject: [% ACL_SPAM_HEADER %] $rh_subject
+    add_header = X-Spam-Status: Yes, score=$spam_score
+    add_header = X-Spam-Score: $spam_score_int
+    add_header = X-Spam-Bar: $spam_bar
+    add_header = X-Spam-Report: ${sg{$spam_report}{\N\n \n\N}{\n}}
+    add_header = X-Spam-Flag: YES
+    set acl_m2 = 1
+
+  warn
+      condition = ${perl{spamd_is_available}}
+      condition =  ${if eq {$spam_score_int}{}{0}{${if <= {${spam_score_int}}{8000}{${if >= {${spam_score_int}}{50}{${perl{store_spam}{$sender_host_address}{$spam_score}}}{0}}}{0}}}}
+
+  warn
+  condition = ${perl{spamd_is_available}}
+  condition = ${if eq {${acl_m0}}{1}{${if eq {${acl_m2}}{1}{0}{1}}}{0}}
+  add_header = X-Spam-Status: No, score=$spam_score
+  add_header = X-Spam-Score: $spam_score_int
+  add_header = X-Spam-Bar: $spam_bar
+  add_header = X-Ham-Report: ${sg{$spam_report}{\N\n \n\N}{\n}}
+  add_header = X-Spam-Flag: NO
+  log_message = "SpamAssassin as ${acl_m1} detected message as NOT spam ($spam_score)"
+
+

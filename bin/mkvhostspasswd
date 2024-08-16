@@ -1,0 +1,141 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - bin/mkvhostspasswd                      Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+use warnings;
+
+use Cpanel::ConfigFiles::Apache       ();
+use Cpanel::PwCache::Helpers          ();
+use Cpanel::PwCache::Build            ();
+use Cpanel::PwCache                   ();
+use Cpanel::Path                      ();
+use Cpanel::SafeFile                  ();
+use Cpanel::Logger                    ();
+use Cpanel::Config::LoadUserDomains   ();
+use Cpanel::Config::Users             ();
+use Cpanel::ConfigFiles               ();
+use Cpanel::Validate::VirtualUsername ();
+use Fcntl                             ();
+
+my $logger       = Cpanel::Logger->new();
+my $apacheconf   = Cpanel::ConfigFiles::Apache->new();
+my $has_anon_ftp = ( -e '/var/cpanel/noanonftp' ? 0 : 1 );
+
+my %DOMAINS;
+
+my %cpusers = map { $_ => 1 } Cpanel::Config::Users::getcpusers();
+Cpanel::Config::LoadUserDomains::loadtrueuserdomains( \%DOMAINS, 1 );
+
+my $logdir = $apacheconf->dir_domlogs();
+if ( -l $logdir ) {
+    $logdir = readlink($logdir);
+    $logdir = Cpanel::Path::relative2abspath( $logdir, $apacheconf->dir_domlogs() );
+}
+
+Cpanel::PwCache::Helpers::no_uid_cache();    #uid cache only needed if we are going to make lots of getpwuid calls
+Cpanel::PwCache::Build::init_pwcache();
+
+my %PASSWD;
+my @pw = Cpanel::PwCache::getpwnam('ftp');
+$PASSWD{'ftp'} = "$pw[0]:$pw[1]:$pw[2]:$pw[3]:$pw[6]:$pw[7]:$pw[8]";
+my $ftpuid = $pw[2];
+my $ftpgid = $pw[3];
+if ( $PASSWD{'ftp'} eq '::::::' ) {
+    $PASSWD{'ftp'} = 'ftp:x:14:50::/var/ftp:';
+    $ftpuid        = 14;
+    $ftpgid        = 50;
+}
+
+my $vlock = Cpanel::SafeFile::safesysopen( my $vusers, "$Cpanel::ConfigFiles::FTP_PASSWD_DIR/.passwd.vhosts", Fcntl::O_WRONLY() | Fcntl::O_TRUNC() | Fcntl::O_CREAT() | Fcntl::O_NOFOLLOW(), 0640 );
+
+if ( !$vlock ) {
+    $logger->die("Could not write to $Cpanel::ConfigFiles::FTP_PASSWD_DIR/.passwd.vhosts");
+}
+
+my $pwcache_ref = Cpanel::PwCache::Build::fetch_pwcache();
+foreach my $pw (@$pwcache_ref) {
+
+    # 0 = name
+    # 1 = password
+    # 2 = uid
+    # 8 = shell
+    next if ( $pw->[1] eq '*'
+        || $pw->[1] eq '!!'
+        || $pw->[2] < 100
+        || substr( $pw->[1], 0, 1 ) eq '!'
+        || !exists $cpusers{ $pw->[0] }
+        || $pw->[8] eq '/bin/false'
+        || $pw->[8] eq '/dev/null'
+        || $pw->[8] =~ /demoshell$/
+        || ( !$has_anon_ftp && ( $pw->[0] eq 'ftp' || $pw->[0] eq 'anonymous' ) ) );
+    print {$vusers} $pw->[0] . ':' . $pw->[1] . ':' . $pw->[2] . ':' . $pw->[3] . '::' . $pw->[7] . ':' . ( $pw->[8] =~ /noshell$/ ? '/bin/ftpsh' : $pw->[8] ) . "\n";
+    $PASSWD{ $pw->[0] } = [ $pw->[2], $pw->[3], $pw->[7], $pw->[8] ];
+}
+
+my ( $domain, $uid, $gid, $homedir, $shell );
+my ( $puser, $passwd, $phomedir );
+
+foreach my $user ( keys %cpusers ) {
+    next if ( $user eq '' || $user eq 'ftp' || $user eq 'anonymous' || !exists $DOMAINS{$user} || !exists $PASSWD{$user} || !-f "$Cpanel::ConfigFiles::FTP_PASSWD_DIR/$user" );
+    $domain = $DOMAINS{$user};
+    next if ( !exists $PASSWD{$user} );
+    ( $uid, $gid, $homedir, $shell ) = @{ $PASSWD{$user} };
+    if ( $shell =~ /noshell$/ ) { $shell = '/bin/ftpsh'; }
+    my $plock = Cpanel::SafeFile::safeopen( \*PVH, '<', "$Cpanel::ConfigFiles::FTP_PASSWD_DIR/$user" );
+    if ( !$plock ) {
+        $logger->warn("Could not read from $Cpanel::ConfigFiles::FTP_PASSWD_DIR/$user");
+        next;
+    }
+    while (<PVH>) {
+        chomp();
+        ( $puser, $passwd, $phomedir ) = ( split( /:/, $_ ) )[ 0, 1, 5 ];
+        my ( $puser_name, $puser_domain ) = ( split( /@/, $puser ) );
+        $puser_domain = $domain if ( !$puser_domain );
+        if ( !Cpanel::Validate::VirtualUsername::is_valid( $puser_name . '@' . $puser_domain ) ) {
+            $logger->warn("“$puser” in “$Cpanel::ConfigFiles::FTP_PASSWD_DIR/$user” is not a valid ftp username.");
+            next;
+        }
+        elsif ( !$uid ) {
+            print STDERR "[$user] -- [$puser] -- [$PASSWD{$user}]\n";
+            next();
+        }
+        elsif ( $puser eq 'ftp' && $has_anon_ftp ) {
+            print {$vusers} 'anonymous' . '@' . $domain . '::' . $ftpuid . ':' . $ftpgid . '::' . $homedir . '/public_ftp:/bin/ftpsh' . "\n";
+            print {$vusers} 'ftp' . '@' . $domain . '::' . $ftpuid . ':' . $ftpgid . '::' . $homedir . '/public_ftp:/bin/ftpsh' . "\n";
+        }
+        elsif ( $puser =~ /_logs$/ ) {
+            print {$vusers} $puser . ':' . $passwd . ':' . $uid . ':' . $gid . '::' . $logdir . '/' . $user . ':/bin/ftpsh' . "\n";
+            print {$vusers} $puser . '@' . $domain . ':' . $passwd . ':' . $uid . ':' . $gid . '::' . $logdir . '/' . $user . ':/bin/ftpsh' . "\n";
+            print {$vusers} $puser . '+' . $domain . ':' . $passwd . ':' . $uid . ':' . $gid . '::' . $logdir . '/' . $user . ':/bin/ftpsh' . "\n";
+        }
+        else {
+            my ( $puser_name, $puser_domain ) = ( split( /@/, $puser ) );
+            $puser_domain = $domain if ( !$puser_domain );
+            print {$vusers} $puser_name . '@' . $puser_domain . ':' . $passwd . ':' . $uid . ':' . $gid . ':' . $user . ':' . $phomedir . ':/bin/ftpsh' . "\n";
+            print {$vusers} $puser_name . '+' . $puser_domain . ':' . $passwd . ':' . $uid . ':' . $gid . ':' . $user . ':' . $phomedir . ':/bin/ftpsh' . "\n";
+        }
+    }
+    Cpanel::SafeFile::safeclose( \*PVH, $plock );
+}
+Cpanel::SafeFile::safeclose( $vusers, $vlock );
+
+# Correct ownership on password file for proftpd.
+
+my $pw_gid;
+
+for my $group ( 'proftpd', 'ftp' ) {
+    $pw_gid = ( getgrnam($group) )[2];
+    last if $pw_gid;
+}
+
+$pw_gid ||= 0;    # pure-ftpd runs as root
+
+chown 0, $pw_gid, "$Cpanel::ConfigFiles::FTP_PASSWD_DIR/.passwd.vhosts";
+
+unlink("$Cpanel::ConfigFiles::FTP_PASSWD_DIR/passwd.vhosts");
+link( "$Cpanel::ConfigFiles::FTP_PASSWD_DIR/.passwd.vhosts", "$Cpanel::ConfigFiles::FTP_PASSWD_DIR/passwd.vhosts" );
+unlink("$Cpanel::ConfigFiles::FTP_PASSWD_DIR/.passwd.vhosts");

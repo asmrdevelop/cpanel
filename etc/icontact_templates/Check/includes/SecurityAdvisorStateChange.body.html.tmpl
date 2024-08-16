@@ -1,0 +1,49 @@
+[%-
+    PROCESS "include/colors.tmpl";
+    PROCESS "include/styles.tmpl";
+    PROCESS "include/zebra_table.tmpl";
+    PROCESS "include/icons.tmpl";
+
+    NOTICE.table_titles = [
+        CPANEL.locale.maketext("Type"),
+        CPANEL.locale.maketext("Module"),
+        CPANEL.locale.maketext("Advice"),
+    ];
+    NOTICE.table_items = [];
+
+    SET high_text = get_icon(icon='error') _ " " _ CPANEL.locale.maketext("High");
+    SET medium_text = get_icon(icon='warn') _ " " _ CPANEL.locale.maketext("Medium");
+    SET info_text = CPANEL.locale.maketext("Info");
+    SET high_table_items = [];
+    SET medium_table_items = [];
+    SET info_table_items = [];
+
+    FOREACH module IN NOTICE.notices;
+      SET module_split = (module.key.split('::'));
+      SET module_name = module_split.pop();
+
+      FOREACH advice IN module.value;
+          SET notice_text = advice.text _ " " _ advice.suggestion;
+
+          IF advice.type == 8;
+            high_table_items.push([high_text,module_name,notice_text]);
+          ELSIF advice.type == 4;
+            medium_table_items.push([medium_text,module_name,notice_text]);
+          ELSE;
+            info_table_items.push([info_text,module_name,notice_text]);
+          END;
+      END;
+    END;
+
+    SET table_import = NOTICE.table_items.import(high_table_items, medium_table_items, info_table_items);
+
+-%]
+
+    [% zebra_table(titles=NOTICE.table_titles,items=NOTICE.table_items); %]
+
+    <p>
+        [% CPANEL.locale.maketext('In order to resolve these security concerns, log in to [asis,WHM] and navigate to the “[_1]” interface.', CPANEL.locale.maketext('Security Advisor')); %]
+        <a href="[% NOTICE.security_advisor_url %]">[% NOTICE.security_advisor_url %]</a>
+    </p>
+
+

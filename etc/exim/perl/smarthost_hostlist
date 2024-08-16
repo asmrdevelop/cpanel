@@ -1,0 +1,35 @@
+
+sub extract_hosts_from_route_list_item {
+    my $item = shift;
+    my (undef, $hosts, undef) = Exim::parse_route_item($item);
+    return $hosts;
+}
+
+sub convert_to_hostlist_item {
+    my ($item, $separator) = @_;
+
+    $separator //= '\n';
+    $item =~ s/^\s+//;
+    $item =~ s/\s+$//;
+
+    # Ignore group separator:
+    if ($item eq '+') {
+        $item = '';
+    }
+
+    # Extract bracketed IP address:
+    elsif ( $item !~ s/^\[(\S*)\]:\d+$/$1/ ) {
+
+        # If nothing subbed, what's left is an unbracketed IPv4 or a hostname.
+        # Remove port if present:
+        $item =~ s/:\d+$//;
+
+        # Finally, if the hostname specified /mx, do a lookup of its MX records and sub in the entire list:
+        if ($item =~ s{^(\S+)/mx$}{$1}i) {
+            $item = Exim::expand_string('${lookup dnsdb{>' . $separator . ' mxh=' . $item . '}{$value}}');
+        }
+    }
+
+    return $item;
+}
+

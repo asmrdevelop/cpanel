@@ -1,0 +1,40 @@
+[%
+MACRO autossl_queue_table BLOCK;
+
+    IF autossl_queue && autossl_queue.size;
+        '<p>';
+
+        IF autossl_problems && autossl_problems.size;
+            CPANEL.locale.maketext('The “[_1]” [asis,AutoSSL] provider attempted to renew the certificate; however, the order has not yet completed. If you correct the above [numerate,_2,problem,problems], and this prevents the [asis,SSL] certificate renewal order, request help below:', autossl_provider, autossl_problems.size);
+        ELSE;
+            CPANEL.locale.maketext('The “[_1]” [asis,AutoSSL] provider attempted to renew the certificate; however, the order has not yet completed:', autossl_provider);
+        END;
+
+        PROCESS 'include/zebra_table.tmpl';
+
+        SET queue_table_items = [];
+        FOREACH queue_entry IN autossl_queue;
+            SET help_link = "mailto:cs@cpanel.net?subject=Help with order item " _ queue_entry.order_item_id;
+            SET request_time_utc_text = CPANEL.locale.datetime(queue_entry.request_time,'datetime_format_long');
+            SET last_poll_time_utc_text = CPANEL.locale.datetime(queue_entry.last_poll_time,'datetime_format_long');
+
+            queue_table_items.push([
+                request_time_utc_text,
+                last_poll_time_utc_text,
+                queue_entry.order_item_id,
+                CPANEL.locale.maketext("[output,url,_1,Request Help]", help_link)
+            ]);
+        END;
+        zebra_table(
+            titles = [
+                CPANEL.locale.maketext("Request Time"),
+                CPANEL.locale.maketext("Last Poll Time"),
+                CPANEL.locale.maketext("Order Item ID"),
+                CPANEL.locale.maketext("Actions"),
+            ],
+            items = queue_table_items
+        );
+        '</p>';
+    END;
+END
+%]

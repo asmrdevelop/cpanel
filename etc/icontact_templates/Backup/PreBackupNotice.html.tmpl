@@ -1,0 +1,35 @@
+[%#
+Variables passed in:
+
+origin                  - the system component from which the notification was requested.
+script_name             - the name of the deprecated script
+backup_conf_file        - the path of the backup configuration file
+backup_conf_modify_url  - the url to modify the backup configuration in WHM
+
+
+For more information about how to customize notification templates, read our documentation at https://go.cpanel.net/notificationtemplates
+
+-%]
+
+[%
+    PROCESS "include/colors.tmpl";
+    PROCESS "include/styles.tmpl";
+    PROCESS "include/code_block.tmpl";
+    PROCESS "include/code_inline.tmpl";
+
+    WRAPPER 'wrapper/main.html.tmpl';
+
+          NOTICE.email_reason = CPANEL.locale.maketext('Deprecation notice for “[_1]” on [_2]' , NOTICE.script_name, NOTICE.host_server);
+%]
+
+ <p>[% CPANEL.locale.maketext('The backup process detected the existence of the “[_1]” script. In earlier versions of “[asis,cpbackup]”, the system executed this script prior to any checks or verifications, and it executed the script regardless of whether the backups were up-to-date.', NOTICE.script_name);  %]</p>
+
+<p>[% CPANEL.locale.maketext('If you wish to retain this deprecated behavior, set the “[asis,PREBACKUP]” setting to a value of “[_1]” in the “[_2]” configuration file. You can run the following shell command to perform this task:', code_inline(term="-1"), NOTICE.backup_conf_file); %]</p>
+
+<p>[% code_block('formatted_code'=>'echo "PREBACKUP -1" >> ' _ NOTICE.backup_conf_file) %]</p>
+
+<p>[% CPANEL.locale.maketext('Unless you update the configuration file, the system will continue to use the legacy behavior and send you this message once per day when the backup process executes.');  %]</p>
+
+<p>[% CPANEL.locale.maketext('Visit [output,url,_1,_1,target,_2] to adjust your backup configuration.', NOTICE.backup_conf_modify_url ,'_blank'); %]</p>
+
+[% END %]

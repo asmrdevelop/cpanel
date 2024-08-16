@@ -1,0 +1,59 @@
+[%
+USE Whostmgr;
+
+WRAPPER 'master_templates/master.tmpl'
+    app_key = 'upgrade_to_latest_version'
+    header = locale.maketext('Upgrade to Latest Version')
+    breadcrumburl = '/scripts2/upcpform'
+    theme = 'bootstrap';
+%]
+<div ng-controller="UpgradeController" ng-cloak class="layout-medium">
+    <div class="row">
+        <div class="col-xs-12">
+            <!-- If ALL updates are disabled, danger callout is displayed & manual upgrade section is hidden -->
+            <div ng-if="allUpdatesDisabled">
+                <callout callout-type="danger" callout-heading="[% locale.maketext('Cannot Upgrade') %]">
+                    <p>[% locale.maketext("Updates are currently [output,strong,disabled].") %]</p>
+                    <button id="enable-updates-button" type="button" spinner-id="enable-updates-spinner" cp-action="enableAutomaticUpdates()">
+                        <i class="fas fa-history fa-flip-horizontal" aria-hidden="true"></i>
+                        [% locale.maketext("Enable Automatic Updates") %]
+                    </button>
+                </callout>
+            </div>
+            <!-- If only AUTOMATIC updates are disabled, warning callout is displayed above upgrade section -->
+            <div ng-if="!allUpdatesDisabled && !autoUpdatesEnabled">
+                <callout callout-type="warning" callout-heading="[% locale.maketext('Warning') %]">
+                    <p>[% locale.maketext("Automatic updates are disabled for this server. We strongly recommend enabling automatic updates.") %]</p>
+                    <button id="enable-updates-button" type="button" spinner-id="enable-updates-spinner" cp-action="enableAutomaticUpdates()">
+                        <i class="fas fa-history fa-flip-horizontal" aria-hidden="true"></i>
+                        [% locale.maketext("Enable Automatic Updates") %]
+                    </button>
+                </callout>
+            </div>
+            <div ng-if="!allUpdatesDisabled">
+                <form action="[% cp_security_token %]/scripts/upcp2" name="mainform">
+                    <p>[% locale.maketext("You will be upgrading to the latest [output,strong,_1] build.",data.treename.html) %] </p>
+                    <div class="form-group">
+                        <div class="checkbox">
+                            <label>
+                                <input type="checkbox" name="force" value="1">
+                                [% locale.maketext('Force a reinstall even if the system is up to date.') %]
+                            </label>
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <input type="submit" class="btn btn-primary" value="[% locale.maketext('Click to Upgrade') %]">
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+<cp-alert-list></cp-alert-list>
+<script>
+    var PAGE = PAGE || {};
+    PAGE.all_updates_disabled = [% data.update_type.lower == 'never' ? 'true' : 'false' %];
+    PAGE.auto_updates_enabled = [% data.update_type.lower == 'daily' ? 'true' : 'false' %];
+</script>
+[% PROCESS 'master_templates/cjt2_header_include.tt' %]
+[% END #wrapper -%]

@@ -1,0 +1,51 @@
+[%
+    USE Whostmgr;
+    USE JSON;
+
+    SET stylesheet_includes = [
+        Whostmgr.find_file_url('/templates/backup_user_selection/index.min.css')
+    ];
+
+    IF locale.get_html_dir_attr() == 'rtl';
+        stylesheet_includes.unshift(Whostmgr.find_file_url('/3rdparty/bootstrap-rtl/optimized/dist/css/bootstrap-rtl.min.css'));
+    END;
+
+    SET PAGE_BASE = '/scripts/backup_user_selection/';
+    SET PAGE_NAME = Whostmgr.get_page_name_by_url(PAGE_BASE);
+
+    SET PAGE_DATA = {
+        MAIN_TITLE               => PAGE_NAME, # common parent of all views (untranslated)
+    };
+
+
+    WRAPPER 'master_templates/master.tmpl'
+        header         = locale.makevar(PAGE_NAME),
+        breadcrumburl  = PAGE_BASE,
+        base           = PAGE_BASE,
+        stylesheets    = stylesheet_includes,
+        CJT2_EXCLUSIVE = 1,
+        theme          = 'bootstrap',
+        app_key        = 'backup_user_selection';
+%]
+
+<div id="viewContent"
+     class="ng-cloak section"
+     ng-view
+     ng-cloak>
+</div>
+
+<script type="text/javascript">
+    var PAGE = [% PAGE_DATA.json() %];
+</script>
+
+<script id="views/backupUserSelectionView.ptt" type="text/ng-template">
+[% PROCESS 'backup_user_selection/views/backupUserSelectionView.ptt' %]
+</script>
+
+<script type="text/javascript">
+    PAGE.legacyBackupEnabled = [% data.legacy_backup_enabled.json() %];
+</script>
+
+[% PROCESS 'master_templates/cjt2_header_include.tt' %]
+
+[% END %]

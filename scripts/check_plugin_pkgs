@@ -1,0 +1,94 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/check_plugin_pkgs               Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::check_plugin_pkgs;
+
+use cPstrict;
+
+use parent qw( Cpanel::HelpfulScript );
+
+use Cpanel::OS      ();
+use Cpanel::Plugins ();
+
+=encoding utf-8
+
+=head1 NAME
+
+scripts::check_plugin_pkgs
+
+=head1 SYNOPSIS
+
+    check_plugin_pkgs [ --pkg <pkg> --pkg <pkg> | help ]
+
+    NOTE: The `pkg` argument can be passed 1 or more times
+
+=head1 DESCRIPTION
+
+This script verifies the integrity of installed plugin packages. If it finds an
+altered package, the script will replace it with an unaltered version.  If the
+package is not installed, the script will install it.
+
+=cut
+
+sub _OPTIONS {
+    return qw( pkg=s@ );
+}
+
+exit( __PACKAGE__->new(@ARGV)->script() // 0 ) unless caller();
+
+sub script ($self) {
+
+    if ( !Cpanel::OS::supports_plugins_repo() ) {
+        $self->say( "cPanel plugins are not supported for your current distribution: " . Cpanel::OS::display_name() );
+        return;
+    }
+
+    $self->ensure_root();
+
+    my $pkgs = $self->getopt('pkg') // die "Please specify at least one package to check with --pkg.\n" . $self->help();
+
+    my $ok = 1;
+    foreach my $pkg (@$pkgs) {
+        $self->say("* Checking package ‘$pkg’");
+
+        my $check = eval { $self->check_pkg($pkg); 1 } // 0;
+        my $error = $@;
+
+        if ($check) {
+            $self->say("Package ‘$pkg’ is OK.");
+        }
+        else {
+            $self->say( "Issue detected with package ‘$pkg’", $error );
+        }
+        $self->say('');
+
+        $ok &= $check;
+    }
+
+    return !$ok;
+}
+
+sub check_pkg ( $self, $pkg ) {
+
+    if ( Cpanel::Plugins::is_plugin_installed($pkg) ) {
+        if ( !Cpanel::Plugins::is_pkg_unaltered($pkg) ) {
+            $self->say("Altered files found, attempting to reinstall package …\n");
+
+            # Do not use reinstall_plugins here since we need this to work for ubuntu too
+            # and reinstall_plugins is not implemented on ubuntu
+            Cpanel::Plugins::uninstall_and_install_plugins( [$pkg], [$pkg] );
+        }
+    }
+    else {
+        $self->say("Package '$pkg' is not installed, attempting to install it …\n");
+        Cpanel::Plugins::install_plugins($pkg);
+    }
+
+    return;
+}
+
+1;

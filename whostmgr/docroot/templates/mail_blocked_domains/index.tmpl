@@ -1,0 +1,85 @@
+[%
+    USE Whostmgr;
+    USE JSON;
+
+    SET PAGE_BASE = '/scripts12/mail_blocked_domains/';
+    SET PAGE_NAME = Whostmgr.get_page_name_by_url(PAGE_BASE);
+
+    WRAPPER 'master_templates/master.tmpl'
+        app_key = 'mail_blocked_domains'
+        breadcrumburl = PAGE_BASE,
+        base =  PAGE_BASE,
+        stylesheets = [
+            Whostmgr.find_file_url('/templates/mail_blocked_domains/index.min.css')
+        ],
+        warn_linked_nodes => 1,
+        theme='bootstrap';
+%]
+
+<div id="content"
+    ng-controller="BaseController as base"
+    class="ng-cloak"
+    ng-cloak>
+
+    <p>[% locale.maketext('This interface allows you to manage a list of domains that may not send mail to your server. The system will reject any messages that it receives whose “[output,class,_1,code]” address matches one of this list’s domains.', 'From') %]</p>
+    <p>[% locale.maketext('You can reject all subdomains of a given domain by prefixing the name with an asterisk ([output,class,_1,code]). For example, “[output,class,_2,code]” will cause this server to reject all messages sent from any subdomain of “[output,class,_3,code]”.', '*', '*.example.com', 'example.com') %]</p>
+    <p>[% locale.maketext('This interface accepts [output,acronym,IDN,Internationalized Domain Name]s.') -%]</p>
+
+    <cp-alert-list></cp-alert-list>
+
+    <form class="layout-medium" id="save_domains_form" name="saveDomainsForm" spellcheck="false">
+        <div class="row">
+            <div class="col-xs-8">
+                <div class="form-group" ng-class="{'has-error':saveDomainsForm.$invalid}">
+                    <toggle-label-info
+                        for="blockedDomainsList"
+                        label-text="[% locale.maketext('Blocked Domains:') %]"
+                        label-id="lblUserName"
+                        info-icon-id="iconUserNameInfo"
+                        info-block-id="infoBlkUserName"
+                        show-info-block="true">
+                        [% locale.maketext('Enter domains on separate lines. The order of the list is not important.') -%]
+                    </toggle-label-info>
+                    <textarea
+                        id="blockedDomainsList"
+                        rows="10"
+                        class="domains-list form-control"
+                        name="domainsArea"
+                        domain-list
+                        ng-model="state.domainsText"
+                        ng-disabled="inProgress"
+                    ></textarea>
+                    <ul validation-container field-name="domainsArea"></ul>
+                </div>
+                <div class="form-group">
+                    <label>
+                        <input
+                            type="checkbox"
+                            ng-model="state.viewPunycodeYN"
+                            ng-click="updateViewPunycode()"
+                            ng-disabled="!saveDomainsForm.$valid"
+                        >
+                        [% locale.maketext('Show domains as [asis,ASCII] (relevant for [output,acronym,IDN,Internationalized Domain Name]s)') %]
+                    </label>
+                </div>
+                <div class="form-group">
+                    <button
+                        type="submit"
+                        class="btn btn-primary"
+                        cp-action="submit()"
+                        ng-disabled="!saveDomainsForm.$valid || saveDomainsForm.$pristine || !domainsAreChanged()"
+                    >[% locale.maketext('Save') %]</button>
+                </div>
+            </div>
+        </div>
+    </form>
+</div>
+<script>
+    var PAGE = PAGE || {};
+    PAGE.initial_blocked_domains = [% blocked_domains.json() -%];
+    PAGE.initial_view_punycode = false;
+</script>
+
+[% PROCESS 'master_templates/cjt2_header_include.tt' %]
+
+[% END #wrapper -%]

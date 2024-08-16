@@ -1,0 +1,151 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/apachelimits                    Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::apachelimits;
+
+use strict;
+use warnings;
+
+use Cpanel::Usage                        ();
+use Cpanel::HttpUtils::Rlimits           ();
+use Cpanel::HttpUtils::ApRestart::BgSafe ();
+use Cpanel::Server::Type::License        ();
+
+exit unless Cpanel::Server::Type::License::is_ea4_allowed();
+exit __PACKAGE__->runner(@ARGV) if not caller();
+
+sub runner {
+    my ( $class, @argv ) = @_;
+
+    #this is under the artistic lics
+    print "Apache Limiter by cPanel, Inc. <copyright\@cpanel.net>\n\n";
+
+    my $opts;
+    my %OPTS = (
+        'current'   => \$opts->{'current'},
+        'rlimitmem' => \$opts->{'rlimitmem'},
+        'disable'   => \$opts->{'disable'},
+        'restart'   => \$opts->{'restart'},
+    );
+    Cpanel::Usage::wrap_options( \@argv, \&show_help, \%OPTS );
+
+    if ( $> != 0 ) {
+        print "[!] Sorry, only root can use this utility to modify Apache RLimits on the server.\n";
+        return 1;
+    }
+    if ( $opts->{'current'} ) {
+        return _current_rlimits();
+    }
+    elsif ( $opts->{'disable'} ) {
+        return _disable_rlimits( $opts->{'restart'} );
+    }
+    else {
+        return _set_rlimits( $opts->{'rlimitmem'}, $opts->{'restart'} );
+    }
+}
+
+sub _current_rlimits {
+    my $current    = Cpanel::HttpUtils::Rlimits::get_current_rlimitmem() || 0;
+    my $current_MB = int( $current / ( 1024 * 1024 ) );
+    print "[*] Current RLimitMEM: $current ( $current_MB MB )\n";
+    return;
+}
+
+sub _disable_rlimits {
+    my $restart_apache = shift;
+
+    my $status;
+    print "[*] Removing rlimits ... \n";
+    eval { $status = Cpanel::HttpUtils::Rlimits::unset_rlimits_in_apache(); };
+
+    if ( !$status ) {
+        if ($@) {
+            print "[!] Failed to remove rlimits: $@\n";
+        }
+        else {
+            print "[!] Failed to remove rlimits: Unknown error.\n";
+        }
+    }
+    else {
+        print "[+] Removed rlimits successfully.\n";
+    }
+
+    return _restart_apache() if $restart_apache;
+    return;
+}
+
+sub _set_rlimits {
+    my ( $size, $restart_apache ) = @_;
+    $size = _parse_rlimit($size);
+    if ( !$size ) {
+        print "[*] No valid rlimit specified. Calculating Limit to use...\n";
+        ($size) = Cpanel::HttpUtils::Rlimits::determine_rlimitmem_for_apache();
+        if ( !$size ) {
+            print "[!] Unable to determine appropriate memory limit.\n";
+            return 1;
+        }
+    }
+    my $size_MB = int( $size / ( 1024 * 1024 ) );
+    _current_rlimits();
+    print "[*] Setting rlimit to: $size bytes( $size_MB MB ).\n";
+
+    my $status;
+    eval { $status = Cpanel::HttpUtils::Rlimits::set_rlimits_in_apache($size); };
+
+    if ( !$status ) {
+        if ($@) {
+            print "[!] Failed to set new Rlimit: $@\n";
+        }
+        else {
+            print "[!] Failed to set new Rlimit: Unknown error.\n";
+        }
+    }
+    else {
+        print "[+] Largest webserver child cgi/ssi/php is now limited to $size_MB MB.\n";
+    }
+
+    return _restart_apache() if $restart_apache;
+    return;
+}
+
+sub _restart_apache {
+    Cpanel::HttpUtils::ApRestart::BgSafe::restart();
+    print "[+] Apache restarting the background.\n";
+    return;
+}
+
+sub _parse_rlimit {
+    my $input = shift or return;
+    if ( $input =~ m/([0-9]+)([M])?$/i ) {
+        my $number = $1;
+        my $type   = $2;
+
+        if ( $type eq "M" or $type eq "m" ) {
+            $number *= 1024 * 1024;
+        }
+        return $number;
+    }
+    return;
+}
+
+sub show_help {
+    print <<"EOM";
+$0: Command line tool to manage Apache RLimits.
+
+Usage:
+    $0
+
+    --current   : Display the current RlimitMEM value.
+    --rlimitmem : The new RlimitMEM value to use. You can specify this in MB (eg: 64M), or bytes (eg: 67108864).
+    --disable   : Remove the RlimitMEM and RlimitCPU limits.
+    --restart   : Restart Apache after the changes have been made (Default: off)
+
+    Note: If none of these options are specified, then the script will determine a value for RlimitMEM based on the amount of ram and swap available on the server, and update the limit to this value.
+
+EOM
+    exit 1;
+}

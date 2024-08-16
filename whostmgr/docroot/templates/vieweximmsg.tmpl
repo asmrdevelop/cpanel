@@ -1,0 +1,510 @@
+[%-
+    USE Whostmgr;
+    USE NVData;
+    USE JSON;
+    USE CPScalar;
+
+    IF data.type == "queue";
+        origin = '/scripts11/fetch_mail_queue';
+    ELSE;
+        origin = '/scripts11/emailstats_search';
+    END;
+
+    # Fetch the NVDATA for this user
+    SET nvdata = NVData.get_page_nvdata();
+
+    #This way, undefined/'' values will default to "on".
+    SET show_extended_headers = nvdata.show_extended_headers == 1;
+    SET show_control_data = nvdata.show_control_data == 1;
+-%]
+[% WRAPPER 'master_templates/master.tmpl' theme="yui"
+    breadcrumburl = origin;
+-%]
+<script>CPANEL.nvdata.initial = [% nvdata.json() || 'undefined' %]</script>
+<style type="text/css">
+.toggle_ctl {
+    width: 190px;
+    float: right;
+}
+
+.hidden_control_data {
+    display:none;
+}
+
+.clearit {
+    clear:both;
+    height: 0px;
+}
+
+.email_controls {
+    clear: both;
+    width: 924px;
+    margin-bottom: 4px;
+}
+
+.email_controls_list {
+    padding: 1px;
+    margin: 0;
+}
+
+.email_controls_list li button {
+    line-height: 19px;
+}
+
+.email_controls_list li:first-child button {
+    margin-left: 0;
+}
+
+.email_controls_list li:last-child button {
+    margin-right: 0;
+}
+
+.email_control {
+    display: inline-block;
+    list-style: none;
+    vertical-align: middle;
+}
+
+.email_control a, .email_control img {
+    vertical-align: middle;
+    line-height: 22px;
+}
+
+.header_default {
+
+}
+
+.header_extended {
+    display:none;
+}
+
+.header_extended_shown {
+}
+
+.header_name {
+    color: #555;
+    font-weight: 900;
+    text-align:left;
+    vertical-align: top;
+    line-height: 20px;
+    min-width: 110px;
+}
+
+.header_value {
+    text-align:left;
+    vertical-align: middle;
+    padding-top: 4px;
+    line-height: 18px;
+}
+
+#email_control_data_ctl {
+    font-weight: 900;
+}
+
+#email_headers_ctl {
+    font-weight: 900;
+    padding-bottom: 2px;
+    text-align: right;
+}
+
+#email_message {
+    border: 1px inset #ccc;
+    padding:10px;
+    margin-left: 2px;
+    margin-right: 10px;
+    background-color: #EAEAEA;
+    border: 1px solid #FFFFFF;
+    margin-bottom: 10px;
+    margin-top: 5px;
+    outline: 1px solid #C1D0D3;
+    width: 900px;
+}
+
+#email_body {
+    padding-top: 5px;
+    margin-top: 5px;
+    border-top: 1px solid #C1D0D3;
+}
+
+#email_body div {
+    overflow:auto;
+    padding: 5px;
+    max-height: 400px;
+    background-color: white;
+}
+
+#email_control_data {
+    padding-bottom: 5px;
+    margin-bottom: 5px;
+    border-bottom: 1px solid #C1D0D3;
+}
+
+#email_control_data div.data {
+    padding: 0 5px 5px 5px;
+    max-height: 150px;
+    overflow:auto;
+}
+
+#email_headers {
+    padding: 0 5px 5px 5px;
+    max-height: 140px;
+    overflow-y: scroll;
+}
+
+pre {
+    margin:0;
+}
+
+.right_item {
+    float: right;
+}
+
+</style>
+[%- IF data.type == "queue" && ! data.found_exim -%]
+<div>
+    <h2>Unable to locate valid exim binary. You may need to install Exim ( This is done during upcp --force now ).</h2>
+</div>
+[% ELSIF data.header %]
+<div>
+
+    <h3 class="simpleheading">[% locale.maketext('Message ID: [_1]',data.msgid.html()) %]</h3>
+
+    [% IF data.type == "queue" %]
+        [% controls = BLOCK %]
+            <div class="email_controls">
+                <ul class="email_controls_list">
+                    <li class="email_control email_control_item">
+                        <button class="btn-secondary" onclick="window.location = '[% cp_security_token %]/scripts11/remove_messages_mail_queue?msgid=[% data.msgid FILTER uri %]';">
+                            <img class="email_control_icon" src="[% Whostmgr.find_file_url('/images/delete_page.gif') %]" border="0">
+                            <span class="email_control_text">[% locale.maketext('Delete Message') %]</span>
+                        </button>
+                    </li>
+                    <li class="email_control email_control_item">
+                        <button  class="btn-secondary" onclick="window.location='[% cp_security_token %]/scripts11/deliver_messages_mail_queue?msgid=[% data.msgid FILTER uri %]';">
+                            <img class="email_control_icon" width="16" height="16" src="[% Whostmgr.find_file_url('/images/email-force-on.png') %]" border="0">
+                            <span class="email_control_text">[% locale.maketext('Deliver Message Now') %]</span>
+                        </button>
+                    </li>
+                    <li class="email_control email_control_item">
+                        <button class="btn-secondary" onclick="downloadEmail('[% cp_security_token %]/scripts2/download_email_message?msgid=[% data.msgid FILTER uri %]');">
+                            <img class="email_control_icon" src="[% Whostmgr.find_file_url('/images/download_sm.gif') %]" border="0">
+                            <span class="email_control_text">[% locale.maketext('Download in “[output,strong,_1]” format.', '.eml') %]</span>
+                        </button>
+                    </li>
+                    [% IF data.control_data %]
+                    <li class="email_control email_control_item right_item">
+                        <button class="btn-secondary" href="javascript:void(0);" onclick="toggle_control_data(this); return false;">
+                             [%- IF show_control_data -%][%- locale.maketext('Hide Control Data') -%][%-ELSE-%][%- locale.maketext('Show Control Data') -%][%-END-%]
+                        </button>
+                    </li>
+                    [% END %]
+                    <li class="email_control email_control_item right_item">
+                        <button class="btn-secondary" href="javascript:void(0);" onclick="toggle_extended_headers(this); return false; return false;">
+                             [%- IF show_extended_headers -%][%- locale.maketext('Hide Extended Headers') -%][%-ELSE-%][%- locale.maketext('Show Extended Headers') -%][%-END-%]
+                        </button>
+                    </li>
+                </ul>
+            </div>
+            <div class="clearit">&nbsp;</div>
+        [% END %]
+    [% ELSE %]
+        [% controls = BLOCK %]
+            <div class="email_controls">
+                    <ul class="email_controls_list">
+                        <li class="email_control email_control_item">
+                            <button class="btn-secondary" onclick="downloadEmail('[% cp_security_token %]/scripts2/download_email_message?msgid=[% data.msgid FILTER uri %]&transport=[% data.transport FILTER uri %]&address=[% data.address FILTER uri %]&path=[% data.path FILTER uri %]');">
+                                <img class="email_control_icon" src="[% Whostmgr.find_file_url('/images/download_sm.gif') %]" border="0">
+                                <span class="email_control_text">[% locale.maketext('Download in “[output,strong,_1]” format.', '.eml') %]</span>
+                            </button>
+                        </li>
+                        [% IF data.control_data %]
+                        <li class="email_control email_control_item right_item">
+                            <button class="btn-secondary" onclick="toggle_control_data(this); return false;">
+                                 [%- IF show_control_data -%][%- locale.maketext('Hide Control Data') -%][%-ELSE-%][%- locale.maketext('Show Control Data') -%][%-END-%]
+                            </button>
+                        </li>
+                        [% END %]
+                        <li class="email_control email_control_item right_item">
+                            <button class="btn-secondary" href="javascript:void(0);" onclick="toggle_extended_headers(this); return false; return false;">
+                                 [%- IF show_extended_headers -%][%- locale.maketext('Hide Extended Headers') -%][%-ELSE-%][%- locale.maketext('Show Extended Headers') -%][%-END-%]
+                            </button>
+                        </li>
+                    </ul>
+            </div>
+            <div class="clearit">&nbsp;</div>
+        [% END %]
+    [% END %]
+
+    [% BLOCK header_line %]
+        <tr class="[%-
+                IF thisheader.key.match('(?i)^(from|to|date|subject|x-boxtrapper-match|x-get-message-sender-via)$');
+                    'header_default';
+                ELSE;
+                    IF show_extended_headers;
+                        'header_extended_shown';
+                    ELSE;
+                        'header_extended';
+                    END;
+                END;
+             -%]">
+            <td class="header_name">[% thisheader.key FILTER html %]:</td>
+            <td class="header_value"><pre>[% thisheader.value FILTER html %]</pre></td>
+        </tr>
+    [% END %]
+
+    [% controls %]
+
+    <div id="email_message">
+        [% IF data.control_data %]
+            <div id="email_control_data" class="[%- IF show_control_data -%]shown_control_data[%-ELSE-%]hidden_control_data[%-END-%]">
+                <div class="header_name">[% locale.maketext("Mail Control Data:") %]</div>
+                <div class="data">
+                    <pre>[%- data.control_data FILTER html -%]</pre>
+                </div>
+            </div>
+        [% END %]
+        <div id="email_headers">
+            <table class="header_table">
+                [%- # Build the dataset for the headers
+                    current_header = '';
+
+                    SET date_header = {};
+                    SET from_header = {};
+                    SET to_header = {};
+                    SET subject_header = {};
+                    SET box_trapper_header = {};
+                    SET get_message_sender_via_header = {};
+
+                    SET mail_headers = [];
+
+                    FOREACH msgheader IN data.header.split("\n");
+                        IF msgheader.match('^\s+');
+                            msgheader = msgheader.replace('^\s+',' ');
+                            current_header = current_header _ "\n" _ msgheader;
+                            NEXT;
+                        ELSE;
+                            IF current_header;
+                                SET parts = current_header.split(':\s+',2);
+                                SET header_item = {
+                                    key => parts.0,
+                                    value => parts.1
+                                };
+                                IF header_item.key.match('(?i)^(from|to|date|subject|x-boxtrapper-match|x-get-message-sender-via)$');
+                                    SWITCH header_item.key.lc;
+                                        CASE 'date';
+                                            SET date_header = header_item;
+                                        CASE 'from';
+                                            SET from_header = header_item;
+                                        CASE 'to';
+                                            SET to_header = header_item;
+                                        CASE 'subject';
+                                            SET subject_header = header_item;
+                                        CASE 'x-boxtrapper-match';
+                                            SET box_trapper_header = header_item;
+                                        CASE 'x-get-message-sender-via';
+                                            SET get_message_sender_via_header = header_item;
+                                    END;
+                                ELSE;
+                                    mail_headers.push(header_item);
+                                END;
+                            END;
+
+                            current_header = msgheader;
+                        END;
+                    END;
+
+                    IF current_header;
+                        SET parts = current_header.split(':\s+',2);
+                        SET header_item = {
+                            key => parts.0,
+                            value => parts.1
+                        };
+                        IF header_item.key.match('(?i)^(from|to|date|subject|x-boxtrapper-match|x-get-message-sender-via)$');
+                            SWITCH header_item.key.lc;
+                                CASE 'date';
+                                    SET date_header = header_item;
+                                CASE 'from';
+                                    SET from_header = header_item;
+                                CASE 'to';
+                                    SET to_header = header_item;
+                                CASE 'subject';
+                                    SET subject_header = header_item;
+                                CASE 'x-boxtrapper-match';
+                                    SET box_trapper_header = header_item;
+                                CASE 'x-get-message-sender-via';
+                                    SET get_message_sender_via_header = header_item;
+                            END;
+                        ELSE;
+                            mail_headers.push(header_item);
+                        END;
+                    END;
+
+                    #----------------------------------------------
+                    # Output the headers
+                    #----------------------------------------------
+
+                    # Start with the standard ones in predefined order
+                    IF date_header.exists('key');
+                        PROCESS header_line thisheader = date_header;
+                    END;
+                    IF from_header.exists('key');
+                        PROCESS header_line thisheader = from_header;
+                    END;
+                    IF to_header.exists('key');
+                        PROCESS header_line thisheader = to_header;
+                    END;
+                    IF subject_header.exists('key');
+                        PROCESS header_line thisheader = subject_header;
+                    END;
+                    IF box_trapper_header.exists('key');
+                        PROCESS header_line thisheader = box_trapper_header;
+                    END;
+                    IF get_message_sender_via_header.exists('key');
+                        PROCESS header_line thisheader = get_message_sender_via_header;
+                    END;
+
+                    # Now output any remaining headers sorted by key name
+                    FOREACH mail_header IN mail_headers.sort('key');
+                        PROCESS header_line thisheader = mail_header;
+                    END;
+                -%]
+            </table>
+        </div>
+        <div id="email_body"><div><pre>[%-
+                data.body FILTER html;
+        -%]</pre></div></div>
+    </div>
+
+<div class="email_controls">
+        <ul class="email_controls_list">
+            <li class="email_control email_control_item">
+                <button class="btn-secondary" onclick="try { window.opener.focus(); } catch(e) {}; window.close(); return false;">
+                    <img class="email_control_icon" src="[% Whostmgr.find_file_url('/images/go-last.png') %]" border="0">
+                    <span class="email_control_text">
+                        [%- IF data.transport -%]
+                        [% locale.maketext('Return to Mail Delivery Reports.') %]
+                        [%- ELSE -%]
+                        [% locale.maketext('Return to Mail Queue Manager.') %]
+                        [%- END -%]
+                    </span>
+                </button>
+            </li>
+        </ul>
+</div>
+
+</div>
+
+<script type="text/javascript">
+//------------------------
+// Shortcuts
+//------------------------
+var DOM = YAHOO.util.Dom;
+var cpDOM = CPANEL.dom;
+
+var extended_headers_shown = [% IF show_extended_headers == 1 %]1[% ELSE %]0[% END %];
+var control_data_shown = [% IF show_control_data == 1 %]1[% ELSE %]0[% END %];;
+
+/**
+ * Shows and hides the email control data
+ * @name toggle_control_data
+ * @param {HTMLElement} el
+ */
+function toggle_control_data(el) {
+    if (control_data_shown) {
+        el.innerHTML = "[% locale.maketext('Show Control Data') %]";
+        control_data_shown = 0;
+
+        DOM.get('email_control_data').className = 'hidden_control_data';
+    }
+    else {
+        el.innerHTML = "[% locale.maketext('Hide Control Data') %]";
+        control_data_shown = 1;
+        DOM.get('email_control_data').className='shown_control_data';
+    }
+    CPANEL.nvdata.save();
+}
+
+/**
+ * Shows and hides the extended email headers
+ * @name toggle_extended_headers
+ * @param {HTMLElement} el
+ */
+function toggle_extended_headers(el) {
+    if (extended_headers_shown) {
+        el.innerHTML = "[% locale.maketext('Show Extended Headers') %]";
+        extended_headers_shown = 0;
+
+        var headerEls = DOM.getElementsByClassName('header_extended_shown', 'tr');
+        for(var i = 0, l = headerEls.length; i < l; i++) {
+            headerEls[i].className = 'header_extended';
+        }
+    }
+    else {
+        el.innerHTML = "[% locale.maketext('Hide Extended Headers') %]";
+        extended_headers_shown = 1;
+
+        var headerEls = DOM.getElementsByClassName('header_extended', 'tr');
+        for(var i = 0, l = headerEls.length; i < l; i++) {
+            headerEls[i].className='header_extended_shown';
+        }
+    }
+    CPANEL.nvdata.save();
+}
+
+/**
+ * Download the email
+ * @name downloadEmail
+ * @param {string} url
+ */
+function downloadEmail(url)
+{
+    var iframe;
+    iframe = DOM.get("hiddenDownloader");
+    if (iframe === null)
+    {
+        iframe = document.createElement('iframe');
+        iframe.id = "hiddenDownloader";
+        iframe.style.visibility = 'hidden';
+        document.body.appendChild(iframe);
+    }
+    iframe.src = url;
+}
+
+
+// Setup the nvdata personalization properties
+( function() {
+    CPANEL.nvdata.register('show_extended_headers', function() {
+        return (extended_headers_shown ? 1 : 0);
+    } );
+
+    CPANEL.nvdata.register('show_control_data', function() {
+        return (control_data_shown ? 1 : 0);
+    } );
+}() );
+
+</script>
+[% ELSIF data.type == "queue" %]
+    <p>
+        [% html_safe_msgid = data.msgid FILTER html %]
+        [% locale.maketext("The system failed to locate the message with Message [asis,ID] “[_1]” in the queue. The system may have delivered the message during the request process.", html_safe_msgid) %]
+    </p>
+    <a class="btn-secondary" href="javascript:void(0);" onClick="try { window.opener.focus(); } catch(e) {}; window.close(); return false;">[% locale.maketext('Return to Mail Queue.') %]</a>
+[% ELSE %]
+    <p>
+        [% html_safe_msgid = data.msgid FILTER html %]
+        [% IF data.permitted %]
+            [% IF data.statusmsg %]
+              [% locale.maketext("The system failed to locate the message with Message [asis,ID] “[_1]”. The system may have deleted the message: [_2]", html_safe_msgid, data.statusmsg.html()) %]
+            [% ELSE %]
+              [% locale.maketext("The system failed to locate the message with Message [asis,ID] “[_1]”. The system may have deleted the message.", html_safe_msgid) %]
+            [% END %]
+        [% ELSE %]
+            [% locale.maketext("The system has not delivered a message with Message [asis,ID] “[_1]” to an account that you control.", html_safe_msgid) %]
+        [% END %]
+    </p>
+    <a class="btn-secondary" href="javascript:void(0);" onClick="try { window.opener.focus(); } catch(e) {}; window.close(); return false;">[% locale.maketext('Return to Mail Delivery Reports.') %]</a>
+
+[% END -%]
+
+
+[% END #wrapper -%]

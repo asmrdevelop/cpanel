@@ -1,0 +1,48 @@
+[%#
+Variables passed in:
+
+new_username - The username for the new cPanel account that was created
+addon_domain - The addon domain that was converted into a cPanel account
+is_success   - Boolean value indicating whether the conversion was successful or not.
+log_content  - The log of the conversion
+sent_to_root - A default boolean flag sent to all templates that indicates if the message was sent to 'root'
+
+For more information about how to customize notification templates, read our documentation at https://go.cpanel.net/notificationtemplates
+
+-%]
+
+[%
+    PROCESS "include/colors.tmpl";
+    PROCESS "include/styles.tmpl";
+    PROCESS "include/code_block.tmpl";
+
+    WRAPPER 'wrapper/main.html.tmpl';
+
+  IF NOTICE.is_success;
+    NOTICE.email_reason = CPANEL.locale.maketext('Conversion of Addon Domain “[_1]” into the [asis,cPanel] account “[_2]” succeeded', NOTICE.addon_domain, NOTICE.new_username);
+  ELSE;
+    NOTICE.email_reason = CPANEL.locale.maketext('Conversion of Addon Domain “[_1]” into the [asis,cPanel] account “[_2]” failed', NOTICE.addon_domain, NOTICE.new_username);
+  END;
+-%]
+
+<p>
+    [% IF NOTICE.is_success %]
+    [% CPANEL.locale.maketext('The conversion of addon domain “[_1]” into the full [asis,cPanel] account “[_2]” succeeded. Review the log for further details.', NOTICE.addon_domain, NOTICE.new_username) %]
+    [% ELSE %]
+    [% CPANEL.locale.maketext('The conversion of addon domain “[_1]” into the full [asis,cPanel] account “[_2]” failed. Review the log for further details.', NOTICE.addon_domain, NOTICE.new_username) %]
+    [% END %]
+</p>
+[% IF NOTICE.is_success %]
+<p>
+    [% CPANEL.locale.maketext('NOTE: The new [asis,cPanel] account has a randomly generated password. To log in as the user, you must reset the password.') %]
+</p>
+[% END %]
+<p>
+    [% code_block(formatted_code=NOTICE.log_content, title="---- Convert Addon Domain to Account ----") %]
+</p>
+
+<p>
+    [% CPANEL.locale.maketext('For more information, read our [output,url,_1,documentation,target,_2].', 'https://go.cpanel.net/AddonConversion', '_blank') %]
+</p>
+
+[% END %]

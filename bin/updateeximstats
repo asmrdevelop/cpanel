@@ -1,0 +1,86 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+# cpanel - bin/updateeximstats                       Copyright 2022 cPanel L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package bin::updateeximstats;
+
+use Cpanel::EximStats::Constants  ();
+use Cpanel::EximStats::DB::Sqlite ();
+use Cpanel::PwCache               ();
+use Cpanel::Usage                 ();
+
+use Try::Tiny;
+
+=encoding utf-8
+
+=head1 NAME
+
+bin::updateeximstats
+
+=head1 SYNOPSIS
+
+/usr/local/cpanel/bin/updateeximstats
+
+=head1 DESCRIPTION
+
+This script creates the EximStats database if it doesn't exist or updates the existing one.
+
+=cut
+
+my $verbose = 0;
+my $force   = 0;
+
+our $CHKSERVD_EXIMSTATS_FILE = '/etc/chkserv.d/eximstats';
+
+__PACKAGE__->run(@ARGV) unless caller();
+
+sub run {
+    my ( $class, @args ) = @_;
+
+    if ( $< != 0 ) {
+        print "Only root may run this.\n";
+        return;
+    }
+
+    if (@args) {
+        Cpanel::Usage::wrap_options(
+            { strict => 1, remove => 1, require_left => 1 }, \@args, \&usage, { 'verbose' => \$verbose, 'force' => \$force, },
+        );
+    }
+
+    local $ENV{'USER'} = Cpanel::PwCache::getusername();
+    local $ENV{'HOME'} = Cpanel::PwCache::gethomedir();
+
+    $class->script( verbose => $verbose );
+
+    return;
+}
+
+sub script {
+    my ($class) = @_;
+
+    # TODO: This modulino needs to have its core functionality moved to
+    # a module and have its test coverage improved.  Once done the
+    # install/* scripts should call the module directly instead of
+    # loading this modulino.
+    unlink $CHKSERVD_EXIMSTATS_FILE if -e $CHKSERVD_EXIMSTATS_FILE;
+
+    if ( !-e $Cpanel::EximStats::Constants::EXIMSTATS_SQLITE_DB ) {
+        print "updateeximstats: creating new SQLite database\n";
+        Cpanel::EximStats::DB::Sqlite->new_with_wait( verbose => $verbose );
+    }
+    else {
+        print "updateeximstats: database schema is up to date.\n";
+    }
+
+    return;
+}
+
+sub usage {
+    print "\nUsage: $0 [--verbose]\n";
+    exit 3;    # As strongly recommended in the user docs to Cpanel::Usage, q.v.
+}
+
+1;

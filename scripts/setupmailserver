@@ -1,0 +1,282 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/setupmailserver                 Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+use warnings;
+
+use Cpanel::Config::LoadCpConf        ();
+use Cpanel::Config::CpConfGuard       ();
+use Cpanel::Chkservd::Manage          ();
+use Cpanel::RPM::Versions::Directory  ();
+use Cpanel::RPM::Versions::File       ();
+use Cpanel::SSLCerts                  ();
+use Cpanel::Usage                     ();
+use Cpanel::PID                       ();
+use Cpanel::Init                      ();
+use Cpanel::MailUtils::SNI            ();
+use Cpanel::AdvConfig::dovecot::utils ();
+use Cpanel::SafeRun::Object           ();
+use Cpanel::OS                        ();
+use Cpanel::Dovecot::Service          ();
+use Cpanel::Server::Type              ();
+use Cpanel::ServerTasks               ();
+
+our $DOVECOT_CONF_PATH = '/etc/dovecot/dovecot.conf';
+
+my $help    = 0;
+my $man     = 0;
+my $force   = 0;
+my $current = 0;
+$| = 1;
+
+delete $ENV{'cp_security_token'};
+delete $ENV{'HTTP_REFERER'};
+
+# Argument processing
+my %opts = (
+    'force'   => \$force,
+    'current' => \$current,
+);
+
+Cpanel::Usage::wrap_options( \@ARGV, \&usage, \%opts );
+
+@ARGV = ( grep( !/^--/, @ARGV ) );
+
+my $selected_mailserver = shift;
+usage() unless ( $selected_mailserver || $current );
+
+my $cpconf_ref         = Cpanel::Config::LoadCpConf::loadcpconf();
+my $current_mailserver = 'dovecot';
+
+if ($current) {
+    print "Current mailserver type: ${current_mailserver}\n";
+    print "Current storage format: maildir or mdbox\n";
+    exit 0;
+}
+
+if ( $> != 0 ) {
+    die "You must perform the conversion process as the root user.";
+}
+
+if ( $selected_mailserver ne 'disabled' && $selected_mailserver ne 'dovecot' ) {
+    print "You specified an unknown mailserver type.\nThe valid mailserver types are: “dovecot” and “disabled”.\nTry the $0 --help command.\n";
+    exit 1;
+}
+
+if ( !$force && $selected_mailserver ne 'disabled' ) {
+    my $dir          = Cpanel::RPM::Versions::Directory->new( { 'dont_set_legacy' => 1 } );
+    my $target_state = $dir->fetch( { 'section' => 'target_settings', 'key' => 'exim' } );
+
+    if ( $target_state && $target_state =~ m/^(uninstalled|unmanaged)$/ ) {
+        print "WARNING: You attempted to enable the dovecot mailserver, but exim is explicitly set to $target_state in the /var/cpanel/rpm.versions.d/ file.\n";
+
+        print "This means that cPanel & WHM does not manage the mailserver's packages."                           if ( $target_state eq 'unmanaged' );
+        print "This means that cPanel & WHM has explicitly blocked the mailserver's packages from installation. " if ( $target_state eq 'uninstalled' );
+
+        print "If this was unintentional, run the following command to remove this flag, \nand then run the setupmailserver script.\n";
+        print "\n    /usr/local/cpanel/scripts/update_local_rpm_versions --del target_settings.exim\n\n";
+
+        print "If this was intentional, run the setupmailserver script with the --force flag.\n\n";
+        exit 2;
+    }
+}
+
+if ( !-e '/etc/dovecot/ssl/dovecot.crt' ) {
+    require Cpanel::SSLCerts;
+    Cpanel::SSLCerts::createDefaultSSLFiles( 'service' => 'dovecot' );
+}
+
+$selected_mailserver = 'disabled' if Cpanel::Server::Type::is_dnsonly();
+
+my $pid_obj = Cpanel::PID->new( { 'pid_file' => '/var/run/setupmailserver.pid' } );
+unless ( $pid_obj->create_pid_file() > 0 ) {
+    print "The setupmailserver script is running already.\n";
+    print "Wait for this conversion process to finish before you attempt another.\n";
+    exit 1;
+}
+
+my $installed = install_cpanel_rpms();
+
+my $changed_enabled_protocols;
+my $disabled_mailserver_text = '';
+if ( $selected_mailserver eq 'disabled' ) {
+    $changed_enabled_protocols = disable_imap_and_pop3();
+
+    # Dovecot must always be enabled
+    # for local mail delivery
+    $selected_mailserver      = 'dovecot';
+    $disabled_mailserver_text = ' (local delivery only)';
+
+}
+else {
+    $changed_enabled_protocols = enable_imap_and_pop3();
+}
+
+if ( !$cpconf_ref->{'mailserver'} || $cpconf_ref->{'mailserver'} ne $selected_mailserver ) {
+    my $cpconf_guard = Cpanel::Config::CpConfGuard->new();
+    $cpconf_ref->{'mailserver'} = $cpconf_guard->{'data'}->{'mailserver'} = $selected_mailserver;
+    $cpconf_guard->save();
+    print "\nThe system configured the new mailserver in the cpanel.config file as $selected_mailserver\n";
+}
+
+if ( !$force && !$installed ) {
+    rebuildconf_if_not_valid();
+    reconfigure_exim() if $selected_mailserver ne 'disabled';
+
+    if ($changed_enabled_protocols) {
+        ensure_lmtp_is_monitored();
+        local $@;
+        eval { Cpanel::ServerTasks::queue_task( ['CpServicesTasks'], "restartsrv dovecot", "restartsrv tailwatchd" ); };
+        warn if $@;
+        exit(0);
+    }
+    print "The system is already configured for the ${selected_mailserver}${disabled_mailserver_text} mailserver.\n";
+    exit 0;
+}
+
+my $error_count = 0;
+
+#branch to uninsall/install functions
+enable_dovecot();
+rebuildconf_if_not_valid();
+reconfigure_exim();
+run_fastmail();
+ensure_lmtp_is_monitored();
+{
+    local $@;
+    eval { Cpanel::ServerTasks::queue_task( ['CpServicesTasks'], "restartsrv tailwatchd" ); };
+    warn if $@;
+}
+$pid_obj->remove_pid_file();
+
+if ($error_count) {
+    print "\nWARNING: The system encountered errors during the conversion process.\n";
+    exit 1;
+}
+else {
+    print "\nMailserver conversion complete.\n";
+    exit 0;
+}
+
+#----------------------------------------------------------------------
+
+sub rebuildconf_if_not_valid {
+    require Cpanel::AdvConfig::dovecot;
+    if ( !( Cpanel::AdvConfig::dovecot::check_if_config_file_is_valid($DOVECOT_CONF_PATH) )[0] ) {
+        Cpanel::SafeRun::Object->new_or_die( 'program' => '/usr/local/cpanel/scripts/builddovecotconf' );
+    }
+    return 1;
+}
+
+sub enable_imap_and_pop3 {
+    print "\nEnabling IMAP and POP3.\n";
+    return _setup_dovecot_services( 'protocols' => { 'pop3' => 1, 'imap' => 1 } );
+}
+
+sub _setup_dovecot_services {
+    my (@args) = @_;
+    my $ret = Cpanel::Dovecot::Service::set_dovecot_service_state(@args);
+    Cpanel::Dovecot::Service::set_dovecot_monitoring_state(@args);
+    return $ret;
+}
+
+sub disable_imap_and_pop3 {
+    print "\nDisabling IMAP and POP3.\n";
+    return _setup_dovecot_services( 'protocols' => { 'pop3' => 0, 'imap' => 0 } );
+}
+
+sub run_fastmail {
+    system '/usr/local/cpanel/scripts/fastmail';
+    return;
+}
+
+sub enable_dovecot {
+    print "\nChecking that Dovecot is up-to-date...\n";
+    install_cpanel_rpms($force);
+
+    if ($force) {
+        print "\nChecking the status of Dovecot's installed packages...\n";
+        system( '/usr/local/cpanel/scripts/check_cpanel_pkgs', '--fix', '--long-list', ( $ENV{'CPANEL_BASE_INSTALL'} ? '--no-broken' : () ), '--targets', 'exim' );    # dovecot is now a dependency of exim (see CPANEL-7391)
+    }
+
+    print "\nChecking SSL certificates...";
+    my $dovecot_cert_ref = Cpanel::SSLCerts::fetchSSLFiles( 'service' => 'dovecot' );
+    unless ( $dovecot_cert_ref->{'crt'} ) {
+        print "The certificate is missing or unusable. Generating a default certificate...";
+        {
+            no warnings 'once';
+            open OLDSTDERR, '>&STDERR';
+        }
+        open STDERR, '>', '/dev/null';
+        Cpanel::SSLCerts::createDefaultSSLFiles( 'service' => 'dovecot' );
+        open STDERR, '>&OLDSTDERR';
+        print "Done.\n";
+    }
+    else {
+        print "Done.\n";
+    }
+
+    print "\n" . txt_for_enabling_service('Dovecot') . "\n";
+    my $init   = Cpanel::Init->new();
+    my $output = $init->run_command_for_one( 'enable', 'dovecot' );
+
+    print "\nRebuilding SNI configuration...";
+    if ( !eval { Cpanel::MailUtils::SNI->rebuild_dovecot_sni_conf() } ) {
+        print " failed! Error: " . $@ . "\n";
+    }
+    print "Done.\nSuccessfully built Dovecot SNI configuration: " . Cpanel::AdvConfig::dovecot::utils::find_dovecot_sni_conf() . "\n";
+
+    print "\nEnqueueing restart of Dovecot...\n";
+    local $@;
+    eval { Cpanel::ServerTasks::queue_task( ['CpServicesTasks'], "restartsrv dovecot" ); };
+    warn if $@;
+    return;
+}
+
+sub txt_for_enabling_service {
+    my $service = shift;
+
+    if ( Cpanel::OS::is_systemd() ) {
+        return qq{Enabling the $service service in the systemd system...};
+    }
+
+    return qq{Enabling the $service service in the init system...};
+}
+
+sub install_cpanel_rpms {
+    my $versions = Cpanel::RPM::Versions::File->new( { 'only_targets' => [qw/exim/] } );    # dovecot is now a dependency of exim (see CPANEL-7391)
+    $versions->stage();
+    return $versions->commit_changes();
+}
+
+sub ensure_lmtp_is_monitored {
+    my %monitored_services = Cpanel::Chkservd::Manage::getmonitored();
+    Cpanel::Chkservd::Manage::enable('lmtp') if !$monitored_services{'lmtp'};
+    return;
+}
+
+sub reconfigure_exim {
+    print "\nReconfiguring Exim for the new mailserver...\n";
+    local $@;
+    eval { Cpanel::ServerTasks::queue_task( ['EximTasks'], 'buildeximconf --restart' ); };
+    warn if $@;
+    return;
+}
+
+sub usage {
+    print "Usage: setupmailserver [options] <mailserver>\n\n";
+    print "Options:\n";
+    print "  --force                    Perform conversion even if server is already configured\n";
+    print "  --current                  Display the currently configured mail server\n";
+    print "\n";
+    print "MailServers:\n";
+    print "  dovecot    Standard mail server on cPanel systems.\n";
+    print "  disabled   Disable local POP3 and IMAP functionality (dovecot will function in authentication only mode)\n";
+    print "\n";
+
+    exit 0;
+}

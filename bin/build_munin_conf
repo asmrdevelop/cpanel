@@ -1,0 +1,153 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - bin/build_munin_conf                    Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+use warnings;
+
+use Sys::Hostname                        ();
+use Cpanel::Binaries                     ();
+use Cpanel::ChildErrorStringifier        ();
+use Cpanel::ConfigFiles                  ();
+use Cpanel::AccessIds                    ();
+use Cpanel::AccessIds::SetUids           ();
+use Cpanel::FileUtils::TouchFile         ();
+use Cpanel::Services::Enabled            ();
+use Cpanel::HttpUtils::ApRestart::BgSafe ();
+use Cpanel::Umask                        ();
+
+my $prefix        = '/usr/local/cpanel/3rdparty';
+my $munin_etc     = "/etc/munin";
+my $munin_db_dir  = '/var/lib/munin';
+my $munin_log_dir = '/var/log/munin';
+
+# Add munin.cron to crontab.
+system(qw{crontab -u munin /usr/local/cpanel/3rdparty/share/munin/munin.cron});
+system(qw{/usr/local/cpanel/scripts/cpservice munin-node enable});
+
+# In a forked process as mailman, touch it's post log file if it's not already there.
+my $mailman_log = "$Cpanel::ConfigFiles::MAILMAN_ROOT/logs/post";
+if ( !-e $mailman_log ) {
+
+    unless ( fork() ) {
+        Cpanel::AccessIds::SetUids::setuids( 'mailman', 'mailman' );
+        Cpanel::FileUtils::TouchFile::touchfile($mailman_log);
+        exit 0;
+    }
+}
+
+# Make sure all files in the log and db dirs are owned by munin
+system qw{/bin/chown -h -R munin:munin}, $munin_db_dir, $munin_log_dir;
+
+# Make sure mysql is enabled by setting links from '/usr/share/munin/plugins' to '/etc/munin/plugins'
+# If it's not enabled (or remote), remove them.
+if ( Cpanel::Services::Enabled::is_enabled('mysql') ) {
+    set_mysql_links( "$prefix/share/munin/plugins", "$munin_etc/plugins" );
+}
+else {
+    unset_mysql_links( "$prefix/share/munin/plugins", "$munin_etc/plugins" );
+}
+
+# Build the munin.conf file from template if it's not there already
+my $munin_conf = '/etc/munin/munin.conf';
+if ( !-e $munin_conf ) {
+    my $umask = Cpanel::Umask->new(022);
+    open( my $infh,  '<', "$munin_conf.tmpl" ) or die("Missing file from munin package: '$munin_conf.tmpl'");
+    open( my $outfh, '>', $munin_conf )        or die("Can't open '$munin_conf' for writing");
+    my $host = Sys::Hostname::hostname();
+    while ( my $line = <$infh> ) {
+        $line =~ s/YOUR.HOSTNAME.COMM/$host/;
+        print {$outfh} $line;
+    }
+}
+
+# Configure munin plugins by setting up symlinks in /etc/munin/plugins
+system( Cpanel::Binaries::path('munin-node-configure') . " --shell 2>&1 | sh >/dev/null 2>&1" );
+
+# Cagefs?
+if ( -x '/usr/sbin/cagefsctl' ) {
+    print "Updating CageFS\n";
+    system '/usr/sbin/cagefsctl', '-u';
+    print "Done\n";
+}
+
+# Start the node process now all the files are in place.
+system(qw{/sbin/service munin-node restart});
+
+print "Restarting apache (gracefully)....\n";
+Cpanel::HttpUtils::ApRestart::BgSafe::restart();
+
+# Run munin cron
+Cpanel::AccessIds::run_as_user( 'munin', Cpanel::Binaries::path('munin-cron') );
+
+if ($?) {
+    my $child_error_string = Cpanel::ChildErrorStringifier->new($?)->autopsy();
+    warn "Failed to execute munin-cron: $child_error_string";
+}
+
+exit;
+
+sub set_mysql_links {
+    my ( $source_dir, $link_dir ) = @_;
+    return if ( !( -d $source_dir && -d $link_dir ) );
+
+    my $dh = undef;
+    if ( !opendir( $dh, $source_dir ) ) {
+        print "Warning: Unable to read \"$source_dir\" ($!)\n";
+        print "         No mysql symlinks created from \"$source_dir\" to \"$link_dir\".\n";
+        return;
+    }
+    my @filelist = grep { /^mysql_[\w]+/ } readdir($dh);
+    closedir($dh);
+
+    foreach my $file (@filelist) {
+        my $link_file = "$link_dir/$file";
+
+        # Clear out any potentially old broken link
+        unlink $link_file if -l $link_file;
+
+        # Assign valid link as needed
+        if ( !-e $link_file ) {
+            if ( !symlink( "$source_dir/$file", $link_file ) ) {
+                print "Warning: Unable to create link \"$link_file\" ($!)\n";
+            }
+        }
+    }
+
+    # Exclude existing "mysql_isam_space"
+    my $isam_link   = "$link_dir/mysql_isam_space_";
+    my $isam_source = "$source_dir/mysql_isam_space_";
+    if ( -e $isam_link && readlink($isam_link) =~ /^\Q$isam_source\E$/ ) {
+        unlink $isam_link;
+    }
+
+    return;
+}
+
+sub unset_mysql_links {
+    my ( $source_dir, $link_dir ) = @_;
+
+    # Look at the source dir and use the selection criteria for adding, because there may be unmanaged plugins manually installed by the admin.
+    my $dh = undef;
+    if ( !opendir( $dh, $source_dir ) ) {
+        print "Warning: Failed to read \"$source_dir\" ($!)\n";
+        print "         No mysql symlinks will be removed from \"$link_dir\" out of caution.\n";
+        return;
+    }
+    my @filelist = grep { /^mysql_[\w]+/ } readdir($dh);
+    closedir($dh);
+
+    foreach my $file (@filelist) {
+        my $link_file = "$link_dir/$file";
+
+        # Remove link we would have added as needed
+        if ( !unlink($link_file) ) {
+            print "Warning: Failed to remove link \"$link_file\" ($!)\n" unless $!{ENOENT};    # just move on if the plugin isn't installed
+        }
+    }
+
+    return;
+}

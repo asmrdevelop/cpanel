@@ -1,0 +1,270 @@
+[%
+PROCESS 'master_templates/_defheader.tmpl'
+    theme="bootstrap"
+    app_key='host_access_control'
+-%]
+<!--XXX Hack to fix page presentation, as neither LTR or RTL are set with bootstrap theme. Oops-->
+<script type="text/javascript">
+	document.getElementsByTagName('html')[0].dir = "ltr";
+</script>
+<style>
+	.spinner {
+	  animation-name: spinner;
+	  animation-duration: 1000ms;
+	  animation-iteration-count: infinite;
+	  animation-timing-function: linear;
+	}
+
+	@keyframes spinner {
+		from {transform:rotate(0deg);}
+		to {transform:rotate(360deg);}
+	}
+</style>
+<p>
+	Host Access Control allows you to set up specific rules to accept, reject
+    or drop access to your
+	server on various ports based on the IP address that is attempting to connect.
+	Denying all connections and only allowing connections that
+	you wish to allow is the most secure way to use Host Access Control.
+</p>
+
+<p>
+	To set up a rule,
+    add the ports you wish to create the rule for,
+    the IP addresses for which the rule will apply to,
+    and the action the system should take (ACCEPT, DROP, or REJECT).
+</p>
+
+<button id="showHideExample" class="btn btn-default">Show/Hide Example</button><br><br>
+<div id="exampleDiv" style="display: none;" class="well">
+    <table class="table table-striped">
+        <tr>
+            <th>Port</th>
+            <th>IP Address/CIDR</th>
+			<th>Protocol</th>
+            <th>Action</th>
+        </tr>
+        <tr>
+			<td>22</td>
+            <td>192.168.0.0</td>
+			<td>TCP</td>
+            <td>ACCEPT</td>
+        </tr>
+        <tr>
+			<td>22</td>
+            <td>198.66.254.1/24</td>
+			<td>TCP</td>
+            <td>ACCEPT</td>
+        </tr>
+        <tr>
+			<td>22</td>
+            <td>ALL</td>
+			<td>TCP</td>
+            <td>REJECT</td>
+        </tr>
+    </table>
+</div>
+
+<p class="alert alert-info">
+	<strong>Note:</strong> Rules have an order of precedence.
+	You need to place your ACCEPT rules before your deny (REJECT or DROP) rules.
+	<br><br>
+    This list allows all IP addresses to access the port except for the IP
+    address range that you specify.
+</p>
+<h3>Add Rule</h3>
+<form name="addform" action="hostaccess.cgi" method="POST">
+	<input type="hidden" name="add_nftables_rule" value="1"></input>
+	<table id="addRuleTbl" class="table table striped">
+		<thead>
+			<tr>
+				<th>Port</th>
+				<th>IP Address/CIDR</th>
+				<th>Protocol</th>
+				<th>Action</th>
+			</tr>
+		</thead>
+		<tbody>
+			<tr>
+				<td><input required id="addPort" name="port" type="number" placeholder="1234" min="1" max="65535"></input></td>
+				<td><input id="addIp" name="ip" type="text" placeholder="123.12.1.123"></input></td>
+				<td>
+					<select name="protocol" id="addProtocol">
+						<option value="tcp" default>TCP</option>
+						<option value="udp">UDP</option>
+					</select>
+				</td>
+				<td>
+					<select name="action" id="addAction">
+						<option value="reject" default>REJECT</option>
+						<option value="drop">DROP</option>
+						<option value="accept">ACCEPT</option>
+					</select>
+				</td>
+			</tr>
+		</tbody>
+	</table>
+	<button id="addSubmit" class="btn btn-success">Add Rule</button>
+</form>
+<h3>Current Rules</h3>
+<table id="ruleTbl" class="table table-striped">
+	<thead>
+		<tr>
+			<th>Handle</th>
+			<th>Port</th>
+			<th>IP Address/CIDR</th>
+			<th>Protocol</th>
+			<th>Action</th>
+			<th>Delete?</th>
+		</tr>
+	</thead>
+	<tbody>
+		<tr><td colspan=5>Loading... <span class="glyphicon glyphicon-cog spinner"></span></td></tr>
+	</tbody>
+</table>
+<div class="controls">
+	<a id="reloadRules" href="hostaccess.cgi" class="btn btn-default" id="btn-reload">Reload</a>
+</div>
+<script type="text/javascript">
+	document.getElementById("showHideExample").addEventListener("click", function () {
+		let elem = document.getElementById("exampleDiv");
+		let mode = ( elem.style.display === "none" ) ? "block" : "none";
+		elem.style.display = mode;
+	});
+
+	// I've done this pattern many times.
+	// May not be the prettiest, but it's easy. - TAB
+	function selfRequest (method, handler, errorHandler, args) {
+		'use strict';
+		let oReq = new XMLHttpRequest();
+		oReq.onreadystatechange = function() {
+			if (this.readyState === XMLHttpRequest.DONE) {
+				if( this.status === 200 ) {
+					handler(this.responseText);
+				} else {
+					errorHandler(method, this.status, this.responseText);
+				}
+			}
+		}
+		let argarr = [];
+		if( typeof args === 'object' ) {
+			Object.keys(args).forEach( function(argument) {
+				argarr.push(`${argument}=${args[argument]}`);
+			});
+		}
+		let argstr = argarr.join("&");
+
+		if( method === 'GET' ) {
+			oReq.open( method, `hostaccess.cgi?${argstr}`, true );
+			oReq.send();
+		} else if ( method === 'POST' ) {
+			oReq.open( method, "hostaccess.cgi", true );
+			oReq.setRequestHeader( "Content-type", "application/x-www-form-urlencoded" );
+			oReq.send(argstr);
+		}
+		return false;
+	}
+
+	function populateTbl(blob) {
+		let tbody = document.querySelector("table#ruleTbl > tbody");
+		let content = '';
+		JSON.parse(blob).forEach(function(elem) {
+
+			// Not sure yet how to represent IN or OUT bound traffic distinction.
+			if(elem.chain !== 'cPanel-HostAccessControl') {
+				return;
+			}
+
+			// OK, we're looking for match left along with reject or accept.
+			content += `<tr id='handle_${elem.handle}'>`;
+			content += `<td>${elem.handle}</td>`;
+			let rule = {};
+            rule.ip = 'ALL';
+			elem.expr.forEach(function(expr) {
+				if(expr.hasOwnProperty('reject') ) {
+					rule.action = 'REJECT';
+					return;
+				}
+				if(expr.hasOwnProperty('accept') ) {
+					rule.action = 'ACCEPT';
+					return;
+				}
+				if(expr.hasOwnProperty('drop') ) {
+					rule.action = 'DROP';
+					return;
+				}
+				if( expr.hasOwnProperty('match') && expr.match.op === '==' ) {
+					if( expr.match.left.payload.field === "saddr" ) {
+						if( typeof expr.match.right === 'object' ) {
+                            if(expr.match.right.hasOwnProperty('prefix')) {
+                                rule.ip = expr.match.right.prefix.addr + '/' + expr.match.right.prefix.len;
+                            } else if(expr.match.right.hasOwnProperty('range')) {
+							    rule.ip = expr.match.right.range.join("-");
+                            }
+						}
+						else {
+							rule.ip = expr.match.right;
+						}
+					}
+					else if ( expr.match.left.payload.field === "dport" ) {
+						rule.port     = expr.match.right;
+						rule.protocol = expr.match.left.payload.protocol;
+					}
+					return;
+				}
+				return;
+			});
+			content += `<td>${rule.port}</td>`; // port
+			content += `<td>${rule.ip}</td>`; // IP Address/CIDR
+			content += `<td>${rule.protocol}</td>`; // protocol
+			content += `<td>${rule.action}</td>`; // action
+			content += `<td><form id="delete_${elem.handle}" name="delete_${elem.handle}" action="hostaccess.cgi" method="POST">`;
+			content += `<input type="hidden" name="chain" value="${elem.chain}"></input>`;
+			content += `<input type="hidden" name="delete_nftables_rule" value="${elem.handle}"></input>`;
+			content += '<button class="btn btn-link"><span class="glyphicon glyphicon-trash"></span></button></form></td>';
+			content += '</tr>';
+		});
+		if(content === '') {
+			content = '<tr><td colspan=5>No host access rules currently exist.</td></tr>';
+		}
+		tbody.innerHTML = content;
+		return false;
+	}
+
+    // Numeric validator already good to go
+    function register_validators() {
+        let ip        = document.querySelector('#addRuleTbl input[name=ip]');
+        let reggiev4  = '^(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])(\/([0-9]|[1-2][0-9]|3[0-2]))?$';
+        let reggiev6  = '^s*((([0-9A-Fa-f]{1,4}:){7}([0-9A-Fa-f]{1,4}|:))|(([0-9A-Fa-f]{1,4}:){6}(:[0-9A-Fa-f]{1,4}|((25[0-5]|2[0-4]d|1dd|[1-9]?d)(.(25[0-5]|2[0-4]d|1dd|[1-9]?d)){3})|:))|(([0-9A-Fa-f]{1,4}:){5}(((:[0-9A-Fa-f]{1,4}){1,2})|:((25[0-5]|2[0-4]d|1dd|[1-9]?d)(.(25[0-5]|2[0-4]d|1dd|[1-9]?d)){3})|:))|(([0-9A-Fa-f]{1,4}:){4}(((:[0-9A-Fa-f]{1,4}){1,3})|((:[0-9A-Fa-f]{1,4})?:((25[0-5]|2[0-4]d|1dd|[1-9]?d)(.(25[0-5]|2[0-4]d|1dd|[1-9]?d)){3}))|:))|(([0-9A-Fa-f]{1,4}:){3}(((:[0-9A-Fa-f]{1,4}){1,4})|((:[0-9A-Fa-f]{1,4}){0,2}:((25[0-5]|2[0-4]d|1dd|[1-9]?d)(.(25[0-5]|2[0-4]d|1dd|[1-9]?d)){3}))|:))|(([0-9A-Fa-f]{1,4}:){2}(((:[0-9A-Fa-f]{1,4}){1,5})|((:[0-9A-Fa-f]{1,4}){0,3}:((25[0-5]|2[0-4]d|1dd|[1-9]?d)(.(25[0-5]|2[0-4]d|1dd|[1-9]?d)){3}))|:))|(([0-9A-Fa-f]{1,4}:){1}(((:[0-9A-Fa-f]{1,4}){1,6})|((:[0-9A-Fa-f]{1,4}){0,4}:((25[0-5]|2[0-4]d|1dd|[1-9]?d)(.(25[0-5]|2[0-4]d|1dd|[1-9]?d)){3}))|:))|(:(((:[0-9A-Fa-f]{1,4}){1,7})|((:[0-9A-Fa-f]{1,4}){0,5}:((25[0-5]|2[0-4]d|1dd|[1-9]?d)(.(25[0-5]|2[0-4]d|1dd|[1-9]?d)){3}))|:)))(%.+)?s*(\/([0-9]|[1-9][0-9]|1[0-1][0-9]|12[0-8]))?$'
+        let validators = [ new RegExp( reggiev4, ""), new RegExp( reggiev6, "" ) ];
+        let msg = "IP addresses must be a valid v4 or v6 address";
+        let validatorFn = function() {
+            if(ip.value === 'ALL' ) {
+                ip.setCustomValidity("");
+                return;
+            }
+            validators.some(function (validator) {
+                if (validator.test(ip.value)) {
+                    ip.setCustomValidity("");
+                    return true;
+                } else {
+                    ip.setCustomValidity(msg);
+                }
+            });
+        }
+
+        ip.addEventListener( 'keyup', validatorFn );
+        validatorFn();
+    }
+
+	function genericErr(method, stat, message) {
+		alert(`${method} hostaccess.cgi: ${stat} ${message}`);
+	}
+
+	document.addEventListener('DOMContentLoaded', function(event) {
+    	selfRequest( "GET", populateTbl, genericErr, { 'fetch_nftables_rules': 1, 'no_cache': [% data.no_cache %] } );
+        register_validators();
+        return;
+	});
+</script>
+[% PROCESS 'master_templates/_deffooter.tmpl' theme="bootstrap" %]

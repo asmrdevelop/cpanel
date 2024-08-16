@@ -1,0 +1,39 @@
+<!-- Migration Section -->
+<div class="row">
+    <div class="col-xs-12">
+        <p class="info-block">[% locale.maketext("This action will convert the Legacy Backup System to the new Backup System.") %]</p>
+        <div class="alert alert-info" ng-show="allowKeepConfig">
+            <p>[% locale.maketext("You have both the [output,em,Legacy Backup System] and the new [output,em,Backup System] configured and enabled on your server. When you click [output,em,Migrate], the system will overwrite your current [output,em,Backup System Configuration]. To keep your current [output,em,Backup] configuration, select the checkbox below.") %]</p>
+            <div class="checkbox">
+                <label>
+                    <input type="checkbox" ng-model="keepConfig" id="keepConfig">
+                    [% locale.maketext("Keep existing configuration") %]
+                </label>
+            </div>
+        </div>
+        <button class="btn btn-lg btn-primary" id="migrateButton" ng-click="migrate()" ng-show="!running && !finished" ng-disabled="finished">[% locale.maketext("Migrate") %]</button>
+        <p ng-show="running"><span spinner id="runningSpinner" class="addSpinner" title="[% locale.maketext('Running migration …') %]"></span> [% locale.maketext("Running migration …") %]</p>
+        <div class="alert alert-success" id="resultText_success" ng-show="finished && !errorDetected">
+            <span class="glyphicon glyphicon-ok-sign"></span>
+            <div class="alert-message">[% locale.maketext("The system successfully migrated your server from the Legacy Backup system to the new Backup system.") %]</div>
+        </div>
+        <div class="alert alert-danger" id="resultText_fail" ng-show="finished && errorDetected">
+            <span class="glyphicon glyphicon-remove-sign"></span>
+            <div class="alert-message">[% locale.maketext("The system failed to migrate from the Legacy Backup system to the new Backup system. Refresh your page and try again.") %]<br>{{ errorMessage }}</div>
+        </div>
+        <a href="[% cp_security_token %]/scripts/backupconfig" id="doneButton" class="btn btn-primary" ng-show="finished">[% locale.maketext("Done") %]</a>
+    </div>
+</div>
+<script type="text/ng-template" id="migrationModalContent.tmpl">
+<div class="modal-header">
+    <h3 class="modal-title" id="migrateModalLabel">[% locale.maketext("Confirm Your Action") %]</h3>
+</div>
+<div class="modal-body">
+    <h3>[% locale.maketext("Run Backup System Migration?") %]</h3>
+    <p>[% locale.maketext("Confirm that you wish for the system to convert from Legacy Backup System to new Backup System.") %]</p>
+</div>
+<div class="modal-footer">
+    <button class="btn btn-link" ng-click="closeModal()">[% locale.maketext("Close") %]</button>
+    <button class="btn btn-primary" ng-click="runIt()">[% locale.maketext("Yes, run Migration.") %]</button>
+</div>
+</script>

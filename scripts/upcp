@@ -1,0 +1,879 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/upcp                            Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::upcp;
+
+BEGIN {
+    unshift @INC, q{/usr/local/cpanel};
+
+    # if we are being called with a compile check flag ( perl -c ), skip the begin block
+    # so we don't actually call upcp.static when just checking syntax and such is OK
+    return if $^C;
+
+    # static never gets --use-checked and should pass all the begin block checks
+    return if $0 =~ /\.static$/;
+
+    # let the '--use-check' instance compiled
+    if ( grep { $_ eq '--use-check' } @ARGV ) {
+        no warnings;
+
+        # dynamic definition of the INIT block
+        eval "INIT { exit(0); }";
+        return;
+    }
+
+    system("$0 --use-check >/dev/null 2>&1");
+
+    # compilation is ok with '--use-check', we will continue the non static version
+    return if $? == 0;
+
+    my $static = $0 . ".static";
+    if ( -f $static ) {
+        print STDERR "We determined that $0 had compilation issues..\n";
+        print STDERR "Trying to exec $static " . join( ' ', @ARGV ) . "\n";
+        exec( $^X, $static, @ARGV );
+    }
+}
+
+use cPstrict;
+no warnings;    ## no critic qw(ProhibitNoWarnings)
+
+use Try::Tiny;
+
+use Cpanel::OS::All ();    # PPI USE OK -- make sure Cpanel::OS is embedded
+use Cpanel::HiRes ( preload => 'perl' );
+use Cpanel::Env                  ();
+use Cpanel::Update::IsCron       ();
+use Cpanel::Update::Logger       ();
+use Cpanel::FileUtils::TouchFile ();
+use Cpanel::LoadFile             ();
+use Cpanel::LoadModule           ();
+use Cpanel::Usage                ();
+use Cpanel::UPID                 ();
+use IO::Handle                   ();
+use POSIX                        ();
+
+use Cpanel::Unix::PID::Tiny ();
+
+my $pidfile              = '/var/run/upcp.pid';
+my $lastlog              = '/var/cpanel/updatelogs/last';
+my $upcp_disallowed_path = '/root/.upcp_controlc_disallowed';
+my $version_upgrade_file = '/usr/local/cpanel/upgrade_in_progress.txt';
+our $logger;    # Global for logger object.
+our $logfile_path;
+my $now;
+
+my $forced         = 0;
+my $fromself       = 0;
+my $sync_requested = 0;
+my $bg             = 0;
+my $rlimit_max     = 1024;
+my $from_version;
+my $pbar_starting_point;
+
+exit( upcp() || 0 ) unless caller();
+
+sub usage {
+    print <<EOS;
+Usage: scripts/upcp [--bg] [--cron] [--force] [--help] [--log=[path]] [--sync]
+Updates cPanel & WHM.
+
+Options:
+   --bg         Runs upcp in the background.  Output is only visible in the log.
+   --cron       Follow WHM's Update Preferences (/etc/cpupdate.conf).
+   --force      Force a reinstall even if the system is up to date.
+   --help       Display this documentation.
+   --log=[path] Overrides the default log file.
+   --sync       Updates the server to the currently-installed version instead of downloading a newer version.
+                This will also run other maintenance items, such as package updates and repairs.
+                You cannot use the --sync argument with the --force argument.
+
+EOS
+    exit 1;    ## no critic(Cpanel::NoExitsFromSubroutines) -- /scripts/upcp needs refactor to use Getopt
+}
+
+sub upcp {    ## no critic(Subroutines::ProhibitExcessComplexity) - preserve original code
+    Cpanel::Usage::wrap_options( \@ARGV, \&usage, {} );    #display usage information on --help
+
+    open( STDERR, ">&STDOUT" ) or die $!;
+    local $| = 1;
+    umask(0022);
+
+    $now = time();
+
+    setupenv();
+    unset_rlimits();
+
+#############################################################################
+    # Record the arguments used when started, check for certain flags
+    my $update_is_available_exit_code = 42;
+
+    my @retain_argv = @ARGV;
+
+    foreach my $arg (@ARGV) {
+        if ( $arg =~ m/^--log=(.*)/ ) {
+            $logfile_path = $1;
+        }
+        elsif ( $arg eq '--fromself' ) {
+            $fromself = 1;
+        }
+        elsif ( $arg eq '--force' ) {
+            $forced = 1;
+            $ENV{'FORCEDCPUPDATE'} = 1;
+        }
+        elsif ( $arg eq '--sync' ) {
+            $sync_requested = 1;
+        }
+        elsif ( $arg eq '--bg' ) {
+            $bg = 1;
+        }
+    }
+
+    if ( $sync_requested && $forced ) {
+        print "FATAL: --force and --sync are mutually exclusive commands.\n";
+        print "       Force is designed to update your installed version, regardless of whether it's already up to date.\n";
+        print "       Sync is designed to update the version already installed, regardless of what is available.\n";
+        return 1;
+    }
+
+    if ( $> != 0 ) {
+        die "upcp must be run as root";
+    }
+
+#############################################################################
+    # Make sure easyapache isn't already running
+
+    my $upid = Cpanel::Unix::PID::Tiny->new();
+
+    if ( $upid->is_pidfile_running('/var/run/easyapache.pid') ) {
+        print "EasyApache is currently running. Please wait for EasyApache to complete before running cPanel Update (upcp).\n";
+        return 1;
+    }
+
+#############################################################################
+    # Make sure we aren't already running && make sure everyone knows we are running
+
+    my $curpid = $upid->get_pid_from_pidfile($pidfile) || 0;
+
+    if ( $curpid && $curpid != $$ && !$fromself && -e '/var/cpanel/upcpcheck' ) {
+
+        my $pidfile_mtime = ( stat($pidfile) )[9];
+        my $pidfile_age   = ( time - $pidfile_mtime );
+
+        if ( $pidfile_age > 21600 ) {    # Running for > 6 hours
+            _logger()->warning("previous PID ($curpid) has been running more than 6 hours. Killing processes.");
+            kill_upcp($curpid);          # the pid_file_no_cleanup() will exit if it is still stuck after this
+            sleep 1;                     # Give the process group time to die.
+        }
+        elsif ( my $logpath = _determine_logfile_path_if_running($curpid) ) {
+            print _message_about_already_running( $curpid, $logpath ) . "\n";
+
+            return 1;
+        }
+    }
+
+    if ( $curpid && $curpid != $$ && !$upid->is_pidfile_running($pidfile) ) {
+        print "Stale PID file '$pidfile' (pid=$curpid)\n";
+    }
+
+    if ( !$fromself && !$upid->pid_file_no_cleanup($pidfile) ) {
+        print "process is already running\n";
+        return 1;
+    }
+
+    # to indicate re-entry into upcp
+    $pbar_starting_point = $fromself ? 17 : 0;
+
+    # record current version
+    $from_version = fetch_cpanel_version();
+
+#############################################################################
+    # Set up the upcp log directory and files
+    setup_updatelogs();
+
+#############################################################################
+    # Fork a child to the background. The child does all the heavy lifting and
+    # logs to a file; the parent just watches, reads, and parses the log file,
+    # displaying what it gets.
+    #
+    # Note that the parent reads the log in proper line-oriented -- and buffered!
+    # -- fashion. An earlier version of this script did raw sysread() calls here,
+    # and had to deal with all the mess that that entailed. The current approach
+    # reaps all the benefits of Perl's and Linux's significant file read
+    # optimizations without needing to re-invent any of them. The parent loop
+    # below becomes lean, mean, and even elegant.
+    #
+    # Note in particular that we do not need to explicitly deal with an
+    # end-of-file condition (other than avoiding using undefined data). For
+    # exiting the read loop we merely need to test that the child has expired,
+    # which in any case is the only situation that can cause an eof condition for
+    # us on the file the child is writing.
+    #
+    # Note, too, that the open() needs to be inside this loop, in case the child
+    # has not yet created the file.
+
+    if ( !$fromself ) {
+
+        # we need to be sure that log an pid are the current one when giving back the end
+        unlink $lastlog if $bg;
+        if ( my $updatepid = fork() ) {
+            $logfile_path ||= _determine_logfile_path_if_running($updatepid);
+
+            if ($logger) {    # Close if logged about killing stale process.
+                $logger->{'brief'} = 1;    # Don't be chatty about closing
+                $logger->close_log;
+            }
+            if ($bg) {
+
+                print _message_about_newly_started( $updatepid, $logfile_path ) . "\n";
+                my $progress;
+                select undef, undef, undef, .10;
+                while ( !-e $lastlog ) {
+                    print '.';
+                    select undef, undef, undef, .25;
+                    $progress = 1;
+                }
+                print "\n" if $progress;
+            }
+            else {
+                monitor_upcp($updatepid);
+            }
+            return;
+        }
+        else {
+            $logfile_path ||= _determine_logfile_path_if_running($$);
+        }
+    }
+
+    local $0 = 'cPanel Update (upcp) - Slave';
+    open( my $RNULL, '<', '/dev/null' ) or die "Cannot open /dev/null: $!";
+    chdir '/';
+
+    _logger();    # Open the log file.
+
+#############################################################################
+    # Set CPANEL_IS_CRON env var based on detection algorithm
+    my $cron_reason = set_cron_env();
+
+    $logger->info("Detected cron=$ENV{'CPANEL_IS_CRON'} ($cron_reason)");
+
+    my $set_cron_method = $ENV{'CPANEL_IS_CRON'} ? 'set_on' : 'set_off';
+    Cpanel::Update::IsCron->$set_cron_method();
+
+    my $openmax = POSIX::sysconf( POSIX::_SC_OPEN_MAX() );
+    if ( !$openmax ) { $openmax = 64; }
+    foreach my $i ( 0 .. $openmax ) { POSIX::close($i) unless $i == fileno( $logger->{'fh'} ); }
+
+    POSIX::setsid();
+
+    open( STDOUT, '>', '/dev/null' ) or warn $!;
+    open( STDERR, '>', '/dev/null' ) or warn $!;
+
+    $logger->update_pbar($pbar_starting_point);
+
+##############################################################################
+    # Symlink /var/cpanel/updatelogs/last to the current log file
+    unlink $lastlog;
+    symlink( $logfile_path, $lastlog ) or $logger->error("Could not symlink $lastlog: $!");
+
+#############################################################################
+    # now that we have sporked: update our pidfile and ensure it is removed
+
+    unlink $pidfile;                       # so that pid_file() won't see it as running.
+    if ( !$upid->pid_file($pidfile) ) {    # re-verifies (i.e. upcp was not also started after the unlink() and here) and sets up cleanup of $pidfile for sporked proc
+        $logger->error("Could not update pidfile “$pidfile” with BG process: $!\n");
+        return 1;
+    }
+
+    # Assuming we didn't get re-executed from a upcp change after updatenow (!$fromself).
+    # If the file is still there from a failed run, remove it.
+    unlink($upcp_disallowed_path) if !$fromself && -f $upcp_disallowed_path;
+
+    # make sure that the pid file is going to be removed when killed by a signal
+    $SIG{INT} = $SIG{HUP} = $SIG{TERM} = sub {    ## no critic qw(Variables::RequireLocalizedPunctuationVars)
+        unlink $pidfile;
+        if ($logger) {
+            $logger->close_log;
+            $logger->open_log;
+            $logger->error("User hit ^C or killed the process ( pid file '$pidfile' removed ).");
+            $logger->close_log;
+        }
+        return;
+    };
+
+#############################################################################
+    # Get variables needed for update
+
+    my $gotSigALRM     = 0;
+    my $connecttimeout = 30;
+    my $liveconnect    = 0;
+    my $connectedhost  = q{};
+    my @HOST_IPs       = ();
+
+## Case 46528: license checks moved to updatenow and Cpanel::Update::Blocker
+
+    $logger->debug("Done getting update config variables..");
+    $logger->increment_pbar;
+
+#############################################################################
+    # Run the preupcp hook
+
+    if ( -x '/usr/local/cpanel/scripts/preupcp' ) {
+        $logger->info("Running /usr/local/cpanel/scripts/preupcp");
+        system '/usr/local/cpanel/scripts/preupcp';
+    }
+
+    if ( -x '/usr/local/cpanel/scripts/hook' ) {
+        $logger->info("Running Standardized hooks");
+        system '/usr/local/cpanel/scripts/hook', '--category=System', '--event=upcp', '--stage=pre';
+    }
+
+    $logger->increment_pbar();
+
+#############################################################################
+    # Check mtime on ourselves before sync
+
+    # This is the target for a goto in the case that the remote TIERS file is
+    # changed sometime during the execution of this upcp run.  It prevents the
+    # need for a new script argument and re-exec.
+  STARTOVER:
+
+    my $mtime = ( stat('/usr/local/cpanel/scripts/upcp') )[9];
+
+    $logger->info( "mtime on upcp is $mtime (" . scalar( localtime($mtime) ) . ")" );
+
+    #   * If no fromself arg is passed, it's either the first run from crontab or called manually.
+    #   * --force is passed to updatenow, has no bearing on upcp itself.
+    #   * Even if upcp is changed 3 times in a row during an update (fastest builds ever?), we
+    #     would never actually update more than once unless the new upcp script changed the logic below
+
+    if ( !$fromself ) {
+
+        # run updatenow to sync everything
+
+        # updatenow expects --upcp to be passed or will error out
+        my @updatenow_args = ( '/usr/local/cpanel/scripts/updatenow', '--upcp', "--log=$logfile_path" );
+
+        # if --forced was received, pass it on to updatenow
+        if ($forced) { push( @updatenow_args, '--force' ); }
+
+        # if --sync was received, pass it on to updatenow. --force makes --sync meaningless.
+        if ( !$forced && $sync_requested ) { push( @updatenow_args, '--sync' ); }
+
+        # This is the point of no return, we are upgrading
+        # and its no longer abortable.
+
+        # set flag to disallow ^C during updatenow
+        Cpanel::FileUtils::TouchFile::touchfile($upcp_disallowed_path) or $logger->warn("Failed to create: $upcp_disallowed_path: $!");
+
+        # call updatenow, if we get a non-zero status, die.
+        my $exit_code = system(@updatenow_args);
+
+        $logger->increment_pbar(15);
+
+        if ( $exit_code != 0 ) {
+            my $signal = $exit_code % 256;
+            $exit_code = $exit_code >> 8;
+
+            analyze_and_report_error(
+
+                #success_msg => undef,
+                error_msg   => "Running `@updatenow_args` failed, exited with code $exit_code (signal = $signal)",
+                type        => 'upcp::UpdateNowFailed',
+                exit_status => $exit_code,
+                extra       => [
+                    'signal'         => $signal,
+                    'updatenow_args' => \@updatenow_args,
+                ],
+            );
+
+            return ($exit_code);
+        }
+
+        # get the new mtime and compare it, if upcp changed, let's run ourselves again.
+        # this should be a fairly rare occasion.
+
+        my $newmtime = ( stat('/usr/local/cpanel/scripts/upcp') )[9];
+        if ( $newmtime ne $mtime ) {
+
+            #----> Run our new self (and never come back).
+            $logger->info("New upcp detected, restarting ourself");
+            $logger->close_log();
+            exec '/usr/local/cpanel/scripts/upcp', @retain_argv, '--fromself', "--log=$logfile_path";
+        }
+    }
+
+#############################################################################
+    # Run the maintenance script
+
+    my $last_logfile_position;
+    my $save_last_logfile_position = sub {
+        $last_logfile_position = int( qx{wc -l $logfile_path 2>/dev/null} || 0 );
+    };
+
+    $logger->close_log();    # Allow maintenance to write to the log
+
+    $save_last_logfile_position->();    # remember how many lines has the logfile before starting the maintenance script
+
+    my $exit_status;
+    my $version_change_happened = -e $version_upgrade_file;
+    if ($version_change_happened) {
+        $exit_status = system( '/usr/local/cpanel/scripts/maintenance', '--pre', '--log=' . $logfile_path, '--pbar-start=20', '--pbar-stop=30' );
+    }
+    else {
+        $exit_status = system( '/usr/local/cpanel/scripts/maintenance', '--log=' . $logfile_path, '--pbar-start=20', '--pbar-stop=95' );
+    }
+    $logger->open_log();                # Re-open the log now maintenance is done.
+
+    analyze_and_report_error(
+        success_msg           => "Pre Maintenance completed successfully",
+        error_msg             => "Pre Maintenance ended, however it did not exit cleanly ($exit_status). Please check the logs for an indication of what happened",
+        type                  => 'upcp::MaintenanceFailed',
+        exit_status           => $exit_status,
+        logfile               => $logfile_path,
+        last_logfile_position => $last_logfile_position,
+    );
+
+    # Run post-sync cleanup only if updatenow did a sync
+    # Formerly run after layer2 did a sync.
+    if ($version_change_happened) {
+
+        # post_sync pbar range: 30%-55%
+        $logger->close_log();               # Yield the log to post_sync_cleanup
+        $save_last_logfile_position->();    # remember how many lines has the logfile before starting the post_sync_cleanup script
+        my $post_exit_status = system( '/usr/local/cpanel/scripts/post_sync_cleanup', '--log=' . $logfile_path, '--pbar-start=30', '--pbar-stop=55' );
+        $logger->open_log;                  # reopen the log to continue writing messages
+
+        analyze_and_report_error(
+            success_msg           => "Post-sync cleanup completed successfully",
+            error_msg             => "Post-sync cleanup has ended, however it did not exit cleanly. Please check the logs for an indication of what happened",
+            type                  => 'upcp::PostSyncCleanupFailed',
+            exit_status           => $post_exit_status,
+            logfile               => $logfile_path,
+            last_logfile_position => $last_logfile_position,
+        );
+
+        unlink $version_upgrade_file;
+        unlink($upcp_disallowed_path) if -f ($upcp_disallowed_path);
+
+        # Maintenance pbar range: 55-95%
+        $logger->close_log();               # Allow maintenance to write to the log
+        $save_last_logfile_position->();    # remember how many lines has the logfile before starting the maintenance --post
+        $exit_status = system( '/usr/local/cpanel/scripts/maintenance', '--post', '--log=' . $logfile_path, '--pbar-start=55', '--pbar-stop=95' );
+        $logger->open_log();                # Re-open the log now maintenance is done.
+
+        analyze_and_report_error(
+            success_msg           => "Post Maintenance completed successfully",
+            error_msg             => "Post Maintenance ended, however it did not exit cleanly ($exit_status). Please check the logs for an indication of what happened",
+            type                  => 'upcp::MaintenanceFailed',
+            exit_status           => $exit_status,
+            logfile               => $logfile_path,
+            last_logfile_position => $last_logfile_position,
+        );
+
+        # Check for new version... used when updating to next LTS version
+        $logger->info("Polling updatenow to see if a newer version is available for upgrade");
+
+        $logger->close_log();    # Yield the log to updatenow
+        my $update_available = system( '/usr/local/cpanel/scripts/updatenow', "--log=$logfile_path", '--checkremoteversion' );
+        $logger->open_log;       # reopen the log to continue writing messages
+
+        if ( !$sync_requested && $update_available && ( $update_available >> 8 ) == $update_is_available_exit_code ) {
+            $logger->info("\n\n/!\\ - Next LTS version available, restarting upcp and updating system. /!\\\n\n");
+            $fromself = 0;
+            goto STARTOVER;
+        }
+    }
+    else {
+        unlink($upcp_disallowed_path) if -f ($upcp_disallowed_path);
+    }
+
+#############################################################################
+    # Run the post upcp hook
+
+    $logger->update_pbar(95);
+    if ( -x '/usr/local/cpanel/scripts/postupcp' ) {
+        $logger->info("Running /usr/local/cpanel/scripts/postupcp");
+        system '/usr/local/cpanel/scripts/postupcp';
+    }
+
+    if ( -x '/usr/local/cpanel/scripts/hook' ) {
+        $logger->info("Running Standardized hooks");
+        system '/usr/local/cpanel/scripts/hook', '--category=System', '--event=upcp', '--stage=post';
+    }
+
+    close($RNULL);
+
+#############################################################################
+    # All done.
+#############################################################################
+
+    $logger->update_pbar(100);
+    $logger->info( "\n\n\tcPanel update completed\n\n", 1 );
+    $logger->info("A log of this update is available at $logfile_path\n\n");
+
+    # this happens on exit so it shouldn't be necessary
+    $logger->info("Removing upcp pidfile");
+
+    unlink $pidfile if -f $pidfile || $logger->warn("Could not delete pidfile $pidfile : $!");
+
+    my $update_blocks_fname = '/var/cpanel/update_blocks.config';
+    if ( -s $update_blocks_fname ) {
+        $logger->warning("NOTE: A system upgrade was not possible due to the following blockers:\n");
+        if ( open( my $blocks_fh, '<', $update_blocks_fname ) ) {
+            while ( my $line = readline $blocks_fh ) {
+                my ( $level, $message ) = split /,/, $line, 2;
+
+                # Not using the level in the log, cause the logger can emit additional messages
+                # on some of the levels used (fatal emits an 'email message', etc)
+
+                # Remove URL from log output. Make sure message is defined.
+                if ($message) {
+                    $message =~ s/<a.*?>//ig;
+                    $message =~ s{</a>}{}ig;
+                }
+
+                $logger->warning( uc("[$level]") . " - $message" );
+            }
+        }
+        else {
+            $logger->warning("Unable to open blocks file! Please review '/var/cpanel/update_blocks.config' manually.");
+        }
+    }
+    else {
+        $logger->info("\n\nCompleted all updates\n\n");
+    }
+
+    $logger->close_log();
+
+    return 0;
+}
+
+#############################################################################
+######[ Subroutines ]########################################################
+#############################################################################
+
+sub analyze_and_report_error {
+    my %info = @_;
+
+    my $type        = $info{type} or die;
+    my $exit_status = $info{exit_status};
+
+    if ( $exit_status == 0 ) {
+        if ( defined $info{success_msg} ) {
+            $logger->info( $info{success_msg} );
+        }
+        return;
+    }
+
+    my $msg = $info{error_msg} or die;
+    my @extra;
+    if ( ref $info{extra} ) {
+        @extra = @{ $info{extra} };
+    }
+
+    my $logfile_content = Cpanel::LoadFile::loadfile_r($logfile_path);
+
+    # add events to the end of the error log
+    if ( try( sub { Cpanel::LoadModule::load_perl_module("Cpanel::Logs::ErrorEvents") } ) ) {
+        my ($events) = Cpanel::Logs::ErrorEvents::extract_events_from_log( log => $logfile_content, after_line => $info{last_logfile_position} );
+        if ( $events && ref $events && scalar @$events ) {
+            my $events_str = join ', ', map { qq["$_"] } @$events;
+            $events_str = qq[The following events were logged: ${events_str}.];
+            $msg =~ s{(Please check)}{${events_str} $1} or $msg .= ' ' . $events_str;
+        }
+    }
+
+    $logger->error( $msg, 1 );
+
+    if ( try( sub { Cpanel::LoadModule::load_perl_module("Cpanel::iContact::Class::$type") } ) ) {
+        require Cpanel::Notify;
+        Cpanel::Notify::notification_class(
+            'class'            => $type,
+            'application'      => $type,
+            'constructor_args' => [
+                'exit_code'         => $exit_status,
+                'events_after_line' => $info{last_logfile_position},
+                @extra,
+                'attach_files' => [ { 'name' => 'update_log.txt', 'content' => $logfile_content, 'number_of_preview_lines' => 25 } ]
+            ]
+        );
+    }
+    elsif (
+        !try(
+            sub {
+                Cpanel::LoadModule::load_perl_module("Cpanel::iContact");
+                Cpanel::iContact::icontact(
+                    'application' => 'upcp',
+                    'subject'     => 'cPanel & WHM update failure (upcp)',
+                    'message'     => $msg,
+                );
+            }
+        )
+    ) {
+        $logger->error('Failed to send contact message');
+    }
+
+    return 1;
+}
+
+#############################################################################
+
+sub kill_upcp {
+    my $pid    = shift or die;
+    my $status = shift || 'hanging';
+    my $msg    = shift || "/usr/local/cpanel/scripts/upcp was running as pid '$pid' for longer than 6 hours. cPanel will kill this process and run a new upcp in its place.";
+
+    # Attempt to notify admin of the kill.
+    if ( try( sub { Cpanel::LoadModule::load_perl_module("Cpanel::iContact::Class::upcp::Killed") } ) ) {
+        require Cpanel::Notify;
+        Cpanel::Notify::notification_class(
+            'class'            => 'upcp::Killed',
+            'application'      => 'upcp::Killed',
+            'constructor_args' => [
+                'upcp_path'    => '/usr/local/cpanel/scripts/upcp',
+                'pid'          => $pid,
+                'status'       => $status,
+                'attach_files' => [ { 'name' => 'update_log.txt', 'content' => Cpanel::LoadFile::loadfile_r($logfile_path), 'number_of_preview_lines' => 25 } ]
+            ]
+        );
+    }
+    else {
+        try(
+            sub {
+                Cpanel::LoadModule::load_perl_module("Cpanel::iContact");
+                Cpanel::iContact::icontact(
+                    'application' => 'upcp',
+                    'subject'     => "cPanel update $status",
+                    'message'     => $msg,
+                );
+            }
+        );
+    }
+
+    print "Sending kill signal to process group for $pid\n";
+    kill -1, $pid;    # Kill the process group
+
+    for ( 1 .. 60 ) {
+        print "Waiting for processes to die\n";
+        waitpid( $pid, POSIX::WNOHANG() );
+        last if ( !kill( 0, $pid ) );
+        sleep 1;
+    }
+
+    if ( kill( 0, $pid ) ) {
+        print "Could not kill upcp nicely. Doing kill -9 $pid\n";
+        kill 9, $pid;
+    }
+    else {
+        print "Done!\n";
+    }
+    return;
+}
+
+#############################################################################
+
+sub setupenv {
+    Cpanel::Env::clean_env();
+    delete $ENV{'DOCUMENT_ROOT'};
+    delete $ENV{'SERVER_SOFTWARE'};
+    if ( $ENV{'WHM50'} ) {
+        $ENV{'GATEWAY_INTERFACE'} = 'CGI/1.1';
+    }
+    ( $ENV{'USER'}, $ENV{'HOME'} ) = ( getpwuid($>) )[ 0, 7 ];
+    $ENV{'PATH'} .= ':/sbin:/usr/sbin:/usr/bin:/bin:/usr/local/bin';
+    $ENV{'LANG'}   = 'C';
+    $ENV{'LC_ALL'} = 'C';
+}
+
+sub unset_rlimits {
+
+    # This is required if upcp started running from a pre-1132
+    eval {
+        local $SIG{__DIE__};
+        require Cpanel::Rlimit;
+        Cpanel::Rlimit::set_rlimit_to_infinity();
+    };
+
+    # CPANEL-43452: Ensure consistent rlimit value between UI and CLI
+    eval {
+        local $SIG{__DIE__};
+        Cpanel::Rlimit::set_rlimit( $rlimit_max, [qw/NOFILE/] );
+    };
+}
+
+#############################################################################
+
+sub setup_updatelogs {
+    return if ( -d '/var/cpanel/updatelogs' );
+
+    unlink('/var/cpanel/updatelogs');
+    mkdir( '/var/cpanel/updatelogs', 0700 );
+}
+
+sub set_cron_env {
+
+    # Do not override the env var if set.
+    return 'env var CPANEL_IS_CRON was present before this process started.' if ( defined $ENV{'CPANEL_IS_CRON'} );
+
+    if ( grep { $_ eq '--cron' } @ARGV ) {
+        $ENV{'CPANEL_IS_CRON'} = 1;
+        return 'cron mode set from command line';
+    }
+
+    if ( $ARGV[0] eq 'manual' ) {
+        $ENV{'CPANEL_IS_CRON'} = 0;
+        return 'manual flag passed on command line';
+    }
+
+    if ($forced) {
+        $ENV{'CPANEL_IS_CRON'} = 0;
+        return '--force passed on command line';
+    }
+
+    if ( -t STDOUT ) {
+        $ENV{'CPANEL_IS_CRON'} = 0;
+        return 'Terminal detected';
+    }
+
+    if ( $ENV{'SSH_CLIENT'} ) {
+        $ENV{'CPANEL_IS_CRON'} = 0;
+        return 'SSH connection detected';
+    }
+
+    # cron sets TERM=dumb
+    if ( $ENV{'TERM'} eq 'dumb' ) {
+        $ENV{'CPANEL_IS_CRON'} = 1;
+        return 'TERM detected as set to dumb';
+    }
+
+    # Check if parent is whostmgr
+    if ( readlink( '/proc/' . getppid() . '/exe' ) =~ m/whostmgrd/ ) {
+        $ENV{'CPANEL_IS_CRON'} = 0;
+        return 'parent process is whostmgrd';
+    }
+
+    # Default to cron enabled.
+    $ENV{'CPANEL_IS_CRON'} = 1;
+    return 'default';
+}
+
+#############################################################################
+
+sub fetch_cpanel_version {
+    my $version;
+    my $version_file = '/usr/local/cpanel/version';
+    return if !-f $version_file;
+    my $fh;
+    local $/ = undef;
+    return if !open $fh, '<', $version_file;
+    $version = <$fh>;
+    close $fh;
+    $version =~ s/^\s+|\s+$//gs;
+    return $version;
+}
+
+#############################################################################
+
+sub monitor_upcp {
+    my $updatepid = shift or die;
+
+    $0 = 'cPanel Update (upcp) - Master';
+
+    $SIG{INT} = $SIG{TERM} = sub {
+        print "User hit ^C\n";
+        if ( -f $upcp_disallowed_path ) {
+            print "Not allowing upcp slave to be killed during updatenow, just killing monitoring process.\n";
+            exit;
+        }
+
+        print "killing upcp\n";
+
+        kill_upcp( $updatepid, "aborted", "/usr/local/cpanel/scripts/upcp was aborted by the user hitting Ctrl-C." );
+        exit;
+    };
+
+    $SIG{HUP} = sub {
+        print "SIGHUP detected; closing monitoring process.\n";
+        print "The upcp slave has not been affected\n";
+        exit;
+    };
+
+    # Wait till the file shows up.
+    until ( -e $logfile_path ) {
+        select undef, undef, undef, .25;    # sleep just a bit
+    }
+
+    # Wait till we're allowed to open it.
+    my $fh;
+    until ( defined $fh && fileno $fh ) {
+        $fh = IO::Handle->new();
+        if ( !open $fh, '<', $logfile_path ) {
+            undef $fh;
+            select undef, undef, undef, .25;    # sleep just a bit
+            next;
+        }
+    }
+
+    # Read the file until the pid dies.
+    my $child_done = 0;
+    while (1) {
+
+        # Read all the available lines.
+        while (1) {
+            my $line = <$fh>;
+            last if ( !defined $line || $line eq '' );
+            print $line;
+        }
+
+        # Once the child is history, we need to do yet one more final read,
+        # on the off chance (however remote) that she has written one last
+        # hurrah after we last checked. Hence the following.
+
+        last            if $child_done;                       # from prev. pass
+        $child_done = 1 if -1 == waitpid( $updatepid, 1 );    # and loop back for one more read
+
+        select undef, undef, undef, .25;                      # Yield idle time to the cpu
+    }
+
+    close $fh if $fh;
+    exit;
+}
+
+sub _logger {
+    return $logger if $logger;
+    $logger = Cpanel::Update::Logger->new( { 'logfile' => $logfile_path, 'stdout' => 1, 'log_level' => 'info' } );
+
+    # do not set the pbar in the constructor to do not display the 0 % in bg mode
+    $logger->{pbar} = $pbar_starting_point;
+
+    return $logger;
+}
+
+sub _determine_logfile_path_if_running ($pid) {
+    my $upid = Cpanel::UPID::get($pid);
+
+    return $upid ? "/var/cpanel/updatelogs/update.$upid.log" : undef;
+}
+
+#----------------------------------------------------------------------
+# HANDLE WITH CARE!! This string is parsed
+# in at least one place. (cf. Cpanel::Update::Start)
+sub _message_about_newly_started ( $updatepid, $logfile_path ) {
+
+    return "upcp is going into background mode (PID $updatepid). You can follow “$logfile_path” to watch its progress.";
+}
+
+#----------------------------------------------------------------------
+# HANDLE WITH CARE!! This string is parsed
+# in at least one place. (cf. Cpanel::Update::Start)
+sub _message_about_already_running ( $curpid, $logpath ) {
+
+    return "cPanel Update (upcp) is already running. Please wait for the previous upcp (PID $curpid, log file “$logpath”) to complete, then try again. You can use the command 'ps --pid $curpid' to check if the process is running. You may wish to use '--force'.";
+}
+
+1;

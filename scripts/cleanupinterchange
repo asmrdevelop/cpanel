@@ -1,0 +1,119 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/cleanupinterchange              Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::cleanupinterchange;
+
+use strict;
+use warnings;
+
+use Cpanel::FileUtils::Lines  ();
+use Cpanel::FileUtils::Modify ();
+use Cpanel::ServerTasks       ();
+
+use Getopt::Long;
+use Pod::Usage;
+use Try::Tiny;
+
+our $INTERCHANGE_FILE         = '/etc/chkserv.d/interchange';
+our $INTERCHANGE_RESTART_FILE = '/var/run/chkservd/restart_track/interchange';
+our $CHKSERVD_CONF_FILE       = '/etc/chkserv.d/chkservd.conf';
+
+sub new {
+    my $pkg  = shift;
+    my $self = {};
+    bless $self, $pkg;
+    return $self;
+}
+
+sub as_script {
+    my $self = shift;
+
+    my $execute = 0;
+    my $help    = 0;
+    Getopt::Long::GetOptions(
+        'x'    => \$execute,
+        'help' => \$help,
+    );
+
+    if ($help) {
+        Pod::Usage::pod2usage(
+            -verbose => 2,
+            -exitval => 1,
+        );
+    }
+
+    if ( not $execute ) {
+        my $msg = qq{To execute, use the -x flag.};
+        die($msg);
+    }
+
+    $self->run();
+
+    return 1;
+}
+
+sub run {
+    my $self = shift;
+
+    my $restart_tailwatchd;
+
+    if ( -e $INTERCHANGE_FILE ) {
+        unlink($INTERCHANGE_FILE);
+        ++$restart_tailwatchd;
+    }
+    if ( -e $INTERCHANGE_RESTART_FILE ) {
+        unlink($INTERCHANGE_RESTART_FILE);
+    }
+    if ( -e $CHKSERVD_CONF_FILE ) {
+        if ( Cpanel::FileUtils::Lines::has_txt_in_file( $CHKSERVD_CONF_FILE, 'interchange' ) ) {
+            Cpanel::FileUtils::Modify::remlinefile( $CHKSERVD_CONF_FILE, 'interchange:', 'begin' );
+            ++$restart_tailwatchd;
+        }
+    }
+
+    if ($restart_tailwatchd) {
+        local $@;
+        try {
+            Cpanel::ServerTasks::queue_task( ['TailwatchTasks'], 'reloadtailwatch' );
+        }
+        catch {
+            warn "There was an error restarting tailwatchd: $_";
+        };
+    }
+
+    return 0;
+}
+
+if ( not caller() ) {
+    my $cleanup = scripts::cleanupinterchange->new();
+    $cleanup->as_script;
+    exit 0;
+}
+
+1;
+
+__END__
+
+=head1 NAME
+
+cleanupinterchange - cleans up cruft left over from the interchange removal
+
+=head1 SYNOPSIS
+
+cleanup_interchange [options]
+
+  Options:
+    -help      print help message
+    -x         execute the change
+
+=head1 DESCRIPTION
+
+In cPanel & WHM version 11.34, we removed Interchange, but small remnants
+were left behind. This script cleans up that clutter. If the remnants have
+already been removed, this script does nothing.
+
+=cut

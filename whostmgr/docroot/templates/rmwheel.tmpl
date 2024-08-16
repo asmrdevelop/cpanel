@@ -1,0 +1,25 @@
+[%
+    WRAPPER 'master_templates/master.tmpl' theme="yui"
+        breadcrumburl = (data.group == 'compiler') ? '/scripts/modwheel?compilers=1'
+            : (data.group == 'sudo') ? '/scripts/modwheel?sudo=1'
+            : '/scripts/modwheel'
+-%]
+[% IF data.user == 'root' -%]
+You cannot alter the root account.
+[% ELSIF ! data.user_exists -%]
+<h3 class='simpleheading'>System Error</h3>
+User &quot;[% data.user %]&quot; does not exist!
+[% ELSE -%]
+[% data.output -%]
+[% IF !data.return_value -%]
+<h3 class='simpleheading'>Problem encountered removing user &quot;[% data.user %]&quot; from the [% data.group %] group:
+<br />
+<br />
+<i>[% data.return_value %]</i>
+</h3>
+<br />
+[% ELSE -%]
+<h3 class='simpleheading'>Removed user &quot;[% data.user %]&quot; from the [% data.group %] group.</h3>
+[% END -%]
+[% END -%]
+[% END #wrapper -%]

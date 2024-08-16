@@ -1,0 +1,285 @@
+<div class="row">
+    <div class="col-xs-12">
+        <h2 class="view-title">[% locale.maketext('[asis,DNSSEC] Keys for “[_1]”', '{{ dnssec.domain }}') %]</h2>
+        <p>[% locale.maketext('[asis,DNSSEC] can protect clients from various forms of attack, such as [asis,Spoofing] or a [asis,Man-in-the-Middle] attack. Visitors’ browsers will compare the [asis,DNS] server’s [asis,DS] record to the [asis,DS] record at the registrar. If they match, then the visitor knows that the record is valid. [asis,DNSSEC] uses digital signatures to strengthen [asis,DNS] authentication. These digital signatures use public key cryptography to sign the [asis,DNS] data.') %]</p>
+    </div>
+</div>
+<cp-alert type="danger" id="notAllowedWarning" ng-show="dnssec.loading_error">{{ dnssec.loading_error_message }}</cp-alert>
+<div id="dns_sec_keys_container" ng-hide="dnssec.loading_error">
+
+<div class="row action-bar">
+    <div class="col-xs-12">
+        <div class="pull-right flip">
+            <button id="btnImport"
+                class="btn btn-default btn-sm"
+                type="button"
+                ng-click="dnssec.goToInnerView('import')"
+                ng-disabled="dnssec.is_generating"
+                aria-label="[% locale.maketext('Import a [asis,DNSEC] key') %]"
+                >
+                <i class="fas fa-upload" aria-hidden="true"></i>
+                [% locale.maketext('Import Key') %]
+            </button>
+            <button id="btnGenerate"
+                type="button"
+                class="btn btn-primary btn-sm"
+                ng-click="dnssec.launchGenerateModal()"
+                aria-label="[% locale.maketext('Create [asis,DNSSEC] keys') %]"
+                >
+                <i class="fas fa-plus" aria-hidden="true"></i>
+                [% locale.maketext('Create Key') %]
+            </button>
+        </div>
+    </div>
+</div>
+
+<div id="tableContainer" class="dnssec-view">
+<table id="dns_sec_keys" class="table table-striped table-striped-child responsive-table dnssec details-table">
+    <thead>
+    <tr>
+        <th class="name-column">[% locale.maketext('Key Tag') %]</th>
+        <th class="hidden-xs">[% locale.maketext('Key Type') %]</th>
+        <th class="hidden-xs hidden-sm">[% locale.maketext('Algorithm') %]</th>
+        <th class="hidden-xs">[% locale.maketext('Created') %]</th>
+        <th></th>
+    </tr>
+    </thead>
+    <tbody>
+        <tr id="key_row_{{:: key.key_tag }}"
+            ng-repeat-start="key in dnssec.keys track by key.key_id"
+            ng-class="{ 'warning': key.should_rotate }">
+            <td id="key_tag_column_{{:: key.key_tag }}" class="name-column">
+                <div class="row-expand-container">
+                    <button type="button" id="lnkToggleViewInfo_{{::key.key_tag}}" class="btn btn-link"
+                        title="[% locale.maketext('View details.') %]"
+                        aria-label="[% locale.maketext('View details.') %]"
+                        ng-click="dnssec.expandKey(key, !key.isExpanded)"
+                        aria-expanded="{{key.isExpanded}}"
+                        >
+                        <i class="fas"
+                            ng-class="{ 'fa-chevron-right': !dnssec.isRTL && !key.isExpanded, 'fa-chevron-left': dnssec.isRTL && !key.isExpanded, 'fa-chevron-down': key.isExpanded }"
+                            aria-hidden="true"
+                            >
+                        </i>
+                    </button>
+                </div>
+                <span id="key_tag_{{:: key.key_tag}}" class="account-name collapse-text">{{ ::key.key_tag }}
+                    <button type="button" id="lnkToggleViewForWarning_{{::key.key_tag}}" class="btn btn-link dnssec-table-cell-warning-icon visible-xs-inline-block hidden-sm hidden-md hidden-lg"
+                        ng-if="::key.should_rotate"
+                        uib-tooltip="[% locale.maketext('We recommend that you rotate this key.') %]"
+                        aria-label="[% locale.maketext('We recommend that you rotate this key.') %]"
+                        ng-click="dnssec.expandKey(key, !key.isExpanded)">
+                        <i class="fas fa-exclamation-triangle" aria-hidden="true"></i>
+                    </button>
+                </span>
+            </td>
+            <td id="key_type_{{:: key.key_tag }}" class="hidden-xs">{{:: key.key_type }}</td>
+            <td id="key_algo_{{:: key.key_tag }}" class="hidden-xs hidden-sm">{{:: key.algo_num}}: {{:: key.algo_tag }}</td>
+            <td id="key_created_{{:: key.key_tag }}" class="hidden-xs">
+                {{:: key.created }}
+                <button type="button" id="lnkToggleViewForWarning_{{::key.key_tag}}" class="btn btn-link dnssec-table-cell-warning-icon hidden-xs"
+                    ng-if="::key.should_rotate"
+                    uib-tooltip="[% locale.maketext('We recommend that you rotate this key.') %]"
+                    aria-label="[% locale.maketext('We recommend that you rotate this key.') %]"
+                    ng-click="dnssec.expandKey(key, !key.isExpanded)">
+                    <i class="fas fa-exclamation-triangle" aria-hidden="true"></i>
+                </button>
+            </td>
+            <td class="action-column">
+                <span ng-if="key.digests">
+                    <button type="button"
+                        id="ds_records_for_{{:: key.key_tag }}"
+                        class="btn btn-outline-primary btn-sm"
+                        ng-disabled="dnssec.is_generating"
+                        aria-label="[% locale.maketext('View [asis,DS] Records for key “[_1]”', '{{ key.key_tag }}') %]"
+                        ng-click="dnssec.goToInnerView('dsrecords', key.key_id)">
+                        <i class="fas fa-search" aria-hidden="true"></i>
+                        [% locale.maketext("View [asis,DS] Records") %]
+                    </button>
+                </span>
+                <button type="button"
+                    id="export_for_{{:: key.key_tag }}"
+                    aria-label="[% locale.maketext('Export Key “[_1]”', '{{ key.key_tag }}') %]"
+                    ng-disabled="dnssec.is_generating"
+                    ng-click="dnssec.goToInnerView('export', key.key_id)"
+                    class="btn btn-outline-primary btn-sm hidden-xs">
+                    <i class="fas fa-download" aria-hidden="true"></i>
+                    [% locale.maketext("Export") %]
+                </button>
+            </td>
+        </tr>
+        <tr ng-repeat-end="" class="wordbreak" ng-class="{ 'warning': key.should_rotate }">
+            <td class="expand-panel-data" colspan="5">
+                <div class="list-panel expand-panel"
+                    ng-if="key.isExpanded">
+                    <div class="row">
+                        <div class="col-xs-12 col-sm-8">
+                            <cp-alert type="info" info-label="" ng-if="key.should_rotate">[% locale.maketext('We recommend that you rotate this key. Read our [output,url,_1,documentation,_2] on how to rotate your [asis,DNSSEC] keys.', 'https://go.cpanel.net/rotatednsseckey', { 'target' => 'rotatednsseckey' }) %]</cp-alert>
+                            <dl class="expand-details">
+                                <dt class="visible-xs">[% locale.maketext('Key Tag') %]</dt>
+                                <dd class="visible-xs">{{:: key.key_tag }}</dd>
+                                <dt class="visible-xs">[% locale.maketext('Key Type') %]</dt>
+                                <dd class="visible-xs">{{:: key.key_type }}</dd>
+                                <dt>[% locale.maketext('Algorithm') %]</dt>
+                                <dd id="key_algo_full_{{::key.key_tag}}"> {{:: key.algo_desc }} [% locale.maketext('(Algorithm [_1])', '{{ key.algo_num }}') %], {{:: key.bits_msg }} </dd>
+                                <dt class="visible-xs">[% locale.maketext('Created') %]</dt>
+                                <dd class="visible-xs">
+                                    {{:: key.created }}
+                                    <i ng-if="::key.should_rotate" class="fas fa-exclamation-triangle" uib-tooltip="[% locale.maketext('We recommend that you rotate this key.') %]" aria-label="[% locale.maketext('We recommend that you rotate this key.') %]"></i>
+                                </dd>
+                                <dt>[% locale.maketext('Status') %]</dt>
+                                <dd id="key_status_{{::key.key_tag}}">
+                                    <span ng-show="key.active">
+                                        <i class="fas fa-fw fa-check text-success" aria-hidden="true"></i>
+                                        [% locale.maketext('Active') %]
+                                    </span>
+                                    <span ng-show="!key.active">
+                                        <i class="fas fa-fw fa-times text-danger" aria-hidden="true"></i>
+                                        [% locale.maketext('Not Active') %]
+                                    </span>
+                                </dd>
+                            </dl>
+                        </div>
+                    </div>
+                    <div class="row">
+                        <div class="col-xs-12">
+                            <div class="expand-actions">
+                                <button type="button"
+                                    id="inner_export_for_{{:: key.key_tag }}"
+                                    aria-label="[% locale.maketext('Export Key “[_1]”', '{{ key.key_tag }}') %]"
+                                    ng-disabled="dnssec.is_generating"
+                                    ng-click="dnssec.goToInnerView('export', key.key_id)"
+                                    class="btn btn-outline-primary btn-sm visible-xs-inline-block hidden-sm hidden-md hidden-lg">
+                                    <i class="fas fa-download" aria-hidden="true"></i>
+                                    [% locale.maketext("Export") %]
+                                </button>
+                                <span ng-if="!key.active">
+                                    <button type="button"
+                                        id="activate_for_{{:: key.key_tag }}"
+                                        aria-label="[% locale.maketext('Activate Key “[_1]”', '{{ key.key_tag }}') %]"
+                                        ng-disabled="dnssec.is_generating"
+                                        cp-action="dnssec.activate(key)"
+                                        button-class="btn btn-outline-primary btn-sm">
+                                        <i class="fas fa-play-circle" aria-hidden="true"></i>
+                                        [% locale.maketext("Activate") %]
+                                    </button>
+                                </span>
+                                <span ng-if="key.active">
+                                    <button type="button"
+                                        id="deactivate_for_{{:: key.key_tag }}"
+                                        aria-label="[% locale.maketext('Deactivate Key “[_1]”', '{{ key.key_tag }}') %]"
+                                        ng-disabled="dnssec.is_generating"
+                                        cp-action="dnssec.confirmDeactivateKey(key)"
+                                        button-class="btn btn-outline-primary btn-sm">
+                                        <i class="fas fa-stop-circle" aria-hidden="true"></i>
+                                        [% locale.maketext("Deactivate") %]
+                                    </button>
+                                </span>
+                                <button type="button"
+                                    id="delete_key_for_{{:: key.key_tag }}"
+                                    aria-label="[% locale.maketext('Delete key “[_1]”', '{{ key.key_tag }}') %]"
+                                    ng-disabled="dnssec.is_generating"
+                                    cp-action="dnssec.confirmDeleteKey(key)"
+                                    button-class="btn btn-outline-primary btn-sm">
+                                    <i class="fas fa-fw fa-trash-alt" aria-hidden="true"></i>
+                                    [% locale.maketext("Delete") %]
+                                </button>
+                                <button type="button"
+                                    id="dnskey_for_{{:: key.key_tag }}"
+                                    aria-label="[% locale.maketext('Public [asis,DNSKEY] for “[_1]”', '{{ key.key_tag }}') %]"
+                                    ng-disabled="dnssec.is_generating"
+                                    ng-click="dnssec.goToInnerView('dnskey', key.key_id)"
+                                    class="btn btn-outline-primary btn-sm">
+                                    <i class="fas fa-download" aria-hidden="true"></i>
+                                    [% locale.maketext("Public [asis,DNSKEY]") %]
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </td>
+        </tr>
+
+        <tr ng-if="!(dnssec.keys.length > 0 || dnssec.is_loading)">
+            <td colspan="6" id="emptyRow">
+                [% locale.maketext("No keys found. Click Create Key or Import Key to get started.") %]
+            </td>
+        </tr>
+        <tr id="loadingNotice" class="info empty-row" ng-if="dnssec.is_loading">
+            <td colspan="6" id="loadingMessage">
+                <i id="loadingSpinner" class="fas fa-spinner fa-spin" aria-hidden="true"></i>
+                [% locale.maketext('Loading …') %]
+            </td>
+        </tr>
+    </tbody>
+</table>
+</div>
+</div>
+<script id="dnssec_confirm_deactivate.html" type="text/ng-template">
+    <div class="modal-header">
+        <h4>[% locale.maketext('Confirm Deactivation') %]</h4>
+    </div>
+    <div class="modal-body">
+        <p>[% locale.maketext('Before deactivating this key, you must remove the corresponding [asis,DS] record at your domain registrar. Failure to do this will cause [asis,DNSSEC] validation to fail, which will cause [asis,DNS] resolution errors.') %]</p>
+        <p class="last-paragraph">[% locale.maketext('Are you certain that you want to deactivate key “[_1]”?', '{{ ctrl.key.key_tag }}') %]</p>
+    </div>
+    <div class="modal-footer">
+        <button type="button"
+            id="modalContinueBtn"
+            cp-action="ctrl.confirm()"
+            button-class="btn btn-primary btn-sm">[% locale.maketext('Deactivate') %]</button>
+        <button type="button"
+            id="modalCancelBtn"
+            class="btn btn-link btn-sm"
+            ng-click="ctrl.cancel()">[% locale.maketext('Cancel') %]</button>
+    </div>
+</script>
+<script id="dnssec_confirm_delete.html" type="text/ng-template">
+    <div class="modal-header">
+        <h4>[% locale.maketext('Confirm Delete') %]</h4>
+    </div>
+    <div class="modal-body">
+        <p>[% locale.maketext('Before deleting this key, you must remove the corresponding [asis,DS] record at your domain registrar. Failure to do this will cause [asis,DNSSEC] validation to fail, which will cause [asis,DNS] resolution errors.') %]</p>
+        <p class="last-paragraph">[% locale.maketext('Are you certain that you want to delete key “[_1]”?', '{{ ctrl.key.key_tag }}') %]</p>
+    </div>
+    <div class="modal-footer">
+        <button type="button"
+            id="modalContinueBtn"
+            cp-action="ctrl.confirm()"
+            button-class="btn btn-primary btn-sm">[% locale.maketext('Delete') %]</button>
+        <button type="button"
+            id="modalCancelBtn"
+            class="btn btn-link btn-sm"
+            ng-click="ctrl.cancel()">[% locale.maketext('Cancel') %]</button>
+    </div>
+</script>
+<script id="quick_generate.html" type="text/ng-template">
+    <div class="modal-header">
+        <h4>[% locale.maketext('Confirm Create') %]</h4>
+    </div>
+    <div class="modal-body">
+        <p>[% locale.maketext('Click the Create button to generate the following keys:') %]</p>
+        <pre><code>Key-Signing Key: RSA/SHA-256 (Algorithm 8), 2,048 bits
+Zone-Signing Key: RSA/SHA-256 (Algorithm 8), 1,024 bits</code></pre>
+        <p>[% locale.maketext('Most domain registrars will accept one of these keys.') %]</p>
+        <p class="last-paragraph">[% locale.maketext('If you want to create a customized key with a different algorithm, click the Customize button.') %]</p>
+    </div>
+    <div class="modal-footer clearfix">
+        <button type="button"
+            id="modalCustomize"
+            aria-label="[% locale.maketext('Customize a [asis,DNSSEC] key') %]"
+            class="btn btn-default btn-sm pull-left flip"
+            ng-click="ctrl.goToGenerate()">[% locale.maketext('Customize') %]</button>
+        <button type="button"
+            id="modalContinueBtn"
+            aria-label="[% locale.maketext('Create the [asis,DNSSEC] keys') %]"
+            cp-action="ctrl.confirm()"
+            button-class="btn btn-primary btn-sm">[% locale.maketext('Create') %]</button>
+        <button type="button"
+            id="modalCancelBtn"
+            aria-label="[% locale.maketext('Close the dialog') %]"
+            class="btn btn-link btn-sm"
+            ng-click="ctrl.cancel()">[% locale.maketext('Cancel') %]</button>
+    </div>
+</script>
+

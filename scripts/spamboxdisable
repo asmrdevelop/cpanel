@@ -1,0 +1,83 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/spamboxdisable                  Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+use Cpanel::SafeFile;
+use Cpanel::LoginDefs ();
+use Getopt::Std;
+
+my %options = ();
+getopts( 'fqh', \%options );
+
+$| = 1;
+
+if ( defined( $options{'h'} ) ) {
+    print <<EOM;
+
+spamboxdisable command line options:
+-f : force, bypass 5 second sleep
+-q : quiet, do not provide any output on STDOUT
+-h : display this message and exit
+options 'f' and 'q' are useful when running this
+script as a part of an automated process (e.g. cron).
+
+EOM
+
+    exit;
+}
+
+unless ( defined( $options{'q'} ) ) {
+    print "??????????????????????????????????????????????????????????????????\n";
+    print "This will disable SpamAssassin's spambox delivery for all accounts\n";
+    print "on the server. If you do not wish to do this, then hit Ctrl-C now.\n";
+    print "??????????????????????????????????????????????????????????????????\n\n";
+    print "Sleeping for 5 seconds ... (Ctrl-C to abort) ";
+}
+unless ( defined( $options{'f'} ) ) {
+    sleep(5);
+}
+
+unless ( defined( $options{'q'} ) ) {
+    print "continuing.\n";
+}
+
+if ( !-e '/etc/passwd' ) {
+    die "/etc/passwd does not exist!";
+}
+
+my @homedirs;
+
+my $passwdlock = Cpanel::SafeFile::safeopen( \*PASS, '/etc/passwd' )
+  || die "Unable to open /etc/passwd: $!";
+while (<PASS>) {
+    my ( $uid, $homedir ) = ( split( /:/, $_ ) )[ 2, 5 ];
+    next if ( int($uid) < Cpanel::LoginDefs::get_uid_min() );
+    if ( -d $homedir ) {
+        push( @homedirs, $homedir );
+    }
+}
+Cpanel::SafeFile::safeclose( \*PASS, $passwdlock );
+
+my $removed = 0;
+foreach my $homedir (@homedirs) {
+    if ( -e $homedir . '/.spamassassinboxenable' ) {
+        unless ( defined( $options{'q'} ) ) {
+            print "Unlinking $homedir/.spamassassinboxenable\n";
+        }
+        unlink( $homedir . '/.spamassassinboxenable' );
+        $removed = 1;
+    }
+}
+
+unless ( defined( $options{'q'} ) ) {
+    if ($removed) {
+        print "Done\n";
+    }
+    else {
+        print "No accounts currently have their spam box enabled.\n";
+    }
+}

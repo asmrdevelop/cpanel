@@ -1,0 +1,28 @@
+<!-- THIS TEMPLATE IS INACTIVE PENDING WORK ON THE rearrangeacct FUNCTION. -->
+
+[%
+DEFAULT has_multiple_drives
+	FOR drv in free.keys.sort
+		IF data.user_homedir.match('^' _ drv _ '/')
+			has_multiple_drives = 1
+            <option value="[% drv %]" [% IF most_free = drv == mnt %]selected="selected"[% END %]>[% $drv %] [% free.$drv %]% used[% IF most_free %] (most free blocks)[% END %]</option>
+[% END %]
+[% END %]
+
+<form action="[% cp_security_token %]/scripts/dorearrange">
+<table class="tablecomplex2">
+    <tr>
+        <td colspan="3">
+            [% data.user %] [[% data.xdomain %]] is currently residing in [% data.user_homedir %]<br /><br />
+            Please choose a new mount point for this account:
+            <input type="hidden" name="user" value="[% data.user %]" />
+            <select name="mnt">
+[% DEFAULT has_multiple_drives %]
+[% FOR drv in free.keys.sort %]
+[% IF data.user_homedir.match('^' _ drv _ '/') %]
+[% has_multiple_drives = 1 %]
+            <option value="[% drv %]" [% IF most_free = drv == mnt %]selected="selected"[% END %]>[% $drv %] [% free.$drv %]% used[% IF most_free %] (most free blocks)[% END %]</option>
+[% END %]
+[% END %]
+[% IF ! has_multiple_drives %]
+

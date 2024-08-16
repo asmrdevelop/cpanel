@@ -1,0 +1,88 @@
+<form action="../scripts/makesec" method="POST">
+<div class="error-header">
+    [% FOREACH error IN data.errors %]
+    [% NEXT IF error == 'peers_without_dnssec' && !data.has_dnssec %]
+    <div role="alert" class="error-container" style="background-color:#fcf8e1; border-color:#f6c342; border-width:.05rem; border-style:solid; border-radius: .1rem;">
+        <div class="fas fa-exclamation-circle" style="background-color:#f6c342; color:#fcf8e1; display:table-cell; text-align:center; min-width: 2rem; vertical-align:middle; font-size:1.25rem;"></div>
+        <div style="display:table-cell; padding: .5rem; width:100%">
+            <span class="float:left">
+                [% IF error == 'dead_peers' %]
+                    [% locale.maketext("One or more cluster members are configured to receive zones, but their [asis,DNS] server is currently offline. This can cause failed [asis,DNS] queries and failed synchronizations.") %]
+                [% ELSIF error == 'peer_zonetrap' %]
+                    [% locale.maketext("One or more cluster members are configured to receive zones, but have their [asis,DNS] server disabled. This can cause failed DNS queries.") %]
+                [% ELSIF error == 'disabled_peers' %]
+                    [% locale.maketext("The system cannot contact one or more cluster members. They may exist in an inconsistent state when they reboot. This can cause failed [asis,DNS] queries.") %]
+                [% ELSIF error == 'peers_without_dnssec' %]
+                    [% locale.maketext("The system is broadcasting [asis,DNSSEC] zones to cluster. However, some receivers do not support [asis,DNSSEC]. This will result in [asis,SRVFAIL] responses from those cluster members when queried.") %]
+                [% END %]
+            </span>
+            <span style="float:right;">
+                <a href="[% cp_security_token %]/scripts7/clusterstatus">[% locale.maketext("Manage") %]</a>
+            </span>
+        </div>
+    </div>
+    <br />
+    [% END %]
+</div>
+<div class="body-content">
+<p>Synchronizing DNS Zones ensures all servers in the cluster use the latest version of each DNS Zone. This prevents invalid or old data being sent in response to DNS queries.</p>
+<h2>Choose synchronization method</h2>
+<div class="sync_dns_container">
+<div class="sdc_container">
+<input type="radio" name="sync_zones" id="one_local" value="one_local"/>
+<label for="one_local">Synchronize one zone to this server only</label>
+<div class="sdc_module">
+<input type="text" name="onezonelocal" id="onezonelocal" onClick="selectRadio('one_local')" />
+<small>(e.g. example.com)</small>
+</div>
+<p class="description">One zone will be compared with the same zone on all servers in the cluster and the newest one will be copied to this server only.</p>
+</div>
+<hr size="1" color="#dddddd" NOSHADE />
+<div class="sdc_container">
+<input type="radio" name="sync_zones" id="all_local" value="all_local" />
+<label for="all_local">Synchronize all zones to this server only</label><br />
+<input type="checkbox" name="all_domains" id="all_local_synchronize_zones" value="1" onClick="verifythis(this);">
+<label for="all_local_synchronize_zones">Synchronize zones that are not configured on this server</label>
+<p class="description">All zones will be compared with the same zones on all servers in the cluster and the newest ones will be copied to this server only.</p>
+</div>
+<hr size="1" color="#dddddd" NOSHADE />
+<div class="sdc_container">
+<input type="radio" name="sync_zones" id="one_zone" value="one_zone"/>
+<label for="one_zone">Synchronize one zone to all servers</label>
+<div class="sdc_module">
+<input type="text" name="onezone" id="onezone" onClick="selectRadio('one_zone')"/>
+<small>(e.g. example.com)</small>
+</div>
+<p class="description">One zone will be compared with the same zone on all servers in the cluster and the newest one will be copied to all servers in the cluster.</p>
+</div>
+<hr size="1" color="#dddddd" NOSHADE />
+<div class="sdc_container">
+<input type="radio" name="sync_zones" id="all_zones" checked="checked" value="all_zones" />
+<label for="all_zones">Synchronize all zones to all servers</label><br />
+<input type="checkbox" name="all_domains" id="all_zones_synchronize_zones" value="1" onClick="verifythis(this);">
+<label for="all_zones_synchronize_zones">Synchronize zones that are not configured on this server</label>
+<p class="description">All zones will be compared with the same zones on all servers in the cluster and the newest ones will be copied to all servers in the cluster.</p>
+</div>
+</div>
+<input type="submit" class="btn-primary" name="action" value="Synchronize" />
+</form>
+</div>
+<script type="text/javascript">
+function verifythis(El) {
+    if (!El.checked) { return; }
+
+    var forsure = confirm("Are you sure you wish to pull in all dns zones in the cluster?");
+    if (!forsure) {
+        El.checked=false;
+    }
+}
+
+/**
+* Input text click handler that will check the radio button id.
+* @function selectRadio
+* @param {string} elementId - The id property of the radio to be checked
+*/
+function selectRadio(elementId) {
+    document.getElementById(elementId).checked = true;
+}
+</script>

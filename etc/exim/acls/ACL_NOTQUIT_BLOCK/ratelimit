@@ -1,0 +1,13 @@
+
+# ignore authenticated hosts
+accept authenticated = *
+
+accept hosts = : +recent_authed_mail_ips : +loopback : +backupmx_hosts
+
+warn
+    #only rate limit port 25
+    condition = ${if eq {$received_port}{25}{yes}{no}}
+    condition = ${if match {$smtp_notquit_reason}{command}{yes}{no}}
+    log_message = "Connection Ratelimit - $sender_fullhost because of notquit: $smtp_notquit_reason ($sender_rate/$sender_rate_period max:$sender_rate_limit)"
+    ratelimit = 1.2 / 1h / strict / per_conn
+

@@ -1,0 +1,456 @@
+[% INCLUDE gsw/header.tmpl %]
+[% USE Whostmgr; %]
+
+<script type="text/javascript" src="[% MagicRevision('/yui/cookie/cookie-min.js') %]"></script>
+<div id="content">
+    <div class="showcaseFeatures">
+        <form id="showcaseFeaturesForm" action="feature_showcase_do" method="POST">
+            <h1 id="newFeaturesTitle">[% locale.maketext("Feature Showcase") %]</h1>
+            <div class="whatsNew">
+                <p>
+                    [% locale.maketext("The system added new features during this [asis,cPanel amp() WHM] upgrade. You can enable some of these features directly in this interface.") %]
+                    [% locale.maketext("Select “[_1]” next to the features that you wish to use and, then click “[_2]” at the bottom of the interface.", locale.maketext('Enable'), locale.maketext('Save Settings')) %]
+                </p>
+            </div>
+
+            [% IF data.feature_collection.0.size -%]
+            <div id="spotlightFeatures" class="releaseTypeContainer">
+                <div class="spotlightFeatureContainer">
+                    <div class="recommendedFeatureTitle spotlightFeatureTitle">
+                        <h2>[% locale.maketext("Feature Spotlight") %]</h2>
+                    </div>
+                    [% FOREACH feature IN data.feature_collection.0 -%]
+                        <div id="[% feature.driver -%]" class="feature spotlight[% IF !loop.next.spotlight_feature -%] last[% END -%]">
+                            <fieldset>
+                                <div class="titleContainer">
+                                    <h3>[% feature.name -%]</h3>
+                                    [% IF feature.helpurl -%]
+                                    <div class="featureUrl">
+                                        <a href="[% feature.helpurl -%]" target="_blank">[% locale.maketext("More Information") %]</a>
+                                    </div>
+                                    [% END -%]
+                                </div>
+                                [% IF feature.forced || feature.readonly %]
+                                <div class="featureBlurbNoFields">
+                                [% ELSE %]
+                                <div class="featureBlurb">
+                                [% END %]
+                                    <p>[% feature.blurb_html -%]</p>
+                                </div>
+
+                                [% IF !feature.forced && !feature.readonly %]
+                                <div class="fields">
+                                    <div class="inputContainer">
+                                        <label class="fancyRadio checked enable" title="[% locale.maketext('Enable') %]">
+                                            <!-- pre-select 'Enabled' for recommended features -->
+                                            <input id="[% feature.driver -%]_enable" type="radio" name="[% feature.driver -%]" value="enabled" checked="checked"/>
+                                            <span class="fancyText">[% locale.maketext("Enable") %]</span>
+                                        </label>
+                                        <label class="unchecked" title="[% locale.maketext('No, thank you') %]">
+                                            <input id="[% feature.driver -%]_disable" type="radio" name="[% feature.driver -%]" value="disabled" />
+                                            <span class="noThanksText">[% locale.maketext("No, thank you") %]</span>
+                                        </label>
+                                    </div>
+                                </div>
+                                [% END %]
+                            </fieldset>
+                        </div>
+                    [% END -%]
+                </div>
+            </div>
+            [% END -%]
+            [% IF data.feature_collection.1.size -%]
+            <div id="newRecommended" class="releaseTypeContainer">
+                <div class="recommendedFeatureContainer">
+                    <div class="recommendedFeatureTitle">
+                        <h2>[% locale.maketext("Recommended [numerate,_1,Feature,Features]", data.feature_collection.1.size) %]</h2>
+                    </div>
+                    [% FOREACH feature IN data.feature_collection.1 -%]
+                        <div id="[% feature.driver -%]" class="feature recommended [% IF !loop.next.recommended -%]last[% END -%]">
+                            <fieldset>
+                                <div class="titleContainer">
+                                    <h3>[% feature.name -%]</h3>
+                                    [% IF feature.helpurl -%]
+                                    <div class="featureUrl">
+                                        <a href="[% feature.helpurl -%]" target="_blank">[% locale.maketext("More Information") %]</a>
+                                    </div>
+                                    [% END -%]
+                                </div>
+                                [% IF feature.forced || feature.readonly %]
+                                <div class="featureBlurbNoFields">
+                                [% ELSE %]
+                                <div class="featureBlurb">
+                                [% END %]
+                                    <p>[% feature.blurb_html -%]</p>
+                                </div>
+                                [% IF !feature.forced && !feature.readonly %]
+                                <div class="fields">
+                                    <div class="inputContainer">
+                                        <label class="fancyRadio checked enable" title="[% locale.maketext('Enable') %]">
+                                            <!-- pre-select 'Enabled' for recommended features -->
+                                            <input id="[% feature.driver -%]_enable" type="radio" name="[% feature.driver -%]" value="enabled" checked="checked"/>
+                                            <span class="fancyText">[% locale.maketext("Enable") %]</span>
+                                        </label>
+                                        <label class="unchecked" title="[% locale.maketext('No, thank you') %]">
+                                            <input id="[% feature.driver -%]_disable" type="radio" name="[% feature.driver -%]" value="disabled" />
+                                            <span class="noThanksText">[% locale.maketext("No, thank you") %]</span>
+                                        </label>
+                                    </div>
+                                </div>
+                                [% END %]
+                            </fieldset>
+                        </div>
+                    [% END -%]
+                </div>
+            </div>
+            [% END -%]
+            [% IF data.feature_collection.2.size -%]
+                <h2>[% locale.maketext("New [numerate,_1,Feature,Features]", data.feature_collection.2.size) %]</h2>
+                <div id="newGeneral" class="releaseTypeContainer">
+                    <div class="generalFeatureContainer">
+                        [% FOREACH feature IN data.feature_collection.2 -%]
+                            <div id="[% feature.driver -%]" class="feature general [% IF !data.feature_collection.0.size -%]generalOnly[% END -%]">
+                                <fieldset>
+                                    <div class="titleContainer">
+                                        <h3>[% feature.name -%]</h3>
+                                        [% IF feature.helpurl -%]
+                                        <div class="featureUrl">
+                                            <a href="[% feature.helpurl -%]" target="_blank">[% locale.maketext("More Information") %]</a>
+                                        </div>
+                                        [% END -%]
+                                    </div>
+                                    [% IF feature.forced || feature.readonly %]
+                                    <div class="featureBlurbNoFields">
+                                    [% ELSE %]
+                                    <div class="featureBlurb">
+                                    [% END %]
+                                        <p>[% feature.blurb_html -%]</p>
+                                    </div>
+                                    [% IF !feature.forced && !feature.readonly %]
+                                    <div class="fields">
+                                        <div class="inputContainer">
+                                            <label class="[% IF feature.defaultvalue -%]checked[% ELSE -%]unchecked[% END -%] enable" title="[% locale.maketext('Enable') %]">
+                                                <input id="[% feature.driver -%]_enable" type="radio" name="[% feature.driver -%]" value="enabled" [% IF feature.defaultvalue -%] checked="checked"[% END -%]/>
+                                                <span class="radioText">[% locale.maketext("Enable") %]</span>
+                                            </label>
+                                            <label class="[% IF !feature.defaultvalue -%]checked[% ELSE -%]unchecked[% END -%]" title="[% locale.maketext('No, thank you') %]">
+                                                <input id="[% feature.driver -%]_disable" type="radio" name="[% feature.driver -%]" value="disabled" [% IF ! feature.defaultvalue -%] checked="checked"[% END -%]>
+                                                <span class="noThanksText">[% locale.maketext("No, thank you") %]</span>
+                                            </label>
+                                        </div>
+                                    </div>
+                                    [% END %]
+                                </fieldset>
+                            </div>
+                        [% END -%]
+                    </div>
+                </div>
+            [% END -%]
+            [% IF data.feature_collection.3.size -%]
+                <h2 id="additionalFeaturesTitle">[% locale.maketext("Previously Configured [numerate,_1,Feature,Features]", data.feature_collection.3.size) %]</h2>
+                <div id="modified" class="releaseTypeContainer">
+                    [% FOREACH feature IN data.feature_collection.3 -%]
+                        <div id="[% feature.driver -%]" class="feature [% IF feature.recommended -%] recommended [% ELSIF feature.spotlight_feature -%] spotlight [% ELSE -%] general [% END -%]">
+                            <fieldset>
+                                <div class="titleContainer">
+                                    <h3>[% feature.name -%]</h3>
+                                    [% IF feature.helpurl -%]
+                                    <div class="featureUrl">
+                                        <a href="[% feature.helpurl -%]" target="_blank">[% locale.maketext("More Information") %]</a>
+                                    </div>
+                                    [% END -%]
+                                </div>
+                                [% IF feature.forced || feature.readonly %]
+                                    <div class="featureBlurbNoFields">
+                                    [% ELSE %]
+                                    <div class="featureBlurb">
+                                    [% END %]
+                                    <p>[% feature.blurb -%]</p>
+                                </div>
+                                [% IF !feature.forced && !feature.readonly %]
+                                <div class="fields">
+                                    <div class="inputContainer">
+                                        <label class="[% IF feature.defaultvalue -%]checked[% ELSE -%]unchecked[% END -%] enable" title="[% locale.maketext('Enable') %]">
+                                            <input id="[% feature.driver -%]_enable" type="radio" name="[% feature.driver -%]" value="enabled" [% IF feature.defaultvalue -%] checked="checked"[% END -%]/>
+                                            <span class="radioText">[% locale.maketext("Enable") %]</span>
+                                            <span class="currentState hide">([% locale.maketext("current state") %])</span>
+                                        </label>
+                                        <label class="[% IF !feature.defaultvalue -%]checked[% ELSE -%]unchecked[% END -%]" title="[% locale.maketext('Disable') %]">
+                                            <input id="[% feature.driver -%]_disable" type="radio" name="[% feature.driver -%]" value="disabled" [% IF ! feature.defaultvalue -%] checked="checked"[% END -%]/>
+                                            <span class="radioText">[% locale.maketext("Disable") %]</span>
+                                            <span class="currentState hide">([% locale.maketext("current state") %])</span>
+                                        </label>
+                                    </div>
+                                </div>
+                                [% END %]
+                            </fieldset>
+                        </div>
+                    [% END -%]
+                </div>
+            [% END -%]
+            <div id="controls" class="featureControls">
+                <input type="hidden" name="continue"/>
+                <a id="cancel" class="cancel" href="javascript:void(0);" title="[% locale.maketext('Exit to WHM') %]">[% locale.maketext('Exit to WHM')%]</a>
+                <button type="submit" id="submitShowcaseFeatures" name="submitShowcase" title="[% locale.maketext('Save Settings') %]" class="btn-primary" >[% locale.maketext('Save Settings') %]</button>
+            </div>
+        </form>
+    </div><!-- End main -->
+    <div id="confirmationModal" class="modalPopup" style="visibility: hidden;">
+        <div class="hd">
+            <h1>[% locale.maketext("Updated Features Summary") %]</h1>
+        </div>
+        <div class="bd">
+            <div class="confirmationLoader">&nbsp;</div>
+            <ul id="featureStates" class="summaryList"></ul>
+        </div>
+        <div class="ft">
+            <p><i>[% locale.maketext("This window will close automatically.") %]</i></p>
+        </div>
+    </div>
+    <div id="exitModal" class="modalPopup" style="visibility: hidden;">
+        <div class="hd">
+            <h1>[% locale.maketext("No Features Were Updated") %]</h1>
+            <a id="exitModalClose" class="close" href="javascript:void(0);" title="[% locale.maketext('Close') %]">[% locale.maketext('Close')%]</a>
+        </div>
+        <div class="bd">
+            <p>[% locale.maketext("The Feature Showcase will appear again at the next WHM login.") %]</p>
+        </div>
+        <div class="ft">
+            <p><i>[% locale.maketext("This window will close automatically.") %]</i></p>
+        </div>
+    </div>
+</div><!-- End content -->
+
+<script type="text/javascript">
+    var featureForm = DOM.get('showcaseFeaturesForm');
+    var inputs = featureForm.getElementsByTagName('input');
+
+    //Stripe the features
+    var featureContainers = ['spotlightFeatures', 'newRecommended', 'newGeneral', 'modified'];//id's
+    var stripeFeatures = function() {
+        for (var i = 0; i < featureContainers.length; i++) {
+            var features = YAHOO.util.Selector.query('.feature', featureContainers[i])
+            for (var k = 1, len = features.length; k < len; k+=2) {
+                DOM.addClass(features[k], 'even');
+            }
+        }
+        return true;
+    }
+    stripeFeatures();
+
+    //We want to keep the expected state of our radio buttons
+    //Some browsers will keep the changed radio button state on refresh
+    DOM.batch(inputs, function() {
+        if (this.type == 'radio' && this.getAttribute('checked') == 'checked' ) {
+            this.checked = true;
+            var parentLabel = DOM.getAncestorByTagName(this, 'label');
+            if(parentLabel){
+                var currStateElArray = DOM.getChildrenBy(
+                                        parentLabel,
+                                        function(el){
+                                            return DOM.hasClass(el, 'currentState');
+                                        });
+                if(currStateElArray && currStateElArray.length>0){
+                    var currStateEl = currStateElArray[0];
+                    DOM.setStyle(currStateEl, 'display', 'inline-block');
+                }
+            }
+        }
+    });
+
+    //Label state toggles for radio buttons
+    function toggleLabelState() {
+        var inputParent = this.parentNode;
+        if (DOM.hasClass(inputParent, 'unchecked')) {
+            DOM.replaceClass(inputParent, 'unchecked', 'checked');
+            var sibling = (DOM.getPreviousSibling(inputParent) != null )
+                    ? DOM.getPreviousSibling(inputParent)
+                    : DOM.getNextSibling(inputParent);
+
+            DOM.replaceClass(sibling, 'checked', 'unchecked');
+
+            if (DOM.hasClass(sibling, 'fancyRadio')) {
+                //make sure that the other action is unchecked
+                this.checked = true;
+                DOM.getFirstChild(sibling).checked = false;
+            }
+        } else {
+            return false;
+        }
+    }
+
+    //get the current feature state
+    //takes a node object
+    var getFeatureState = function(feature) {
+        var checkedInput = DOM.getElementsByClassName('checked', 'label', feature);
+        if(checkedInput !== null && checkedInput.length !== 0) {
+            if (DOM.hasClass(checkedInput, 'enable')[0]) {
+                return "Enabled";
+            } else {
+                return "Disabled";
+            }
+        }
+        return null;
+    }
+
+    //Build the list of features and their states from form values.
+    var buildConfirmationData = function() {
+        var featureList = DOM.get('featureStates');
+        var features = YAHOO.util.Selector.query('.feature.general, .feature.recommended, .feature.spotlight');
+
+        DOM.batch(features, function() {
+            var featureTitle = YAHOO.util.Selector.query('.titleContainer h3', this, true).innerHTML;
+
+            var li = document.createElement('li');
+            var span = document.createElement('span');
+            DOM.addClass(span, 'status');
+
+            var title = document.createElement('span');
+            title.innerHTML = featureTitle;
+            var state = document.createElement('span');
+            if(getFeatureState(this) !== null) {
+                if (getFeatureState(this) === "Enabled") {
+                    DOM.addClass(span, 'enabled');
+                    state.innerHTML = "[% locale.maketext('Saved') %]";
+                } else {
+                    DOM.addClass(span, 'disabled');
+                    state.innerHTML = "[% locale.maketext('Saved') %]";
+                }
+            } else {
+                // Assuming its a forced feature
+                DOM.addClass(span, 'enabled');
+                state.innerHTML = "[% locale.maketext('Saved') %]";
+            }
+
+            span.appendChild(state);
+
+            li.appendChild(title);
+            li.appendChild(span);
+            featureList.appendChild(li);
+        });
+
+        //Stripe the list items.
+        var listChildren = DOM.getChildren(featureList);
+        for (var i = 0; i < listChildren.length; i++) {
+            if (i % 2) {
+                DOM.addClass(listChildren[i], 'even');
+            }
+        }
+    }
+
+    // Send mixpanel tracking data
+    const sendMixpanelEvents = () => {
+        const form = document.getElementById('showcaseFeaturesForm');
+
+        // disable hidden inputs to not interfere with actual features
+        const hiddenInputs = form.querySelectorAll('input[type="hidden"]');
+        hiddenInputs?.forEach(input => input.disabled = true);
+
+        // get the form data
+        const formData = new FormData(form);
+
+        // send mixpanel events
+        for (let [name, value] of formData?.entries()) {
+            const driverName = getFeatureDriverName(name);
+
+            if (!driverName) return;
+
+            window["mixpanel"]?.track("WHM-FeatureShowcase-submit", {
+                "driver-name": driverName,
+                "option-name": name,
+                "option-value": value,
+            });
+        }
+
+        // re-enable hidden inputs to cleanup
+        hiddenInputs?.forEach(input => input.disabled = false);
+    }
+
+    // find the feature driver name to pass to the mixpanel event
+    const getFeatureDriverName = (inputName) => {
+        let element = document.getElementsByName(inputName)[0];
+
+        while (element && element !== document.body) { // traverse up until you hit the document body
+            if (element.tagName === "DIV" && element.classList.contains("feature")) {
+                return element.id; // found the ".feature" div
+            }
+            element = element.parentElement;
+        }
+        return null;
+    }
+
+    //Confirmation modal
+    var confirmation = new YAHOO.widget.Panel("confirmationModal", {
+        fixedcenter: true,
+        close: false,
+        draggable: false,
+        modal: true,
+        width: '600px',
+        visible: false
+    });
+    confirmation.render();
+
+    var showConfirmationModal = function(e) {
+        EVENT.preventDefault(e);
+        buildConfirmationData();
+        sendMixpanelEvents();
+        confirmation.show();
+        window.setTimeout(function(){
+            featureForm['continue'].value = "[% locale.maketext('Save Settings') %]";
+            featureForm.submit();
+        }, 3000, true);
+    }
+
+    //Confirmation modal
+    var exitModalPopup = new YAHOO.widget.Panel("exitModal", {
+        fixedcenter: true,
+        close: false,
+        draggable: false,
+        modal: true,
+        width: '600px',
+        visible: false
+    });
+    exitModalPopup.render();
+    var showExitModal = function(e) {
+        EVENT.preventDefault(e);
+        exitModalPopup.show();
+        setFeatureShowcaseCookie();
+        window.setTimeout(function(){
+            exitToWHM();
+        }, 3000, true);
+    }
+
+
+    //Load event listeners
+    EVENT.on(inputs, 'click', toggleLabelState);
+    EVENT.on(featureForm, 'submit', showConfirmationModal);
+    EVENT.on('cancel', 'click', showExitModal);
+    EVENT.on('exitModalClose', 'click',
+    function(e) {
+        EVENT.preventDefault(e);
+        exitToWHM(e);
+    });
+
+    /**
+    * isSet: This variable allows to set FeatureShowcase Cookie only once. We need this since
+    * 'setFeatureShowcaseCookie' method is triggered by timeout handler in 'showExitModal' and close link click
+    * handler
+    */
+    var isSet=0;
+    var exitToWHM = function(e){
+        if(!isSet){
+            setFeatureShowcaseCookie();
+            window.location = "[% cp_security_token %]/?gswdone=1";
+            isSet=1;
+        }
+    }
+
+    function setFeatureShowcaseCookie(){
+        YAHOO.util.Cookie.set("whostmgr_feature_showcase_[% data.loggedin_user %]", "[% data.whmversion %]", {
+            path:"/"
+        });
+    }
+</script>
+
+[% INCLUDE gsw/gsw_step_end.tmpl %]
+[% INCLUDE gsw/footer.tmpl %]

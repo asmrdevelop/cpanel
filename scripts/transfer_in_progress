@@ -1,0 +1,144 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/transfer_in_progress            Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::transfer_in_progress;
+
+=encoding utf-8
+
+=head1 NAME
+
+transfer_in_progress
+
+=head1 SYNOPSIS
+
+    transfer_in_progress ( --serialize_output | --help )
+
+This script will check if there is an active transfer session.
+
+ Options:
+    --help                      brief help message
+    --serialize_output          encode output as JSON
+
+=cut
+
+use strict;
+
+use Getopt::Long ();
+
+use Cpanel::Exception              ();
+use Cpanel::JSON                   ();
+use Cpanel::LoadModule             ();
+use Whostmgr::Transfers::SessionDB ();
+
+use Try::Tiny;
+
+if ( !caller() ) {
+    my $serialize_output;
+    my $help;
+
+    Getopt::Long::Configure('pass_through');
+    Getopt::Long::GetOptionsFromArray(
+        [@ARGV],
+        serialize_output => \$serialize_output,
+        help             => \$help,
+    );
+
+    if ($help) {
+        print _help();
+        exit 0;
+    }
+
+    my $script_obj = scripts::transfer_in_progress->new();
+
+    try {
+        my $transfer_exists = $script_obj->active_transfer_exists();
+        $script_obj->_handle_output( $transfer_exists, $serialize_output );
+    }
+    catch {
+        die Cpanel::Exception::get_string($_) . "\n";
+    };
+
+    exit 0;
+}
+
+sub new {
+    my $self = bless {}, __PACKAGE__;
+
+    return $self;
+}
+
+=head1 METHODS
+
+=over 4
+
+=item B<active_transfer_exists>
+
+A function that indicates if there is an active transfer session (one that is RUNNING or PAUSING).
+
+This function returns 1 if there is an active transfer session and 0 if there isn't.
+
+This function may die if there is any issue connecting to the database or getting the data
+from the database.
+
+=back
+
+=cut
+
+sub active_transfer_exists {
+    my ($self) = @_;
+
+    my $session_db = Whostmgr::Transfers::SessionDB->new();
+
+    my $sessions = $session_db->list_session_details( [ 'RUNNING', 'PAUSING' ] );
+    return 0 if !$sessions || !keys %$sessions;
+
+    return 1;
+}
+
+sub _handle_output {
+    my ( $self, $transfer_exists, $serialize_output ) = @_;
+
+    if ($serialize_output) {
+        print Cpanel::JSON::Dump(
+            {
+                transfer_exists => $transfer_exists,
+            }
+        ) . "\n";
+    }
+    else {
+        if ($transfer_exists) {
+            print "An active transfer exists.\n";
+        }
+        else {
+            print "An active transfer does not exist.\n";
+        }
+    }
+
+    return 1;
+}
+
+sub _help {
+    my $msg = shift;
+
+    my $val;
+    open my $wfh, '>', \$val or die "Failed to open to a scalar: $!";
+
+    Cpanel::LoadModule::load_perl_module('Pod::Usage');
+    Pod::Usage::pod2usage(
+        -exitval   => 'NOEXIT',
+        -message   => $msg,
+        -verbose   => 1,
+        -noperldoc => 1,
+        -output    => $wfh,
+        -input     => '/usr/local/cpanel/scripts/transfer_in_progress.pod',
+    );
+
+    return $val;
+
+}
+
+1;

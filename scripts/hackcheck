@@ -1,0 +1,102 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/hackcheck                       Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use Cpanel::Rand                 ();
+use Cpanel::FileUtils::TouchFile ();
+use Cpanel::SafeDir::MK          ();
+
+$| = 1;
+
+my $tmpdir    = Cpanel::Rand::gettmpdir();    # audit case 46806 ok
+my $is_hacked = '';
+if ( -d $tmpdir ) {
+    foreach my $num ( 0 .. 9 ) {
+        Cpanel::FileUtils::TouchFile::touchfile("$tmpdir/$num");
+        if ( !-f "$tmpdir/$num" ) {
+            $is_hacked = "Could not create file $tmpdir/$num: $!";
+            last;
+        }
+        elsif ( !unlink("$tmpdir/$num") ) {
+            $is_hacked = "Could not remove file $tmpdir/$num: $!";
+            last;
+        }
+        Cpanel::SafeDir::MK::safemkdir("$tmpdir/$num");
+        if ( !-d "$tmpdir/$num" ) {
+            $is_hacked = "Could not create directory $tmpdir/$num: $!";
+            last;
+        }
+        elsif ( !rmdir("$tmpdir/$num") ) {
+            $is_hacked = "Could not remove directory $tmpdir/$num: $!";
+            last;
+        }
+    }
+    if ( !$is_hacked ) {
+        if ( !rmdir($tmpdir) ) {
+            $is_hacked = "Could not remove directory $tmpdir: $!";
+        }
+    }
+}
+else {    # Can't make random directory in /tmp
+    $is_hacked = "Failed to create directory $tmpdir: $!";
+}
+
+my $msg = <<"EOM";
+Attempts to create new directories or files whose filenames begin with numbers have failed.
+This is indicative of a root compromise of the server.
+
+The exact error encountered was:
+
+$is_hacked
+
+EOM
+
+if ($is_hacked) {
+    print "[hackcheck] Possible rootkit detected\n$msg";
+
+    require Cpanel::Notify;
+    Cpanel::Notify::notification_class(
+        'class'            => 'Check::Hack',
+        'application'      => 'Check::Hack',
+        'constructor_args' => [
+            'origin' => 'hackcheck',
+            'reason' => $is_hacked
+        ]
+    );
+}
+
+exit if -e '/etc/disablehackcheck';
+
+foreach my $account (qw(xfs daemon)) {
+    my @pwnam = getpwnam($account);
+    next if !$pwnam[0];
+    if ( $pwnam[1] !~ m{^[\!\*]} ) {
+        system( "/usr/bin/passwd", "-l", $account );
+    }
+}
+
+my ( $user, $uid );
+open( my $passwd, '<', "/etc/passwd" );
+while (<$passwd>) {
+    next if (m/^\#/);
+    ( $user, undef, $uid, undef ) = split( /:/, $_, 3 );
+    next if ( !defined $uid );
+    if ( $uid == 0 && $user ne "root" && $user ne "toor" ) {
+        system( '/usr/bin/passwd', '-l', $user );
+        print "[hackcheck] $user has a uid 0 account (root access).\n";
+
+        require Cpanel::Notify;
+        Cpanel::Notify::notification_class(
+            'class'            => 'Check::Hack',
+            'application'      => 'Check::Hack',
+            'constructor_args' => [
+                'origin'          => 'hackcheck',
+                'suspicious_user' => $user
+            ]
+        );
+    }
+}
+close($passwd);

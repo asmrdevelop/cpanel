@@ -1,0 +1,30 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - bin/eximstats_server                    Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+BEGIN {
+    @INC = grep( !/(^\.|\.\.|\/\.+)/, @INC );
+}
+
+use strict;
+use DBI                          ();
+use Digest::MD5                  ();    #makes Cpanel::MysqlUtils::MyCnf::Basic  faster
+use Cpanel::EximStats::ConnectDB ();
+use Cpanel::DeliveryReporter     ();
+use Cpanel::YAML::Syck           ();
+$SIG{'ALRM'} = sub { die "Timeout: Alarm"; };
+
+alarm 120;
+
+my $dbh = Cpanel::EximStats::ConnectDB::dbconnect();
+
+my $delivery_reporter = Cpanel::DeliveryReporter->new( 'dbh' => $dbh );
+
+my %ARGS = @ARGV;
+
+my ( $stats_ref, $total ) = $delivery_reporter->user_stats(%ARGS);
+
+print YAML::Syck::Dump($stats_ref);

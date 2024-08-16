@@ -1,0 +1,22 @@
+warn
+        condition = $acl_m_outbound_recipient
+        condition = ${if <={$message_size}{[% ACL_MAX_SPAM_SCAN_SIZE %]K}}
+        condition = ${if !eq{$acl_c_authenticated_local_user}{root}}
+        condition = ${if !match{$authenticated_id}{\N^__cpanel__service__auth__[^+%:@]+$\N}}
+        condition = ${perl{spamd_is_available}}
+        set acl_m_spam_scan_enabled = 1
+
+
+deny
+        condition   = $acl_m_outbound_recipient
+        condition   = $acl_m_spam_scan_enabled
+        spam        = ${if eq{$acl_m1}{}{[% ACL_EXIMSCANUSER %]}{$acl_m1}}:true/defer_ok
+        condition   = ${if !eq{$spam_score_int}{}}
+        condition   = ${if >{$spam_score_int}{[% VALUE %]}}
+        message     = This message was classified as SPAM and may not be delivered
+        log_message = "SpamAssassin as ${if eq{$acl_m1}{}{[% ACL_EXIMSCANUSER %]}{$acl_m1}} detected OUTGOING smtp message as spam ($spam_score/[% VALUE %]))"
+
+warn
+        condition   = $acl_m_outbound_recipient
+        condition   = $acl_m_spam_scan_enabled
+        log_message = "SpamAssassin as ${if eq{$acl_m1}{}{[% ACL_EXIMSCANUSER %]}{$acl_m1}} detected OUTGOING smtp message as NOT spam ($spam_score/[% VALUE %])"

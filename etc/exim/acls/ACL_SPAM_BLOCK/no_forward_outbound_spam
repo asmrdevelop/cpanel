@@ -1,0 +1,21 @@
+
+deny
+  condition = ${if eq {${acl_m2}}{1}{1}{0}}
+  condition = ${if eq {$acl_c_delivery_address_data}{}{0}{1}}
+
+  # Don’t reject messages where any forwarder has a local destination.
+  # Ideally we would reject the remote destinations and accept the local,
+  # but there is no known way of achieving this configuration.
+  !condition = ${if \
+    forany{ ${addresses:$acl_c_delivery_address_data} } \
+    { match_domain{${domain:$item}}{+local_domains} } \
+  }
+
+  # Don’t reject messages where every destination is an autoresponder.
+  !condition = ${if \
+    forall{ ${addresses:$acl_c_delivery_address_data} } \
+    { match{$item}{/autorespond} } \
+  }
+
+  log_message = "This mail cannot be forwarded because it was detected as spam."
+  message = "This mail cannot be forwarded because it was detected as spam."

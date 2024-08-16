@@ -1,0 +1,125 @@
+--
+-- Database: 'eximstats'
+--
+-- Version: 3.0
+
+-- --------------------------------------------------------
+
+PRAGMA cache_size   = 8000;
+PRAGMA temp_store   = 2;
+
+--
+-- Table structure for table 'defers'
+--
+
+CREATE TABLE IF NOT EXISTS defers (
+  sendunixtime integer NOT NULL DEFAULT '0',
+  msgid char(23) NOT NULL DEFAULT '',
+  email char(255) NOT NULL DEFAULT '',
+  transport_method char(45) NOT NULL DEFAULT 'remote_smtp',
+  "host" char(255) NOT NULL DEFAULT '',
+  ip char(46) NOT NULL DEFAULT '',
+  message char(240) NOT NULL DEFAULT '',
+  router char(65) NOT NULL DEFAULT '',
+  deliveryuser char(30) NOT NULL DEFAULT '',
+  deliverydomain char(255) NOT NULL DEFAULT '',
+  PRIMARY KEY (sendunixtime,msgid,email)
+);
+
+CREATE INDEX IF NOT EXISTS email_sendunixtime_index_defers on defers (email,sendunixtime);
+CREATE INDEX IF NOT EXISTS msgid_sendunixtime_index_defers ON defers (msgid,sendunixtime);
+CREATE INDEX IF NOT EXISTS deliverydomain_sendunixtime_index_defers ON defers (deliverydomain,sendunixtime);
+CREATE INDEX IF NOT EXISTS deliveryuser_sendunixtime_index_defers ON defers (deliveryuser,sendunixtime);
+CREATE INDEX IF NOT EXISTS email_deliveryuser_sendunixtime_index_defers ON defers (email,deliveryuser,sendunixtime);
+
+-- --------------------------------------------------------
+
+--
+-- Table structure for table 'failures'
+--
+
+CREATE TABLE IF NOT EXISTS failures (
+  sendunixtime integer NOT NULL DEFAULT '0',
+  msgid char(23) NOT NULL DEFAULT '',
+  email char(255) NOT NULL DEFAULT '',
+  deliveredto char(255) NOT NULL DEFAULT '',
+  transport_method char(45) NOT NULL DEFAULT 'remote_smtp',
+  "host" char(255) NOT NULL DEFAULT '',
+  ip char(46) NOT NULL DEFAULT '',
+  message char(240) NOT NULL DEFAULT '',
+  router char(65) NOT NULL DEFAULT '',
+  deliveryuser char(30) NOT NULL DEFAULT '',
+  deliverydomain char(255) NOT NULL DEFAULT '',
+  PRIMARY KEY (sendunixtime,msgid,email,deliveredto)
+);
+
+CREATE INDEX IF NOT EXISTS email_sendunixtime_index_failures ON failures (email,sendunixtime);
+CREATE INDEX IF NOT EXISTS msgid_sendunixtime_index_failures ON failures (msgid,sendunixtime);
+CREATE INDEX IF NOT EXISTS deliverydomain_sendunixtime_index_failures ON failures (deliverydomain,sendunixtime);
+CREATE INDEX IF NOT EXISTS deliveryuser_sendunixtime_index_failures ON failures (deliveryuser,sendunixtime);
+CREATE INDEX IF NOT EXISTS email_deliveryuser_sendunixtime_index_failures ON failures (email,deliveryuser,sendunixtime);
+
+-- --------------------------------------------------------
+
+--
+-- Table structure for table 'sends'
+--
+
+CREATE TABLE IF NOT EXISTS sends (
+  sendunixtime integer NOT NULL DEFAULT '0',
+  msgid char(23) NOT NULL DEFAULT '',
+  email char(255) NOT NULL DEFAULT '',
+  processed integer NOT NULL DEFAULT '0',
+  "user" char(30) NOT NULL DEFAULT '',
+  size integer NOT NULL DEFAULT '0',
+  ip char(46) NOT NULL DEFAULT '',
+  auth char(30) NOT NULL DEFAULT '',
+  "host" char(255) NOT NULL DEFAULT '',
+  domain char(255) NOT NULL DEFAULT '',
+  localsender integer NOT NULL DEFAULT '1',
+  spamscore double NOT NULL DEFAULT 0,
+  sender char(255) NOT NULL DEFAULT '',
+  PRIMARY KEY (sendunixtime,msgid,email)
+);
+
+CREATE INDEX IF NOT EXISTS sendunixtime_domain_user_msgid_index_sends ON sends (sendunixtime,domain,"user",msgid);
+CREATE INDEX IF NOT EXISTS user_sendunixtime_index_sends ON sends ("user",sendunixtime);
+CREATE INDEX IF NOT EXISTS msgid_user_index_sends ON sends (msgid,"user");
+CREATE INDEX IF NOT EXISTS msgid_sendunixtime_index_sends ON sends (msgid, sendunixtime);
+CREATE INDEX IF NOT EXISTS domain_user_sendunixtime_index_sends ON sends (domain,"user",sendunixtime);
+CREATE INDEX IF NOT EXISTS email_sendunixtime_user_index_sends ON sends (email,sendunixtime,"user");
+CREATE INDEX IF NOT EXISTS sender_sendunixtime_user_index_sends ON sends (sender,sendunixtime,"user");
+CREATE INDEX IF NOT EXISTS user_sendunixtime_spamscore_ip_index_sends ON sends ("user",sendunixtime,spamscore,ip);
+
+-- --------------------------------------------------------
+
+--
+-- Table structure for table 'smtp'
+--
+
+CREATE TABLE IF NOT EXISTS smtp (
+  sendunixtime integer NOT NULL DEFAULT '0',
+  msgid char(23) NOT NULL DEFAULT '',
+  email char(255) NOT NULL DEFAULT '',
+  processed integer NOT NULL DEFAULT '0',
+  transport_method char(45) NOT NULL DEFAULT 'remote_smtp',
+  transport_is_remote integer NOT NULL DEFAULT '1',
+  "host" char(255) NOT NULL DEFAULT '',
+  ip char(46) NOT NULL DEFAULT '',
+  deliveredto char(255) NOT NULL DEFAULT '',
+  router char(65) NOT NULL DEFAULT '',
+  deliveryuser char(30) NOT NULL DEFAULT '',
+  deliverydomain char(255) NOT NULL DEFAULT '',
+  countedtime integer NOT NULL DEFAULT '0',
+  countedhour integer NOT NULL DEFAULT '0',
+  counteddomain char(255) NOT NULL DEFAULT '',
+  PRIMARY KEY (sendunixtime,msgid,email,deliveredto,router)
+);
+
+CREATE INDEX IF NOT EXISTS msgid_index_smtp ON smtp (msgid);
+CREATE INDEX IF NOT EXISTS msgid_sendunixtime_index_smtp ON smtp (msgid, sendunixtime);
+CREATE INDEX IF NOT EXISTS deliverydomain_sendunixtime_index_smtp ON smtp (deliverydomain,sendunixtime);
+CREATE INDEX IF NOT EXISTS deliveryuser_sendunixtime_index_smtp ON smtp (deliveryuser,sendunixtime);
+CREATE INDEX IF NOT EXISTS email_sendunixtime_index_smtp ON smtp (email,sendunixtime);
+CREATE INDEX IF NOT EXISTS email_deliveryuser_sendunixtime_index_smtp ON smtp (email,deliveryuser,sendunixtime);
+CREATE INDEX IF NOT EXISTS processed_transport_is_remote_index_smtp ON smtp (processed,transport_is_remote);

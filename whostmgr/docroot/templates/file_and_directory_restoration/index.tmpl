@@ -1,0 +1,41 @@
+[%
+    USE Whostmgr;
+    USE JSON;
+
+    SET stylesheet_includes = [
+        Whostmgr.find_file_url('/templates/file_and_directory_restoration/index.css')
+    ];
+
+    IF locale.get_html_dir_attr() == 'rtl';
+        stylesheet_includes.unshift(Whostmgr.find_file_url('/styles/bootstrap_rtl_offsets.min.css'));
+    END;
+
+    SET PAGE_BASE = '/scripts5/file_and_directory_restoration/';
+
+    WRAPPER 'master_templates/master.tmpl'
+        header = locale.maketext('File and Directory Restoration'),
+        breadcrumburl = PAGE_BASE
+        base = PAGE_BASE
+        stylesheets = stylesheet_includes
+        CJT2_EXCLUSIVE = 1
+        theme = 'bootstrap'
+        app_key = 'file_and_directory_restoration';
+%]
+
+<script type="text/javascript">
+window.loggedInUser="[% whm_user %]";
+</script>
+<script type="text/ng-template" id="file_and_directory_restoration/views/backup_restore.ptt">
+[% PROCESS 'file_and_directory_restoration/views/backup_restore.ptt' %]
+</script>
+
+<div class="body-content">
+    <cp-alert-list alert-group="'whm-restoration'"></cp-alert-list>
+    <div ng-controller="applicationController">
+        <div id="viewContent" class="ng-cloak" ng-view ng-cloak></div>
+    </div>
+</div>
+
+
+[% PROCESS 'master_templates/cjt2_header_include.tt' %]
+[% END %]

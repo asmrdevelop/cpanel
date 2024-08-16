@@ -1,0 +1,84 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/ea4_fresh_install               Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::ea4_fresh_install;
+
+use strict;
+use warnings;
+
+use Cpanel::Config::Httpd::EA4     ();
+use Cpanel::Install::EA4           ();
+use Cpanel::Install::Utils::Logger ();
+use Cpanel::Server::Type           ();
+use IO::Interactive::Tiny          ();
+use IO::Prompt                     ();
+
+exit __PACKAGE__->script(@ARGV) unless caller();
+
+sub script {
+    my @ARGS = @_;
+
+    # We don't take any arguments, so we need to print usage and exit
+    return usage( $ARGS[1] ) if scalar @ARGS > 1;
+
+    my $prompt_text = "This script is for installing EasyApache4 on a ";
+    $prompt_text .= "system that has never had EasyApache4 installed.\n";
+    $prompt_text .= "Do you wish to continue?";
+
+    # We only run this in interactive mode because we want to prompt
+    # the user to be sure they are certain of wanting to run this
+    if ( !IO::Interactive::Tiny::is_interactive() ) {
+        die "$0 is only effective when run interactively.\n";
+    }
+
+    if ( !IO::Prompt::prompt( $prompt_text . " [y/N]", -defaut => 'n', -yes_no ) ) {
+
+        print "Exiting with no changes.\n";
+        return 0;
+    }
+
+    if ( Cpanel::Config::Httpd::EA4::is_ea4() ) {
+        die "EasyApache4 is already installed.\n";
+    }
+
+    if ( Cpanel::Server::Type::is_dnsonly() ) {
+        die "EasyApache4 is not available on DNSONLY Servers.\n";
+    }
+
+    Cpanel::Install::Utils::Logger::init('/usr/local/cpanel/logs/ea4_fresh_intall.log');
+
+    {
+        # CPANEL_BASE_INSTALL ensures that Whostmgr::TweakSettings::Apache, etc., act appropriately while Apache is being installed.
+        local $ENV{'CPANEL_BASE_INSTALL'} = 1;
+
+        Cpanel::Install::EA4::install_apache_repo();
+
+        Cpanel::Install::Utils::Logger::INFO("Installing EA4");
+        Cpanel::Install::EA4::setup_config_and_fs_for_ea4();
+        if ( !Cpanel::Install::EA4::install_apache() ) {
+            Cpanel::Install::Utils::Logger::FATAL("Failed to install EA4");
+        }
+    }
+
+    return 0;
+}
+
+sub usage {
+    my ($arg) = @_;
+
+    my $usage_text = "Run $0 to perform a fresh install of EasyApache4 on a system where EasyApache4 has never been installed.\n";
+    $usage_text .= "Usage:  $0\n";
+
+    # Not an error if they ar asking for help
+    if ( $arg eq '--help' ) {
+        print $usage_text;
+        return 0;
+    }
+    else {
+        die $usage_text;
+    }
+}

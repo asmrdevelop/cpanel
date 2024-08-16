@@ -1,0 +1,149 @@
+[%
+USE CPScalar;
+SET CPANEL.CPVAR.dprefix = "../";
+SET index_type = execute("DirectoryIndexes", "get_indexing", { dir => RAW_FORM.dir });
+
+# Clean up all consecutive // issues
+SET directory = RAW_FORM.dir.replace('/+', '/').replace('/$', '');
+SET from_parent_node = FORM.is_parent;
+SET quoted_home_directory = CPANEL.homedir.quotemeta();
+IF directory.match("^${quoted_home_directory}/.+");
+    # If we are not in the root folder remove
+    # one folder from the end to find the parent
+    SET return_dirs = directory.split('/+');
+    CALL return_dirs.pop();
+    SET up_one_directory = return_dirs.join('/');
+END;
+
+# If this page is loaded from the parent Edit link, we don't
+# want to trim off the child.
+SET return_url = 'index.html?dir=' _ (!from_parent_node ? up_one_directory.uri() : directory.uri() || '/');
+
+SET relative_directory = directory.replace("^${quoted_home_directory}[\/]?", '');
+%]
+
+[% PROCESS '_assets/cjt2_header_include.tt' %]
+
+[% WRAPPER '_assets/master.html.tt'
+    app_key = 'indexes'
+    page_stylesheets = 'indexmanager/dohtaccess.css'
+    use_master_bootstrap = 0
+ -%]
+<div class="body-content">
+    <p class="description">
+        [% locale.maketext("The “[_1]” allows you to customize the way a directory appears when no index files reside in a directory.", locale.maketext('Index Manager')) %]
+        <a id="toggle-example-index-files">[% locale.maketext("Show example index files.") %]</a>
+        <div id="example-index-files" class="hidden callout callout-info">
+            <h4>[% locale.maketext('Example Index Files') %]</h4>
+            <ul>
+                <li>index.php</li>
+                <li>index.php5</li>
+                <li>index.php4</li>
+                <li>index.php3</li>
+                <li>index.perl</li>
+                <li>index.pl</li>
+                <li>index.plx</li>
+                <li>index.ppl</li>
+                <li>index.cgi</li>
+                <li>index.jsp</li>
+                <li>index.jp</li>
+                <li>index.phtml</li>
+                <li>index.shtml</li>
+                <li>index.xhtml</li>
+                <li>index.html</li>
+                <li>index.htm</li>
+                <li>index.wml</li>
+                <li>Default.html</li>
+                <li>Default.htm</li>
+                <li>default.html</li>
+                <li>default.htm</li>
+                <li>home.html</li>
+                <li>home.htm</li>
+                <li>index.js</li>
+            </ul>
+        </div>
+    </p>
+
+    [% IF !index_type.status %]
+    <div class="alert alert-danger" role="alert">
+        <span class="glyphicon glyphicon-remove-sign" aria-hidden="true"></span>
+        <div class="alert-message">
+            <strong class="alert-title">
+                [% locale.maketext('Error:') %]
+            </strong>
+            <span class="alert-body">
+                <span id="error-config">
+                    [% index_type.errors_as_string.html() %]
+                </span>
+            </span>
+        </div>
+    </div>
+    [% ELSE %]
+    [% SET index_type = index_type.data %]
+    <div class="section">
+        <p>
+            <h4 id="hdrSetIndexing">
+                [% IF relative_directory.defined && relative_directory != "" %]
+                [% locale.maketext("Set Indexing for “[output,strong,_1]”", relative_directory.html().breakOn('\.')) %]
+                [% ELSE %]
+                [% locale.maketext("Set Indexing Settings for all directories.") %]
+                [% END %]
+            </h4>
+        </p>
+
+        <form id="the-form" action="changepro.html">
+            <input type="hidden" name="dir" id="dir" value="[% FORM.dir %]">
+            <input type="hidden" name="is_parent" id="is_parent" value="[% FORM.is_parent %]">
+            <div class="radio">
+                <label id="lblDefault">
+                    <input type="radio" name="listable_type" id="rdoDefault" value="inherit" [% IF index_type == 'inherit' %] checked [% END %]>
+                    <span>[% locale.maketext("Inherit") %]</span>
+                </label>
+                <span class="help-block">
+                    [% locale.maketext("Select this mode to use the parent directory’s setting. If the index settings are not defined in the parent directory, the system will use its default settings.") %]
+                </span>
+            </div>
+            <div class="radio">
+                <label id="lblNoIndex">
+                    <input type="radio" name="listable_type" id="rdoNoIndex" value="disabled" [% IF index_type == 'disabled' %] checked [% END %]>
+                    <span>[% locale.maketext("No Indexing") %]</span>
+                </label>
+                <span class="help-block">
+                    [% locale.maketext("No files will appear for this directory if a default file is missing.") %]
+                </span>
+            </div>
+            <div class="radio">
+                <label id="lblStdIndex">
+                    <input type="radio" name="listable_type" id="rdoStdIndex" value="standard" [% IF index_type == 'standard' %] checked [% END %]>
+                    <span>[% locale.maketext("Show Filename Only") %]</span>
+                </label>
+                <span class="help-block">
+                    [% locale.maketext("This mode shows a simple list of the files present if the default file is missing.") %]
+                </span>
+            </div>
+            <div class="radio">
+                <label id="lblFancyIndex">
+                    <input type="radio" name="listable_type" id="rdoFancyIndex" value="fancy" [% IF index_type == 'fancy' %] checked [% END %]>
+                    <span>[% locale.maketext("Show Filename and Description") %]</span>
+                </label>
+                <span class="help-block">
+                    [% locale.maketext("This mode shows a list of files and their attributes: file size and file type.") %]
+                </span>
+            </div>
+            <div class="form-group">
+                <input type="submit" class="btn btn-primary" id="btnSave" value="[% locale.maketext("Save") %]">
+            </div>
+        </form>
+    </div>
+    [% END %]
+
+    [% INCLUDE _assets/return_link.html.tt return_location=return_url return_link_text=locale.maketext("Go Back") %]
+</div>
+<script>
+var PAGE = {
+    showLabel: [% locale.maketext("Show example index files.").json() %],
+    hideLabel: [% locale.maketext("Hide example index files.").json() %]
+};
+</script>
+[% END #wrapper -%]
+

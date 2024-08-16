@@ -1,0 +1,169 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/snapshot_prep                   Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::snapshot_prep;
+
+use cPstrict;
+use Cpanel::Imports;
+use Cpanel::ImagePrep                 ();
+use Cpanel::ImagePrep::Common         ();
+use Cpanel::ImagePrep::Output         ();
+use Cpanel::ImagePrep::Task::packages ();
+
+use base 'Cpanel::HelpfulScript';
+use constant _OPTIONS => ( 'yes', 'no-post-service', 'list-tasks', 'skip=s', 'only=s', 'instance-packages=s', 'delete-saved-copies' );
+
+# Synopsis deliberately omits --yes from "Using the utility" so the warning must be read.
+
+=head1 NAME
+
+scripts/snapshot_prep
+
+=head1 SYNOPSIS
+
+=head2 WARNINGS -- READ BEFORE USING
+
+B<DESTRUCTIVE>: This is a destructive action. If you run this script
+on a production server, data loss will occur. Pass the --yes option to
+acknowledge that you understand this warning. If any cPanel users are
+detected, further confirmation will be required.
+
+B<LIMITED TO CPANEL & WHM>: This utility only handles cPanel & WHM and
+any software distributed with it or actively managed by it. It does not
+handle the various operating system components that also need preparation
+for image creation. For everything else, including SSH host and authorized
+keys, yum UUID, etc., you should use a tool like B<virt-sysprep>.
+
+=head2 Using the utility
+
+/usr/local/cpanel/scripts/snapshot_prep [--no-post-service][--list-tasks]
+[[--skip | --only] task,...] [--instance-packages package,...]
+[--delete-saved-copies]
+
+Puts cPanel & WHM and related bundled software into an ideal state to
+prepare it for use as a deployment image. Warns you if there are problems
+with your image you might want to attend to prior to snapshotting.
+
+Additional options:
+
+--no-post-service: If specified, the on-first-boot service (similar to
+cloud-init) will NOT be installed, and you will be required to manually
+run post_snapshot on first boot of any instance. This is appropriate if
+you have your own custom initialization routines and want to ensure that
+the order in which tasks are performed is predictable.
+
+--list-tasks: List the tasks that the script would perform.
+
+--skip: A comma-delimited list of tasks to skip.
+
+--only: A comma-delimited list of tasks to perform, skipping all other
+tasks.
+
+--instance-packages: A comma-delimited list of packages to install on
+first boot. The main reason for using this option instead of installing
+the packages directly on the template VM would be if the installation
+process generates per-instance data which you do not want to save into
+your images.
+
+--delete-saved-copies: Delete backup copies of configuration files that
+were saved when preparing for a snapshot.
+
+NOTE: The following sets of options are mutually exclusive with others
+from the same set:
+
+=over
+
+=item * --list-tasks, --yes, --delete-saved-copies
+
+=item * --skip, --only
+
+=back
+
+=cut
+
+exit __PACKAGE__->new(@ARGV)->run unless caller;
+
+sub run {
+    my ($self) = @_;
+
+    my $common = Cpanel::ImagePrep::Common->new();
+
+    if ( ( grep { $self->getopt($_) } qw(list-tasks delete-saved-copies yes) ) > 1 ) {
+        die $self->help('The --list-tasks, --yes, and --delete-saved-copies options are mutually exclusive.');
+    }
+
+    if ( $self->getopt('skip') && $self->getopt('only') ) {
+        die $self->help('The --skip and --only options are mutually exclusive.');
+    }
+
+    if ( $self->getopt('list-tasks') ) {
+        my ( $table, $cb ) = Cpanel::ImagePrep::Output->get_list_output_callback();
+        print Cpanel::ImagePrep::list_tasks( output_callback => $cb );
+        print $table->draw;
+        return 0;
+    }
+
+    if ( $self->getopt('delete-saved-copies') ) {
+        return Cpanel::ImagePrep::delete_saved_copies() ? 0 : 1;
+    }
+
+    if ( !$self->getopt('yes') ) {
+        die $self->help('Please read the warning in the usage output before using this script.');
+    }
+
+    local $| = 1;    # helps the test suite stream_cmd method
+
+    my @to_skip;
+    if ( my $to_skip_csl = $self->getopt('skip') ) {
+        @to_skip = split /,/, $to_skip_csl;
+    }
+
+    if ( my $only_csl = $self->getopt('only') ) {
+        my %only = map { $_ => 1 } ( split /,/, $only_csl );
+        Cpanel::ImagePrep::list_tasks(
+            output_callback => sub {
+                my ($task_obj) = @_;
+                my $task = $task_obj->task_name;
+                push @to_skip, $task if !$only{$task};
+            }
+        );
+    }
+
+    my $instance_packages_csl = $self->getopt('instance-packages');
+    if ($instance_packages_csl) {
+        my @instance_packages = split /,/, $instance_packages_csl;
+        Cpanel::ImagePrep::Task::packages->new->request(@instance_packages);
+    }
+
+    my ( $table,  $cb )     = Cpanel::ImagePrep::Output->get_status_output_callback();
+    my ( $status, $reason ) = Cpanel::ImagePrep::snapshot_prep(
+        output_callback => $cb,
+        skip            => \@to_skip,
+    );
+
+    my $skip_service = !$status || $self->getopt('no-post-service') || $ENV{DESTROY_CPANEL_USER_DATA};
+    if ( !$skip_service ) {
+        Cpanel::ImagePrep::install_post_service();
+    }
+
+    $common->raw_logmsg( $table->draw );
+    $common->regular_logmsg($reason);
+
+    if ($status) {
+        $common->regular_logmsg('The rest of the operating system still needs preparation. You can use virt-sysprep or a similar utility to achieve this.');
+        if ($skip_service) {
+            $common->regular_logmsg('Warning: Because you disabled the on-first-boot service, you will have to run /usr/local/cpanel/scripts/post_snapshot yourself on any instances launched from a snapshot.');
+        }
+    }
+    else {
+        $common->regular_logmsg('See the output before the summary table for more detail about the failure(s).');
+    }
+
+    return $status ? 0 : 1;
+}
+
+1;

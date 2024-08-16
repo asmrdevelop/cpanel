@@ -1,0 +1,303 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+package scripts::update_spamassassin_config;
+
+# cpanel - scripts/update_spamassassin_config        Copyright 2022 cPanel L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+use warnings;
+use Cpanel::Daemonizer::Tiny    ();
+use Cpanel::StringFunc::Replace ();
+use Cpanel::StringFunc::File    ();
+use Cpanel::FileUtils::Write    ();
+use Cpanel::SafeRun::Errors     ();
+use Cpanel::LoadFile            ();
+use Cpanel::Logger              ();
+use Cpanel::Rand                ();
+use Cpanel::SafeDir::RM         ();
+use Cpanel::Binaries            ();
+use Cpanel::Unix::PID::Tiny     ();
+use Getopt::Long;
+eval { require Mail::SpamAssassin; };
+use Cpanel::SpamAssassin::Rules  ();
+use Cpanel::Exim::RemoteMX::Read ();
+
+our $STATE_ENABLED  = 1;
+our $STATE_DISABLED = 0;
+
+our $SPAMASSASSIN_CONFIG_DIR = "/etc/mail/spamassassin";
+
+my $made_changes_to_config = 0;
+my $pidfile                = '/var/run/update_spamassassin_config.pid';
+my $help                   = 0;
+my $verbose                = 0;
+my $background             = 0;
+
+if ( !caller() ) {
+    GetOptions( 'background' => \$background, 'help' => \$help, 'verbose' => \$verbose );
+    usage() if $help;
+    if ( $ENV{CPANEL_BASE_INSTALL} ) {
+        print STDERR "“$0” refuses to run during a cPanel installation.\n";
+        exit(0);
+    }
+
+    if ($background) {
+
+        my $pid = Cpanel::Daemonizer::Tiny::run_as_daemon(
+            sub {
+                open( STDERR, '>>', '/usr/local/cpanel/logs/error_log' ) || die "Could not redirect STDERR to /usr/local/cpanel/logs/error_log: $!";
+
+                __PACKAGE__->script() && exit(0);
+                exit(1);
+            }
+        );
+    }
+    else {
+        __PACKAGE__->script();
+    }
+}
+
+sub compile_rules {
+    print "Compiling SpamAssassin rules\n" if $verbose;
+    my $saxsok = compile_sa_rules_if_needed();
+
+    if ($saxsok) {
+        Cpanel::FileUtils::Write::overwrite( '/var/cpanel/sa-compile-time', $Mail::SpamAssassin::VERSION, 0644 );
+        if ( set_plugin_state( 'v320.pre', 'Rule2XSBody', $STATE_ENABLED ) ) {
+            print "Mail::SpamAssassin::Plugin::Rule2XSBody test passed: enabled\n" if $verbose;
+        }
+    }
+    else {
+        if ( set_plugin_state( 'v320.pre', 'Rule2XSBody', $STATE_DISABLED ) ) {
+            print "Mail::SpamAssassin::Plugin::Rule2XSBody is not available: disabled\n" if $verbose;
+        }
+    }
+    return;
+}
+
+sub enable_pyzor {
+    print "Enabling the Pyzor plugin\n" if $verbose;
+    if ( eval { require Mail::Pyzor; } ) {
+        if ( set_plugin_state( 'v310.pre', 'Pyzor', $STATE_ENABLED ) ) {
+            print "pyzor is installed, enabled in SpamAssassin!\n" if $verbose;
+        }
+    }
+    else {
+        if ( set_plugin_state( 'v310.pre', 'Pyzor', $STATE_DISABLED ) ) {
+            print "pyzor is not installed, disabling it in SpamAssassin to save memory\n" if $verbose;
+        }
+
+    }
+    return;
+}
+
+sub enable_razor {
+    print "Enabling the Razor2 plugin\n" if $verbose;
+    if ( eval { require Razor2::Client::Agent; } ) {
+        if ( set_plugin_state( 'v310.pre', 'Razor2', $STATE_ENABLED ) ) {
+            print "razor2 is installed, enabled in SpamAssassin!\n" if $verbose;
+        }
+    }
+    else {
+        if ( set_plugin_state( 'v310.pre', 'Razor2', $STATE_DISABLED ) ) {
+            print "razor2 is not installed, disabling it in SpamAssassin to save memory\n" if $verbose;
+        }
+    }
+    return;
+}
+
+sub script {
+    my ($class) = @_;
+    my $upid = Cpanel::Unix::PID::Tiny->new();
+
+    if ( !$upid->pid_file($pidfile) ) {
+        my $pid = $upid->get_pid_from_pidfile($pidfile);
+        print "$0: already running with pid: $pid\n";
+        return 0;
+    }
+
+    my $logger    = Cpanel::Logger->new();
+    my $spamd_bin = Cpanel::Binaries::path('spamd');
+    if ( !-x $spamd_bin ) {
+        print "Spamd binary not found.  Is Apache SpamAssassin™ installed?\nTry: /usr/local/cpanel/scripts/upcp --force" if $verbose;
+        return 1;
+    }
+
+    my $has_rules = Cpanel::SpamAssassin::Rules::has_rules_installed();
+
+    if ( !$has_rules ) {
+        print "The Apache SpamAssassin™ rule update has not yet run.\n" if $verbose;
+        require Cpanel::SafeRun::Object;
+
+        warn if !eval {
+            my $run = Cpanel::SafeRun::Object->new_or_die(
+                program => '/usr/local/cpanel/scripts/sa-update_wrapper',
+                stdout  => \*STDOUT,
+                stderr  => \*STDERR,
+            );
+        };
+
+        $made_changes_to_config = 1;
+    }
+
+    # This module can give us up to 20% more cpu time free on a loaded mail server
+    print "Enabling the Shortcircuit plugin\n" if $verbose;
+    set_plugin_state( 'v320.pre', 'Shortcircuit', $STATE_ENABLED );
+
+    enable_pyzor();
+    enable_razor();
+
+    my $envtype = Cpanel::LoadFile::loadfile('/var/cpanel/envtype');
+    if ( $envtype && $envtype ne 'standard' ) {
+        print "Enabling the SpamCop plugin\n" if $verbose;
+        set_plugin_state( 'v310.pre', 'SpamCop', $STATE_ENABLED );
+    }
+
+    my $local_cf = Cpanel::LoadFile::loadfile("$SPAMASSASSIN_CONFIG_DIR/local.cf");
+
+    # Configure missing trusted networks
+    if ( $local_cf !~ m{\n[ \t]*trusted_networks}s || $local_cf =~ m{\n[ \t]*trusted_networks[^\n]+# Autoconfigured by cPanel}s ) {
+        print "Autoconfiguring trusted networks\n" if $verbose;
+        require Cpanel::IP::Neighbors;
+        require Cpanel::SocketIP;
+        require Cpanel::Net::Whois::IP::Cached;
+        Cpanel::IP::Neighbors::update_neighbor_netblocks_or_log();
+        my %ranges        = map { $_ => 1 } Cpanel::IP::Neighbors::get_netblocks();
+        my @trueaddresses = Cpanel::SocketIP::_resolveIpAddress('mail.cpanel.net');
+        foreach my $public_ip (@trueaddresses) {
+            my $whois_response = Cpanel::Net::Whois::IP::Cached->new()->lookup_address($public_ip) or next;
+
+            # The cidr attribute is an array
+            my $cidr_ar = $whois_response->get('cidr');
+
+            next if !$cidr_ar || 'ARRAY' ne ref $cidr_ar || !scalar @{$cidr_ar};
+
+            foreach ( @{$cidr_ar} ) { $ranges{$_} = 1; }
+        }
+
+        my @remote_mx_ips = Cpanel::Exim::RemoteMX::Read::all_ips();
+        @ranges{@remote_mx_ips} = (1) x @remote_mx_ips;
+
+        my $range_list = join( ' ', sort keys %ranges );
+        if ( $local_cf !~ m{\n[ \t]*#?[ \t]*trusted_networks[ \t]*\Q$range_list\E}s ) {
+            print "Autoconfigured trusted_networks setting.\n" if $verbose;
+            Cpanel::StringFunc::Replace::regsrep( "$SPAMASSASSIN_CONFIG_DIR/local.cf", '^\s*#?\s*trusted_networks', 'trusted_networks ' . $range_list . " # Autoconfigured by cPanel - Remove this end of line comment to avoid future updates" );
+            $made_changes_to_config = 1;
+        }
+    }
+
+    if ( $local_cf !~ m{\n[ \t]*#?[ \t]*dns_available}s ) {
+        print "Setting dns_available = yes\n" if $verbose;
+
+        # spamassassin takes about 5 times longer if dns_available is not set
+        Cpanel::StringFunc::File::addlinefile( "$SPAMASSASSIN_CONFIG_DIR/local.cf", "\n" . 'dns_available yes # Autoconfigured by cPanel - comment out this line or set to no to avoid future updates' );
+        $made_changes_to_config = 1;
+    }
+
+    compile_rules();
+
+    if ($made_changes_to_config) {
+        require Cpanel::ServerTasks;
+        print "Queued spamd restart in the background.\n" if $verbose;
+        Cpanel::ServerTasks::schedule_task( ['CpServicesTasks'], 1, "restartsrv spamd" );
+    }
+
+    return 0;
+}
+
+sub system_verbose_aware {
+    my (@args) = @_;
+    if ($verbose) {
+        return system(@args);
+    }
+    else {
+        return Cpanel::SafeRun::Errors::saferunnoerror(@args);
+    }
+}
+
+sub usage {
+    return print q{
+update_spamassassin_config [options]
+
+    Options:
+      --help       Brief help message
+      --verbose    Display verbose output from each test performed
+
+};
+}
+
+sub compile_sa_rules_if_needed {
+    my ($perl_version) = ( $] =~ /^(\d\.\d\d\d)/ );
+
+    my $dir_sa_compiled = (
+        -e "/var/lib/spamassassin/compiled/$perl_version/$Mail::SpamAssassin::VERSION"
+        ? "/var/lib/spamassassin/compiled/$perl_version/$Mail::SpamAssassin::VERSION"
+        : "/var/lib/spamassassin/compiled/$Mail::SpamAssassin::VERSION"
+    );
+
+    my $saxtest = Cpanel::SafeRun::Errors::saferunnoerror( '/usr/local/cpanel/scripts/test_sa_compiled', $dir_sa_compiled );
+    my $saxsok  = ( $saxtest =~ /ok/ ? 1 : 0 );
+
+    my $lastver       = Cpanel::LoadFile::loadfile('/var/cpanel/sa-compile-time');
+    my $compile_mtime = ( stat('/var/cpanel/sa-compile-time') )[9] || 0;
+    my $sa_rule_mtime = Cpanel::SpamAssassin::Rules::get_mtime_of_newest_rule();
+
+    if ( !$saxsok || $sa_rule_mtime >= $compile_mtime || $lastver != $Mail::SpamAssassin::VERSION ) {
+        my $sa_compile_bin = Cpanel::Binaries::path('sa-compile');
+        if ( -x $sa_compile_bin ) {
+            my $tmpdir = Cpanel::Rand::gettmpdir();    # audit case 46806 ok
+            if ($tmpdir) {
+                local $ENV{'TMP'}    = $tmpdir;
+                local $ENV{'TMPDIR'} = $tmpdir;
+                system_verbose_aware($sa_compile_bin);
+                $made_changes_to_config = 1;
+                Cpanel::SafeDir::RM::safermdir($tmpdir);
+            }
+            else {
+                system_verbose_aware($sa_compile_bin);
+            }
+        }
+
+        system_verbose_aware( '/usr/local/cpanel/scripts/patch_mail_spamassassin_compiledregexps_body_0', $dir_sa_compiled );
+
+        $saxtest = Cpanel::SafeRun::Errors::saferunnoerror( '/usr/local/cpanel/scripts/test_sa_compiled', $dir_sa_compiled );
+    }
+    return ( $saxtest =~ /ok/ ? 1 : 0 );
+}
+
+sub set_plugin_state {
+    my ( $conf_file, $plugin, $state ) = @_;
+    my $conf_path      = "$SPAMASSASSIN_CONFIG_DIR/$conf_file";
+    my $current_config = Cpanel::LoadFile::loadfile($conf_path);
+    my $current_state  = ( $current_config =~ m{\n[ \t]*loadplugin[ \t]+Mail::SpamAssassin::Plugin::\Q$plugin\E}s ) ? $STATE_ENABLED : $STATE_DISABLED;
+    if ( $current_state != $state ) {
+        Cpanel::StringFunc::Replace::regsrep( $conf_path, '^\s*#?\s*loadplugin[ \t]*Mail::SpamAssassin::Plugin::' . $plugin, ( $state == $STATE_DISABLED ? '#' : '' ) . 'loadplugin Mail::SpamAssassin::Plugin::' . $plugin );
+        print "Updated plugin “$plugin” state in “$conf_file” to " . ( $state == $STATE_ENABLED ? 'enabled' : 'disabled' ) . "\n" if $verbose;
+        $made_changes_to_config = 1;
+        return 1;
+    }
+    return 0;
+}
+
+1;
+
+__END__
+
+=encoding utf-8
+
+=head1 NAME
+
+update_spamassassin_config - Optimize Apache SpamAssassin™ if possible and update compiled rulesets
+
+=head1 SYNOPSIS
+
+update_spamassassin_config [options]
+
+    Options:
+      --help       Brief help message
+      --verbose    Display verbose output from each test preformed
+
+=cut

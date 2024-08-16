@@ -1,0 +1,70 @@
+[% USE CPSort -%]
+
+<style type="text/css">
+td {
+    padding-left: 3px ! important;
+    padding-right: 3px ! important;
+}
+</style>
+
+<script type="text/javascript" src="[% MagicRevision('/js/validate_optimized.js') %]"></script>
+<script type="text/javascript" src="[% MagicRevision('/js/sorttable.js') %]"></script>
+<script>
+function register_validators() {
+    register_validator('match','alphanum',[document.addrblform.name],'The rbl name must be alpha numeric.');
+    register_validator('nomatch',/[\_\-]/,[document.addrblform.name],'The rbl name must not contain a dash or underscore.');
+    register_validator('nomatch','empty',[document.addrblform.name],'The rbl name must not be empty.');
+    register_validator('nomatch','empty',[document.addrblform.dnslists],'The rbl dnslists must not be empty.  It should be a colon (:) separated list of dnsrbl hosts to check.');
+    register_validator('maxlength',16,[document.addrblform.name],'The rbl name must be 16 characters or less.');
+    register_validator('maxlength',256,[document.addrblform.url],'The rbl url must be 256 characters or less.');
+    register_validator('minlength',2,[document.addrblform.url],'The rbl url must be 2 characters or more.');
+    register_validator('maxlength',256,[document.addrblform.dnslists],'The rbl dnslists must be 256 characters or less.');
+    register_validator('minlength',5,[document.addrblform.dnslists],'The rbl dnslists is not long enough to be valid.');
+    realtime_validate_init('addrblform');
+}
+YAHOO.util.Event.addListener(window, "load", register_validators, false);
+
+</script>
+<h2>Current RBLs</h2>
+<table class="sortable" id="rbls">
+<tr>
+    <th>Origin</th>
+    <th>RBL name</th>
+    <th>DNS list</th>
+    <th>Info URL</th>
+    <th>Action</th>
+</tr>
+
+[% FOREACH rbl_data = rbls.cpsort( 'dist', 'name' ) -%]
+<tr class="[% loop.index % 2 ? 'tdshade2_noborder' : 'tdshade1_noborder' %]">
+<td>[% rbl_data.dist ? 'System' : 'Custom' %]</td>
+<td>[% rbl_data.name FILTER html %]</td>
+<td>[% rbl_data.dnslists.join(', ') FILTER html %]</td>
+<td><a href="[% rbl_data.url FILTER html %]">[% rbl_data.url FILTER html %]</a></td>
+<td>
+[%- IF ! rbl_data.dist -%]
+    <form method="POST" action="../cgi/addrbl.cgi">
+    <input type="hidden" name="action" value="delrbl">
+    <input type="hidden" name="name" value="[% rbl_data.name FILTER html %]">
+    <input type="submit" class="btn-primary" value="Delete">
+    </form>
+[% END -%]
+</td>
+</tr>
+[% END -%]
+</table>
+
+
+<form onSubmit="return do_validate(this.id);" id="addrblform" name="addrblform" method="POST" action="../cgi/addrbl.cgi">
+<input type="hidden" name="action" value="addrbl">
+
+<h2>Add a new RBL</h2>
+<table>
+    <tr><td>Rbl Name</td><td><input size="16" maxlength="16" type="text" name="name" value=""> (please choose a name that will remind you of what is in the dns list for this rbl.)</td></tr>
+    <tr><td>Rbl Info URL</td><td><input maxlength="256" size="100" type="text" name="url" value=""></td></tr>
+    <tr><td>Dns List</td><td><input type="text" size="60" maxlength="256" name="dnslists" value=""></td></tr>
+</table>
+<input type="submit" class="btn-primary" value="Add">
+    </form>
+
+</form>

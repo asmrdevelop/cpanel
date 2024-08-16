@@ -1,0 +1,72 @@
+my $local_connection_uid;
+my $local_connection_user;
+my %sender_host_address_cache;
+
+sub get_identified_local_connection_uid {
+    $local_connection_uid;
+}
+
+sub get_identified_local_connection_user {
+    $local_connection_user;
+}
+
+sub identify_local_connection {
+
+    # passes but not for production
+    # use strict;
+    # On Linux we can identify users by reading /proc/net/tcp*
+    # Since this requires access kernel memory on bsd and we don't have a way
+    # do that under exim users MUST authenticate to send messages from localhost
+
+    my ( $sender_host_address, $sender_host_port, $received_ip_address, $received_port, $log ) = @_;
+
+    undef $local_connection_uid;
+    undef $local_connection_user;
+
+    my $uid;
+
+    if ( exists $sender_host_address_cache{ $sender_host_address . '__' . $sender_host_port } ) {
+        $uid = $sender_host_address_cache{ $sender_host_address . '__' . $sender_host_port };
+        $log = 0;
+    }
+    else {
+        local @INC = ( '/usr/local/cpanel', @INC ) if !grep { '/usr/local/cpanel' } @INC;
+        require Cpanel::Ident;
+        $uid = Cpanel::Ident::identify_local_connection( $sender_host_address, $sender_host_port, $received_ip_address, $received_port );
+        if ( !defined $uid ) {
+            $uid = identify_local_connection_wrapped( $sender_host_address, $sender_host_port, $received_ip_address, $received_port );
+        }
+    }
+
+    if ( defined $uid ) {
+        $local_connection_uid  = $uid;
+        $local_connection_user = uid2user($uid);
+
+        $sender_host_address_cache{ $sender_host_address . '__' . $sender_host_port } = $local_connection_uid;
+
+        # Log this for tailwatchd
+        Exim::log_write("SMTP connection identification H=localhost A=$sender_host_address P=$sender_host_port U=$local_connection_user ID=$local_connection_uid S=$local_connection_user B=identify_local_connection") if $log;
+        return 1;
+    }
+    else {
+        $sender_host_address_cache{ $sender_host_address . '__' . $sender_host_port } = undef;
+
+        Exim::log_write("could not identify the local connection from $sender_host_address on port $sender_host_port.  Please authenticate") if $log;
+        return 0;
+    }
+}
+
+sub identify_local_connection_wrapped {
+    my ( $address, $port, $localaddress, $localport ) = @_;
+
+    my $uidline = call_cpwrap( 'IDENTIFYLOCALCONNECTION', $address, $port, $localaddress, $localport );
+
+    chomp($uidline) if defined $uidline;
+
+    my ( $uidkey, $uid ) = split( /:/, $uidline, 2 );
+    $uid = undef if $uid eq '';
+
+    Exim::log_write("/usr/local/cpanel/bin/eximwrap IDENTIFYLOCALCONNECTION $address $port $localaddress $localport failed to return the uid key.") if ( !defined $uidkey || $uidkey ne 'uid' );
+
+    return $uid;
+}

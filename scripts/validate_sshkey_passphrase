@@ -1,0 +1,48 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/validate_sshkey_passphrase      Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::validate_sshkey_passphrase;
+
+use strict;
+
+use Cpanel::Exception            ();
+use Cpanel::SSH::KeyBackend      ();
+use Cpanel::AdminBin::Serializer ();
+use Try::Tiny;
+
+__PACKAGE__->script(@ARGV) unless caller();
+
+sub script {
+    my ( $class, @argv ) = @_;
+
+    local $/;
+    my $path = $argv[0];
+
+    #We purposely do NOT chomp() the $passphrase.
+    my $passphrase = readline( \*STDIN );
+
+    my $err;
+    my $response = { 'status' => 0 };
+    try {
+        $response->{'valid'}  = Cpanel::SSH::KeyBackend::validate_key_passphrase( $path, $passphrase );
+        $response->{'status'} = 1;
+    }
+    catch {
+        $err = $_;
+    };
+
+    if ($err) {
+        $response->{'class'}        = ( ref $err );
+        $response->{'error_string'} = Cpanel::Exception::get_string($err);
+    }
+
+    print Cpanel::AdminBin::Serializer::Dump($response);
+
+    return;
+}
+
+1;

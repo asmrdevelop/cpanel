@@ -1,0 +1,58 @@
+[% WRAPPER 'master_templates/master.tmpl' theme="yui"
+    breadcrumburl = '/scripts2/sslmanager'
+    extrastyle = '
+textarea {
+    font-family: monospace;
+}
+
+.key-label,
+.cert-label {
+    margin-top: 20px;
+}
+';
+
+SET pem_height = 15;
+SET parse_height = 15;
+-%]
+
+<h2>[% locale.maketext('Website [asis,SSL]/[asis,TLS] Resources') %]</h2>
+<div>
+    <span class="b2">[% locale.maketext('Website: [_1]', data.vhost.html()) %]</span>
+</div>
+<div>
+    <span class="b2">[% locale.maketext('User: [_1]', data.user.html()) %]</span>
+</div>
+
+[% IF data.certificates -%]
+    [% FOR cert = data.certificates -%]
+        <div class="cert-label">
+            [% IF data.certificates.size > 1 %]
+                <label for="cert[% loop.index %]">[% locale.maketext('Certificate #[numf,_1]', 1 + loop.index) %]:</label>
+            [% ELSE -%]
+                <label for="cert[% loop.index %]">[% locale.maketext('Certificate') %]:</label>
+            [% END -%]
+        </div>
+        <div class="cert-parse">
+            <textarea id="cert[% loop.index %]" readonly rows="[% pem_height %]" cols="[% 1 + data.max_line_length_cr(cert.pem) %]">[% cert.pem.html() %]</textarea>
+            <textarea readonly rows="[% parse_height %]" cols="[% 1 + data.max_line_length_cr(cert.openssl_parse) %]">[% cert.openssl_parse.html() %]</textarea>
+        </div>
+
+        [% IF loop.index == 0 -%]
+            <div class="key-label">
+                <label for="key">[% locale.maketext('Key') %]:</label>
+            </div>
+            <div class="key-parse">
+                <textarea id="key" readonly rows="[% pem_height %]" cols="[% 1 + data.max_line_length_cr(data.key) %]">[% data.key.html() %]</textarea>
+                <textarea readonly rows="[% parse_height %]" cols="[% 1 + data.max_line_length_cr(data.key_parse) %]">[% data.key_parse.html() %]</textarea>
+            </div>
+        [% END -%]
+    [% END -%]
+[% ELSE -%]
+    <h5>[% locale.maketext('No [asis,SSL]/[asis,TLS] resources exist on this system for a website named “[_1]”.', data.vhost.html()) %]</h5>
+[% END -%]
+
+<div class="return-link">
+<b>[</b> <a href="sslmanager">[% locale.maketext('Go Back') %]</a><b> ]</b>
+</div>
+
+[% END #wrapper -%]

@@ -1,0 +1,22 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - bin/corecleanup                         Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+# corecleanup -- Safely delete core files.
+
+use Cpanel::SafeRun::Errors ();
+
+my $basepath = '/usr/local/cpanel/whostmgr/docroot';
+opendir( my $whdoc_fh, $basepath );
+while ( my $file = readdir($whdoc_fh) ) {
+    next if ( $file !~ /^core/ );          #only kill cores
+    my $filenfo = Cpanel::SafeRun::Errors::saferunnoerror( 'file', $basepath . '/' . $file );
+    next if ( $filenfo !~ /whostmgr/ );    #only kill whostmgr cores
+    print "Purging core file $file...";
+    unlink( $basepath . '/' . $file );
+    print "Done\n";
+}
+closedir($whdoc_fh);

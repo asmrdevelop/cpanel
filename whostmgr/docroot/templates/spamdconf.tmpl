@@ -1,0 +1,74 @@
+[%
+
+    USE Whostmgr;
+
+    WRAPPER 'master_templates/master.tmpl'
+        app_key = 'spamd_startup_configuration'
+        theme = 'bootstrap'
+        warn_linked_nodes => 1,
+        scripts = ['/templates/spamd/spamdconf.min.js']
+ %]
+
+[%~ PROCESS '_ajaxapp.tmpl' -%]
+
+[%# macro for constructing value attribute for input fields %]
+[%~ MACRO value(key) BLOCK ~%]
+    [% IF data.spamd_conf.$key %]
+        [% ' value="' _ data.spamd_conf.$key.html _ '"' %]
+    [% END %]
+[%~ END ~%]
+
+<p>The following options will be used upon execution of the spamd daemon.</p>
+<form id="configForm" action="javascript:void(0)" class="layout-medium">
+    <input type="hidden" name="cgiaction" value="submit">
+
+    <div class="form-group">
+        <div class="row">
+            <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                <label for="allowedips">[% locale.maketext('Allowed IPs') %]</label>
+                <span class="help-block">[% locale.maketext('Restrict connections to spamd to specific IP address (e.g. 127.0.0.1).') %]</span>
+                <input id="allowedips" class="form-control" name="allowedips" type="text"[% value('allowedips') %] />
+            </div>
+        </div>
+    </div>
+    <div class="form-group">
+        <div class="row">
+            <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                <label for="maxconnperchild">[% locale.maketext('Maximum Connections per Child') %]</label>
+                <span class="help-block">[% locale.maketext('Number of connections to spamd child before the process is abandoned.') %]</span>
+                <input id="maxconnperchild" class="form-control" name="maxconnperchild" type="text"[% value('maxconnperchild') %] />
+            </div>
+        </div>
+    </div>
+    <div class="form-group">
+        <div class="row">
+            <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                <label for="maxchildren">[% locale.maketext('Maximum Children') %]</label>
+                <span class="help-block">[% locale.maketext('Number of spamd child processes spawned upon startup.') %]</span>
+                <input id="maxchildren" class="form-control" name="maxchildren" type="text"[% value('maxchildren') %] />
+            </div>
+        </div>
+    </div>
+    <div class="form-group">
+        <div class="row">
+            <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                <label for="timeouttcp">[% locale.maketext('TCP Timeout') %]</label>
+                <span class="help-block">[% locale.maketext('Time (in seconds) before TCP connection is abandoned.') %]</span>
+                <input id="timeouttcp" class="form-control" name="timeouttcp" type="text"[% value('timeouttcp') %] />
+            </div>
+        </div>
+    </div>
+    <div class="form-group">
+        <div class="row">
+            <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                <label for="timeoutchild">[% locale.maketext('TCP Child Timeout') %]</label>
+                <span class="help-block">[% locale.maketext('Time (in seconds) before TCP connection is abandoned by child process.') %]</span>
+                <input id="timeoutchild" class="form-control" name="timeoutchild" type="text"[% value('timeoutchild') %] />
+            </div>
+        </div>
+    </div>
+    <div class="form-group" id="submitBtnDiv">
+        <input id="saveButton" class="btn btn-primary" type="button" value="Save">
+    </div>
+</form>
+[% END #wrapper -%]

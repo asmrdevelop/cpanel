@@ -1,0 +1,94 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/archive_sync_zones              Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use warnings;
+use strict;
+
+use Cpanel::OS ();
+use Cpanel::Config::Users;
+use Cpanel::Config::LoadCpUserFile;
+use Cpanel::Umask;
+
+######[ set defaults based on distro/OS ]##########################################################
+my $def_basedir   = Cpanel::OS::dns_named_basedir();
+my $def_namedconf = '/etc/named.conf';
+my $def_backup    = $def_basedir . '/' . 'zone_sync_backup.tar';
+
+open( my $ndc_fh, '<', $def_namedconf ) or die "Could not open $def_namedconf for reading: $!\n";
+my @conf_zones = readline($ndc_fh);
+close $ndc_fh;
+
+my %zones;
+foreach my $line (@conf_zones) {
+    if ( $line =~ m/\s*zone\s+["']([\w\-\.]+)["']/ ) {
+        next if $1 eq '.';
+        my $zone_name = $1;
+        next if $zone_name =~ m/^\./;
+        next if $zone_name =~ m/\.arpa$/;
+        next if ( exists $zones{$zone_name} );    # Seen in another view
+        $zones{$zone_name} = 1;
+
+    }
+}
+
+if ( opendir my $zone_dh, $def_basedir ) {
+    while ( my $file = readdir $zone_dh ) {
+        next if $file !~ m/(.+)\.db$/;            # Only look at cPanel managed zone file
+        my $zone_name = $1;
+        next if $zone_name =~ m/\.arpa$/;
+        next if exists $zones{$zone_name};
+        $zones{$zone_name} = 1;
+    }
+    closedir $zone_dh;
+}
+
+my ( $live_domains, $dead_domains ) = get_domains_managed_domains();
+
+if ( -e $def_backup ) {
+    require Cpanel::Autodie;
+    Cpanel::Autodie::chmod( 0600, $def_backup );
+}
+
+my $mask = Cpanel::Umask->new(077);
+system "tar -cf $def_backup $def_namedconf";
+
+foreach my $zone ( sort keys %zones ) {
+    next if ( !$live_domains->{$zone} && !$dead_domains->{$zone} );
+    if ( -e $def_basedir . '/' . $zone . '.db' ) {
+        system 'tar', '-r', '-f', $def_backup, $def_basedir . '/' . $zone . '.db';
+    }
+    else {
+        print "Unable to archive zone file for $zone\n";
+    }
+    system '/usr/local/cpanel/scripts/dnscluster', 'synczone', $zone;
+}
+
+print "Archive of pre-sync zones located at: ${def_basedir}/zone_sync_backup.tar\n";
+
+sub get_domains_managed_domains {
+    my %live_domains;
+    my %dead_domains;
+    foreach my $user ( Cpanel::Config::Users::getcpusers() ) {
+
+        # Safe because it's only loading from cpusers list.
+        my $cpuser_ref = Cpanel::Config::LoadCpUserFile::loadcpuserfile($user);
+
+        if ( $cpuser_ref->{'DOMAIN'} ) {
+            $live_domains{ $cpuser_ref->{'DOMAIN'} } = 1;
+        }
+        if ( ref $cpuser_ref->{'DOMAINS'} eq 'ARRAY' ) {
+            my $_tmp = $cpuser_ref->{'DOMAINS'};
+            $live_domains{$_} = 1 for @$_tmp;
+        }
+
+        if ( ref $cpuser_ref->{'DEADDOMAINS'} eq 'ARRAY' ) {
+            my $_tmp = $cpuser_ref->{'DEADDOMAINS'};
+            $dead_domains{$_} = 1 for @$_tmp;
+        }
+    }
+    return ( \%live_domains, \%dead_domains );
+}

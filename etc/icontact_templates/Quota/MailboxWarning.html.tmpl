@@ -1,0 +1,57 @@
+[%#
+Variables passed in:
+
+box          - The mailbox that is nearing or at quota.
+status       - The quota status of the mailbox. This can be 'full', 'critical', 'warn'.
+diskused     - The amount of diskspace used by the mailbox in bytes.
+disklimit    - The maximum disk quota for the mailbox in bytes.
+percentused  - The amount of diskspace used by the mailbox as a percentage of its limit.
+adjusturl    - The URL an account owner may use to update the quota for the mailbox. Only available in the 'full' status.
+sent_to_root            - A default boolean flag sent to all templates that indicates if the message was sent to 'root'
+
+For more information about how to customize notification templates, read our documentation at https://go.cpanel.net/notificationtemplates
+
+-%]
+
+[%
+    PROCESS "include/colors.tmpl";
+    PROCESS "include/styles.tmpl";
+
+    WRAPPER 'wrapper/main.html.tmpl';
+
+    NOTICE.email_reason = CPANEL.locale.maketext('Mailbox quota notification for “[_1]”.', NOTICE.box);
+
+%]
+
+<p>
+    [%
+        IF NOTICE.status == 'full';
+            CPANEL.locale.maketext('The “[_1]” email account is full.', NOTICE.box);
+        ELSIF NOTICE.status == 'critical';
+            CPANEL.locale.maketext('The “[_1]” email account is nearly full.', NOTICE.box);
+        ELSE;
+            CPANEL.locale.maketext('The “[_1]” email account is almost full.', NOTICE.box);
+        END;
+    %]
+</p>
+<p>
+    [%
+        CPANEL.locale.maketext('The email account currently uses [numf,_1]% ([format_bytes,_2]/[format_bytes,_3]) of its capacity.', NOTICE.percentused, NOTICE.diskused, NOTICE.disklimit);
+    %]
+</p>
+<p>
+    [%
+        IF NOTICE.adjusturl;
+            CPANEL.locale.maketext('You should remove some emails from the mailbox as soon as possible in order to prevent the loss of any future email.');
+            %] </p><p> [%
+            CPANEL.locale.maketext('You can adjust the quota for this mailbox here: [output,url,_1,_1,target,_2]', NOTICE.adjusturl,'_blank');
+            %] </p> [%
+        ELSE;
+            CPANEL.locale.maketext(
+            'You should remove some emails from the mailbox as soon as possible in order to prevent the loss of any future email. Use the Email Disk Usage tool at [output,url,_1,_1,target,_2], or ask the system administrator to upgrade your account to a larger quota.'
+            NOTICE.manage_disk_usage_url, '_blank');
+        END;
+    %]
+</p>
+
+[% END %]

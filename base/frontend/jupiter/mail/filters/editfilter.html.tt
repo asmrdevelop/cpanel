@@ -1,0 +1,113 @@
+[%
+    SET CPANEL.CPVAR.dprefix = "../../";
+
+    SET feature_spam_assassin = !CONF.skipspamassassin && CPANEL.feature("spamassassin");
+
+    # Only call the API if the feature is active, otherwise we can't really check for API errors
+    IF feature_spam_assassin;
+        SET spam_setting_result = execute("Email", "get_spam_settings");
+        SET spam_enabled = spam_setting_result.status ? spam_setting_result.data.spam_enabled : 0;
+        SET has_spam_as_acl = spam_setting_result.status ? spam_setting_result.data.spam_as_acl : 0;
+        SET errors_list = spam_setting_result.errors;
+    ELSE;
+        SET spam_enabled = 0;
+        SET has_spam_as_acl = 0;
+        SET errors_list = [];
+    END;
+
+    SET email_acct = execute( 'Email', 'account_name', {"account"=>RAW_FORM.account, "display"=>"0"}).data;
+
+    IF FORM.account != "" OR email_acct != "";
+        SET app_name = 'email_filters';
+    ELSE;
+        SET app_name = 'global_email_filters';
+    END;
+%]
+
+[% js_code = PROCESS js_block %]
+[% css_code = PROCESS css_block %]
+[% WRAPPER '_assets/master.html.tt'
+    app_key = app_name
+    page_js = js_code
+    page_styles = css_code
+    page_stylesheets = ['/yui/treeview/assets/skins/sam/treeview.css','mail/filters/assets/css/folders/tree.min.css']
+    embed_scripts = ['js2/mail/filters/editfilter.js']
+    page_scripts = ['/yui/treeview/treeview.js']
+    embed_stylesheets = ['css2-min/mail/filters/editfilter.css']
+    feature = 'blockers'
+%]
+
+    [% INCLUDE _assets/_ajaxapp_header.html.tt %]
+
+    <div class="body-content">
+        [% INCLUDE mail/filters/filter.html.tt %]
+
+        [% IF has_spam_as_acl && spam_enabled %]
+        <p id="descSpamStatus" class="description">
+            [%
+                locale.maketext(
+                    "[output,strong,Hint:] To filter all mail that [asis,Apache SpamAssassin™] has marked as spam, just choose “[_1]” and “[_2]”, then enter “[_3]” in the box."
+                    locale.maketext('Spam Status'),
+                    locale.maketext('[comment]begins with[comment,comparison option]'),
+                    locale.maketext('Yes'),
+                );
+            %]
+        </p>
+        <p id="descSpamBar" class="description">
+            [% locale.maketext("[output,strong,Hint]: To filter all mail that [asis,Apache SpamAssassin™] has marked with a spam score of 5.0 or greater, choose [output,em,Spam Bar] and [output,em,contains], then enter “[asis,+++++]” in the box (Note: If you wanted to match a spam score of 4, you would use [asis,++++]`. A spam score of 3 would be [asis,+++], etc).") %]
+        </p>
+        [% END %]
+
+        [% IF spam_setting_result && !spam_setting_result.status && errors_list.size() %]
+            [% INCLUDE '_assets/errors.html.tt' error_list=errors_list; %]
+        [% END %]
+
+        [% IF FORM.account %]
+            [% INCLUDE _assets/return_link.html.tt return_location='userfilters.html?account=' _ FORM.account _ '' return_link_text=locale.maketext('Go Back') %]
+        [% ELSE %]
+            [% INCLUDE _assets/return_link.html.tt return_location='userfilters.html' return_link_text=locale.maketext('Go Back') %]
+        [% END %]
+    </div>
+
+    [% INCLUDE _assets/_ajaxapp_footer.html.tt %]
+
+[% END %]
+
+[% BLOCK css_block %]
+<style type="text/css">
+    .filter-col {
+        padding-top: 3px;
+        padding-bottom: 3px;
+    }
+    #ruletbl tr {
+        height: 50px;
+    }
+    .tree-view-container {
+        border: 1px solid #ccc;
+        background-color: #fff;
+        padding: 0;
+        margin: 4px 0 0 0;
+    }
+    .tree-view {
+        overflow: auto;
+        padding: 0;
+        margin: 0;
+    }
+    #filterform {
+        padding: 8px;
+    }
+</style>
+[% END %]
+
+[% BLOCK js_block %]
+<script type="text/javascript">
+    var WE_ARE_EDITING = !![% RAW_FORM.filtername.json() || 'null' %];
+
+    var HAS_SPAM_AS_ACL = "[% has_spam_as_acl %]" == "1";
+    var SPAM_ASSASSIN_ENABLED = "[% spam_enabled %]" == "1";
+
+    var ACCOUNT_NAME = [% email_acct.json %];
+
+    var GO_BACK_URL = "userfilters.html?account=" + encodeURIComponent([% RAW_FORM.account.json() || 'null' %]);
+</script>
+[% END %]

@@ -1,0 +1,58 @@
+[% PROCESS 'master_templates/_defheader.tmpl'
+    header = locale.maketext('Upgrade Database Version')
+    theme = 'bootstrap'
+    breadcrumburl = '/scripts/mysqlupgrade'
+    extrastyle = '
+        .inline-block {
+            display: inline-block;
+        }
+    ';
+
+    SET upgrade_types = {
+        unattended_automatic = locale.maketext('Unattended Upgrade'),
+        unattended_manual = locale.maketext('Partially-Interactive Upgrade'),
+        interactive = locale.maketext('Interactive Upgrade')
+    };
+-%]
+<div id="content">
+  <div class="callout callout-warning">
+    <div class="callout-heading">[% locale.maketext('Warning') %]</div>
+    <p>[% data.message %]</p>
+  </div>
+
+  <h2>[% locale.maketext('Upgrade Details') %]</h2>
+  <table role="table" class="table table-responsive table-condensed table-striped">
+    <tr>
+      <td>[% locale.maketext('Current step number:') %]</td>
+      <td>[% data.step.html() %]</td>
+    </tr>
+    <tr>
+      <td>[% locale.maketext('Starting database version:') %]</td>
+      <td>[% data.current_version.html() %]</td>
+    </tr>
+    <tr>
+      <td>[% locale.maketext('Selected database version:') %]</td>
+      <td>[% data.selected_version.html() %]</td>
+    </tr>
+    <tr>
+      <td>[% locale.maketext('Upgrade Type:') %]</td>
+      <td>[% upgrade_types.${data.upgrade_type} %]</td>
+    </tr>
+  </table>
+
+  <div class="form-group">
+    <form action="[% cp_security_token %]/scripts/mysqlupgrade" method="post" class="inline-block">
+      <input type="hidden" name="current_version" value="[% data.current_version.html() %]">
+      <input type="hidden" name="selected_version" value="[% data.selected_version.html() %]">
+      <input type="hidden" name="upgrade_type" value="[% data.upgrade_type.html() %]">
+      <input type="hidden" name="step" value="[% data.step.html() %]">
+      <button type="submit" class="btn btn-primary">[% locale.maketext('Resume Current Upgrade') %]</button>
+    </form>
+
+    <form action="[% cp_security_token %]/scripts/mysqlupgrade" method="post" class="inline-block">
+      <input type="hidden" name="ignore_last_run" value="1">
+      <button type="submit" class="btn btn-link">[% locale.maketext('Ignore Current Upgrade') %]</button>
+    </form>
+  </div>
+</div>
+[% PROCESS 'master_templates/_deffooter.tmpl' -%]

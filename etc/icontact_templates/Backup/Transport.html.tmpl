@@ -1,0 +1,54 @@
+[%#
+
+NOTE: This template is for the NEW backup system.
+Transport errors for the legacy backup system get reported
+via the PartialFailure template.
+
+Variables passed in:
+
+origin                  - the system component which generated the email
+upload_errors           - (optional) error messages encountered during the transport of backups
+                          format is array of arrays: [
+                            [ transport name, backup type, error ],     (all strings)
+                            ...
+                          ]
+host_server             - the server that generated the email
+log_preview             - An arrayref of 10(or less) line preview of attached log file
+
+For more information about how to customize notification templates, read our documentation at https://go.cpanel.net/notificationtemplates
+
+-%]
+
+[%
+    PROCESS "include/colors.tmpl";
+    PROCESS "include/styles.tmpl";
+    PROCESS "include/code_block.tmpl";
+
+    WRAPPER 'wrapper/main.html.tmpl';
+
+    NOTICE.email_reason = CPANEL.locale.maketext('Transport errors encountered.');
+%]
+
+    [% IF NOTICE.upload_errors.size %]
+        <p>
+            [% CPANEL.locale.maketext('The system encountered errors during transport of the backup files.') %]
+        </p>
+        <p>
+            [%-
+                PROCESS "include/zebra_table.tmpl";
+                zebra_table(items=NOTICE.upload_errors, titles=[CPANEL.locale.maketext('Transport'), CPANEL.locale.maketext('Backup Label'), CPANEL.locale.maketext('Message')]);
+            -%]
+        </p>
+        <p>
+            [% CPANEL.locale.maketext('Below is a preview of the attached log file.') %]
+        </p>
+    [% ELSE %]
+        <p>
+            [% CPANEL.locale.maketext('The system encountered errors during transport of the backup files. Below is a preview of the attached log file.') %]
+        </p>
+    [% END %]
+<p>
+    [% code_block(title="Preview of transport errors log:", formatted_code=NOTICE.log_preview.0 );  %]
+</p>
+
+[% END %]

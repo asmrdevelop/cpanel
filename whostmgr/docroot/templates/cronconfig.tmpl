@@ -1,0 +1,119 @@
+[% USE Whostmgr %]
+[% WRAPPER 'master_templates/master.tmpl'
+    theme="bootstrap"
+    app_key='configure_cpanel_cron_jobs'
+    scripts = [ '/templates/cron/cronconfig.min.js'],
+    stylesheets = [
+                    '/templates/cron/cronconfig.min.css' ]
+ -%]
+[%~ IF data.formdata.size && data.formdata.action == 'changecron' ~%]
+<div id="cronNotices">
+    [%~ IF data.success %]
+        <div id="successNotice" class="alert alert-success alert-dismissable notice notice-success">
+            <div class="close noticeClose" data-dismiss="alert" aria-hidden="true">&times;</div>
+            <span class="glyphicon glyphicon-ok-sign"></span>
+            <div class="alert-message">
+                <strong>[% locale.maketext('Success:') %]</strong>
+                [% locale.maketext('Your cron entry for “[_1]” has been successfully saved.', data.formdata.script) %]
+            </div>
+        </div>
+    [% ELSE %]
+        <div id="errorNotice" class="alert alert-danger notice notice-error">
+            <span class="glyphicon glyphicon-remove-sign"></span>
+            <div id="contextNoticeContent" class="alert-message">
+                <strong>[% locale.maketext('Error:') %]</strong>
+                [% locale.maketext('Cron Not Changed. Please check that you entered only digits and the * character.') %]
+            </div>
+        </div>
+    [% END %]
+</div>
+[% END %]
+<div id="intro">
+<p>Cron jobs are scheduled tasks that take place at predefined times or intervals on the server. Set the following variables to configure the cPanel & WHM Cron Jobs below:</p>
+<ul>
+    <li><span class="term">[% locale.maketext('Minute:') %] </span>[% locale.maketext('The number of minutes between each execution of the cron job, or the minute of each hour on which you wish to run the cron job. For example, 15 to run the cron job every 15 minutes.') %]</li>
+    <li><span class="term">[% locale.maketext('Hour:') %] </span>[% locale.maketext('The number of hours between each execution of the cron job, or the hour each day (in military format) at which you wish to run the cron job. For example, 2100 to run the cron job at 9:00pm.') %]</li>
+    <li><span class="term">[% locale.maketext('Day:') %] </span>[% locale.maketext('The number of days between each execution of the cron job, or the day of the month on which you wish to run the cron job. For example, 15 to run the cron job on the 15th of the month.') %]</li>
+    <li><span class="term">[% locale.maketext('Month:') %] </span>[% locale.maketext('The number of months between each execution of the cron job, or the month of the year in which you wish to run the cron job. For example, 7 to run the cron job in July.') %]</li>
+    <li><span class="term">[% locale.maketext('Weekday:') %] </span>[% locale.maketext('The day(s) of the week on which you wish to run the cron job.') %]</li>
+</ul>
+<p>Enter * to indicate that the cron job should run at each interval. For example, a value of 0 indicates Sunday, or a value of 6 indicates Saturday.
+For example, a process set to run every day at 21:15 (or 9:15pm in 12-hour format) would be set to Minute = 15, Hour = 21, Day = *, Month = *, Weekday = *.</p>
+</div>
+<div class="formContainer">
+    <h3>[% locale.maketext('Command: [asis,upcp]') %]</h3>
+    <p>[% locale.maketext('upcp updates [asis,cPanel amp() WHM]. We recommend that you run this script once per day. The script, by default, is set to run at a random time between 9pm and 6am local time. You may set this script to run at any time you wish. We recommend that you set it to run during off-peak hours.') %]</p>
+    <div class="formTable">
+        <form name="upcp" action="cronconfig" method="post">
+            <input type="hidden" name="action" value="changecron">
+            <input type="hidden" name="script" value="upcp">
+            <input type="hidden" name="command" value="(/usr/local/cpanel/scripts/fix-cpanel-perl; /usr/local/cpanel/scripts/upcp --cron)">
+            <div class="formRow">
+                <div class="formCell header">[% locale.maketext('Minute') %]</div>
+                <div class="formCell header">[% locale.maketext('Hour') %]</div>
+                <div class="formCell header">[% locale.maketext('Day') %]</div>
+                <div class="formCell header">[% locale.maketext('Month') %]</div>
+                <div class="formCell header">[% locale.maketext('Weekday') %]</div>
+            </div>
+            <div class="formRow">
+                <div class="formCell">
+                    <input type="text" class="form-control" name="minute" value="[% data.upcp.minute %]" size="2">
+                </div>
+                <div class="formCell">
+                    <input type="text" class="form-control" name="hour" value="[% data.upcp.hour %]" size="2">
+                </div>
+                <div class="formCell">
+                    <input type="text" class="form-control" name="day" value="[% data.upcp.day %]" size="2">
+                </div>
+                <div class="formCell">
+                    <input type="text" class="form-control" name="month" value="[% data.upcp.month %]" size="2">
+                </div>
+                <div class="formCell">
+                    <input type="text" class="form-control" name="weekday" value="[% data.upcp.weekday %]" size="2">
+                </div>
+            </div>
+            <div class="form-group">
+                <input type="submit" value="[% locale.maketext('Save') %]" class="btn btn-primary" id="upcpButton">
+            </div>
+        </form>
+    </div>
+</div>
+<div class="formContainer">
+    <h3 class="cronSubhead">[% locale.maketext('Command: [asis,backup]') %]</h3>
+    <p>[% locale.maketext('[asis,backup] runs backups on your server. By default, this script runs at 2:00 AM where the server is located, because this is an off-peak time for most servers. We recommend that you set it to run during off-peak hours, early enough to allow your server to finish backups before peak traffic resumes. If you have backups disabled, the script will immediately exit after it runs.') %]</p>
+    <div class="formTable">
+        <form name="backup" action="cronconfig" method="post">
+            <input type="hidden" name="action" value="changecron">
+            <input type="hidden" name="script" value="backup">
+            <input type="hidden" name="command" value="/usr/local/cpanel/bin/backup">
+            <div class="formRow">
+                <div class="formCell header">[% locale.maketext('Minute') %]</div>
+                <div class="formCell header">[% locale.maketext('Hour') %]</div>
+                <div class="formCell header">[% locale.maketext('Day') %]</div>
+                <div class="formCell header">[% locale.maketext('Month') %]</div>
+                <div class="formCell header">[% locale.maketext('Weekday') %]</div>
+            </div>
+            <div class="formRow">
+                <div class="formCell">
+                    <input type="text" class="form-control" name="minute" value="[% data.backup.minute %]" size="2">
+                </div>
+                <div class="formCell">
+                    <input type="text" class="form-control" name="hour" value="[% data.backup.hour %]" size="2">
+                </div>
+                <div class="formCell">
+                    <input type="text" class="form-control" name="day" value="[% data.backup.day %]" size="2">
+                </div>
+                <div class="formCell">
+                    <input type="text" class="form-control" name="month" value="[% data.backup.month %]" size="2">
+                </div>
+                <div class="formCell">
+                    <input type="text" class="form-control" name="weekday" value="[% data.backup.weekday %]" size="2">
+                </div>
+            </div>
+            <div class="form-group">
+                <input type="submit" value="[% locale.maketext('Save') %]" class="btn btn-primary" id="backupButton">
+            </div>
+        </form>
+    </div>
+</div>
+[% END #wrapper -%]

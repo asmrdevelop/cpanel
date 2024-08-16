@@ -1,0 +1,56 @@
+[% WRAPPER 'master_templates/master.tmpl'
+	theme="yui"
+	app_key='shell_fork_bomb_protection' -%]
+[%
+    IF data.limits_enabled;
+        SET
+            limit_status = locale.maketext('Enabled')
+            status_class = 'greenstatus'
+            modlimits_button = locale.maketext('Disable Protection')
+            action_val = 0
+        ;
+    ELSE;
+        SET
+            limit_status = locale.maketext('Disabled')
+            status_class = 'redstatus'
+            modlimits_button = locale.maketext('Enable Protection')
+            action_val = 1
+        ;
+    END;
+-%]
+	<div>
+	<table class="layouttblmain">
+	<tr>
+[% IF !data.cloud_linux_installed %]
+	    <td valign="top">
+	    <table class="layouttbl">
+	        <tr><th abbr="[% locale.maketext('Description') %]" align="left">[% locale.maketext('Description') %]</th></tr>
+	        <tr>
+	            <td class="description"><p>[% locale.maketext("Fork Bomb Protection denies users who have terminal access ([output,acronym,SSH,Secure Shell]/Telnet) the ability to use all of the resources on the server. To prevent server crashes, do [output,strong,not] allow unlimited resource allocation.") %]</p></td>
+	        </tr>
+	        <tr>
+	            <td class="description"><p>[% locale.maketext('We recommend that you enable this protection for servers that provide terminal access.') %]</p></td>
+	        </tr>
+			<tr>
+				<td>
+				<div>
+				<table class="layouttblstatus">
+				<tr>
+				<td class="statuscelltext"><p>[% locale.maketext('Status:') %] <span class="[% status_class %]">[% limit_status %]<span></p></td>
+				<td class="statuscellbutton"><form action="[% cp_security_token %]/scripts2/modlimits">
+												<input type="hidden" name="limits" value="[% action_val %]">
+												<input type="submit" class="btn-primary" value="[% modlimits_button %]"></form></td>
+				</tr>
+				</table>
+				</div>
+				</td>
+			</tr>
+		</table>
+		</td>
+[% ELSE %]
+    <td>[% locale.maketext("Fork Bomb Protection is not available on [asis,CloudLinux]") %]</td>
+[% END %]
+	</tr>
+	</table>
+	</div>
+[% END -%]

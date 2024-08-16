@@ -1,0 +1,112 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/ssl_crt_status                  Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::ssl_crt_status;
+
+use strict;
+use warnings;
+
+use Cpanel::SSLPath                 ();
+use Cpanel::SSLInfo                 ();
+use Getopt::Param                   ();
+use Cpanel::StringFunc              ();
+use Cpanel::ArrayFunc               ();
+use Term::ANSIColor                 ();
+use Cpanel::Config::LoadUserDomains ();
+use Cpanel::Hostname                ();
+
+__PACKAGE__->run() unless caller();
+
+sub run {
+    my $param = Getopt::Param->new(
+        {
+            'quiet'        => 0,
+            'help_coderef' => sub {
+                print <<"END_HELP";
+$0 - give a status report of the server's SSL certificates
+
+    --help          this screen
+    --verbose       show more than just errors
+    --verbose=long  include verification result of valid crts
+
+By default it will check every domain, you can specify one or more specific
+domains to check by passing one or more --domain flags:
+
+    --domain=your.domain.here --domain=other.domain.here
+
+END_HELP
+                exit;
+            },
+        }
+    );
+
+    my $debug   = $param->get_param('debug');
+    my $verbose = $param->get_param('verbose');
+
+    my @domains = Cpanel::ArrayFunc::uniq_from_arrayrefs( [ $param->exists_param('domain') ? $param->get_param('domain') : ( Cpanel::Hostname::gethostname(), grep( !/^\*/, sort keys %{ Cpanel::Config::LoadUserDomains::loaduserdomains( undef, 1 ) } ) ) ] );
+
+    if ( grep /^--domain$/, @domains ) {
+        print "Domain must be unambiguously specified in this format --domain=fqdn.tld\n\n";
+        $param->help();
+    }
+
+    my $sslroot = Cpanel::SSLPath::getsslroot();
+
+    print "[info] SSL root: $sslroot\n" if $verbose;
+
+    if ($debug) {
+        require Data::Dumper;
+    }
+
+    # fetchinfo() is and verifysslcert() may still be "loud"
+    close STDERR;                     # just to be on the safe side
+    open STDERR, '>', '/dev/null';    ## no critic qw(InputOutput::RequireCheckedOpen)
+
+    for my $domain (@domains) {
+        my $ssl_info_hr = Cpanel::SSLInfo::fetchinfo($domain);
+
+        if ($debug) {
+            print Data::Dumper::Dumper($ssl_info_hr);
+        }
+        if ( $ssl_info_hr->{'statusmsg'} =~ /^No certificate for the domain \S+ could be found[.]$/ ) {
+            if ($verbose) {
+                print Term::ANSIColor::color 'bold blue';
+                print "Ok: $domain does not have an SSL crt\n";
+                print Term::ANSIColor::color 'reset';
+            }
+        }
+        else {
+            my ( $rc, $msg ) = Cpanel::SSLInfo::verifysslcert(
+                $sslroot,
+                $ssl_info_hr->{'crt'},
+                $ssl_info_hr->{'key'},
+                $ssl_info_hr->{'cab'},
+                1,    # makes verifysslcert() not do any print()s
+                1,    # makes verifysslcert() return plain text instead of HTML
+            );
+
+            if ($rc) {
+                if ($verbose) {
+                    print Term::ANSIColor::color 'bold green';
+                    print "Ok: $domain SSL crt verified\n";
+                    print Term::ANSIColor::color 'reset';
+                    if ( $verbose eq 'long' ) {
+                        print Cpanel::StringFunc::indent_string($msg) . "\n";
+                    }
+                }
+            }
+            else {
+                print Term::ANSIColor::color 'bold red';
+                print "Error: $domain SSL crt verification failed:\n";
+                print Term::ANSIColor::color 'reset';
+                print Cpanel::StringFunc::indent_string($msg) . "\n";
+            }
+        }
+    }
+    return 1;
+}
+1;

@@ -1,0 +1,49 @@
+[% SET CPANEL.CPVAR.dprefix = "../" %]
+[%
+    SET results = execute("DirectoryIndexes", "set_indexing", {
+        dir => RAW_FORM.dir,
+        type => RAW_FORM.listable_type
+    });
+%]
+[% WRAPPER '_assets/master.html.tt'
+    app_key = 'indexes'
+ -%]
+<div class="body-content">
+[% IF results.status %]
+    <div class="alert alert-success" id="indexSetingSuccess">
+        <span class="glyphicon glyphicon-ok-sign" id="indexSetingSuccessImg"></span>
+        <div class="alert-message" id="indexSettingSuccessMsg">
+            [% locale.maketext("The system updated the directory index settings for the “[_1]” directory.", FORM.dir) %]
+            [% SWITCH results.data %]
+            [%   CASE 'inherit' %]
+            [% locale.maketext("This directory will inherit from the parent directory’s settings or use the system’s default settings.") %]
+            [%   CASE 'disabled' %]
+            [% locale.maketext("Directory indexing is disabled.") %]
+            [%   CASE 'standard' %]
+            [% locale.maketext("Directory indexing will show only the filename.") %]
+            [%   CASE 'fancy' %]
+            [% locale.maketext("Directory indexing will show the filename and description.") %]
+            [% END %]
+        </div>
+    </div>
+[% ELSE %]
+    <div class="alert alert-danger" role="alert">
+        <span class="glyphicon glyphicon-remove-sign" aria-hidden="true"></span>
+        <div class="alert-message">
+            <strong class="alert-title">
+                [% locale.maketext('Error:') %]
+            </strong>
+            <span class="alert-body">
+                <span id="error-config">
+                    [% results.errors_as_string.html() %]
+                </span>
+            </span>
+        </div>
+    </div>
+[% END %]
+</div>
+[%
+    SET return_url = 'dohtaccess.html?dir=' _ RAW_FORM.dir.uri() _ '&is_parent=' _ RAW_FORM.is_parent.uri();
+    INCLUDE _assets/return_link.html.tt return_location=return_url return_link_text=locale.maketext('Go Back')
+%]
+[% END #wrapper -%]

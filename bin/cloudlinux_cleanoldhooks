@@ -1,0 +1,50 @@
+#!/bin/bash
+
+####################################################
+# Remove legacy EasyApache hooks for CloudLinux    #
+####################################################
+
+common_path_of_cpanel="/usr/share/lve/cpanel"
+common_tmp_path="$common_path_of_cpanel/tmp"
+
+function deleteAllInclude(){
+	#1 - hook
+	#2 - tmp name
+	#3 - pattern
+	if [ ! -e "$common_tmp_path" ]; then
+		mkdir -p "$common_tmp_path"
+	fi
+	if [ -e "$1" ];then
+		cat "$1" | sed "$3" > "$common_tmp_path/$2.tmp.$$"
+		cat "$common_tmp_path/$2.tmp.$$" > "$1"
+		rm -f "$common_tmp_path/$2.tmp.$$"
+
+		# check if hook is empty and remove
+		is_empty=`cat "$1" | sed "/#\!\/bin\/bash/d"`
+		if [ -z "$is_empty" ]; then
+			echo "Removing $1"
+			rm -f "$1"
+		fi
+
+	fi
+}
+
+before_apache_make="/scripts/before_apache_make"
+before_httpd_restart_tests="/scripts/before_httpd_restart_tests"
+postupcp="/scripts/postupcp"
+
+echo "Begin removing old hooks"
+if [ -e "$before_apache_make" ]; then
+	echo "$before_apache_make"
+	deleteAllInclude "$before_apache_make" "before_apache_make" "/#cpanel-lve/d"
+fi
+if [ -e "$before_httpd_restart_tests" ]; then
+	echo "$before_httpd_restart_tests"
+	deleteAllInclude "$before_httpd_restart_tests" "before_httpd_restart_tests" "/#cpanel-lve/d"
+fi
+if [ -e "$postupcp" ]; then
+	echo "$postupcp"
+	deleteAllInclude "$postupcp" "postupcp" "/#cpanel-lve/d"
+	deleteAllInclude "$postupcp" "postupcp" "/#CloudLinux/d"
+fi
+echo "Done removing old hooks"

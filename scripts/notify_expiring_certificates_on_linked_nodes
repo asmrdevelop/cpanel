@@ -1,0 +1,52 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/notify_expiring_certificates_on_linked_nodes
+#                                                  Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::notify_expiring_certificates_on_linked_nodes;
+
+use cPstrict;
+
+=encoding utf-8
+
+=head1 USAGE
+
+    notify_expiring_certificates_on_linked_nodes [ --help ] [ --debug ]
+
+=head1 DESCRIPTION
+
+This script checks for expiring SSL certificates on linked nodes and sends
+a notification to the administrator about valid certificates that are about
+to expire or have already expired.
+
+=cut
+
+#----------------------------------------------------------------------
+
+use parent qw( Cpanel::HelpfulScript );
+
+use Cpanel::SSL::Notify::LinkedNodes    ();
+use Cpanel::Output::Formatted::Terminal ();
+
+use constant _OPTIONS => (
+    'debug',
+);
+
+__PACKAGE__->new(@ARGV)->run() if !caller;
+
+sub run ($self) {
+    my $notify = Cpanel::SSL::Notify::LinkedNodes->new(
+        output => Cpanel::Output::Formatted::Terminal->new(),
+    );
+
+    $notify->enable_debug() if $self->getopt('debug');
+
+    $notify->notify_all();
+
+    return;
+}
+
+1;

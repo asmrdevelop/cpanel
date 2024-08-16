@@ -1,0 +1,50 @@
+
+[% SET CPANEL.CPVAR.dprefix = "../" %]
+
+[% WRAPPER '_assets/master.html.tt'
+    app_key = 'boxtrapper'
+%]
+    <div class="body-content">
+        [% IF (ExpVar.expand('$appname') == "webmail" && !( FORM.item('account') == CPANEL.authuser)) %]
+        <div id="saveChangesErrorMsg" class="alert alert-danger">
+            <span class="glyphicon glyphicon-remove-sign"></span>
+            <div class="alert-message">
+            [% locale.maketext("You are not allowed to change settings for the user “[output,strong,_1]”.",FORM.item('account'))  %]
+            </div>
+        </div>
+        [% ELSIF CPANEL.CPDATA.item('DEMO') %]
+            [% locale.maketext("This feature is disabled in demo mode.") %]
+        [% ELSE %]
+            [%
+                IF (RAW_FORM.item('account'));
+                    SET status = execute("BoxTrapper", "set_forwarders", {
+                            'email' => RAW_FORM.item('account'),
+                            'forwarder' => RAW_FORM.item('page').split('\r?\n')
+                        });
+                ELSE;
+                    SET status = {
+                            status => 0,
+                            errors_as_string => locale.maketext("You must pass the “account” parameter with a value.")
+                        };
+                END;
+            %]
+
+            [% IF !status.status %]
+            <div id="saveChangesErrorMsg" class="alert alert-danger">
+                <span class="glyphicon glyphicon-remove-sign"></span>
+                <div class="alert-message">
+                [% locale.maketext("The system encountered an error when it tried to save the new forwarders: “[output,asis,_1]”.", status.errors_as_string.html()) %]
+                </div>
+            </div>
+            [% ELSE %]
+            <div id="saveChangesSuccessMsg" class="alert alert-success">
+                <span class="glyphicon glyphicon-ok-sign"></span>
+                <div class="alert-message">
+                [% locale.maketext("Your changes have been saved.") %]
+                </div>
+            </div>
+            [% END %]
+        [% END %]
+        [% INCLUDE _assets/return_link.html.tt return_location='manage.html?account=' _ FORM.item('account') _ '' return_link_text=locale.maketext('Go Back') %]
+    </div>
+[% END %]

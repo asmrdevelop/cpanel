@@ -1,0 +1,44 @@
+[%#
+Variables passed in:
+
+report                       - Information reported from S.M.A.R.T.
+disable_smartcheck_touchfile - the touchfile used to disable the smartcheck
+
+For more information about how to customize notification templates, read our documentation at https://go.cpanel.net/notificationtemplates
+
+-%]
+
+[%
+    PROCESS "include/colors.tmpl";
+    PROCESS "include/styles.tmpl";
+    PROCESS "include/code_block.tmpl";
+    PROCESS "include/code_inline.tmpl";
+    PROCESS "include/code_standout.tmpl";
+
+    WRAPPER 'wrapper/main.html.tmpl';
+
+    NOTICE.email_reason = CPANEL.locale.maketext('[output,abbr,S.M.A.R.T.,Self-Monitoring Analysis and Reporting Technology] disk error detected.');
+%]
+
+<p>
+    [% CPANEL.locale.maketext('IMPORTANT: Potential hardware problem detected.') %]
+</p>
+<p>
+    [% CPANEL.locale.maketext('Your system’s [_1] utility detected errors. (see the attached file for details). For more information about those errors, read the [_1] manual page, the documentation at http://smartmontools.sourceforge.net/, and the developers’ mailing list.', code_inline(term="smartctl")) %]
+<p>
+    [% CPANEL.locale.maketext('To disable this check, execute the following command as the [asis,root] user:') %]
+</p>
+<p>
+    [% code_standout(command="touch " _ NOTICE.disable_smartcheck_touchfile); %]
+</p>
+<p>
+    [% CPANEL.locale.maketext('To re-enable the check, remove that file. If you do find issues, we suggest that you use the [_1] daemon to monitor your drives, in addition to or instead of this script.', code_inline(term="smartd")) %]
+</p>
+<p>
+    [% CPANEL.locale.maketext('Since this is not a software-related issue, contact your datacenter or hardware manufacturer for further assistance.') %]
+</p>
+<p>
+    [% code_block(formatted_code=NOTICE.log_preview.0, title="---- smartctl report preview --") %]
+</p>
+
+[% END %]

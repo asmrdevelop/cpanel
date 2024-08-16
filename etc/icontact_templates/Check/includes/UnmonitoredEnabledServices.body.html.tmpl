@@ -1,0 +1,41 @@
+[%-
+    NOTICE.table_titles = [
+        CPANEL.locale.maketext("Service"),
+        CPANEL.locale.maketext("Description"),
+    ];
+    NOTICE.table_items = [];
+    FOREACH item IN NOTICE.services;
+        NOTICE.table_items.push([
+            item.name,
+            item.display_name,
+        ]);
+    END;
+    PROCESS "include/colors.tmpl";
+    PROCESS "include/styles.tmpl";
+    PROCESS "include/zebra_table.tmpl";
+    PROCESS "include/code_standout.tmpl";
+
+
+-%]
+
+
+
+
+    [% zebra_table(titles=NOTICE.table_titles,items=NOTICE.table_items); %]
+
+
+    <p>
+      [% CPANEL.locale.maketext('When you enable [asis,cPanel]’s [asis,chkservd] service, it can monitor services and restore them if they fail.'); %]
+      [% CPANEL.locale.maketext('If monitoring is disabled, the system will not be able to automagically restore services if they fail.'); %]
+      [% CPANEL.locale.maketext('You can enable monitoring of services in [asis,WHM]’s “[_1]” interface with the “[_2]” link below.', CPANEL.locale.maketext('Service Manager'), CPANEL.locale.maketext('Configure Monitor[comment,program that observes] Settings')); %]
+    </p>
+    <p>
+        [% CPANEL.locale.maketext('To enable monitoring of [output,strong,all] of these services from the command line, use the following command:') %]
+        [% code_standout(command=NOTICE.enable_monitor_all_enabled_services_command) %]
+    </p>
+    <p>
+        [% CPANEL.locale.maketext('Configure Monitor[comment,program that observes] Settings'); %]:<br>
+        <a href="[% NOTICE.service_manager_url %]">[% NOTICE.service_manager_url %]</a>
+    </p>
+
+

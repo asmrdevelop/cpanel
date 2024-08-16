@@ -1,0 +1,34 @@
+[%#
+Variables passed in:
+
+exit_code         - The numeric exit code the updatenow process returned.
+signal            - The numeric signal code parsed from the exit code of the updatenow process.
+updatenow_args    - A list reference of the command and arguments used to start the updatenow process.
+sent_to_root      - A default boolean flag sent to all templates that indicates if the message was sent to 'root'.
+log_preview       - An arrayref of 10(or less) line preview of attached log file
+
+For more information about how to customize notification templates, read our documentation at https://go.cpanel.net/notificationtemplates
+
+-%]
+
+[%
+    PROCESS "include/colors.tmpl";
+    PROCESS "include/styles.tmpl";
+    PROCESS "include/code_block.tmpl";
+
+    WRAPPER 'wrapper/main.html.tmpl';
+
+    NOTICE.email_reason = CPANEL.locale.maketext('The [asis,cPanel] [output,amp] [asis,WHM] update process failed for the following reason:');
+
+%]
+
+<p>
+    [%
+        CPANEL.locale.maketext('The `[join, ,_1]` command failed and exited with the code “[_2]” (signal = [_3])', NOTICE.updatenow_args, NOTICE.exit_code, NOTICE.signal);
+    %]
+</p>
+<p>
+    [% code_block(formatted_code=NOTICE.log_preview.0, title=CPANEL.locale.maketext('Update log preview:')) %]
+</p>
+
+[% END %]

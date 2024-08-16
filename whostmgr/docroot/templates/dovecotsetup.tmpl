@@ -1,0 +1,695 @@
+[% USE JSON -%]
+<style type="text/css">
+span.action_link {
+    color: blue;
+    cursor: pointer;
+}
+
+.mailserversetup {
+    margin: 0 20px;
+}
+
+#dovecotsetup {
+    border: 5px solid #ddd;
+    width: 570px;
+}
+
+#dovecotsetup td {
+    border-bottom: 1px solid #eee;
+    padding: 10px;
+}
+
+#dovecotsetup .label_title {
+    float: left;
+    font-weight: bold;
+    margin: 0 10px 0 0;
+    width: 200px;
+}
+
+#dovecotsetup p {
+    color: #444;
+    line-height: 1.5;
+    margin: 5px 0 5px 210px;
+}
+
+/* Defaults back to regular labels for normal labels */
+label {
+    display: inline;
+    float: none;
+    font-weight: normal;
+    width: auto;
+}
+
+#dovecotsetup p.distinct:not(:last-child) {
+    margin-bottom: 10px;
+}
+
+/* ------ BEGIN EXTRACTABLE STICKY-TOOLTIP CSS ------ */
+#dovecotsetup .help_hover_wrapper {
+    position: relative;
+}
+
+#dovecotsetup .help_hover {
+    margin-left: 1em;
+    cursor: help;
+}
+
+#dovecotsetup .help_hover + .help_text {
+    display: none;
+}
+
+#dovecotsetup .help_hover:hover {
+    text-decoration: none;
+}
+
+#dovecotsetup .help_hover.force + .help_text, /* debug */
+#dovecotsetup .help_hover:hover + .help_text,
+#dovecotsetup .help_hover:focus + .help_text {
+    position: absolute;
+    display: block;
+    width: 250px;
+    top: 0;
+    left: 125%;
+    background-color: #eee;
+    border: 1px solid #aaa;
+    border-radius: 3px;
+    padding: 3px;
+}
+/* ------ END EXTRACTABLE STICKY-TOOLTIP CSS ------ */
+
+</style>
+
+<script type="text/javascript">
+//<![CDATA[
+var validators = {};
+
+// set default values
+var set_defaults = function() {
+    var protocols = [% data.protocols_options.json() || '[]' %];
+
+    var default_protocols = [% defaults.protocols_lookup.json() || '{}' %];
+    for (var p=protocols.length-1; p>=0; p--) {
+        var cur_prot = protocols[p].option;
+        DOM.get("protocols_enabled_" + cur_prot).checked = cur_prot in default_protocols;
+    }
+
+    YAHOO.util.Dom.get("enable_plaintext_auth").value = '[% IF defaults.disable_plaintext_auth == 'no' %]yes[% ELSE %]no[% END %]';
+    YAHOO.util.Dom.get("ssl_cipher_list").value = '[% defaults.ssl_cipher_list %]';
+    YAHOO.util.Dom.get("protocol_imap.mail_max_userip_connections").value = '[% defaults.protocol_imap.mail_max_userip_connections %]';
+    YAHOO.util.Dom.get("protocol_imap.imap_idle_notify_interval").value = '[% defaults.protocol_imap.imap_idle_notify_interval %]';
+    YAHOO.util.Dom.get("protocol_pop3.mail_max_userip_connections").value = '[% defaults.protocol_pop3.mail_max_userip_connections %]';
+    YAHOO.util.Dom.get("login_processes_count").value = '[% defaults.login_processes_count %]';
+    YAHOO.util.Dom.get("login_max_processes_count").value = '[% defaults.login_max_processes_count %]';
+    YAHOO.util.Dom.get("login_process_size").value = '[% defaults.login_process_size %]';
+    YAHOO.util.Dom.get("mail_process_size").value = '[% defaults.mail_process_size %]';
+    YAHOO.util.Dom.get("mdbox_rotate_interval").value = '[% defaults.mdbox_rotate_interval %]';
+    YAHOO.util.Dom.get("mdbox_rotate_size").value = '[% defaults.mdbox_rotate_size %]';
+    YAHOO.util.Dom.get("max_mail_processes").value = '[% defaults.max_mail_processes %]';
+    YAHOO.util.Dom.get("auth_cache_size").value = '[% defaults.auth_cache_size %]';
+    YAHOO.util.Dom.get("auth_cache_ttl").value = '[% defaults.auth_cache_ttl %]';
+    YAHOO.util.Dom.get("auth_cache_negative_ttl").value = '[% defaults.auth_cache_negative_ttl %]';
+    YAHOO.util.Dom.get("login_process_per_connection").value = '[% defaults.login_process_per_connection %]';
+    YAHOO.util.Dom.get("mailbox_idle_check_interval").value = '[% defaults.mailbox_idle_check_interval %]';
+    YAHOO.util.Dom.get("imap_hibernate_timeout").value = '[% defaults.imap_hibernate_timeout %]';
+    YAHOO.util.Dom.get("expire_trash_ttl").value = '[% defaults.expire_trash_ttl %]';
+    YAHOO.util.Dom.get("expire_spam_ttl").value = '[% defaults.expire_spam_ttl %]';
+    YAHOO.util.Dom.get("lmtp_user_concurrency_limit").value = '[% defaults.lmtp_user_concurrency_limit %]';
+    YAHOO.util.Dom.get("lmtp_process_min_avail").value = '[% defaults.lmtp_process_min_avail %]';
+    YAHOO.util.Dom.get("compress_messages_level").value = '[% defaults.compress_messages_level %]';
+
+    YAHOO.util.Dom.get("lmtp_process_limit").value = '[% defaults.lmtp_process_limit %]';
+    YAHOO.util.Dom.get("config_vsz_limit").value = '[% defaults.config_vsz_limit %]';
+    YAHOO.util.Dom.get("ssl_min_protocol").value = '[% defaults.ssl_min_protocol %]';
+    YAHOO.util.Dom.get("include_trash_in_quota").checked = false;
+    YAHOO.util.Dom.get("compress_messages").checked = false;
+    var quota_radios = document.getElementsByName("incoming_reached_quota");
+    for (var qr=0; qr<quota_radios.length; qr++) {
+        quota_radios[qr].checked = (quota_radios[qr].value === [% JSON.stringify( defaults.incoming_reached_quota ) %]);
+    }
+
+    verify_data();
+};
+
+var reset_form = function() {
+    // reset the form
+    YAHOO.util.Dom.get("mainform").reset();
+
+    // show validation
+    verify_data();
+};
+
+var verify_data = function() {
+    for (var i in validators) {
+        validators[i].verify();
+    }
+};
+
+var ssl_chars = function(value) {
+    var pattern = new RegExp(/^[\-\w\!\+\@\~\:]+$/);
+    if (pattern.test(value) == false) return false;
+    return true;
+};
+
+//CJT’s functions for this don’t work! The value “-” gets accepted.
+function is_integer(input) {
+    var val = input.value;
+    return /^-?[0-9]+(?:\.0+)?$/.test(val);
+}
+function is_positive_integer(input) {
+    var val = input.value;
+    return( is_integer(input) && parseInt(val, 10) > 0 );
+}
+function is_nonnegative_integer(input) {
+    var val = input.value;
+    return( is_integer(input) && parseInt(val, 10) >= 0 );
+}
+
+function is_invalid_weeks_rotation_interval() {
+    var val = YAHOO.util.Dom.get("mdbox_rotate_interval").value;
+    if (val.match('w$') && parseInt(val) > 7101) return false;
+    return true;
+}
+
+function is_invalid_days_rotation_interval() {
+    var val = YAHOO.util.Dom.get("mdbox_rotate_interval").value;
+    if (val.match('d$') && parseInt(val) > 49710) return false;
+    return true;
+}
+
+var init_page = function() {
+
+    // ssl cipher list
+    validators['ssl_cipher_list'] = new CPANEL.validate.validator([% locale.maketext('[output,acronym,SSL,Secure Socket Layer] Cipher List').json() %]);
+    validators['ssl_cipher_list'].add("ssl_cipher_list", function() { return ssl_chars(YAHOO.util.Dom.get("ssl_cipher_list").value); }, [% locale.maketext('The [output,acronym,SSL,Secure Socket Layer] Cipher List must be defined using alphanumeric characters with regular expressions ! + _ @ ~ and use a colon (:) for a separator.').json() %]);
+
+    // maximum imap connections per IP
+    validators['protocol_imap.mail_max_userip_connections'] = new CPANEL.validate.validator([% locale.maketext('Maximum [output,acronym,IMAP,Internet Message Access Protocol] Connections Per [output,acronym,IP,Internet Protocol] Address').json() %]);
+    validators['protocol_imap.mail_max_userip_connections'].add("protocol_imap.mail_max_userip_connections", "positive_integer", [% locale.maketext('The input value for Maximum [output,acronym,IMAP,Internet Message Access Protocol] Connections Per [output,acronym,IP,Internet Protocol] Address must be a positive whole number.').json() %]);
+    validators['protocol_imap.mail_max_userip_connections'].add("protocol_imap.mail_max_userip_connections", "max_length(%input%, 4)", [% locale.maketext('The input value for Maximum [output,acronym,IMAP,Internet Message Access Protocol] Connections Per [output,acronym,IP,Internet Protocol] Address cannot exceed 4 digits.').json() %]);
+
+    // Interval between IMAP IDLE "OK Still here" messages
+    validators['protocol_imap.imap_idle_notify_interval'] = new CPANEL.validate.validator([% locale.maketext('Interval between [output,acronym,IMAP,Internet Message Access Protocol] [asis,IDLE] “OK Still here” messages.').json() %]);
+    validators['protocol_imap.imap_idle_notify_interval'].add("protocol_imap.imap_idle_notify_interval", "positive_integer", [% locale.maketext('The input value for “Interval between [output,acronym,IMAP,Internet Message Access Protocol] IDLE ‘OK Still here’ messages” must be a positive whole number.').json() %]);
+    validators['protocol_imap.imap_idle_notify_interval'].add("protocol_imap.imap_idle_notify_interval", "max_length(%input%, 2)", [% locale.maketext('Interval between [output,acronym,IMAP,Internet Message Access Protocol] [asis,IDLE] “OK Still here” messages cannot exceed 2 digits.').json() %]);
+
+
+    // maximum pop3 connections per IP
+    validators['protocol_pop3.mail_max_userip_connections'] = new CPANEL.validate.validator([% locale.maketext('Maximum [output,acronym,POP3,Post Office Protocol] Connections per [output,acronym,IP,Internet Protocol] Address').json() %]);
+    validators['protocol_pop3.mail_max_userip_connections'].add("protocol_pop3.mail_max_userip_connections", "positive_integer", [% locale.maketext('The input value for Maximum [output,acronym,POP3,Post Office Protocol] Connections Per [output,acronym,IP,Internet Protocol] must be a positive whole number.').json() %]);
+    validators['protocol_pop3.mail_max_userip_connections'].add("protocol_pop3.mail_max_userip_connections", "max_length(%input%, 4)", [% locale.maketext('The input value for Maximum [output,acronym,POP3,Post Office Protocol] Connections Per [output,acronym,IP,Internet Protocol] Address cannot exceed 4 digits.').json() %]);
+
+    // spare authentication processes
+    validators['login_processes_count'] = new CPANEL.validate.validator("[% locale.maketext('Number of Spare Authentication Processes') %]");
+    validators['login_processes_count'].add("login_processes_count", "positive_integer", "[% locale.maketext('The input value for Number of Spare Authentication Processes must be a positive whole number.') %]");
+    validators['login_processes_count'].add("login_processes_count", "max_length(%input%, 4)", "[% locale.maketext('The input value for Number of Spare Authentication Processes cannot exceed 4 digits.') %]");
+    validators['login_processes_count'].add("login_processes_count",
+        function(el) {
+            var lpc = 1 * el.value;
+            var lmpc = 1 * DOM.get("login_max_processes_count").value;
+console.log(lpc, lmpc, arguments);
+            return( lpc <= lmpc );
+        },
+        "[% locale.maketext('This value cannot exceed the value of “[_1]”.', locale.maketext('Maximum Number of Authentication Processes')) %]"
+    );
+
+    // maximum authentication processes
+    validators['login_max_processes_count'] = new CPANEL.validate.validator("[% locale.maketext('Maximum Number of Authentication Processes') %]");
+    validators['login_max_processes_count'].add("login_max_processes_count", "positive_integer", "[% locale.maketext('The input value for Maximum Number of Authentication Processes must be a positive whole number.') %]");
+    validators['login_max_processes_count'].add("login_max_processes_count", "max_length(%input%, 4)", "[% locale.maketext('The input value for Maximum Number of Authentication Processes cannot exceed 4 digits.') %]");
+
+    // maximum mail processes
+    validators['max_mail_processes'] = new CPANEL.validate.validator("[% locale.maketext('Maximum Number of Mail Processes') %]");
+    validators['max_mail_processes'].add("max_mail_processes", "positive_integer", "[% locale.maketext('The input value for Maximum Number of Mail Processes must be a positive whole number.') %]");
+    validators['max_mail_processes'].add("max_mail_processes", "max_length(%input%, 4)", "[% locale.maketext('The input value for Maximum Number of Mail Processes cannot exceed 4 digits.') %]");
+
+    // maximum mail process size
+    validators['mail_process_size'] = new CPANEL.validate.validator([% locale.maketext('Process Memory Limit for Mail ([output,abbr,MB,Megabytes])').json() %]);
+    validators['mail_process_size'].add("mail_process_size", "positive_integer", "[% locale.maketext('The input value for Process Limit for Mail must be a positive whole number.') %]");
+    validators['mail_process_size'].add("mail_process_size", "max_length(%input%, 4)", "[% locale.maketext('The input value for Process Limit for Mail cannot exceed 4 digits.') %]");
+
+    validators['mdbox_rotate_size'] = new CPANEL.validate.validator([% locale.maketext('MDBOX rotation size ([output,acronym,MB,Megabytes])').json() %]);
+    validators['mdbox_rotate_size'].add("mdbox_rotate_size", "max_length(%input%, 4)", "[% locale.maketext('The input value for MDBOX rotation size cannot exceed 4 characters.') %]");
+    validators['mdbox_rotate_size'].add("mdbox_rotate_size",
+                    function() { return YAHOO.util.Dom.get("mdbox_rotate_size").value.match('^[0-9]{1,3}M$'); },
+                    [% locale.maketext('The MDBOX rotation size ([output,acronym,MB,Megabytes]) must be a positive integer followed by the character “M”. (Example: 2M, 10M)').json()
+     %]);
+
+    // maximum login process size
+    validators['login_process_size'] = new CPANEL.validate.validator([% locale.maketext('Process Memory Limit for Authentication ([output,abbr,MB,Megabytes])').json() %]);
+    validators['login_process_size'].add("login_process_size", "positive_integer", "[% locale.maketext('The input value for Process Memory Limit for Authentication must be a positive whole number.') %]");
+    validators['login_process_size'].add("login_process_size", "max_length(%input%, 4)", "[% locale.maketext('The input value for Process Memory Limit for Authentication cannot exceed 4 digits.') %]");
+
+    validators['config_vsz_limit'] = new CPANEL.validate.validator([% locale.maketext('Process Memory Limit: [asis,config] ([output,abbr,MB,Megabytes])').json() %]);
+    validators['config_vsz_limit'].add("config_vsz_limit", is_positive_integer, "[% locale.maketext('This value must be a positive integer.') %]");
+    validators['config_vsz_limit'].add("config_vsz_limit", "min_value(%input%, 128)", "[% locale.maketext('This value cannot be lower than [numf,_1].', 128) %]");
+    validators['config_vsz_limit'].add("config_vsz_limit", "max_value(%input%, 99999)", "[% locale.maketext('This value cannot be greater than [numf,_1].', 99999) %]");
+
+    validators['mdbox_rotate_interval'] = new CPANEL.validate.validator("[% locale.maketext('MDBOX rotation interval (Weeks or Days)') %]");
+    validators['mdbox_rotate_interval'].add("mdbox_rotate_interval", "max_length(%input%, 6)", "[% locale.maketext('The input value for MDBOX rotation interval cannot exceed 6 characters.') %]");
+    validators['mdbox_rotate_interval'].add("mdbox_rotate_interval",
+                    function() { return YAHOO.util.Dom.get("mdbox_rotate_interval").value.match('^(0|[1-9][0-9]{0,4}[wd])$'); },
+                    "[% locale.maketext('The MDBOX rotation interval (Weeks or Days) must be a positive integer followed by the character “w” or “d” or “0”. (Example: 500d, 0)') %]"
+    );
+    validators['mdbox_rotate_interval'].add("mdbox_rotate_interval", is_invalid_weeks_rotation_interval, "[% locale.maketext('The MDBOX rotation interval cannot be more than 7101 weeks.') %]");
+    validators['mdbox_rotate_interval'].add("mdbox_rotate_interval", is_invalid_days_rotation_interval, "[% locale.maketext('The MDBOX rotation interval cannot be more than 49710 days.') %]");
+
+
+    // size of authentication cache
+    validators['auth_cache_size'] = new CPANEL.validate.validator([% locale.maketext('Size of Authentication Cache ([output,abbr,MB,Megabytes])').json() %]);
+    validators['auth_cache_size'].add("auth_cache_size", "max_length(%input%, 4)", "[% locale.maketext('The input value for Size of Authentication Cache cannot exceed 4 characters.') %]");
+    validators['auth_cache_size'].add("auth_cache_size",
+                    function() { return YAHOO.util.Dom.get("auth_cache_size").value.match('^[0-9]{1,3}M$'); },
+                    [% locale.maketext('The Size of Authentication Cache ([output,acronym,MB,Megabytes]) must be a positive integer followed by the character “M”. (Example: 2M, 10M)').json()
+     %]);
+
+
+    // time to cache successful logins
+    validators['auth_cache_ttl'] = new CPANEL.validate.validator("[% locale.maketext('Time to Cache Successful Logins') %]");
+    validators['auth_cache_ttl'].add("auth_cache_ttl", "positive_integer", "[% locale.maketext('The input value for Time to Cache Successful Logins must be a positive whole number.') %]");
+    validators['auth_cache_ttl'].add("auth_cache_ttl", "max_length(%input%, 4)", "[% locale.maketext('The input value for Time to Cache Successful Logins cannot exceed 4 digits.') %]");
+
+    // time to cache failed logins
+    validators['auth_cache_negative_ttl'] = new CPANEL.validate.validator("[% locale.maketext('Time to Cache Failed Logins') %]");
+    validators['auth_cache_negative_ttl'].add("auth_cache_negative_ttl", "positive_integer", "[% locale.maketext('The input value for Time to Cache Failed Logins must be a positive whole number.') %]");
+    validators['auth_cache_negative_ttl'].add("auth_cache_negative_ttl", "max_length(%input%, 4)", "[% locale.maketext('The input value for Time to Cache Failed Logins cannot exceed 4 digits.') %]");
+
+    // idle check interval
+    validators['mailbox_idle_check_interval'] = new CPANEL.validate.validator("[% locale.maketext('Idle Check Interval') %]");
+    validators['mailbox_idle_check_interval'].add("mailbox_idle_check_interval", "min_value(%input%, 1)", "[% locale.maketext('The input value for Idle Check Interval must be an integer greater than 0.') %]");
+    validators['mailbox_idle_check_interval'].add("mailbox_idle_check_interval","max_length(%input%, 4)", "[% locale.maketext('The input value for Idle Check Interval cannot exceed 4 digits.') %]");
+
+    // imap hibernate timeout
+    validators['imap_hibernate_timeout'] = new CPANEL.validate.validator([% locale.maketext('Idle Hibernate Timeout (Seconds)').json() %]);
+    validators['imap_hibernate_timeout'].add("imap_hibernate_timeout", "min_value(%input%, 0)", "[% locale.maketext('The input value for Idle Hibernate Timeout (Seconds) must be a valid positive integer.') %]");
+    validators['imap_hibernate_timeout'].add("imap_hibernate_timeout","max_length(%input%, 4)", "[% locale.maketext('The input value for Idle Hibernate Timeout (Seconds) cannot exceed 4 digits.') %]");
+
+    // expire trash ttl
+    validators['expire_trash_ttl'] = new CPANEL.validate.validator("[% locale.maketext('Trash Expire Time') %]");
+    validators['expire_trash_ttl'].add("expire_trash_ttl", "min_value(%input%, 1)", "[% locale.maketext('The input value for Trash Expire Time must be an integer greater than 0.') %]");
+    validators['expire_trash_ttl'].add("expire_trash_ttl", "max_value(%input%, 366)", "[% locale.maketext('The input value for Trash Expire Time must be an integer less than 366.') %]");
+
+    // expire spam ttl
+    validators['expire_spam_ttl'] = new CPANEL.validate.validator("[% locale.maketext('Spam Expire Time') %]");
+    validators['expire_spam_ttl'].add("expire_spam_ttl", "min_value(%input%, 1)", "[% locale.maketext('The input value for Spam Expire Time must be an integer greater than 0.') %]");
+    validators['expire_spam_ttl'].add("expire_spam_ttl", "max_value(%input%, 366)", "[% locale.maketext('The input value for Spam Expire Time must be an integer less than 366.') %]");
+
+    validators['lmtp_process_min_avail'] = new CPANEL.validate.validator("[% locale.maketext('Minimum Available [asis,LMTP] Processes') %]");
+    validators['lmtp_process_min_avail'].add("lmtp_process_min_avail", is_integer, "[% locale.maketext('“[_1]” must be an integer.', locale.maketext('Minimum Available [asis,LMTP] Processes')) %]");
+    validators['lmtp_process_min_avail'].add("lmtp_process_min_avail", "min_value(%input%, 0)", "[% locale.maketext('“[_1]” cannot be a negative value.', locale.maketext('Minimum Available [asis,LMTP] Processes')) %]");
+    validators['lmtp_process_min_avail'].add("lmtp_process_min_avail", "max_value(%input%, 99)", "[% locale.maketext('“[_1]” cannot be greater than [numf,_2].', locale.maketext('Minimum Available [asis,LMTP] Processes'), 99) %]");
+
+    validators['compress_messages_level'] = new CPANEL.validate.validator("[% locale.maketext('Compression Level') %]");
+    validators['compress_messages_level'].add("compress_messages_level", is_integer, "[% locale.maketext('“[_1]” must be an integer.', locale.maketext('Compression Level')) %]");
+    validators['compress_messages_level'].add("compress_messages_level", "min_value(%input%, 1)", "[% locale.maketext('“[_1]” cannot be less than [numf,_2].', locale.maketext('Compression Level'), 1) %]");
+    validators['compress_messages_level'].add("compress_messages_level", "max_value(%input%, 9)", "[% locale.maketext('“[_1]” cannot be greater than [numf,_2].', locale.maketext('Compression Level'), 9) %]");
+
+
+    validators['lmtp_process_limit'] = new CPANEL.validate.validator("[% locale.maketext('[asis,LMTP] Process Limit') %]");
+    validators['lmtp_process_limit'].add("lmtp_process_limit", is_positive_integer, "[% locale.maketext('“[_1]” must be a positive integer.', locale.maketext('[asis,LMTP] Process Limit')) %]");
+    validators['lmtp_process_limit'].add("lmtp_process_limit", "max_value(%input%, 9999)", "[% locale.maketext('“[_1]” cannot be greater than [numf,_2].', locale.maketext('[asis,LMTP] Process Limit'), 9999) %]");
+
+    validators["lmtp_user_concurrency_limit"] = new CPANEL.validate.validator("[% locale.maketext('[asis,LMTP] User Concurrency Limit') %]");
+    validators["lmtp_user_concurrency_limit"].add("lmtp_user_concurrency_limit", is_nonnegative_integer, "[% locale.maketext('“[_1]” must be a nonnegative integer.', locale.maketext('[asis,LMTP] User Concurrency Limit')) %]");
+    validators["lmtp_user_concurrency_limit"].add(
+        "lmtp_user_concurrency_limit",
+        function(el) {
+            var ucl = 1 * el.value;
+            var pl = 1 * DOM.get("lmtp_process_limit").value;
+console.log(ucl, pl, arguments);
+            return( ucl <= pl );
+        },
+        "[% locale.maketext('This value cannot exceed the value of “[_1]”.', locale.maketext('[asis,LMTP] Process Limit')) %]"
+    );
+
+    for (var i in validators) {
+        validators[i].attach();
+    }
+
+    CPANEL.validate.attach_to_form("submit_page", validators);
+
+    YAHOO.util.Event.on("use_defaults", "click", set_defaults);
+    YAHOO.util.Event.on("reset_form", "click", reset_form);
+
+    //CPANEL.panels.create_help("example_ssl_cipher_link", "example_ssl_cipher");
+
+    YAHOO.util.Event.on("expire_trash", "click", function(){
+        YAHOO.util.Dom.get("expire_trash_ttl").disabled = !YAHOO.util.Dom.get("expire_trash").checked;
+    });
+
+    YAHOO.util.Event.on("expire_spam", "click", function(){
+        YAHOO.util.Dom.get("expire_spam_ttl").disabled = !YAHOO.util.Dom.get("expire_spam").checked;
+    });
+
+    YAHOO.util.Event.on("compress_messages", "click", function(){
+        YAHOO.util.Dom.get("compress_messages_level").disabled = !YAHOO.util.Dom.get("compress_messages").checked;
+    });
+};
+YAHOO.util.Event.onDOMReady(init_page);
+//]]>
+</script>
+<!--
+<div id="example_ssl_cipher" style="display: none">
+<ul>
+    <li>ALL:!ADH:RC4+RSA:+HIGH:+MEDIUM:-LOW:-SSLv2:-EXP</li>
+    <li>example2</li>
+    <li>example3</li>
+</ul>
+</div>
+-->
+<div class="mailserversetup">
+<p>[% locale.maketext("Dovecot is a mail server capable of handling the [output,acronym,IMAP,Internet Message Access Protocol] and [output,acronym,POP3,Post Office Protocol] protocols. This interface allows you to configure various aspects of Dovecot’s behavior.") %]</p>
+<form action="[% data.action %]" name="mainform" id="mainform" method="post">
+<table id="dovecotsetup" border="0" cellspacing="0" cellpadding="0">
+    <tr>
+        <td>
+            <label class="label_title">[% locale.maketext("Protocols Enabled") %]</label>
+            [% FOR option IN data.protocols_options %]
+                <input [% IF option.name == "LMTP" %]disabled="disabled"[% END %] type="checkbox" name="protocols_enabled_[% option.option %]" class="ipv4_protocol_controls" id="protocols_enabled_[% option.option %]" onchange="disableProtocol()" [% IF option.checked == 'checked' %]checked="checked"[% END %] />
+                <label for="protocols_enabled_[% option.option %]">[%-
+                    SWITCH option.name;
+                        CASE 'LMTP';
+                            locale.maketext('[output,acronym,LMTP,Local Mail Transfer Protocol]');
+                        CASE 'IMAP';
+                            locale.maketext('[output,acronym,IMAP,Internet Message Access Protocol]');
+                        CASE 'IMAPS';
+                            locale.maketext('[output,acronym,IMAPS,Internet Message Access Protocol over SSL]');
+                        CASE 'POP3';
+                            locale.maketext('[output,acronym,POP3,Post Office Protocol 3]');
+                        CASE 'POP3S';
+                            locale.maketext('[output,acronym,POP3S,Post Office Protocol 3 over SSL]');
+                        CASE 'LDA';
+                            locale.maketext('[output,acronym,LDA,Local Delivery Agent]');
+                        CASE;
+                            option.name;
+                    END;
+                -%]</label>
+            [% END %]
+            <p>[% locale.maketext("These checkboxes select which protocols [asis,Dovecot] will listen on.") %]</p>
+            <p>[% locale.maketext("[output,strong,Note]: [asis,cPanel]’s Webmail system requires [output,acronym,IMAP,Internet Message Access Protocol] in order to function.") %]</p>
+            <p>[% locale.maketext("[output,strong,Note]: If you do not select a checkbox, the system will operate in authentication-only mode.") %]</p>
+            <p>[% locale.maketext("[output,strong,Note]: [output,acronym,LMTP,Local Mail Transfer Protocol] is required and you cannot disable it.") %]</p>
+        </td>
+    </tr>
+[% IF data.show_ipv6 %]
+    <tr>
+        <td>
+            <label class="label_title">[% locale.maketext("IPv6 Enabled") %]</label>
+                <input type="checkbox" name="ipv6" id="ipv6" [% IF data.ipv6 %]checked="checked"[% END %] />
+            <p>[% locale.maketext("This option allows you to enable [asis,Dovecot] to listen for [output,acronym,IPv6,Internet Protocol Version 6] Address requests.") %]</p>
+            <p>[% locale.maketext("[output,strong,Note]: You must select a protocol in the Protocols Enabled section before selecting IPv6 Enabled.") %]</p>
+        </td>
+    </tr>
+[% END %]
+    <tr>
+        <td>
+            <label class="label_title">[% locale.maketext("Allow Plaintext Authentication (from remote clients)") %]</label>
+            <select name="enable_plaintext_auth" id="enable_plaintext_auth">
+            [% FOR option IN data.enable_plaintext_auth_options %]
+                <option [% IF option.selected == 'selected' %]selected="selected"[% END %] value="[% option.option %]">[%-
+                    SWITCH option.option;
+                        CASE 'yes';
+                            locale.maketext('Yes');
+                        CASE 'no';
+                            locale.maketext('No');
+                        CASE;
+                            option.option;
+                    END;
+                -%]</option>
+            [% END %]
+            </select>
+            <p>[% locale.maketext("This setting will allow remote email clients to authenticate using unencrypted connections. When set to “no”, only connections originating on the local server will be allowed to authenticate without encryption. Selecting “no” is preferable to disabling [output,acronym,IMAP,Internet Message Access Protocol] in the [output,em,Protocols Enabled] section since it will force remote users to use encryption while still allowing webmail to function correctly.") %]</p>
+        </td>
+    </tr>
+    <tr>
+        <td>
+            <label class="label_title">[% locale.maketext("[output,acronym,SSL,Secure Socket Layer] Cipher List") %]</label>
+            <input type="text" name="ssl_cipher_list" id="ssl_cipher_list" value="[% data.ssl_cipher_list %]" /> <span id="ssl_cipher_list_error"></span>
+            <p>[% locale.maketext("This is a standard format list of the [output,acronym,SSL,Secure Socket Layer] ciphers [asis,Dovecot] should use. Typically this will only need to be adjusted for [output,acronym,PCI,Payment Card Industry] compliance.") %]"
+            <!--<span id="example_ssl_cipher_link" class="action_link">see example</span>--></p>
+        </td>
+    </tr>
+    <tr>
+        <td>
+            <label class="label_title">[% locale.maketext("[output,acronym,SSL,Secure Socket Layer] Minimum Protocol") %]</label>
+            <select name="ssl_min_protocol" id="ssl_min_protocol">
+            [% FOR option IN data.ssl_min_protocol_options %]
+                <option [% IF option.selected == 'selected' %]selected="selected"[% END %] value="[% option.option %]">[%- option.option -%]</option>
+            [% END %]
+            </select>
+            <p>[% locale.maketext("This value represents the minimum [output,acronym,SSL,Secure Socket Layer] protocol that [asis,Dovecot] clients may use to connect. Typically, you will only need to adjust this value for [output,acronym,PCI,Payment Card Industry] compliance.") %]
+            </p>
+        </td>
+    </tr>
+    <tr>
+        <td>
+            <label class="label_title">[% locale.maketext("Maximum Number of Mail Processes") %]</label>
+            <input type="text" name="max_mail_processes" id="max_mail_processes" value="[% data.max_mail_processes %]" /> <span id="max_mail_processes_error"></span>
+            <p>[% locale.maketext("Specifies the maximum number of mail ([output,acronym,IMAP,Internet Message Access Protocol] and [output,acronym,POP3,Post Office Protocol] servers) processes that may be running at one time.") %]</p>
+        </td>
+    </tr>
+    <tr>
+        <td>
+            <label class="label_title">[% locale.maketext("Process Memory Limit for Mail ([output,abbr,MB,Megabytes])") %]</label>
+            <input type="text" name="mail_process_size" id="mail_process_size" value="[% data.mail_process_size %]" /> <span id="mail_process_size_error"></span>
+            <p>[% locale.maketext("The maximum memory usage of the [output,acronym,IMAP,Internet Message Access Protocol] and [output,acronym,POP3,Post Office Protocol] processes, in [output,acronym,MB,Megabytes]. These processes read mostly memory-mapped files, so setting a high limit should not affect your server’s performance.") %]</p>
+        </td>
+    </tr>
+    <tr>
+        <td>
+            <label class="label_title">[% locale.maketext("Maximum [output,acronym,IMAP,Internet Message Access Protocol] Connections Per IP Address") %]</label>
+            <input type="text" name="protocol_imap.mail_max_userip_connections" id="protocol_imap.mail_max_userip_connections" value="[% data.protocol_imap.mail_max_userip_connections %]" /> <span id="protocol_imap.mail_max_userip_connections_error"></span>
+            <p>[% locale.maketext("Specifies the number of simultaneous [output,acronym,IMAP,Internet Message Access Protocol] connections that a single user ([output,acronym,IP,Internet Protocol] address) may make from each IP address.") %]</p>
+        </td>
+    </tr>
+   <tr>
+        <td>
+            <label class="label_title">[% locale.maketext("Interval between [output,acronym,IMAP,Internet Message Access Protocol] [asis,IDLE] “OK Still here” messages.") %]</label>
+            <input type="text" name="protocol_imap.imap_idle_notify_interval" id="protocol_imap.imap_idle_notify_interval" value="[% data.protocol_imap.imap_idle_notify_interval %]" /> <span id="protocol_imap.imap_idle_notify_interval_error"></span>
+            <p>[% locale.maketext("Specifies the number of minutes between [output,acronym,IMAP,Internet Message Access Protocol] IDLE “OK Still here” messages. Increasing this may help increase battery life for some mobile clients.") %]</p>
+        </td>
+    </tr>
+
+    <tr>
+        <td>
+            <label class="label_title">[% locale.maketext("Maximum [output,acronym,POP3,Post Office Protocol] Connections per [output,acronym,IP,Internet Protocol] Address") %]</label>
+            <input type="text" name="protocol_pop3.mail_max_userip_connections" id="protocol_pop3.mail_max_userip_connections" value="[% data.protocol_pop3.mail_max_userip_connections %]" /> <span id="protocol_pop3.mail_max_userip_connections_error"></span>
+            <p>[% locale.maketext("Specifies the number of simultaneous [output,acronym,POP3,Post Office Protocol] connections that a single user (IP address) may make from each IP address.") %]</p>
+        </td>
+    </tr>
+    <tr>
+        <td>
+            <label class="label_title">[% locale.maketext("Number of Spare Authentication Processes") %]</label>
+            <input type="text" name="login_processes_count" id="login_processes_count" value="[% data.login_processes_count %]" /> <span id="login_processes_count_error"></span>
+            <p>[% locale.maketext("This specifies how many spare authentication processes should be kept running to listen for new connections.") %]</p>
+        </td>
+    </tr>
+    <tr>
+        <td>
+            <label class="label_title">[% locale.maketext("Maximum Number of Authentication Processes") %]</label>
+            <input type="text" name="login_max_processes_count" id="login_max_processes_count" value="[% data.login_max_processes_count %]" /> <span id="login_max_processes_count_error"></span>
+            <p>[% locale.maketext("Specifies the maximum number of authentication processes that may be running at one time.") %]</p>
+        </td>
+    </tr>
+    <tr>
+        <td>
+            <label class="label_title">[% locale.maketext("Process Memory Limit for Authentication ([output,abbr,MB,Megabytes])") %]</label>
+            <input type="text" name="login_process_size" id="login_process_size" value="[% data.login_process_size %]" /> <span id="login_process_size_error"></span>
+            <p>[% locale.maketext("The maximum memory usage of the [output,acronym,IMAP,Internet Message Access Protocol] and [output,acronym,POP3,Post Office Protocol] login processes, in [output,acronym,MB,Megabytes].") %]</p>
+        </td>
+    </tr>
+    <tr>
+        <td>
+            <label class="label_title">[% locale.maketext("Idle Hibernate Timeout (Seconds)") %]</label>
+            <input type="text" name="imap_hibernate_timeout" id="imap_hibernate_timeout" value="[% data.imap_hibernate_timeout %]" /> <span id="imap_hibernate_timeout_error"></span>
+            <p>[% locale.maketext("The number of seconds to delay before moving users to the IMAP hibernate process. This will help save system memory. A value of “0” disables this option.") %]</p>
+        </td>
+    </tr>
+    <tr>
+        <td>
+            <label class="label_title">[% locale.maketext("Size of Authentication Cache ([output,abbr,MB,Megabytes])") %]</label>
+            <input type="text" name="auth_cache_size" id="auth_cache_size" value="[% data.auth_cache_size %]" /> <span id="auth_cache_size_error"></span>
+            <p>[% locale.maketext("The master authentication process keeps a cache of validated logins so that it does not need to recheck the login credentials each time mail is retrieved. This specifies the amount of memory used for the cache, in [output,abbr,MB,Megabytes].") %]</p>
+        </td>
+    </tr>
+    <tr>
+        <td>
+            <label class="label_title">[% locale.maketext("Time to Cache Successful Logins") %]</label>
+            <input type="text" name="auth_cache_ttl" id="auth_cache_ttl" value="[% data.auth_cache_ttl %]" /> <span id="auth_cache_ttl_error"></span>
+            <p>[% locale.maketext("The time, in seconds, that successful logins will be stored in the authentication cache. A lower value may cause more work for the authentication server but decrease the likelihood of problems when passwords are updated.") %]</p>
+        </td>
+    </tr>
+    <tr>
+        <td>
+            <label class="label_title">[% locale.maketext("Time to Cache Failed Logins") %]</label>
+            <input type="text" name="auth_cache_negative_ttl" id="auth_cache_negative_ttl" value="[% data.auth_cache_negative_ttl %]" /> <span id="auth_cache_negative_ttl_error"></span>
+            <p>[% locale.maketext("The time in seconds that failed logins will be stored in the authentication cache. Lowering this value may cause more work for the authentication server but decrease the likelihood of problems when passwords are updated.") %]</p>
+        </td>
+    </tr>
+    <tr>
+        <td>
+            <label class="label_title">[% locale.maketext("Use New Authentication Process for Each Connection") %]</label>
+            <select name="login_process_per_connection" id="login_process_per_connection">
+            [% FOR option IN data.login_process_per_connection_options %]
+                <option [% IF option.selected == 'selected' %]selected="selected"[% END %] value="[% option.option %]">[%-
+                    SWITCH option.option;
+                        CASE 'yes';
+                            locale.maketext('Yes');
+                        CASE 'no';
+                            locale.maketext('No');
+                        CASE;
+                            option.option;
+                    END;
+                -%]</option>
+            [% END %]
+            </select>
+            <p>[% locale.maketext("Specifies whether to use a new login process for each new [output,acronym,POP3,Post Office Protocol] or [output,acronym,IMAP,Internet Message Access Protocol] connection. Setting this to yes may improve the security of the [asis,Dovecot] authentication processes, but doing so imposes a significant performance penalty on heavily loaded servers.") %]</p>
+        </td>
+    </tr>
+    <tr>
+        <td>
+            <label class="label_title">[% locale.maketext("Process Memory Limit: [asis,config] ([output,abbr,MB,Megabytes])") %]</label>
+            <input type="text" name="config_vsz_limit" id="config_vsz_limit" value="[% data.config_vsz_limit %]" /> <span id="config_vsz_limit_error"></span>
+            <p>[% locale.maketext("The maximum memory usage (in [output,abbr,MB,Megabytes]) of [asis,Dovecot]’s internal “[asis,config]” service. Each [asis,SSL]/[asis,TLS] certificate that [asis,Dovecot] tracks requires additional memory. Servers with many domains may need to increase this value to ensure that [asis,Dovecot] operates correctly.") %]</p>
+        </td>
+    </tr>
+    <tr>
+        <td>
+            <label class="label_title">[% locale.maketext("Idle Check Interval") %]</label>
+            <input type="text" name="mailbox_idle_check_interval" id="mailbox_idle_check_interval" value="[% data.mailbox_idle_check_interval %]" /> <span id="mailbox_idle_check_interval_error"></span>
+            <p>[% locale.maketext("The time in seconds between updates to idle [output,acronym,IMAP,Internet Message Access Protocol] connections. Lowering this value will cause idle clients to see new messages faster, however lower values may also increase server load slightly. The default setting of 30 is recommended.") %]</p>
+        </td>
+    </tr>
+    <tr>
+        <td>
+            <label class="label_title">[% locale.maketext("Include Trash in Quota") %]</label>
+            <input type="checkbox" name="include_trash_in_quota" id="include_trash_in_quota" value="1" [% data.include_trash_in_quota ? 'checked="checked"' : '' %] /> <span id="include_trash_in_quota_error"></span>
+            <p>[% locale.maketext("When this option is enabled, the system will count email messages in the Trash folder against the user’s quota.") %]
+            [% locale.maketext("Note: In order to recalculate existing quotas, you must run the “[_1]” command in a root shell after you modify this option." ,'/usr/local/cpanel/scripts/generate_maildirsize --allaccounts --confirm') %]
+          </p>
+        </td>
+    </tr>
+    <tr>
+        <td>
+            <label class="label_title">[% locale.maketext("Compress Messages") %]</label>
+            <input type="checkbox" name="compress_messages" id="compress_messages" value="1" [% data.compress_messages ? 'checked="checked"' : '' %] /> <span id="compress_messages_error"></span>
+            <p>[% locale.maketext("When you enable this option, the system will compress recently created and delivered messages.") %]</p>
+          </p>
+        </td>
+    </tr>
+    <tr>
+        <td>
+            <label class="label_title">[% locale.maketext("Compression Level") %]</label>
+            <input type="text" name="compress_messages_level" id="compress_messages_level" value="[% data.compress_messages_level %]" [% !data.compress_messages && 'disabled' %] /> <span id="compress_messages_level_error"></span>
+            <p>[% locale.maketext("The compression level to save messages in when you enable “Compress Messages”.") %]</p>
+        </td>
+    </tr>
+
+    <tr>
+        <td>
+            <label class="label_title">[% locale.maketext("Auto Expunge Trash") %]</label>
+            <input type="checkbox" name="expire_trash" id="expire_trash" value="1" [% data.expire_trash ? 'checked="checked"' : '' %] /> <span id="expire_trash_error"></span>
+            <p>[% locale.maketext("When this option is enabled, the system will remove messages in the Trash and Deleted Messages folders based on the expiration time configured below.") %]</p>
+        </td>
+    </tr>
+    <tr>
+        <td>
+            <label class="label_title">[% locale.maketext("Trash Expire Time") %]</label>
+            <input type="text" name="expire_trash_ttl" id="expire_trash_ttl" value="[% data.expire_trash_ttl %]" [% data.expire_trash ? '' : 'disabled' %]/> <span id="expire_trash_ttl_error"></span>
+            <p>[% locale.maketext("The number of days to keep messages before the [output,em,Auto Expunge Trash] function removes them. This function only works if the [output,em,Auto Expunge Trash] function is enabled.") %]</p>
+        </td>
+    </tr>
+
+    <tr>
+        <td>
+            <label class="label_title">[% locale.maketext("Auto Expunge Spam") %]</label>
+            <input type="checkbox" name="expire_spam" id="expire_spam" value="1" [% data.expire_spam ? 'checked="checked"' : '' %] /> <span id="expire_spam_error"></span>
+            <p>[% locale.maketext("When this option is enabled, the system will remove messages in the Spam folder based on the expiration time configured below.") %]</p>
+        </td>
+    </tr>
+    <tr>
+        <td>
+            <label class="label_title">[% locale.maketext("Spam Expire Time") %]</label>
+            <input type="text" name="expire_spam_ttl" id="expire_spam_ttl" value="[% data.expire_spam_ttl %]" [% data.expire_spam ? '' : 'disabled' %]/> <span id="expire_spam_ttl_error"></span>
+            <p>[% locale.maketext("The number of days to keep messages before the [output,em,Auto Expunge Spam] function removes them. This function only works if the [output,em,Auto Expunge Spam] function is enabled.") %]</p>
+        </td>
+    </tr>
+    <tr>
+        <td>
+            <label class="label_title">[% locale.maketext("[asis,MDBOX] rotation size ([output,acronym,MB,Megabytes])") %]</label>
+            <input type="text" name="mdbox_rotate_size" id="mdbox_rotate_size" value="[% data.mdbox_rotate_size %]" /> <span id="mdbox_rotate_size_error"></span>
+            <p>[% locale.maketext("The maximum size to which a [asis,MDBOX] mailbox file may grow before the system rotates it.") %]</p>
+        </td>
+    </tr>
+    <tr>
+        <td>
+            <label class="label_title">[% locale.maketext("[asis,MDBOX] rotation interval (Weeks or Days)") %]</label>
+            <input type="text" name="mdbox_rotate_interval" id="mdbox_rotate_interval" value="[% data.mdbox_rotate_interval %]" /> <span id="mdbox_rotate_interval_error"></span>
+            <p>[% locale.maketext("The maximum time that an [asis,MDBOX] mailbox file may exist before the system rotates it.") %]</p>
+        </td>
+    </tr>
+    <tr>
+        <td>
+            <label class="label_title">[% locale.maketext('Disk Quota Delivery Failure Response') %]</label>
+            <p class="distinct"><label>[% locale.maketext('How [asis,Dovecot] will respond when a system disk quota or mailbox disk quota prevents delivery:') %]</label></p>
+            [% FOR irq_opt = data.incoming_reached_quota_options -%]
+                <p class="distinct">
+                    <label><input type="radio" name="incoming_reached_quota" value="[% irq_opt.value.html() %]" [% irq_opt.value == data.incoming_reached_quota && 'checked' %]> [% irq_opt.label.html() %]</label>
+                    <span class="help_hover_wrapper">
+                        <a href="javascript:void(0)" class="help_hover">[ ? ]</a>
+                        <span class="help_text">[% irq_opt.help.html() %]</span>
+                    </span>
+                </p>
+            [% END -%]
+        </td>
+    </tr>
+    <tr>
+        <td>
+            <label class="label_title">[% locale.maketext("Minimum Available [asis,LMTP] Processes") %]</label>
+            <input type="text" name="lmtp_process_min_avail" id="lmtp_process_min_avail" value="[% data.lmtp_process_min_avail %]" /> <span id="lmtp_process_min_avail_error"></span>
+            <p>[% locale.maketext("The minimum number of processes that the system will attempt to reserve in order to accept more client connections.") %]
+               [% locale.maketext("A setting of [numf,_1] will only start the [asis,LMTP] server when needed and will conserve memory.", 0) %]
+            </p>
+        </td>
+    </tr>
+    <tr>
+        <td>
+            <label class="label_title">[% locale.maketext("[asis,LMTP] Process Limit") %]</label>
+            <input type="text" name="lmtp_process_limit" id="lmtp_process_limit" value="[% data.lmtp_process_limit %]" /> <span id="lmtp_process_limit_error"></span>
+            <p>[% locale.maketext("The maximum number of [asis,LMTP] server processes.") %]</p>
+        </td>
+    </tr>
+    <tr>
+        <td>
+            <label class="label_title">[% locale.maketext("[asis,LMTP] User Concurrency Limit") %]</label>
+            <input type="text" name="lmtp_user_concurrency_limit" id="lmtp_user_concurrency_limit" value="[% data.lmtp_user_concurrency_limit %]" /> <span id="lmtp_user_concurrency_limit_error"></span>
+            <p>[% locale.maketext('The maximum number of concurrent [asis,LMTP] deliveries per user. A value of “[numf,_1]” disables the per-user limit.', 0) %]</p>
+        </td>
+    </tr>
+</table>
+<br />
+<table style="width: 570px">
+    <tr>
+        <td><input type="button" value="[% locale.maketext('Use Default Values') %]" id="use_defaults" class="btn btn-default" /></td>
+        <td style="text-align: right">
+            <span id="reset_form" class="action_link">[% locale.maketext("Reset Form") %]</span><input type="submit" value="[% locale.maketext('Save Changes') %]" id="submit_page" class="btn btn-primary" />
+        </td>
+    </tr>
+</table>
+<br />
+</form>
+</div>
+<script>
+// Disable IPv6 protocol upon disabling its corresponding IPv4 protocol
+var disableProtocol = function() {
+    var IPv4Controls = document.getElementsByClassName("ipv4_protocol_controls");
+    for (var i = 0; i < IPv4Controls.length; i++) {
+        if(IPv4Controls[i].checked) {
+            document.getElementById("ipv6").disabled = false;
+            return;
+        }
+    }
+    document.getElementById("ipv6").disabled = true;
+    document.getElementById("ipv6").checked = false;
+}
+</script>
+</body>

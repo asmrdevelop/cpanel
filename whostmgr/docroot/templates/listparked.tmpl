@@ -1,0 +1,75 @@
+[%
+    USE Whostmgr;
+    USE JSON;
+
+    WRAPPER 'master_templates/master.tmpl'
+        app_key = 'list_parked_domains'
+        header = locale.maketext('Parked Domains (Domain Aliases)'),
+        breadcrumburl = '/scripts2/listparked',
+        base = '/scripts2/listparked/',
+        theme='bootstrap'
+        scripts = ['/js/sorttable.js'];
+-%]
+<div id="content">
+    [% IF data.show_list_subdomains -%]
+        <div class="description">
+            [% locale.maketext( 'For Domains parked on top of Subdomains (addon domains), please view them with [output,url,_1,List Subdomains]', "../listsubdomains") %]
+        </div>
+    [% END -%]
+    <section id="parked">
+
+        <table class="table table-striped table-condensed sortable" id="parkeddomains">
+            <thead>
+                <th>
+                    [% locale.maketext('Primary Domain') %]
+                </th>
+                <th>
+                    [% locale.maketext('User') %]
+                </th>
+                <th>
+                    [% locale.maketext('Parked Domains') %]
+                </th>
+            </thead>
+            <tbody>
+            [%# case 44176 safe -%]
+            [% FOR domain = data.parked.keys.sort -%]
+            <tr>
+                <td>[% domain %]</td>
+                <td>[% data.parked.$domain.user %]</td>
+                <td>
+                [%- FOR parked = data.parked.$domain.parkedok.keys.sort -%]
+                    <div>
+                        <span>[% parked %]</span>
+                        <form action="../unpark"
+                            method="post"
+                            class="form-inline-block"
+                            id="unparkForm_[% parked %]">
+                            <input type="hidden" name="pdomain" value="[% parked %]">
+                            <button type="submit" class="btn btn-link" id="unpark_[% parked %]">
+                                <span class="fas fa-times"></span>
+                                [% locale.maketext('Unpark') %]
+                            </button>
+                        </form>
+                    [%- IF ! data.parked.$domain.parkedok.$parked -%]
+                        <form action="../addcpuserdns"
+                            method="post"
+                            class="form-inline-block"
+                            id="addcpuserdnsForm_[% parked %]">
+                            <input type="hidden" name="pdomain" value="[% parked %]">
+                            <input type="hidden" name="user" value="[% data.parked.$domain.user %]">
+                            <button type="submit" class="btn btn-link" id="addToMailConfig_[% parked %]">
+                                <span class="fas fa-plus"></span>
+                                [% locale.maketext('Add to Mail Config') %]
+                            </button>
+                        </form>
+                    [%- END -%]
+                    </div>
+                [%- END -%]
+                </td>
+            </tr>
+            [% END -%]
+            </tbody>
+        </table>
+    </section>
+</div>
+[% END -%]

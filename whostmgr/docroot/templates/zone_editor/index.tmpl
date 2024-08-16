@@ -1,0 +1,218 @@
+[%
+    USE Whostmgr;
+    USE NVData;
+
+    SET PAGE_BASE = '/scripts7/zone_editor/';
+    SET PAGE_NAME = Whostmgr.get_page_name_by_url(PAGE_BASE);
+
+    SET zones_per_page = NVData.get('zones_per_page');
+    SET domains_per_page = NVData.get('domains_per_page');
+    SET CPANEL.CPVAR.dprefix = "../";
+
+    # At this point, all of these are hard-coded
+    # The shared system relies on the individual settings
+    # but in WHM, they are all available to the user
+    SET has_simple_feature = 1;
+    SET has_adv_feature = 1;
+    SET has_dnssec_feature = data.dnssec_is_available;
+    SET has_mx_feature = 1;
+    SET has_whmOnly_feature = 1;
+
+    SET base_domains_result = data.dnslist;
+
+    SET RECORD_TYPES = {
+        "A" => {
+            "featureNeeded" => ["simple", "advanced"],
+            "template" => "recordTemplates/a.ptt",
+            "viewTemplate" => "viewRecordTemplates/default.ptt",
+            "priority" => 1
+        },
+        "AAAA" => {
+            "featureNeeded" => ["advanced"],
+            "template" => "recordTemplates/aaaa.ptt",
+            "viewTemplate" => "viewRecordTemplates/default.ptt",
+            "priority" => 2
+        },
+        "AFSDB" => {
+            "featureNeeded" => ["whmOnly"],
+            "template" => "recordTemplates/afsdb.ptt",
+            "viewTemplate" => "viewRecordTemplates/afsdb.ptt",
+            "priority" => 3
+        },
+        "CAA" => {
+            "featureNeeded" => ["advanced"],
+            "template" => "recordTemplates/caa.ptt",
+            "viewTemplate" => "viewRecordTemplates/caa.ptt",
+            "priority" => 4
+        },
+        "CNAME" => {
+            "featureNeeded" => ["simple", "advanced"],
+            "template" => "recordTemplates/cname.ptt",
+            "viewTemplate" => "viewRecordTemplates/default.ptt",
+            "priority" => 5
+        },
+        "DMARC" => {
+            "featureNeeded" => ["advanced"],
+            "template" => "recordTemplates/dmarc.ptt",
+            "priority" => 6
+        },
+        "DNAME" => {
+            "featureNeeded" => ["whmOnly"],
+            "template" => "recordTemplates/dname.ptt",
+            "viewTemplate" => "viewRecordTemplates/default.ptt",
+            "priority" => 7
+        },
+        "DS" => {
+            "featureNeeded" => ["whmOnly"],
+            "template" => "recordTemplates/ds.ptt",
+            "viewTemplate" => "viewRecordTemplates/ds.ptt",
+            "priority" => 8
+        },
+        "HINFO" => {
+            "featureNeeded" => ["whmOnly"],
+            "template" => "recordTemplates/hinfo.ptt",
+            "viewTemplate" => "viewRecordTemplates/hinfo.ptt",
+            "priority" => 9
+        },
+        "LOC" => {
+            "featureNeeded" => ["whmOnly"],
+            "template" => "recordTemplates/loc.ptt",
+            "viewTemplate" => "viewRecordTemplates/loc.ptt",
+            "priority" => 10
+        },
+        "MX" => {
+            "featureNeeded" => ["mx"],
+            "template" => "recordTemplates/mx.ptt",
+            "viewTemplate" => "viewRecordTemplates/mx.ptt",
+            "priority" => 11
+        },
+        "NS" => {
+            "featureNeeded" => ["whmOnly"],
+            "template" => "recordTemplates/ns.ptt",
+            "viewTemplate" => "viewRecordTemplates/default.ptt",
+            "priority" => 12
+        },
+        "NAPTR" => {
+            "featureNeeded" => ["whmOnly"],
+            "template" => "recordTemplates/naptr.ptt",
+            "viewTemplate" => "viewRecordTemplates/naptr.ptt",
+            "priority" => 13
+        },
+        "PTR" => {
+            "featureNeeded" => ["whmOnly"],
+            "template" => "recordTemplates/ptr.ptt",
+            "viewTemplate" => "viewRecordTemplates/default.ptt",
+            "priority" => 14
+        },
+        "RP" => {
+            "featureNeeded" => ["whmOnly"],
+            "template" => "recordTemplates/rp.ptt",
+            "viewTemplate" => "viewRecordTemplates/rp.ptt",
+            "priority" => 15
+        },
+        "SOA" => {
+            "featureNeeded" => ["whmOnly"],
+            "template" => "recordTemplates/soa.ptt",
+            "viewTemplate" => "viewRecordTemplates/soa.ptt",
+            "priority" => 16
+        },
+        "SRV" => {
+            "featureNeeded" => ["advanced"],
+            "template" => "recordTemplates/srv.ptt",
+            "viewTemplate" => "viewRecordTemplates/srv.ptt",
+            "priority" => 17
+        },
+        "TXT" => {
+            "featureNeeded" => ["advanced"],
+            "template" => "recordTemplates/txt.ptt",
+            "viewTemplate" => "viewRecordTemplates/txt.phtml",
+            "priority" => 18
+        },
+    };
+
+    SET VIEW_TEMPLATES = [
+        "views/domain_selection.ptt",
+        "views/manage.ptt",
+        "views/copy_zone_file.ptt",
+        "views/dnssec.ptt",
+        "views/dnssec_generate.ptt",
+        "views/dnssec_ds_records.ptt",
+        "views/dnssec_import.ptt",
+        "views/dnssec_export.ptt",
+        "views/dnssec_dnskey.ptt",
+        "views/a_record_form.html",
+        "views/cname_record_form.html",
+        "views/mx_record_form.html",
+        "viewRecordTemplates/afsdb.ptt",
+        "viewRecordTemplates/caa.ptt",
+        "viewRecordTemplates/ds.ptt",
+        "viewRecordTemplates/hinfo.ptt",
+        "viewRecordTemplates/mx.ptt",
+        "viewRecordTemplates/naptr.ptt",
+        "viewRecordTemplates/rp.ptt",
+        "viewRecordTemplates/soa.ptt",
+        "viewRecordTemplates/srv.ptt",
+        "viewRecordTemplates/loc.ptt",
+        "viewRecordTemplates/default.ptt",
+        "viewRecordTemplates/txt.phtml",
+    ];
+
+    WRAPPER 'master_templates/master.tmpl'
+            header         = locale.makevar(PAGE_NAME),
+            stylesheets = [
+                Whostmgr.find_file_url('/templates/zone_editor/index.css')
+            ],
+            breadcrumburl  = PAGE_BASE,
+            base           = PAGE_BASE,
+            theme          = 'bootstrap',
+            CJT2_EXCLUSIVE = 1,
+            app_key='whm_zone_manager';
+%]
+        <div class="body-content">
+            <p id="descDns" class="description">
+                [% locale.maketext("DNS converts domain names into computer-readable IP addresses. Use this feature to manage DNS zones. For more information, read the [output,url,_1,documentation,target,_2,id,_3].", "//go.cpanel.net/whmdocsDNSZoneManager", "_blank", "lnkZoneEditorDocumentation") %]
+            </p>
+            <!-- NOTE: leave the alert-group in single quotes -->
+            <cp-alert-list alert-group="'zoneEditor'"></cp-alert-list>
+            <div id="viewContent"
+                class="ng-cloak section"
+                ng-view
+                ng-cloak></div>
+        </div>
+        <script type="text/javascript">
+            var PAGE = PAGE || {};
+            PAGE.MAIN_TITLE = [% PAGE_NAME.json() %];
+            PAGE.has_simple_feature = [% has_simple_feature ? 'true' : 'false' %];
+            PAGE.has_adv_feature = [% has_adv_feature ? 'true' : 'false' %];
+            PAGE.has_dnssec_feature = [% has_dnssec_feature ? 'true' : 'false' %];
+            PAGE.has_mx_feature = [% has_mx_feature ? 'true' : 'false' %];
+            PAGE.has_whmOnly_feature = [% has_whmOnly_feature ? 'true' : 'false' %];
+            PAGE.domains = [% base_domains_result.json() %];
+            PAGE.zones_per_page = [% zones_per_page || 'null' %];
+            PAGE.domains_per_page = [% domains_per_page || 'null' %];
+            PAGE.isRTL = document.getElementsByTagName("HTML")[0].getAttribute("dir") === "rtl";
+            PAGE.RECORD_TYPES = [% RECORD_TYPES.json() %];
+            PAGE.serverHostname = '[% data.serverHostname %]';
+            PAGE.showEmailRoutingLink = [% data.show_email_routing_link ? 'true' : 'false' %];
+        </script>
+
+        [% FOREACH record_type_key IN RECORD_TYPES.keys %]
+        [% SET record_template = RECORD_TYPES.$record_type_key.template %]
+        <script id="[% record_template %]" type="text/ng-template">
+            [% PROCESS "sharedjs/zone_editor/$record_template" %]
+        </script>
+        [% END %]
+
+        [% FOREACH view_template IN VIEW_TEMPLATES %]
+        <script id="[% view_template %]" type="text/ng-template">
+            [% PROCESS "sharedjs/zone_editor/$view_template" %]
+        </script>
+        [% END %]
+
+        <script id="views/dnssec_sidebar_help.html.tt" type="text/ng-template">
+            [% PROCESS "zone_editor/views/dnssec_sidebar_help.tmpl" %]
+        </script>
+
+        [% PROCESS 'master_templates/cjt2_header_include.tt' %]
+
+[% END #wrapper -%]

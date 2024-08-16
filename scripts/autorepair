@@ -1,0 +1,42 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/autorepair                      Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use Cpanel::HttpRequest     ();
+use Cpanel::Errors          ();
+use Cpanel::Config::Sources ();
+use Cpanel::Binaries        ();
+
+my $sources = Cpanel::Config::Sources::loadcpsources();
+$| = 1;
+
+my $script = 'autorepair';
+if ( $ARGV[0] ) {
+    $script = $ARGV[0];
+}
+
+$script =~ s/\///g;
+
+my $httpClient = Cpanel::HttpRequest->new( 'hideOutput' => 1 );
+
+print "Requesting script ... ";
+my $autofix = $httpClient->request(
+    'host'     => $sources->{'HTTPUPDATE'},
+    'url'      => '/autofixer2/' . $script,
+    'protocol' => 0,
+    'signed'   => 1,
+);
+if ( $autofix eq '' ) {
+    Cpanel::Errors::deaderror("Problem downloading script $script! Please verify the script's name.");
+}
+print "Done\n";
+print "Auto Repair is running...";
+my $perl    = Cpanel::Binaries::path('perl');
+my $perlpid = open( PERL, "|$perl" );
+print PERL $autofix;
+close(PERL);
+waitpid( $perlpid, 1 );
+print "...Auto Repair is done.\n";

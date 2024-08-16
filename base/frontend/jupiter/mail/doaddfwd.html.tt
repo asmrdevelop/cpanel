@@ -1,0 +1,51 @@
+[%
+SET CPANEL.CPVAR.dprefix = "../";
+SET email_add_forward = execute("Email", "add_forwarder", {
+    "domain" => RAW_FORM.item("domain"),
+    "email" => RAW_FORM.item("email"),
+    "fwdopt" => RAW_FORM.item("fwdopt"),
+    "failmsgs" => RAW_FORM.item("failmsgs"),
+    "pipefwd" => RAW_FORM.item("pipefwd"),
+    "fwdemail" => RAW_FORM.item("fwdemail"),
+    "fwdsystem" => RAW_FORM.item("fwdsystem")
+});
+%]
+
+[% WRAPPER '_assets/master.html.tt'
+    app_key = 'forwarders'
+ -%]
+
+<div class="body-content">
+    <div class="section">
+        <p>
+            [% IF email_add_forward.status %]
+                [% FOREACH hashref IN email_add_forward.data %]
+                    <div id="fwdSuccess" class="alert alert-success">
+                        <span id="fwdSuccessImg" class="glyphicon glyphicon-ok-sign"></span>
+                        <div id="fwdSuccessMsg" class="alert-message">
+                            [% locale.maketext("All email sent to ”[_1]” will now be copied to “[_2]”.", hashref.email.html(), hashref.forward.html())%]
+                        </div>
+                    </div>
+                [% END %]
+            [% ELSE %]
+                [% FOREACH error IN email_add_forward.errors %]
+                    <div id="fwdCperror" class="alert alert-danger">
+                        <span id="fwdCperrorImg" class="glyphicon glyphicon-remove-sign"></span>
+                        <div id="fwdCperrorMsg" class="alert-message">
+                            [% locale.maketext("The system could not add the forwarder: [_1]", error.html()) %]
+                        </div>
+                    </div>
+                [% END %]
+            [% END %]
+        </p>
+    </div>
+
+    [% IF (ExpVar.expand('$appname') == "webmail") %]
+        [% INCLUDE _assets/return_link.html.tt return_location='../index.html' return_link_text=locale.maketext('Go Back') %]
+    [% ELSE %]
+        [% INCLUDE _assets/return_link.html.tt return_location='fwds.html' return_link_text=locale.maketext('Go Back') %]
+    [% END %]
+
+</div>
+
+[% END %]

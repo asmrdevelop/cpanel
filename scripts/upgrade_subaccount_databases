@@ -1,0 +1,92 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/upgrade_subaccount_databases    Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::upgrade_subaccount_databases;
+
+use strict;
+use Getopt::Long;
+use Cpanel::Config::Users ();
+use Cpanel::Logger        ();
+use Whostmgr::UserManager ();
+
+exit run(@ARGV) unless caller;
+
+sub run {
+    my (@args) = @_;
+    my ( $opt_user, $opt_all, $opt_expire_invites, $opt_quiet, $opt_help );
+    Getopt::Long::GetOptionsFromArray(
+        \@args,
+        'user=s'         => \$opt_user,
+        'all'            => \$opt_all,
+        'expire-invites' => \$opt_expire_invites,
+        'quiet'          => \$opt_quiet,
+        'help'           => \$opt_help,
+      )
+      and !@args
+      and ( $opt_user xor $opt_all )
+      or do {
+        _print_usage();
+        return 1;
+      };
+
+    if ($opt_help) {
+        _print_usage();
+        return 0;
+    }
+
+    my $logger = Cpanel::Logger->new();
+
+    my $users;
+    if ($opt_user) {
+        $users = [$opt_user];
+    }
+    else {
+        $users = Cpanel::Config::Users::getcpusers();
+    }
+
+    my ( $total, @failed );
+    for my $u ( sort @$users ) {
+        eval {
+            Whostmgr::UserManager::upgrade_if_needed(
+                $u,
+                {
+                    note           => $u,
+                    quiet          => $opt_quiet,
+                    expire_invites => $opt_expire_invites,
+                }
+            );
+        };
+        if ( my $exception = $@ ) {
+            push @failed, $u;
+            $logger->warn("There was a problem with the $u account: $exception");    # Always show errors, even in quiet mode
+        }
+        ++$total;
+    }
+
+    # Always show this summary even in quiet mode
+    $logger->info( sprintf( 'Processed %d total accounts with %d errors. The following accounts had errors: %s', $total, scalar(@failed), join( ', ', @failed ) || '(none)' ) );
+    return 0;
+}
+
+sub _print_usage {
+    print <<EOU;
+Usage: $0 [--user=<username> | --all] [--quiet] [--expire-invites]
+
+Check the schema versions for Subaccount databases, and upgrade if needed. The normal way
+to run this script is with --all, which instructs it to handle all users on the system.
+If you only want to handle one user, you can specify it as --user=<username>.
+
+If --quiet is specified, only error messages will be reported. Otherwise, general diagnostic
+information is logged.
+
+The optional --expire-invites flag instructs the script to also expire any existing invites.
+This is mainly needed for transfers and restores.
+EOU
+    return;
+}
+
+1;

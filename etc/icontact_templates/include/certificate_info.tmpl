@@ -1,0 +1,24 @@
+[%-
+
+  PROCESS 'include/zebra_table.tmpl';
+
+  MACRO certificate_info BLOCK;
+     IF certificate_error;
+        CPANEL.locale.maketext('The certificate cannot be decoded because of an error: [_1]', certificate_error);
+     ELSIF certificate;
+     # Create the titles
+       NOTICE.table_titles =[];
+       SET issuerText = certificate.issuer.organizationName ? certificate.issuer.organizationName : certificate.issuer.commonName;
+       NOTICE.table_items = [
+           [ CPANEL.locale.maketext('Domains:'), CPANEL.locale.maketext('[list_and,_1]', certificate.domains) ],
+           [ CPANEL.locale.maketext('Issuer:'), issuerText ],
+           [ CPANEL.locale.maketext('Key Size:'), certificate.modulus_length ],
+           [ CPANEL.locale.maketext('Expires:'), CPANEL.locale.datetime(certificate.not_after,'datetime_format_full') ]
+       ];
+      '<p style="text-align:center">';
+         zebra_table(titles=NOTICE.table_titles, items=NOTICE.table_items, boldfirst=1);
+      '</p>';
+     END;
+  END;
+
+-%]

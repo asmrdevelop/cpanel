@@ -1,0 +1,133 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/clean_user_php_sessions         Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::clean_user_php_sessions;
+
+use cPstrict;
+
+use Cpanel::PackMan                       ();
+use Cpanel::ProgLang::Supported::php::Ini ();
+use Cpanel::ProgLang                      ();
+
+if ( !caller() ) {
+    exit main(@ARGV);
+}
+
+sub main (@args) {
+
+    return help() if grep {
+        my $arg = $_;
+        grep { $_ eq $arg } qw{-h --help}
+    } @args;
+    my $regex = $args[0] // "sess_.*";
+
+    die "$0 is not intended to be run by non-root users." if $> != 0;
+
+    # Get available PHP packages
+    my @php_common_pkgs = Cpanel::PackMan->instance->list( prefix => "ea-php*-php-common" );
+    my @available_pkgs  = map { my $p = $_; $p =~ s/-php-common.*$//; $p } @php_common_pkgs;
+
+    # Get installed PHP packages
+    my $php                     = get_cpanel_proglang();
+    my $installed_packages_aref = $php->get_installed_packages();
+    my %installed_pkgs          = map { $_ => 1 } @$installed_packages_aref;
+
+    foreach my $pkg (@available_pkgs) {
+        $installed_pkgs{$pkg} ? clean_installed_pkg_sessions( $pkg, $regex ) : clean_uninstalled_pkg_sessions( $pkg, $regex );
+    }
+
+    return 0;
+}
+
+my $php;
+
+sub get_cpanel_proglang () {
+    $php ||= Cpanel::ProgLang->new( type => 'php' );
+    return $php;
+}
+
+sub clean_installed_pkg_sessions ( $pkg, $regex ) {
+
+    my $php        = get_cpanel_proglang();
+    my $ini        = $php->get_ini( 'package' => $pkg );
+    my $directives = $ini->get_basic_directives();
+    my ( $path, $maxlifetime );
+    foreach my $directive ( @{$directives} ) {
+        $maxlifetime = $directive->{'value'} if $directive->{'key'} eq 'session.gc_maxlifetime';
+        $path        = $directive->{'value'} if $directive->{'key'} eq 'session.save_path';
+    }
+
+    return clean_sessions( $path, $regex, $maxlifetime );
+}
+
+sub clean_uninstalled_pkg_sessions ( $pkg, $regex ) {
+
+    # We can only really clean up the default path in '/var/cpanel/php/sessions' at this point
+    # since there is no way to know what the customer was really using as their session path
+    my $path = $Cpanel::ProgLang::Supported::php::Ini::SESSION_SAVE_PATH . '/' . $pkg;
+
+    return clean_sessions( $path, $regex );
+}
+
+sub clean_sessions ( $path, $regex, $maxlife = undef ) {
+
+    # session.save_path could be commented out, in which case we will let PHP handle garbage collection.
+    return 0 if !defined $path || !-d $path;
+
+    $maxlife = $Cpanel::ProgLang::Supported::php::Ini::SESSION_MAXLIFETIME if !defined $maxlife;
+
+    # get_basic_directives can return values with leading/trailing whitespace.
+    s/^\s+|\s+$//g for ( $path, $maxlife );
+
+    $maxlife = $Cpanel::ProgLang::Supported::php::Ini::SESSION_MAXLIFETIME if $maxlife !~ /^\d+$/;
+
+    my $time = time;
+
+    opendir( my $dh, $path ) or die "Could not open directory $path: $!";
+
+    while ( my $file = readdir $dh ) {
+        next if $file !~ m/$regex/i;
+        my $ctime = ( stat("$path/$file") )[10];
+        unlink "$path/$file" if $time - $ctime > $maxlife;
+    }
+
+    return 1;
+}
+
+sub help {
+    print <<USAGE;
+$0 [--help]
+
+$0 SESSION_MATCH_REGEX
+
+Clean expired PHP session files.
+
+PHP session files can be stored in a secure temporary directory. This removes PHP's ability
+to clean up its own session files. This script should run at least once per day to remove any old PHP session files, and
+is automatically added to your crontab via the /scripts/upcp script.
+
+Users can also set custom session handler code via session_set_save_handler(),
+which PHP does not know ahead of time how to clean up. Since a way to register a
+session cleanup method does not exist, custom scripts are the only way to clean these up.
+
+This script does allow you to remove all files within session.save_path older than session.gc_maxlifetime.
+However, you must use a removal regex to prevent mistakes like save_path=/ destroying a system.
+
+We only remove files with session.save_path that contain /sess_.*/ by default.
+If one of your users sets a custom save handler that does not follow this format, you will have to provide
+a custom regex to this script (SESSION_MATCH_REGEX).  Make certain that your regex is specific enough to not be
+destructive in the event of save_path being misconfigured.
+
+Even then it is possible that users set exotic save handlers, such as writing to a database.
+However, in that case one hopes they have good sense enough to clean up after themselves.
+
+The crontab running this script is editable, and should not be overridden by upcp when adding SESSION_MATCH_REGEX.
+
+USAGE
+    return 1;
+}
+1;

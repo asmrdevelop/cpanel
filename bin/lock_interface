@@ -1,0 +1,171 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - bin/lock_interface                      Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::lock_interface;
+
+use v5.14;
+
+use strict;
+
+use Cpanel::Config::Users ();
+use Cpanel::InterfaceLock ();
+use Getopt::Long          ();
+
+# Constants
+our $VERSION = '01.01';
+
+# Application state
+my $opts = {};
+
+exit _main(@ARGV) unless caller;
+
+sub _main {
+    my (@args) = @_;
+
+    my $show_version;
+    my $show_help;
+    my $verbose = 0;
+    my $name;
+    my @users;
+    my $all = 0;
+
+    Getopt::Long::GetOptionsFromArray(
+        \@args,
+        'version' => \$show_version,
+        'help'    => \$show_help,
+        'verbose' => \$verbose,
+        'all'     => \$all,
+        'name=s'  => \$name,
+        'user=s'  => \@users,
+      )
+      and !@args
+      or do { print_help(); exit 1; };
+
+    if ($show_help) {
+        print_help();
+        return 0;
+    }
+
+    if ($show_version) {
+        print_version();
+        return 0;
+    }
+
+    if ( !$name ) {
+        print STDERR "You did not provide a lock name. Aborting run…\n";
+        print_help();
+        return 254;
+    }
+
+    if ($all) {
+        @users = Cpanel::Config::Users::getcpusers();
+        if ( !@users ) {
+            print STDERR "There are no users on your system. Aborting run…\n";
+            return 253;
+        }
+    }
+
+    $opts = {
+        'verbose' => $verbose,
+        'name'    => $name,
+        'users'   => \@users,
+    };
+
+    return lock_interface($opts);
+}
+
+sub lock_interface {
+    my ($opts) = @_;
+    my $failed = 0;
+
+    my @users  = @{ $opts->{users} };
+    my $global = scalar @users ? 0 : 1;
+    push @users, '' if !@users;
+
+    foreach my $user (@users) {
+
+        if ( $opts->{verbose} && $global ) {
+            print "Locking global lock $opts->{name}.\n";
+        }
+        elsif ( $opts->{verbose} ) {
+            print "Locking $opts->{name} for $user.\n";
+        }
+
+        my $lock = Cpanel::InterfaceLock->new(
+            name => $opts->{name},
+            $user ? ( user => $user ) : (),
+            unlock_on_destroy => 0
+        );
+
+        my $status = $lock->lock();
+
+        if ( $status == -1 ) {
+            if ($global) {
+                print STDERR "The system cannot acquire the global lock $opts->{name}. It already exists.\n";
+            }
+            else {
+                print STDERR "The system cannot acquire the $opts->{name} lock for $user. It already exists.\n";
+            }
+            $failed++;
+        }
+        elsif ( $status == 0 ) {
+            if ($global) {
+                print STDERR "The system cannot acquire the global lock $opts->{name}.\n";
+            }
+            else {
+                print STDERR "The system cannot acquire the $opts->{name} lock for $user.\n";
+            }
+            $failed++;
+        }
+        elsif ( $status == 1 ) {
+            print "User: $user\n";
+            if ( !$global ) {
+                print "Locked $opts->{name} for $user.\n";
+            }
+            else {
+                print "Locked $opts->{name} globally.\n";
+            }
+        }
+    }
+
+    if ($failed) {
+        print STDERR "Failed $failed locks. See details above.\n";
+    }
+
+    return $failed ? 1 : 0;
+}
+
+sub print_version {
+    print <<VERSION_HELP;
+    lock_interface $VERSION
+VERSION_HELP
+    return;
+}
+
+sub print_help {
+    print <<EO_USAGE;
+Usage: lock_interface [options]
+
+  This program locks one or more interfaces by placing a touch file in a well known location
+  that is checked by those applications. It can be used to lock supporting features globally
+  or by user depending on how the feature is implemented. If no user is provided and --all
+  is not included, this name applies to a global lock. Locks are kept under the
+  /var/cpanel/.application-locks directory.
+
+Options:
+
+  --help           This help information.
+  --version        Display the script version.
+  --name           Name of the lock.
+  --all            Use user name locks and iterate over all users on the system. (Note: This is not the same as a global lock.)
+  --user           Use user name locks and iterate over the users provided. May provide multiple instances of this argument.
+
+EO_USAGE
+    return;
+}
+
+1;

@@ -1,0 +1,332 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/fix_reseller_acls               Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::fix_reseller_acls;
+
+use cPstrict;
+
+use parent qw( Cpanel::HelpfulScript );
+
+use Try::Tiny;
+
+use Cpanel::Exception    ();
+use Cpanel::LoadModule   ();
+use Cpanel::ConfigFiles  ();
+use Whostmgr::ACLS::Data ();
+
+=encoding utf8
+
+=head1 NAME
+
+fix_reseller_acls
+
+=head1 DESCRIPTION
+
+Utility to update reseller privileges and ACL lists.
+
+=head1 SYNOPSIS
+
+    fix_reseller_acls [OPERATION] [MODE]
+
+    Operations:
+    --add-default-privs            Add the default set of privileges.
+    --fix-disallow-shell           Clean up the 'disallow-shell' privilege.
+
+    Modes:
+   --reseller [reseller]           Update the specified reseller.
+   --all-resellers                 Update all resellers on the system.
+
+   --acl-list [acl-list]           Update the specified ACL list.
+   --all-acl-lists                 Update all ACL lists on the system.
+
+   --help                          This documentation.
+
+=head1 Operations
+
+Specify at least one operation.
+
+=over
+
+=item B<--add-default-privs>
+
+Add the default set of privileges, introduced in v68 and later, to the set of resellers
+and ACLS lists specified.
+
+    acct-summary
+    basic-system-info
+    basic-whm-functions
+    cors-proxy-get
+    connected-applications
+    cpanel-integration
+    cpanel-api
+    create-user-session
+    digest-auth
+    generate-email-config
+    list-pkgs
+    manage-api-tokens
+    manage-dns-records
+    manage-oidc
+    manage-styles
+    mysql-info
+    ns-config
+    ssl-info
+    track-email
+
+=item B<--fix-disallow-shell>
+
+Remove the 'disallow-shell' privilege from the set of resellers and specified ACL lists.
+
+If the C<disallow-shell> privilege is set, then the script will remove it.
+If the C<disallow-shell> privilege is not set, then the script adds the C<allow-shell> privilege.
+
+=back
+
+=head1 Modes
+
+Specify at least one mode.
+
+=over
+
+=item B<--all-resellers>
+
+Process all of the resellers on the system. This option overrides B<--reseller>.
+
+B<Note>: The script does not process resellers without an associated domain in this mode.
+
+=item B<--reseller [reseller-username]>
+
+Process the reseller specified.
+
+Specify this option multiple times to process mutiple resellers.
+
+=item B<--all-acl-lists>
+
+Process all ACL lists on the system. This option overrides B<--acl-list>.
+
+=item B<--acl-list [acl-list]>
+
+Process the ACL list specified.
+
+Specify this option multiple times to process mutiple ACL lists.
+
+=back
+
+=head1 EXAMPLES
+
+=over
+
+=item C<--add-default-privs --fix-disallow-shell --all-resellers>
+
+Update the privileges for all resellers on the system to include the default privilege and clean
+up the C<disallow-shell> privilege.
+
+=item C<--add-default-privs --reseller myreseller>
+
+Update the privileges for the I<myreseller> reseller to include the new default privileges.
+
+=item C<--add-default-privs --fix-disallow-shell --all-acl-lists>
+
+Update all of the ACL lists on the system to include the default privileges, and clean up the
+C<disallow-shell> privilege.
+
+=back
+
+=cut
+
+sub _OPTIONS {
+    return qw( add-default-privs fix-disallow-shell reseller=s@ all-resellers acl-list=s@ all-acl-lists );
+}
+
+__PACKAGE__->new(@ARGV)->script() unless caller();
+
+sub script ($self) {
+
+    $self->ensure_root();
+
+    my $opts = $self->_parse_and_validate_opts();
+
+    # This only happens if there are no resellers and/or acl-lists on the system.
+    # In that case, there is nothing to do and we do not want to return uncleanly
+    # if that happens.
+    return unless $opts;
+
+    $self->process_users( $opts->{resellers}, $opts->{operations} )       if $opts->{resellers}   && scalar @{ $opts->{resellers} };
+    $self->process_acl_lists( $opts->{'acl-lists'}, $opts->{operations} ) if $opts->{'acl-lists'} && scalar @{ $opts->{'acl-lists'} };
+
+    return;
+}
+
+sub process_users ( $self, $resellers_to_process_ar, $operations_hr ) {    ## no critic qw(Subroutines::ProhibitManyArgs) adding prohibit due to bug with signatures
+    Cpanel::LoadModule::load_perl_module('Cpanel::Reseller');
+    Cpanel::LoadModule::load_perl_module('Whostmgr::Resellers');
+
+    # TODO: The current interfaces to the RESELLERS_FILE do not provide
+    # any way to do a 'mass-edit'. Depending on how slow this process is,
+    # we might need to implement one.
+    my %current_reseller_acls = Cpanel::Reseller::getresellersaclhash();
+    foreach my $reseller ( @{$resellers_to_process_ar} ) {
+
+        # We validated resellers beforehand, but just in case something
+        # changed between that check, and the getresellersaclhash call, check again.
+        next unless exists $current_reseller_acls{$reseller};
+        print "[*] Processing reseller: '$reseller'...\n";
+
+        my $to_process_hr = {
+            name         => $reseller,
+            current_acls => $current_reseller_acls{$reseller},
+        };
+
+        $self->add_default_privs($to_process_hr)  if $operations_hr->{'add-default-privs'};
+        $self->fix_disallow_shell($to_process_hr) if $operations_hr->{'fix-disallow-shell'};
+
+        # set_reseller_acls requires the ACLs to have a 'acl-' prefix
+        Whostmgr::Resellers::set_reseller_acls( $reseller, { map { 'acl-' . $_ => 1 } keys %{ $current_reseller_acls{$reseller} } } );
+        print "[+] Processed reseller: '$reseller'\n";
+    }
+
+    return;
+}
+
+sub process_acl_lists ( $self, $acl_lists_to_process_ar, $operations_hr ) {    ## no critic qw(Subroutines::ProhibitManyArgs) adding prohibit due to bug with signatures
+    Cpanel::LoadModule::load_perl_module('Whostmgr::ACLS');
+
+    # This is required when loading Whostmgr::ACLS -- see the module for more details
+    Whostmgr::ACLS::init_acls();
+
+    foreach my $acl_list ( @{$acl_lists_to_process_ar} ) {
+        my $list_file = "$Cpanel::ConfigFiles::ACL_LISTS_DIR/$acl_list";
+        next unless -f $list_file;
+
+        print "[*] Processing ACL list: '$acl_list'...\n";
+        if ( open( my $acl_fh, '<', $list_file ) ) {
+            my $acls = { map { split /=/, $_, 2 } grep { !/^\s*$/ } map { s/\n//r } readline($acl_fh) };
+            close($acl_fh);
+
+            my $to_process_hr = {
+                name         => $acl_list,
+                current_acls => $acls,
+            };
+
+            $self->add_default_privs($to_process_hr)  if $operations_hr->{'add-default-privs'};
+            $self->fix_disallow_shell($to_process_hr) if $operations_hr->{'fix-disallow-shell'};
+
+            Whostmgr::ACLS::save_acl_list(
+                'acllist' => $acl_list,
+                ( map { 'acl-' . $_ => 1 } grep { $acls->{$_} } keys %{$acls} )
+            );
+
+            print "[+] Processed ACL list: '$acl_list'\n";
+        }
+        else {
+            print "[!] Failed to process ACL list '$acl_list': $!\n";
+        }
+    }
+
+    return;
+}
+
+my $defaults_to_apply_hr;
+
+sub add_default_privs ( $self, $to_process_hr ) {
+    $defaults_to_apply_hr //= { map { $_ => 1 } @{ Whostmgr::ACLS::Data::get_default_acls() } };
+    print "\t[*] Adding default privileges to '$to_process_hr->{'name'}'...\n";
+    %{ $to_process_hr->{'current_acls'} } = (
+        %{ $to_process_hr->{'current_acls'} },
+        %{$defaults_to_apply_hr}
+    );
+    print "\t[+] Added default privileges to '$to_process_hr->{'name'}'.\n";
+    return;
+}
+
+sub fix_disallow_shell ( $self, $to_process_hr ) {
+    print "\t[*] Fixing 'disallow-shell' privilege for '$to_process_hr->{'name'}'...\n";
+    my $had_disallow_shell = delete $to_process_hr->{'current_acls'}->{'disallow-shell'};
+    if ( !$had_disallow_shell ) {
+        %{ $to_process_hr->{'current_acls'} } = (
+            %{ $to_process_hr->{'current_acls'} },
+            'allow-shell' => 1,
+        );
+    }
+    print "\t[+] Fixed 'disallow-shell' privilege for '$to_process_hr->{'name'}'.\n";
+    return;
+}
+
+sub _parse_and_validate_opts ($self) {
+
+    unless ( $self->getopt('add-default-privs') || $self->getopt('fix-disallow-shell') ) {
+        print $self->help();
+        return;
+    }
+
+    my $resellers      = $self->getopt('reseller');
+    my %uniq_resellers = map { $_ => 1 } @$resellers if $resellers;
+
+    my $acl_lists      = $self->getopt('acl-list');
+    my %uniq_acl_lists = map { $_ => 1 } @$acl_lists if $acl_lists;
+
+    my $opts = {
+        'operations' => {
+            'add-default-privs'  => $self->getopt('add-default-privs'),
+            'fix-disallow-shell' => $self->getopt('fix-disallow-shell'),
+        },
+        'all-resellers'       => $self->getopt('all-resellers'),
+        'specified_resellers' => \%uniq_resellers,
+        'all-acl-lists'       => $self->getopt('all-acl-lists'),
+        'specified_acl_lists' => \%uniq_acl_lists,
+    };
+
+    $opts->{'resellers'} = $self->_validate_resellers($opts);
+    $opts->{'acl-lists'} = $self->_validate_acl_lists($opts);
+
+    return unless $opts->{'resellers'} // $opts->{'acl-lists'};
+    return $opts;
+}
+
+sub _validate_resellers ( $self, $opts ) {
+    if ( $opts->{'all-resellers'} ) {
+        Cpanel::LoadModule::load_perl_module("Whostmgr::Resellers::List");
+        Cpanel::LoadModule::load_perl_module('Cpanel::Config::HasCpUserFile');
+        return [
+
+            # Skip 'resellers without a domain' when processing all resellers on the system:
+            # https://go.cpanel.net/how-to-create-a-whm-reseller-without-an-associated-domain
+            #
+            # These resellers are created "out of band" by editing the resellers file,
+            # so altering them should be left up to the server administrators.
+            grep { Cpanel::Config::HasCpUserFile::has_cpuser_file($_) }
+              keys %{ Whostmgr::Resellers::List::list() }
+        ];
+    }
+    elsif ( my @specified_resellers = keys %{ $opts->{'specified_resellers'} } ) {
+        Cpanel::LoadModule::load_perl_module("Whostmgr::Resellers::Check");
+        if ( my @invalid_resellers = grep { !Whostmgr::Resellers::Check::is_reseller($_) } @specified_resellers ) {
+            die Cpanel::Exception->create_raw( "[!] Invalid resellers specified:\n" . join( "\n", map { " " x 8 . $_ } @invalid_resellers ) . "\n" )->to_string_no_id();
+        }
+
+        return \@specified_resellers;
+    }
+
+    return;
+}
+
+sub _validate_acl_lists ( $self, $opts ) {
+    if ( $opts->{'all-acl-lists'} ) {
+        if ( opendir my $dh, $Cpanel::ConfigFiles::ACL_LISTS_DIR ) {
+            return [ grep { $_ !~ m/^\.+$/ && -f "$Cpanel::ConfigFiles::ACL_LISTS_DIR/$_" } readdir($dh) ];
+        }
+    }
+    elsif ( my @specified_acl_lists = keys %{ $opts->{'specified_acl_lists'} } ) {
+        if ( my @invalid_acl_lists = grep { !-f "$Cpanel::ConfigFiles::ACL_LISTS_DIR/$_" } @specified_acl_lists ) {
+            die Cpanel::Exception->create_raw( "[!] Invalid acl-lists specified:\n" . join( "\n", map { " " x 8 . $_ } @invalid_acl_lists ) . "\n" )->to_string_no_id();
+        }
+        return \@specified_acl_lists;
+    }
+
+    return;
+}
+
+1;

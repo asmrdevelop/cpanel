@@ -1,0 +1,310 @@
+
+# cpanel - Cpanel/SecurityPolicy/Base.pod          Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+=head1 NAME
+
+Cpanel::SecurityPolicy::Base - Base class for Security Policy plugin classes
+
+
+=head1 SYNOPSIS
+
+    package Cpanel::Security::Policy::MyPolicy;
+    use base 'Cpanel::SecurityPolicy::Base';
+
+    sub new {
+        my ($class) = @_;
+
+        return Cpanel::SecurityPolicy::Base->init( __PACKAGE__, 123 );
+    }
+
+    sub fails {
+        my ( $self, $sec_ctxt, $cpconf ) = @_;
+
+        ...
+
+        return 0;
+    }
+
+    1;
+
+This modules supplies a base class for any C<Cpanel::SecurityPolicy> plugin
+class.
+
+=head1 DESCRIPTION
+
+=head1 INTERFACE
+
+=head2 $class->init( $pkg, $priority )
+
+Create an object of the type C<$pkg> and initialize the internal variables
+C<name> and C<priority> in the object.
+
+The C<name> variable is created from the last portion of the C<$pkg> string.
+The C<$priority> parameter must be an integer, defining the order in which the
+policies are tested.
+
+The method returns an object blessed into the C<$pkg> namespace.
+
+=head2 $pol->check_fails( $sec_ctxt, $cpconf )
+
+This method takes a set of parameters and returns C<1> if the policy is
+violated or C<0> if the policy has been satisfied. This takes into account the
+global overrides before delegating to the C<fails> method, that the derived
+classes must override.
+
+The parameters to the method are as follows:
+
+=over 4
+
+=item C<$sec_ctxt>
+
+A reference to a hash describing the security context for the current request.
+
+=item C<$cpconf>
+
+A reference to the hash of Cpanel Configuration information.
+
+=back
+
+This method will die on a development box as a reminder to replace the method
+in any derived class.
+
+=head2 $pol->fails( $sec_ctxt, $cpconf )
+
+This method takes a set of parameters and returns C<1> if the policy is
+violated or C<0> if the policy has been satisfied.
+
+The parameters to the method are as follows:
+
+=over 4
+
+=item C<$sec_ctxt>
+
+A reference to a hash describing the security context for the current request.
+
+=item C<$cpconf>
+
+A reference to the hash of Cpanel Configuration information.
+
+=back
+
+This method will die on a development box as a reminder to replace the method
+in any derived class.
+
+=head2 $pol->priority()
+
+Return the number supplied as C<$priority> to the C<init> method.
+
+=head2 $pol->name()
+
+Return the name of the policy derived from the C<$pkg> parameter to the C<init>
+method.
+
+=head2 $pol->conf_value( $cpconf, $subkey )
+
+Extract a value from the C<$cpconf> hash associated with the key constructed
+from the current policy and the C<$subkey>.
+
+For a given security policy I<MyPolicy> and C<$subkey> of I<foo>, the actual
+key in the F</var/cpanel/cpanel.config> file becomes
+I<SecurityPolicy::MyPolicy::foo>.
+
+=head2 $pol->set_conf_value( $cpconf, $subkey, $value )
+
+Set the value in the C<$cpconf> hash associated with the key constructed from
+the current policy and the C<$subkey>.
+
+For a given security policy I<MyPolicy> and C<$subkey> of I<foo>, the actual
+key in the F</var/cpanel/cpanel.config> file becomes
+I<SecurityPolicy::MyPolicy::foo>.
+
+=head2 $pol->conf_keys( $cpconf )
+
+List the keys (without the policy name portion) for all config values in the
+C<$cpconf> hash.
+
+So, for the key I<SecurityPolicy::MyPolicy::foo> for the policy I<MyPolicy> in
+the F</var/cpanel/cpanel.config> file, this routine would return I<foo>.
+
+=head2 $pol->bypass( $sec_ctxt, $cpconf )
+
+Test the current document and context to determine if this request should be
+bypassed for the security policy. This I<Template Method> does some high-level
+security context checking (based on request type and such) before allowing the
+C<bypass_page> to allow derived policies to specify bypassing.
+
+The parameters to the method are as follows:
+
+=over 4
+
+=item C<$sec_ctxt>
+
+A reference to a hash describing the security context for the current request.
+
+=item C<$cpconf>
+
+A reference to the hash of Cpanel Configuration information.
+
+=head2 $pol->bypass_page( $sec_ctxt, $cpconf )
+
+This optional method supports marking pages as immune to this particular
+policy. A good example for why you might want to do this would be bypassing the
+password change pages for policies that require password change. (The standard
+policies C<Cpanel::Security::Policy::PasswordAge> and
+C<Cpanel::Security::Policy::PasswordStrength> are good examples.)
+
+The parameters to the method are as follows:
+
+=over 4
+
+=item C<$sec_ctxt>
+
+A reference to a hash describing the security context for the current request.
+
+=item C<$cpconf>
+
+A reference to the hash of Cpanel Configuration information.
+
+=back
+
+=head2 $pol->get_ui( $reqtype )
+
+Return an object that handles the UI portion of the security policy for the
+C<$reqtype>. Returns C<undef> if the C<$reqtype> is unrecognized. The standard
+The method C<require>s in the appropriate UI module and creates a UI object for
+this UI type.
+
+See L<Cpanel::SecurityPolicy::BaseUI> for a description of the interface for
+this module.
+
+=head2 $pol->get_config()
+
+Return an object that handles the configuration portion of the security
+policy.
+
+See L<Cpanel::SecurityPolicy::BaseConfig> for a description of the interface
+for this module.
+
+=head1 HASH PARAMETERS
+
+=head2 C<$sec_ctxt>
+
+The security context hash contains security-specific information about the user
+and request that is being evaluated. It is supplied to the C<fails>,
+C<bypass_page>, and C<bypass> methods.
+
+The values included in this hash are:
+
+=over 4
+
+=item appname
+
+The name of the application that is testing the security policy. Valid values
+include I<whostmgr>, I<webmaild>, or C<cpaneld>.
+
+=item auth_by_accesshash
+
+Exists with a value of 1 if the user logged in with an accesshash instead of
+a password.
+
+=item cookies
+
+This is a reference to a hash of HTTP cookies.
+
+=item cptheme
+
+If the I<appname> is I<cpaneld>, this parameter will exist and has the value of
+the current user's theme.
+
+=item document
+
+A path containing the path portion of the URL requested.
+
+=item domain
+
+For a I<webmaild> application, this is the domain portion of the email address.
+
+=item homedir
+
+The home directory associated with the user that has been logged in.
+
+=item is_possessed
+
+This entry is true if a reseller or root account is masquerading as the user
+during this login session.
+
+=item pass_change_time
+
+This is the number of days since Jan. 1 1970 that the user last changed the
+password on this account.
+
+=item possessor
+
+If C<is_possessor> is a true value, this is the username of the user actually
+logging in to the account.
+
+=item possessor_homedir
+
+If C<is_possessor> is a true value, this is the home directory of the user
+actually logging in to the account.
+
+=item possessor_pass_change_time
+
+If C<is_possessor> is a true value, this is the number of days since Jan. 1,
+1970 that the user who is actually logging in to the account last changed the
+password on this account.
+
+=item pwstrength
+
+This is an integer between 1 and 100 specifying the required password strength.
+
+=item remoteip
+
+This is the IP address of the machine from which the user is attempting login.
+
+=item request_type
+
+The request type for this request: I<html>, I<xml>, I<json>, or I<dnsadmin>.
+
+=item system_user
+
+This is the username for the system account associated with the login. Except
+for the case of a webmail login, this value should be the same as I<user>.
+
+=item user
+
+The name of the user we are logged in as.
+
+=item virtualuser
+
+For the I<webmaild> application, this holds the local part of the email
+address.
+
+=item webmailowner
+
+For the I<webmaild> application, this holds the username of the system account
+that owns this webmail account.
+
+=back
+
+=head2 C<$cpconf>
+
+=head1 INCOMPATIBILITIES
+
+None reported.
+
+=head1 BUGS AND LIMITATIONS
+
+No bugs have been reported.
+
+=head1 AUTHOR
+
+G. Wade Johnson  C<< wade@cpanel.net >>
+
+=head1 LICENSE AND COPYRIGHT
+
+Copyright (c) 2011, cPanel, Inc. All rights reserved.
+This code is subject to the cPanel license. Unauthorized copying is prohibited

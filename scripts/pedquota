@@ -1,0 +1,52 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/pedquota                        Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use Cpanel::Binaries ();
+
+my $quotacheck_cmd = Cpanel::Binaries::path('quotacheck');
+if ( !-x $quotacheck_cmd ) {
+    print "Unable to find quotacheck tool.\n";
+    exit 1;
+}
+if ( $ENV{'NQUOTA'} eq "" ) {
+    if ( $ENV{'WHM50'} ) { print "<table width=100%><tr><td><pre>"; }
+    print "$0: Can't find new quota value\n";
+    if ( $ENV{'WHM50'} ) { print "</pre></td><td width=30><img src=/icons/error.gif></td></tr></table>\n\n"; }
+    exit;
+}
+open( my $quota_fh, '+<', $ARGV[0] );
+my @QUOTADATA = (<$quota_fh>);
+seek( $quota_fh, 0, 0 );
+print "Using Universal Quota Support (quota=$ENV{'NQUOTA'})\n";
+my $lines_changed = 0;
+foreach my $line (@QUOTADATA) {
+    $line =~ s/\n//;
+    if ( $line =~ /Used\s*(\d+)KB,\s*limits:\s*soft=(\d+)\s*hard=(\d+)$/ ) {
+        $lines_changed++;
+        $line = "Used $1KB, limits: soft=$ENV{'NQUOTA'} hard=$ENV{'NQUOTA'}";
+    }
+    elsif ( $line =~ /^(\S+):\s*blocks\s*in\s*use:\s*(\d+),\s*limits\s*\(soft\s*=\s*(\d+),\s*hard\s*=\s*(\d+)\)$/ ) {
+        $lines_changed++;
+        $line = "$1: blocks in use: $2, limits (soft = $ENV{'NQUOTA'}, hard = $ENV{'NQUOTA'})";
+    }
+    elsif ( $line =~ /^(\S+):\s*kbytes\s*in\s*use:\s*(\d+),\s*limits\s*\(soft\s*=\s*(\d+),\s*hard\s*=\s*(\d+)\)$/ ) {
+        $lines_changed++;
+        $line = "$1: kbytes in use: $2, limits (soft = $ENV{'NQUOTA'}, hard = $ENV{'NQUOTA'})";
+    }
+    elsif ( $line =~ /(\s*)(\/\S+)(\s*)(\d+)(\s*)(\d+)(\s*)(\d+)(.*)/ ) {
+        $lines_changed++;
+        $line = "$1$2$3$4$5$ENV{'NQUOTA'}$7$ENV{'NQUOTA'}$9";
+    }
+    print {$quota_fh} "$line\n";
+}
+truncate( $quota_fh, tell($quota_fh) );
+close($quota_fh);
+if ( !$lines_changed ) {
+    if ( $ENV{'WHM50'} ) { print "<table width=100%><tr><td><pre>"; }
+    print "Failed to change quota.\nQuotas may not be not enabled or this version of edquota is not supported by $0\n";
+    if ( $ENV{'WHM50'} ) { print "</pre></td><td width=30><img src=/icons/error.gif></td></tr></table>\n\n"; }
+}

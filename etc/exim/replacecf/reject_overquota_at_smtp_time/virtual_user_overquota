@@ -1,0 +1,14 @@
+virtual_user_overquota:
+  driver = redirect
+  domains = !$primary_hostname : ${lookup{$domain}lsearch{/etc/userdomains}{${perl{untaint}{$domain}}}}
+  require_files = "+$home/etc/$domain_data"
+  user = "%CPANEL-domain-owner%"
+  router_home_directory = %CPANEL-domain-owner-homedir%
+
+  # NB: On busy servers Dovecot may take several seconds to respond to
+  # this request. So we set the timeout generously:
+  condition = "${if match {${readsocket{/var/run/dovecot/quota-status}{request=smtpd_access_policy\nrecipient=${quote:$local_part}@${quote:$domain_data}\nsize=$message_size\n\n}{[% exim_config.mailbox_quota_query_timeout %]}{\n}{SOCKETFAIL}}}{action=5}{true}{false}}"
+
+  data = ":fail:Mailbox is full / Blocks limit exceeded / Inode limit exceeded"
+  verify_only
+  allow_fail

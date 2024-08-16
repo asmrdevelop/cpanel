@@ -1,0 +1,58 @@
+[%
+    SET CPANEL.CPVAR.dprefix="../";
+    SET scripts = [
+        "js2/contact/index.js",
+    ];
+    IF CPANEL.appname == "webmail";
+        scripts.push(
+            'libraries/angularjs/1.4.4/angular.js'
+        );
+    END;
+%]
+
+[% WRAPPER '_assets/master.html.tt'
+    app_key = 'contact_information'
+    page_stylesheets = [
+        'css2-min/contact/index.css'
+    ]
+    page_scripts = scripts
+%]
+
+<script>
+if (!PAGE) PAGE = {};
+PAGE.username = [% CPANEL.authuser.json() %];
+</script>
+
+[% INCLUDE _assets/_ajaxapp_header.html.tt %]
+
+<div>
+    <p id="descContactInformation" class="description">
+        [% locale.maketext('Use this interface to set your account’s contact information and preferences.') %]
+        [% locale.maketext("Want to learn more? Read our [output,url,_1,documentation,class,externalLink,target,_2,id,_3].", "//go.cpanel.net/cpaneldocsContactInformation", "_blank", "lnkContactInfoDocumentation") %]
+    </p>
+</div>
+
+[% IF (CPANEL.feature('updatenotificationprefs') || CPANEL.feature("updatecontact")) && !ExpVar.expand('$isarchiveuser') %]
+    [% IF CPANEL.appname != "webmail" || CPANEL.authuser == CPANEL.user %]
+        [% Api1.exec("include", ["contact_validator.html.tt"]) %]
+    [% END %]
+    <div class="body-content">
+        <div id="cjt_pagenotice_container"></div>
+        <form id="mainform" name="mainform"
+            autocomplete="off"
+            onsubmit="savemailform(this)"
+            action="javascript:void(0)"
+        >
+            <fieldset>
+            [% Api1.exec("include", ["indexincludeform.html.tt"]) %]
+            </fieldset>
+        </form>
+    </div><!-- end body-content -->
+[% ELSE %]
+    <div class="body-content">
+        [% Api1.exec("include", ["../refresh.html.tt"]) %]
+    </div><!-- end body-content -->
+[% END %]
+[% END #wrapper -%]
+
+[% INCLUDE _assets/_ajaxapp_footer.html.tt %]

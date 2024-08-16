@@ -1,0 +1,27 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/killspamkeys                    Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+# Attention: This script is called during SpamAssassin installation.
+
+use strict;
+
+$| = 1;
+
+use Cpanel::PwCache::Helpers ();
+use Cpanel::PwCache::Build   ();
+
+Cpanel::PwCache::Helpers::no_uid_cache();    #uid cache only needed if we are going to make lots of getpwuid calls
+Cpanel::PwCache::Build::init_passwdless_pwcache();
+
+my $pwcache_ref = Cpanel::PwCache::Build::fetch_pwcache();
+foreach my $pw (@$pwcache_ref) {
+    if ( -f "$pw->[7]/.spamkey" ) {
+        print "Removing spamkey for $pw->[0]...";
+        unlink("$pw->[7]/.spamkey");
+        print "Done\n";
+    }
+}

@@ -1,0 +1,513 @@
+[%
+    USE CPUsername;
+    SET USERNAME_REGEX = CPUsername.make_strict_regexp_str(1);
+    SET USERNAME_MAX_LENGTH = CPUsername.get_max_username_length();
+%]
+
+<div id="editor" class="panel panel-primary">
+    <div class="panel-heading">
+        <h3 class="panel-title">[% locale.maketext('Add Profile') %]</h3>
+    </div>
+    <div class="panel-body">
+    <div class="alert alert-info">
+        <span class="glyphicon glyphicon-exclamation-sign"></span>
+        <div class="alert-message">
+            <strong>[% locale.maketext('Information:') %]</strong><br>
+            <ul>
+                <li>[% locale.maketext("Make certain that the database server can resolve the [asis,cPanel] [output,amp] [asis,WHM] server’s [asis,IP] address to its fully-qualified [asis,hostname].") %]</li>
+                <li>[% locale.maketext("Do not use the [output,inline,skip-name-resolve,class,mysql-option] option in any server’s database configuration. This option may create problems on remote database servers, during account transfers and restorations, and with [asis,phpMyAdmin].") %]</li>
+                <li>[% locale.maketext("We only support [asis,MySQL] version [list_and,_1] on [asis,Amazon RDS] servers. We don’t support [asis,AuroraDB] on Amazon RDS servers. For more information, read our [output,url,_2,documentation,_3].", ['5.7', '8.0'], 'https://go.cpanel.net/AmazonRDS', { target => "_blank" }) %]</li>
+                <li>[% locale.maketext("When using [asis,Amazon RDS], you must set the database username to [asis,root]. Using any other username will cause some features in cPanel [output,amp] WHM to not function properly.") %]</li>
+            </ul>
+        </div>
+    </div>
+    <form class="layout-medium ng-pristine ng-valid" id="editorForm" name="editorForm" novalidate>
+        <!-- prevent password autofill -->
+        <input type="text" style="display:none">
+        <input type="password" autocomplete='off' style="display:none">
+        <h4 class="section-heading" id="sectionHeaderProfileType">[% locale.maketext("Profile Settings") %]</h4>
+        <div class="section-body">
+            <div class="form-group">
+                <label for="txtField_name">[% locale.maketext('Profile Name') %]</label>
+                <span class="glyphicon glyphicon-info-sign"
+                    role="tooltip"
+                    tabindex="0"
+                    aria-describedby="txtField_name"
+                    uib-tooltip="[% locale.maketext('The name of the database profile. Once you save this, you cannot change the Profile Name.') %]"
+                    tooltip-trigger="focus"
+                    tooltip-placement="top"></span>
+                <div class="row">
+                    <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                        <input type="text"
+                            id="txtField_name"
+                            name="txtField_name"
+                            ng-model="currentProfile.name"
+                            required
+                            ng-maxlength="32"
+                            ng-pattern="/^[a-zA-Z][\w\s\-]*$/"
+                            class="form-control" />
+                    </div>
+                    <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                        <ul validation-container field-name="txtField_name">
+                            <validation-item
+                                field-name="txtField_name"
+                                validation-name="maxlength">[% locale.maketext("Profile names must be no more than 32 characters.") %]</validation-item>
+                            <validation-item
+                                field-name="txtField_name"
+                                validation-name="required">[% locale.maketext("This field is required.") %]</validation-item>
+                            <validation-item
+                                field-name="txtField_name"
+                                validation-name="pattern">
+                                [% locale.maketext("A profile name must begin with a letter and may only contain letters, numbers, underscores, hyphens, or spaces.") %]
+                            </validation-item>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+
+            <div class="form-group">
+                <label for="radio_type">[% locale.maketext('Configuration Method') %]</label>
+                <span class="glyphicon glyphicon-info-sign"
+                    role="tooltip"
+                    tabindex="0"
+                    uib-tooltip="[% locale.maketext('A database superuser must have [asis,ALL] privileges on all databases with the [asis,GRANT] option.') %]"
+                    tooltip-trigger="focus"
+                    tooltip-placement="top"></span>
+                <div class="row">
+                    <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                        <div class="radio" ng-if="enableCreateViaSSH">
+                          <label>
+                            <input type="radio"
+                                   ng-model="currentProfile.type"
+                                   name="radio_type"
+                                   id="radio_type_ssh"
+                                   value="ssh"
+                                   aria-labelledby="sectionHeaderProfileType"
+                                   ng-change="convertProfileType('ssh')"
+                                   ng-checked="currentProfile.type == 'ssh'">
+                            <span>[% locale.maketext('Automatically create a database superuser via [asis,SSH].') %]</span>
+                          </label>
+                        </div>
+                        <div class="radio">
+                          <label>
+                            <input type="radio"
+                                   ng-model="currentProfile.type"
+                                   name="radio_type"
+                                   id="radio_type_mysql"
+                                   value="mysql"
+                                   aria-labelledby="sectionHeaderProfileType"
+                                   ng-change="convertProfileType('mysql')"
+                                   ng-checked="currentProfile.type == 'mysql'">
+                            <span>[% locale.maketext('Manually enter an existing database superuser’s credentials.') %]</span>
+                          </label>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <h4 class="section-heading">[% locale.maketext("Host Settings") %]</h4>
+        <div class="section-body">
+           <div class="form-group">
+                <label for="txtField_host">[% locale.maketext('Host') %]</label>
+                <span class="glyphicon glyphicon-info-sign"
+                    role="tooltip"
+                    tabindex="0"
+                    aria-describedby="txtField_host"
+                    uib-tooltip="[% locale.maketext('The database server’s [asis,IP] address or [asis,hostname].') %]"
+                    tooltip-trigger="focus"
+                    tooltip-placement="right"></span>
+                <div class="row">
+                    <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                        <input type="text"
+                            id="txtField_host"
+                            name="txtField_host"
+                            ng-model="currentProfile.host"
+                            required
+                            hostname-or-ip
+                            placeholder="[% locale.maketext('[asis,Hostname] or [asis,IP] address.') %]"
+                            class="form-control" />
+                    </div>
+                    <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                        <ul validation-container field-name="txtField_host">
+                            <validation-item
+                                field-name="txtField_host"
+                                validation-name="required">[% locale.maketext("This field is required.") %]</validation-item>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+            <div class="form-group" ng-if="currentProfile.type != 'ssh'">
+                <label for="txtField_port">[% locale.maketext('Port') %]</label>
+                <span class="glyphicon glyphicon-info-sign"
+                    role="tooltip"
+                    tabindex="0"
+                    aria-describedby="txtField_port"
+                    uib-tooltip="[% locale.maketext('The database server’s port. The port must be between 1 and 65535.') %]"
+                    tooltip-trigger="focus"
+                    tooltip-placement="top"></span>
+                <div class="row">
+                    <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                        <input type="text"
+                            id="txtField_port"
+                            name="txtField_port"
+                            ng-model="currentProfile.port"
+                            required
+                            positive-integer
+                            num-greater-than-equal="1"
+                            num-less-than-equal="65535"
+                            placeholder="[% locale.maketext('Port number for database connection.') %]"
+                            class="form-control" />
+                    </div>
+                    <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                        <ul validation-container field-name="txtField_port">
+                            <validation-item
+                                field-name="txtField_port"
+                                validation-name="required">[% locale.maketext("This field is required.") %]</validation-item>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+            <div class="form-group" ng-if="currentProfile.type == 'ssh'">
+                <label for="txtField_ssh_port">[% locale.maketext('[asis,SSH] Port') %]</label>
+                <span class="glyphicon glyphicon-info-sign"
+                    role="tooltip"
+                    tabindex="0"
+                    aria-describedby="txtField_ssh_port"
+                    uib-tooltip="[% locale.maketext('The [asis,SSH] server’s port. The port must be between 1 and 65535.') %]"
+                    tooltip-trigger="focus"
+                    tooltip-placement="top"></span>
+                <div class="row">
+                    <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                        <input type="text"
+                            id="txtField_ssh_port"
+                            name="txtField_ssh_port"
+                            ng-model="currentProfile.port"
+                            required
+                            positive-integer
+                            num-greater-than-equal="1"
+                            num-less-than-equal="65535"
+                            placeholder="[% locale.maketext('Port number for [asis,SSH] connection.') %]"
+                            class="form-control" />
+                    </div>
+                    <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                        <ul validation-container field-name="txtField_ssh_port">
+                            <validation-item
+                                field-name="txtField_ssh_port"
+                                validation-name="required">[% locale.maketext("This field is required.") %]</validation-item>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <h4 class="section-heading">[% locale.maketext("Login Information") %]</h4>
+        <div class="section-body">
+            <div class="form-group" ng-if="currentProfile.type != 'ssh'">
+                <label for="txtField_account">[% locale.maketext('Username') %]</label>
+                <div class="row">
+                    <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                        <input type="text"
+                            id="txtField_account"
+                            name="txtField_account"
+                            ng-model="currentProfile.account"
+                            ng-pattern="/[% USERNAME_REGEX %]/"
+                            required
+                            maxlength="[% USERNAME_MAX_LENGTH %]"
+                            placeholder="[% locale.maketext('Username for database connection.') %]"
+                            class="form-control" />
+                    </div>
+                    <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                        <ul validation-container field-name="txtField_account">
+                            <validation-item
+                                field-name="txtField_account"
+                                validation-name="required">[% locale.maketext("This field is required.") %]</validation-item>
+                            <validation-item
+                                field-name="txtField_account"
+                                validation-name="pattern">[% locale.maketext("A username must not begin with a period or number and may only contain letters, numbers, underscores, hyphens, or periods.") %]</validation-item>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+            <div class="form-group" ng-if="currentProfile.type == 'ssh'">
+                <label for="txtField_account">[% locale.maketext('Username') %]</label>
+                <div class="row">
+                    <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                        <input type="text"
+                            id="txtField_account"
+                            name="txtField_account"
+                            ng-model="currentProfile.account"
+                            ng-pattern="/[% USERNAME_REGEX %]/"
+                            required
+                            maxlength="[% USERNAME_MAX_LENGTH %]"
+                            placeholder="[% locale.maketext('Username for [asis,SSH] connection.') %]"
+                            class="form-control" />
+                    </div>
+                    <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                        <ul validation-container field-name="txtField_account">
+                            <validation-item
+                                field-name="txtField_account"
+                                validation-name="required">[% locale.maketext("This field is required.") %]</validation-item>
+                            <validation-item
+                                field-name="txtField_account"
+                                validation-name="pattern">[% locale.maketext("A username must not begin with a period or number and may only contain letters, numbers, underscores, hyphens, or periods.") %]</validation-item>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+            <div class="form-group" ng-if="currentProfile.type != 'ssh'">
+                <label for="txtField_password">[% locale.maketext('Password') %]</label>
+                <div class="row">
+                    <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                        <input type="password"
+                            autocomplete='off'
+                            id="txtField_password"
+                            name="txtField_password"
+                            ng-model="currentProfile.password"
+                            required
+                            placeholder="[% locale.maketext('Account password for database connection.') %]"
+                            class="form-control" />
+                            <span ng-show="currentRoute == '/profiles/newlocalhost'"
+                                class="help-block">[% locale.maketext('You can reset your database [asis,root] password through the [output,url,_1,_2,_3] interface.', cp_security_token _ '/scripts2/mysqlrootpass', locale.maketext('Change Database Root Password'), { "target" => "_blank" }) %]</span>
+                    </div>
+                    <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                        <ul validation-container field-name="txtField_password">
+                            <validation-item
+                                field-name="txtField_password"
+                                validation-name="required">[% locale.maketext("This field is required.") %]</validation-item>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+            <div ng-if="currentProfile.type == 'ssh'">
+                <div class="form-group">
+                    <label for="radio_auth_type">[% locale.maketext('Authentication Method') %]</label>
+                    <span class="glyphicon glyphicon-info-sign"
+                        role="tooltip"
+                        tabindex="0"
+                        uib-tooltip="[% locale.maketext('You can authenticate with a password or an [asis,SSH] key.') %]"
+                        tooltip-trigger="focus"
+                        tooltip-placement="top"></span>
+                    <div class="row">
+                        <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                            <div class="radio">
+                              <label>
+                                <input type="radio"
+                                   ng-model="workflow.currentProfileAuthType"
+                                   name="radio_auth_type"
+                                   id="radio_auth_type_password"
+                                   value="password"
+                                   ng-change="workflow.currentProfileAuthType = 'password'">
+                                <span>[% locale.maketext('Password') %]</span>
+                              </label>
+                            </div>
+                            <div class="radio">
+                              <label>
+                                <input type="radio"
+                                   ng-model="workflow.currentProfileAuthType"
+                                   name="radio_auth_type"
+                                   id="radio_auth_type_ssh"
+                                   value="ssh"
+                                   ng-change="workflow.currentProfileAuthType = 'ssh'"
+                                   ng-disabled="workflow.disableSshProfileAuthType">
+                                <span>[% locale.maketext('[asis,SSH] Key') %]</span>
+                              </label>
+                              <p ng-show="workflow.disableSshProfileAuthType">
+                                <span class="help-block">
+                                [% locale.maketext('You have no [asis,SSH] keys configured on your server.') %]
+                                [% locale.maketext('You can add an [asis,SSH] key through the [output,url,_1,Manage Root’s SSH Keys,_2] interface.', cp_security_token _ '/scripts2/sshkeys', { "target" => "_blank" }) %]</span>
+                              </p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div ng-if="workflow.currentProfileAuthType == 'password'">
+                    <div class="form-group">
+                        <label for="txtField_password">[% locale.maketext('Password') %]</label>
+                        <div class="row">
+                            <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                                <input type="password"
+                                    autocomplete='off'
+                                    id="txtField_password"
+                                    name="txtField_password"
+                                    ng-model="currentProfile.password"
+                                    required
+                                    placeholder="[% locale.maketext('Account password for [asis,SSH] connection.') %]"
+                                    class="form-control" />
+                            </div>
+                            <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                                <ul validation-container field-name="txtField_password">
+                                    <validation-item
+                                        field-name="txtField_password"
+                                        validation-name="required">[% locale.maketext("This field is required.") %]</validation-item>
+                                </ul>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div ng-if="workflow.currentProfileAuthType == 'ssh'">
+                    <div class="form-group">
+                        <label for="txtField_ssh_key">[% locale.maketext('[asis,SSH] Key') %]</label>
+                        <span class="glyphicon glyphicon-info-sign"
+                            role="tooltip"
+                            tabindex="0"
+                            aria-describedby="txtField_ssh_key"
+                            uib-tooltip="[% locale.maketext('The [asis,SSH] key used to log into the remote server. The key may require a passphrase.') %]"
+                            tooltip-trigger="focus"
+                            tooltip-placement="top"></span>
+                        <div class="row">
+                            <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                                <select
+                                    id="ddl_ssh_key"
+                                    name="ddl_ssh_key"
+                                    ng-model="currentProfile.sshKey"
+                                    ng-options="ssh_key.key for ssh_key in ssh_keys track by ssh_key.key"
+                                    class="form-control"></select>
+                                <span class="help-block">[% locale.maketext('You can add an [asis,SSH] key through the [output,url,_1,Manage Root’s SSH Keys,_2] interface.', cp_security_token _ '/scripts2/sshkeys', { "target" => "_blank" }) %]</span>
+                            </div>
+                            <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                                <ul validation-container field-name="ddl_ssh_key">
+                                    <validation-item
+                                        field-name="ddl_ssh_key"
+                                        validation-name="required">[% locale.maketext("This field is required.") %]</validation-item>
+                                </ul>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="form-group" ng-if="currentProfile.sshKey.encrypted == 1">
+                        <label for="txtField_ssh_passphrase">[% locale.maketext('[asis,SSH] Key Passphrase') %]</label>
+                        <span class="glyphicon glyphicon-info-sign"
+                            role="tooltip"
+                            tabindex="0"
+                            aria-describedby="txtField_ssh_passphrase"
+                            uib-tooltip="[% locale.maketext('Passphrase for the selected [asis,SSH] key.') %]"
+                            tooltip-trigger="focus"
+                            tooltip-placement="top"></span>
+                        <div class="row">
+                            <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                                <input type="password"
+                                    autocomplete='off'
+                                    id="txtField_ssh_passphrase"
+                                    name="txtField_ssh_passphrase"
+                                    ng-model="currentProfile.ssh_passphrase"
+                                    required
+                                    placeholder="[% locale.maketext('Passphrase for the selected [asis,SSH] key.') %]"
+                                    class="form-control" />
+                            </div>
+                            <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                                <ul validation-container field-name="txtField_ssh_passphrase">
+                                    <validation-item
+                                        field-name="txtField_ssh_passphrase"
+                                        validation-name="required">[% locale.maketext("This field is required.") %]</validation-item>
+                                </ul>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div ng-if="requiresEscalation()">
+                <div class="form-group">
+                    <label for="radio_escalation_type">[% locale.maketext('Escalation Method') %]</label>
+                    <span class="glyphicon glyphicon-info-sign"
+                        role="tooltip"
+                        tabindex="0"
+                        uib-tooltip="[% locale.maketext('Non-[asis,root] users require [asis,superuser] access to modify the remote database server.') %]"
+                        tooltip-trigger="focus"
+                        tooltip-placement="top"></span>
+                    <div class="row">
+                        <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                            <div class="radio">
+                              <label>
+                                <input type="radio"
+                                  ng-model="currentProfile.escalation_type"
+                                  name="radio_escalation_type"
+                                  id="radio_escalation_type_su"
+                                  value="su"
+                                  ng-required="!currentProfile.escalation_type"
+                                  ng-change="currentProfile.escalation_password = ''">
+                                <span>[% locale.maketext('[asis,su][comment,run a shell with substitute user and group IDs]') %]</span>
+                              </label>
+
+                              <div class="row" ng-if="currentProfile.escalation_type == 'su'">
+                                <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                                  <label for="suRootPassword">[% locale.maketext('[asis,Root] Password') %]</label>
+                                  <input type="password"
+                                    autocomplete='off'
+                                    id="suRootPassword"
+                                    name="suRootPassword"
+                                    class="form-control"
+                                    required
+                                    ng-model="currentProfile.escalation_password">
+                                </div>
+                                <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                                    <ul validation-container field-name="suRootPassword">
+                                        <validation-item
+                                            field-name="suRootPassword"
+                                            validation-name="required">[% locale.maketext("This field is required.") %]</validation-item>
+                                    </ul>
+                                </div>
+                              </div>
+                            </div>
+                            <div class="radio">
+                              <label>
+                                <input type="radio"
+                                  ng-model="currentProfile.escalation_type"
+                                  name="radio_escalation_type"
+                                  id="radio_escalation_type_sudo"
+                                  value="sudo"
+                                  ng-required="!currentProfile.escalation_type"
+                                  ng-change="currentProfile.escalation_password = ''">
+                                <span>[% locale.maketext('[asis,sudo][comment,execute a command as another user]') %]</span>
+                              </label>
+
+                              <div class="row" ng-if="workflow.currentProfileAuthType !== 'password' && currentProfile.escalation_type == 'sudo'">
+                                <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                                    <label for="sudoPassword">[% locale.maketext('Account Password') %]</label>
+                                    <input type="password"
+                                        autocomplete='off'
+                                        id="txtField_password"
+                                        name="txtField_password"
+                                        ng-model="currentProfile.password"
+                                        required
+                                        class="form-control" />
+                                </div>
+                                <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                                    <ul validation-container field-name="txtField_password">
+                                        <validation-item
+                                            field-name="txtField_password"
+                                            validation-name="required">[% locale.maketext("This field is required.") %]</validation-item>
+                                    </ul>
+                                </div>
+                              </div>
+                            </div>
+                        </div>
+                        <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                            <ul validation-container field-name="radio_escalation_type">
+                                <validation-item
+                                    field-name="radio_escalation_type"
+                                    validation-name="required">[% locale.maketext("This field is required.") %]</validation-item>
+                            </ul>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="form-group">
+            <div class="row">
+                <div class="col-xs-12 col-sm-10 col-md-8 col-lg-6">
+                    <button
+                        type="submit"
+                        spinner-id="saveProfile"
+                        cp-action="saveProfile(editorForm)"
+                        button-class="btn-primary"
+                        ng-disabled="disableSave(editorForm)">[% locale.maketext("Save") %]</button>
+                    <a id="backLink"
+                        href="profiles"
+                        class="btn btn-link">[% locale.maketext('Cancel') %]</a>
+                </div>
+            </div>
+        </div>
+    </form>
+</div>

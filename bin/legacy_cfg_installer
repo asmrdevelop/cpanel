@@ -1,0 +1,40 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - bin/legacy_cfg_installer                Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package bin::legacy_cfg_installer;
+
+use strict;
+use warnings;
+use Cpanel::SafeRun::Errors ();
+use Cpanel::OS              ();
+
+__PACKAGE__->script() unless caller();
+
+sub script {
+
+    # TODO: This modulino needs to have its core functionality moved to
+    # a module and have its test coverage improved.  Once done the
+    # install/* scripts should call the module directly instead of
+    # loading this modulino.
+    filelimits();
+    return;
+}
+
+sub filelimits {
+    return if Cpanel::OS::is_systemd();
+
+    my $chkconfig_output = Cpanel::SafeRun::Errors::saferunnoerror( '/sbin/chkconfig', '--list', 'filelimits' );
+    if ( $chkconfig_output !~ m{3:on} ) {
+        system( '/usr/bin/install', '-m',      '755', '/usr/local/cpanel/whostmgr/bin/filelimits', '/etc/init.d/filelimits' );
+        system( '/sbin/chkconfig',  '--add',   'filelimits' );
+        system( '/sbin/chkconfig',  '--level', '345', 'filelimits', 'on' );
+    }
+    system( '/etc/init.d/filelimits', 'start' );
+    return;
+}
+
+1;

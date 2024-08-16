@@ -1,0 +1,71 @@
+[% WRAPPER 'master_templates/master.tmpl' theme="yui"
+    breadcrumburl = '/scripts2/sslmanager'
+    extrastyle = '
+textarea {
+    font-family: monospace;
+}
+'
+-%]
+[% USE CPScalar -%]
+[% USE Whostmgr -%]
+
+[% SET ssltypes = {
+    'crt' = locale.maketext('Certificate'),
+    'csr' = locale.maketext('[output,acronym,CSR,Certificate Signing Request]'),
+    'key' = locale.maketext('Key')
+}; %]
+
+[% SET storagetypes = {
+    'installed' = locale.maketext('[asis,Apache]’s Installed SSL Resource'),
+    'user' = locale.maketext('User Account SSL Resource')
+}; %]
+
+<h2>[% locale.maketext("Resource Information") %]</h2>
+[% IF data.friendly_name %]
+<div>
+    <span class="b2">[% locale.maketext("Friendly Name: [_1]", data.friendly_name.html()) %]</span>
+</div>
+[% END %]
+<div>
+    <span class="b2">[% locale.maketext("ID: [_1]", data.id.html()) %]</span>
+</div>
+<div>
+    [% SET storage = data.storage %]
+    [% SET storagetext = storagetypes.$storage %]
+    [% SET storagetext = storagetext.html() %]
+    <span class="b2">[% locale.maketext("Resource Type: [_1]", storagetext) %]</span>
+</div>
+
+<h2>[% locale.maketext("Raw Text") %]</h2>
+<textarea cols="80" rows="[% data.text.split('\\n').size %]" readonly>
+[% data.text FILTER html -%]
+</textarea>
+
+<h2>[% locale.maketext("Detailed Information") %]</h2>
+<textarea cols="80" rows="[% data.parse.split('\\n').size %]" readonly>
+[% data.parse FILTER html -%]
+</textarea>
+
+[% IF data.related && data.related.keys && data.related.keys.size %]
+<h2>[% locale.maketext("Related Items") %]</h2>
+    <ul class="bulleted">
+    [% FOR relatedobj IN data.related.pairs %]
+        [% SET itemtype = relatedobj.key %]
+        [% FOR item IN relatedobj.value %]
+            [% IF item.friendly_name %]
+                <li><a href="?id=[% item.id FILTER html %]&storage=[% data.storage FILTER html %]&type=[% itemtype FILTER html %]">[% locale.maketext("[_1] ([output,strong,_2])[comment,do not use this phrase, it will be fixed in an upcoming case]", ssltypes.$itemtype, item.friendly_name.html() ) %]</a></li>
+            [% ELSE %]
+                <li><a href="?id=[% item.id FILTER html %]&storage=[% data.storage FILTER html %]&type=[% itemtype FILTER html %]">[% locale.maketext("[_1] ([output,strong,_2])[comment,do not use this phrase, it will be fixed in an upcoming case]", ssltypes.$itemtype, item.id) %]</a></li>
+            [% END %]
+        [% END %]
+    [% END %]
+    </ul>
+
+[% END %]
+
+
+
+<div class="return-link">
+<b>[</b> <a href="sslmanager">[% locale.maketext('Go Back') %]</a><b> ]</b>
+</div>
+[% END #wrapper -%]

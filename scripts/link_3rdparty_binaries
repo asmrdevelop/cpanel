@@ -1,0 +1,50 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/link_3rdparty_binaries          Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+# This script assures that all 3rdparty binaries which cpanel might need are located in 3rdparty/bin as a symlink at the least.
+
+use strict;
+use warnings;
+
+use Cpanel::CleanINC ();
+use Cpanel::Binaries ();
+
+exit( run(@ARGV) || 0 ) unless caller;
+
+sub run {
+    my (@args) = @_;
+
+    if ( grep { m{^-+h(elp)?$} } @args ) {
+        return usage();
+    }
+
+    $Cpanel::Binaries::VERBOSE = 0 if grep { m{^-+q(uiet)?$} } @args;
+
+    my $ok = 1;
+    $ok = 0 if !Cpanel::Binaries::symlink_into_3rdparty_bin();
+    $ok = 0 if !Cpanel::Binaries::symlink_thirdparty_into_system_bin();
+
+    return !$ok;
+}
+
+sub usage {
+
+    print STDERR <<EOM;
+$0 [OPTIONS]
+
+Description:
+    This script is used to create symlinks to third party binaries
+    in /usr/local/cpanel/3rdparty/ directory.
+
+Options:
+    --help   show this message then exit
+    --quiet  do not display verbose informations to the output
+
+EOM
+
+    return;
+}

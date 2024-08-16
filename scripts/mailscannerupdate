@@ -1,0 +1,85 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/mailscannerupdate               Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use Cpanel::SafeFile;
+use Cpanel::Logger ();
+use strict;
+
+my $logger = Cpanel::Logger->new();
+
+if ( $ARGV[0] !~ /force/i ) {
+    print "$0: This script should not be run manually.  If you really wanted to do that, please add --force\n";
+    exit(1);
+}
+
+unless ( -e '/etc/exim_trusted_configs' ) {
+    if ( open my $trusted_fh, '>', '/etc/exim_trusted_configs' ) {
+        print {$trusted_fh} "/etc/exim_outgoing.conf\n";
+        close $trusted_fh;
+    }
+    else {
+        print "Warning: Unable to create /etc/exim_trusted_config file!\n";
+    }
+}
+
+if ( open my $conf_fh, '<', '/etc/exim.conf' ) {
+    while (<$conf_fh>) {
+        if ( m/^\s*av_scanner/ || m/MailScanner/ ) {
+            close $conf_fh;
+            exit 0;
+        }
+    }
+    close $conf_fh;
+}
+
+if ( -e '/etc/exim_outgoing.conf' ) {
+    print 'Mail Scanner exim.conf updating...';
+    mkdir( '/etc/exim', 0755 );
+    system 'cp', '-fv', '/etc/exim.conf', '/etc/exim_outgoing.conf';
+
+    my $file     = '/etc/exim.conf';
+    my $filelock = Cpanel::SafeFile::safeopen( \*FH, '+<', $file );
+    if ( !$filelock ) {
+        $logger->die("Could not read from $file");
+    }
+    my @CONF = <FH>;
+    seek( FH, 0, 0 );
+    foreach (@CONF) {
+        next if m/^\s*system_filter/ || m/^\s*spool_directory/ || m/^\s*queue_only/ || m/^\s*queue_only_override/;
+        print FH;
+
+        if (m/cPanel\s+Exim\s+4\s+Config/) {
+            print FH "\n";
+            print FH "spool_directory = /var/spool/exim_incoming\n";
+            print FH "queue_only = true\n";
+            print FH "queue_only_override = false\n\n";
+        }
+        if (m/^begin routers/) {
+            print FH <<'EOM';
+
+	defer_router:
+		driver = redirect
+		allow_defer
+		data = :defer: All deliveries are handled by MailScanner
+		verify = false
+
+EOM
+        }
+    }
+    truncate( FH, tell(FH) );
+    Cpanel::SafeFile::safeclose( \*FH, $filelock );
+
+    if ( -d '/usr/local/etc/exim' ) {
+        system 'cp', '-fv', '/etc/exim.conf', '/usr/local/etc/exim/configure';
+    }
+
+    print "Done\n";
+    require 'scripts/checkexim.pl';
+    scripts::checkexim::checkeximperms();
+}
+
+exit 0;

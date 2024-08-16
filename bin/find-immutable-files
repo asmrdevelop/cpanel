@@ -1,0 +1,440 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - bin/find-immutable-files                Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+#
+# Implementation notes appear at the bottom of this script.
+#
+
+use strict;
+use warnings;
+
+use Cpanel::Usage           ();
+use Cpanel::Notify          ();
+use Cpanel::Binaries        ();
+use Cpanel::Logger          ();
+use Cpanel::SafeRun::Errors ();
+use Cpanel::TempFile        ();
+use Cpanel::FileUtils::Copy ();
+use Cpanel::OSSys           ();
+use Cpanel::IP::Remote      ();
+
+my $frequency  = shift @ARGV || 10;
+my $gHaveNoTty = 0;                   # assume to start that stdin *is* the TTY
+
+# . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .
+sub stdin_is_not_tty {
+
+    # $gNoTTy is set from --notty command line switch. It and
+    # the ENV option are mainly for testing.
+    !-t STDIN or $gHaveNoTty or $ENV{NO_TTY};
+}
+
+# . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .
+sub usage {    # We'll pass a ref to this subrtn to Cpanel::Usage
+
+    # The --notty switch is only for devel/debug, so we don't
+    # include it in our usage message. Conversely, the --verbose
+    # switch is intended for the user, and explicitly required
+    # by the written spec, aka requirements document, for this
+    # script.
+
+    print <<"End";
+
+    usage: $0 [--verbose]
+End
+    exit 3;    # As strongly recommended in the user documentation
+               # to Cpanel::Usage, q.v.
+}
+
+# . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .
+sub do_linux_platform {
+    my ( $file_out, $targets ) = @_;
+    unlink $file_out;
+
+    open my $out_fh, '>', $file_out or die "Cannot open $file_out for writing: $!";
+
+    my $n_found = 0;
+
+    # The 'lsattr' command reports immutable files by setting a particular flag
+    # to "i" or "a" among approx. 15 leading attribute flags. The other flags,
+    # typically not set, are shown as hyphens. A single space follows those
+    # initial flags, followed by the file name. Like so:
+    #
+    # -----i-------- fileXYZ
+    #
+
+    my $lsattr = Cpanel::Binaries::path('lsattr');
+    -x $lsattr or die 'Cannot find path to "lsattr" command';
+
+    for my $target ( @{$targets} ) {
+
+        my @cmd = ( $lsattr, '-Ra', $target );    # Re security issues, see case 51451
+
+        open my $in_fh, '-|', @cmd or die "Cannot open pipe to read from command ( @{ [ join ' ', @cmd ] } : $!";
+
+        my $prev = "";
+        while ( defined( my $curr = <$in_fh> ) ) {
+
+            # We take an 'i' or 'a' anywhere before the first white (not counting optional leading white),
+            # as immutable. We've mimicked Cpanel/Sync/v2.pm, except that this script uses the -R
+            # opt to 'lsattr' to recurse into dirs (instead of explicit 'find' as v2.pm does), and -R
+            # inserts dir name lines looking like '/optional/path/dirname:' preceded by a blank line.
+
+            unless ( $prev =~ m/^\s*$/ && $curr =~ m/:\s*$/ ) {
+                if ( $curr =~ m/^\s*\S*[ai]\S*\s+(.*)/s ) {
+                    my $file = $1;
+                    print {$out_fh} $file;
+                    ++$n_found;
+                }
+            }
+
+            $prev = $curr;
+        }
+        close $in_fh;
+    }
+
+    close $out_fh;
+
+    return $n_found;
+}
+
+my $verbose = 0;
+
+Cpanel::Usage::wrap_options(
+    \@ARGV,
+    \&usage,
+    {
+        'verbose' => \$verbose,
+        'notty'   => \$gHaveNoTty
+    }
+);
+
+my $file_out       = '/var/cpanel/immutable_files';
+my $logger         = Cpanel::Logger->new;
+my $tmpfilobj      = Cpanel::TempFile->new;
+my $tmpdir         = $tmpfilobj->dir;
+my $sync_file_list = '/usr/local/cpanel/etc/official_cpanelsync_list';
+my $sync_file_list_expanded;
+
+my $msg1                 = 'The immutable file scan will not run, because ';
+my $msg2                 = '.cpanelsync* files on the system, which are needed in order to determine which immutable files are cpanel files.';
+my $REMOVE_KNOWN_FILES   = 1;                                                                                                                    # Only for testing
+my $MAKE_MUTABLE_COMMAND = 'chattr -i';
+
+eval { $sync_file_list_expanded = find_cpanelsync_files($sync_file_list) };
+
+my $exit;
+if ( $exit ||= $@ ) {
+    $logger->warn("$msg1 I am unable to determine whether there are any $msg2 $@");
+}
+elsif ( $exit ||= !scalar @{$sync_file_list_expanded} ) {
+    $logger->warn("$msg1 I have determined that there are no $msg2");
+}
+abnormal_eoj($file_out) if $exit;
+
+my @target_dirs = qw( /usr/local/cpanel );
+
+my $rerun_interval_days = $frequency;
+
+# For platform differentiation for immutable files,
+# there is no need to differentiate by file system '
+# type within os, everything depends only on the os.
+
+my $n_found = do_linux_platform( $file_out, \@target_dirs );
+
+my ( $reduced_n_found, $reduced_file );
+
+if ($REMOVE_KNOWN_FILES) {
+    eval { ( $reduced_n_found, $reduced_file ) = eliminate_non_cpanel_files($file_out); };
+
+    my $elim_err_msg = "Could not eliminate non-cpanel files (if any) from the immutable file list";
+
+    if ( $exit ||= $@ ) {
+        $logger->warn("$elim_err_msg: $@");
+    }
+    else {
+        my ( $status, $msg ) = Cpanel::FileUtils::Copy::safecopy( $reduced_file, $file_out );
+        if ( $exit ||= !$status ) {
+            $logger->warn("$elim_err_msg: Could not copy $reduced_file onto $file_out: $msg");
+        }
+        else {
+            $n_found = $reduced_n_found;
+        }
+    }
+
+    abnormal_eoj($file_out) if $exit;
+}
+my ( $ic_obj, $immut_files );
+if ($n_found) {
+    open my $fh, "<", $file_out or die "Cannot open file '$file_out' for reading: $!";
+    my @immut_files = <$fh>;
+    close $fh;
+
+    for (@immut_files) {
+        s{^/usr/local/cpanel/+}{};
+    }
+
+    $immut_files = join "", @immut_files;
+    my @files_to_attach = ( { 'content' => \$immut_files, 'name' => 'immutable-files.txt' } );
+    require Cpanel::Notify;
+    $ic_obj = Cpanel::Notify::notification_class(
+        'class'            => 'Check::ImmutableFiles',
+        'application'      => 'Check::ImmutableFiles',
+        'constructor_args' => [
+            'application'       => 'find-immutable-files',
+            'status'            => 'failed',
+            'source_ip_address' => Cpanel::IP::Remote::get_current_remote_ip(),
+            'origin'            => 'find-immutable-files',
+            'chattr_command'    => $MAKE_MUTABLE_COMMAND,
+            'attach_files'      => \@files_to_attach,
+            'skip_send'         => 1,
+        ]
+    );
+}
+
+if ( stdin_is_not_tty() )    # probably means we are running from cron
+{
+    if ($n_found) {
+        $ic_obj->send();
+    }
+}
+
+if ($n_found) {
+    show_take_action_message( $ic_obj, $immut_files );
+}
+else {
+    print STDERR "0 immutable files have been found\n";
+}
+
+if ($verbose) {
+    if ( open my $fh, '<', $file_out ) {
+        print while <$fh>;
+        close $fh;
+    }
+}
+
+exit( $n_found ? 1 : 0 );    # note: need parens
+
+sub show_take_action_message {
+    print STDERR take_action_message(@_);
+}
+
+sub take_action_message {
+    my ( $ic_obj, $immut_files ) = @_;
+
+    my $message = $ic_obj->render_template_include_as_text( 'template' => 'action_message', 'type' => 'html' );
+
+    $message =~ s/^\040{8}//gms;
+
+    $message .= "\n" . ( "-" x 80 ) . "\n";
+
+    foreach my $file ( split( m{\n}, $immut_files ) ) {
+        $message .= "$MAKE_MUTABLE_COMMAND /usr/local/cpanel/$file\necho \"/usr/local/cpanel/$file\" >> /etc/cpanelsync.exclude\n";
+    }
+
+    return $message;
+}
+
+sub get_file_list {
+    my $filename = shift;
+    open my $fh, "<", $filename or die "Cannot open file $filename for reading: $!";
+    my @files = <$fh>;
+    close $fh;
+    chomp @files;
+    return \@files;
+}
+
+sub find_cpanelsync_files {
+    my ($infile) = @_;
+
+    open my $fh, '<', $infile or die "Cannot open file $infile for reading: $!";
+    my @globables = <$fh>;
+    @globables = grep { !/^\s*#/ && !/^\s*$/ } @globables;
+    for (@globables) {
+        s{ ^ \s* (.*?) \s* $ }{$1}xg;
+        substr $_, 0, 0, '/usr/local/cpanel/' unless m{^/};
+    }
+    close $fh;
+
+    return glober( \@globables, $infile );
+}
+
+sub glober {
+
+    # This is a very special-purpose glober. It will allow '*' only in one
+    # special case, and even then will not glob() the '*' in the usual way,
+    # but will expand '*' according to rules highly specific to that case,
+    # such that there will be exactly one possible expansion.
+
+    my ( $globables, $globlistfile ) = @_;
+
+    my @ret;
+
+  GLOB: for my $globable ( @{$globables} ) {
+
+        if ( $globable =~ /[*]/ ) {
+            $globable =~ s/[*]+/*/g;
+            my $ok_name = '/usr/local/cpanel/.cpanelsync_binaries__forward_slash__*';
+            if ( $globable ne $ok_name ) {
+                $logger->warn("Found globable file name '$globable' in $globlistfile, I cannot accept it, the only globable file name I can accept is '$ok_name'. Ignoring. ");
+                next GLOB;
+            }
+
+            # A la scripts/updatenow.static
+            my ( $kernel_type, $machine_arch ) = ( Cpanel::OSSys::uname() )[ 0, 4 ];
+            $kernel_type = lc $kernel_type;
+            my @valid_kernels = qw/ linux /;
+            grep { $_ eq $kernel_type } @valid_kernels    ## no critic(ProhibitVoidGrep)
+              or die "cPanel & WHM do not support kernel type '$kernel_type', only kernels ( @{ [ join ', ', @valid_kernels ] } ) are supported";
+            $machine_arch = $machine_arch =~ m/64/ ? 'x86_64' : 'i386';
+            $globable =~ s{[*]$}{$kernel_type-$machine_arch};
+        }
+
+        push @ret, $globable;
+    }
+
+    return \@ret;
+}
+
+sub eliminate_non_cpanel_files {
+
+    # This find-immutable-files script must report only on cPanel-owned (not 3rd party)
+    # files. We identify them based on file lists found in ./cpanelsync* files anywhere
+    # under /usr/local/cpanel. The lists might get large, so we conserve memory by
+    # implementing a file-based solution using the Linux comm(1) utility.
+
+    my $immut_list = shift;
+
+    my $cpanel_file_list = parse_cpanel_sync_files($sync_file_list_expanded);
+
+    for my $file ( $immut_list, $cpanel_file_list ) {
+        my $sortcmd = "sort -u -o $file $file";
+        my $errors  = Cpanel::SafeRun::Errors::saferunallerrors($sortcmd);
+        $errors && die "Error when running '$sortcmd': $errors";
+    }
+
+    my $comm_cmd = "comm $immut_list $cpanel_file_list";
+    my @comm_cmd = split /\s+/, $comm_cmd;
+    open my $pipefh, '-|', @comm_cmd or die "Cannot open pipe from command '$comm_cmd': $!";
+
+    my $comm_out = "$tmpdir/cpanel_comm_out";
+    open my $fhout, '>', $comm_out or die "Cannot open file $comm_out for writing";
+
+    my $ncomm = 0;
+
+    while (<$pipefh>)    # parse 'comm' command output
+    {
+        my ( $indent, $filename ) = / ^ (\t*) (.*) /x;
+        if ( 2 == length $indent )    # line was found in both files
+        {
+            ++$ncomm;
+            print {$fhout} "$filename\n";
+        }
+        elsif ( 1 == length $indent )    # line found in cpanel file list only, a no-op for us
+        {
+        }
+        else                             # no indent, line found in immutable file list only
+        {
+            chomp;
+            $logger->info("Ignoring immutable file '$filename' because it is not found in the cpanel master file lists; it is presumably a 3rd party item");
+        }
+    }
+
+    close $pipefh;
+    close $fhout;
+
+    return ( $ncomm, $comm_out );
+}
+
+sub parse_cpanel_sync_files {
+    my $sync_file_list_ref = shift;    # A file we previously generated with 'find' that contains a list of
+                                       # .cpanelsync* files. Each file in the list itself contains a
+                                       # list of files known to and "owned by" cpanel.
+
+    my $outfile = "$tmpdir/cpanel_master_file_list";
+    open my $ofh, '>', $outfile or die "Cannot open file $outfile for writing: $!";
+
+  SYNCFILE: for my $syncfile ( @{$sync_file_list_ref} ) {
+        ( my $dir = $syncfile ) =~ s{/+[.]cpanelsync[^/]*$}{};
+
+        my $ifh;
+        unless ( open $ifh, '<', $syncfile ) {
+            $logger->warn("Cannot open cpanel sync file $syncfile for reading: $!: skipping");
+            next SYNCFILE;
+        }
+
+        while (<$ifh>) {
+            chomp;
+
+            # Handle both old and new .cpanelsync formats, one is "===" delimited, the
+            # other colon delimited
+            my $file;
+            if (/^[dfl]===([^=]*)===/i) {
+                $file = $1;
+            }
+            else {
+                my @flds = split /:/;
+                $file = shift @flds if 10 == @flds;
+            }
+
+            if ( defined $file && $file =~ /\w/ ) {
+                $file =~ s{^[.]/+}{};
+                print {$ofh} "$dir/$file\n";
+            }
+        }
+        close $ifh;
+    }
+
+    close $ofh;
+
+    return $outfile;
+}
+
+sub abnormal_eoj {
+
+    my $file_out = shift;
+
+    # If we bombed for any reason, remove /var/cpanel/immutable_files to assure
+    # it won't be consulted by any subsequent run of this script.
+
+    unlink $file_out;
+
+    # Note that any exit through here means that no notifications of any kind
+    # will be sent. This includes any situation where immutable files were
+    # found, but we were unable for any reason to determine which are cpanel
+    # files by verifying against the master cpanel file lists in .cpanelsync* .
+    # The goal is to minimize less than useful notifications to the user, which
+    # only have the effect to undermine her trust and interest in such
+    # notifications, in general.
+
+    exit 2;
+}
+
+#################################################################
+
+# This script searches for immutable files (explained below)
+# on critical Cpanel file systems, and complains loudly (or
+# sometimes just quietly) if any such files are found.
+#
+# We need this script, because immutable files wreak extreme
+# havoc with Cpanel operability, or have the potential to do
+# so.
+#
+# Depending on the run-time environment and how we are
+# invoked, on finding immutable files we do one or more of
+# the following:
+#
+#     * Write the list of immutable files to
+#       /var/cpanel/immutable-files ;
+#
+#     * Write the list of immutable files to stdout.
+#
+#     * Display a one-line message on stderr or stdout
+#       indicating that one or more immutable files were found.
+#
+#     * Exit with a non-zero status code.
+#

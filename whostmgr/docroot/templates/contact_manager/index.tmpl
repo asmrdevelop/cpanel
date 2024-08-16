@@ -1,0 +1,234 @@
+[%
+    USE JSON;
+    USE Whostmgr;
+
+    WRAPPER 'master_templates/master.tmpl'
+        header = data.header,
+        breadcrumburl = '/scripts2/editcontact',
+        stylesheets = [
+            Whostmgr.find_file_url('/templates/contact_manager/index.min.css'),
+            '/css/whm_dynamic_notices.css'
+        ],
+        theme = 'bootstrap',
+        app_key='contact_manager';
+-%]
+
+<div id="content" ng-controller="MainController as main" ng-cloak>
+    <section class="description">
+        <p>
+          <span>[% locale.maketext('The Contact Manager allows you to specify which types of alerts you want to receive. It also allows you to specify how the system delivers them. We recommend that you assign a priority to each contact method.') %]</span>
+        </p>
+        <p>
+          <span>[% locale.maketext('These settings control which notifications the system sends to the server administrator. These settings use the contact methods that you select in the “[_1]” tab.', locale.maketext('Communication Type')) %]</span>
+          <span>[% locale.maketext('Each cPanel user can manage their own notification settings in [asis,cPanel]’s “[_1]” interface.', locale.maketext('Contact Information')) %]</span>
+        </p>
+        <div class="callout callout-info">
+            <div>
+                [% locale.maketext('For more information on each of these notifications, go to [output,url,_1,_1,target,_2,id,contact_manager_go_link].','https://go.cpanel.net/contactmanager', '_blank') %]
+            </div>
+            <div>
+                [% locale.maketext('To adjust the destination for each contact method, go to [output,url,_1,_2,target,_3,id,basic_cpanel_link].','../scripts/editsets?active_tab=contactinformation', locale.maketext('Basic [asis,cPanel amp() WHM] Setup'), '_blank') %]
+            </div>
+        </div>
+        [% UNLESS Whostmgr.ENV.REMOTE_USER == "root" %]
+            <div class="callout callout-warning">
+                <div>
+                    [% locale.maketext('The following notification settings control what notifications [asis,root] receives.') %]
+                    [% locale.maketext('The notification settings for your specific user account can be modified [output,url,_1,here,ng-click,main.loginTocPanel()].', data.cpanel_session_url) %]
+                </div>
+            </div>
+        [% END %]
+    </section>
+    <form name="cform"
+            action="../scripts2/saveeditcontact"
+            method="POST">
+        <uib-tabset>
+            <uib-tab heading="[% locale.maketext('Communication Type') %]" id="communication_tab">
+                <div class="tab-content">
+                    <div class="list-container">
+                        <div class="section-body">
+                            <table  id="communication_type_table" role="table" class="table table-striped responsive-table">
+                                <thead>
+                                    <tr>
+                                        <th class="col-xs-5 col-sm-5 col-md-5 col-lg-6">[% locale.maketext('Type') %]</th>
+                                        <th class="col-xs-3 col-sm-3 col-md-2 col-lg-2">[% locale.maketext('Receives') %]</th>
+                                        <th class="col-xs-3 col-sm-3 col-md-2 col-lg-2">[% locale.maketext('Destination') %]</th>
+                                        <th class="col-xs-1 col-sm-1 col-md-3 col-lg-2"></th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <tr ng-repeat="contact_method in main.PAGE.contactmethods | orderBy: 'display_name'">
+                                        <td data-title="[% locale.maketext('Type') %]">
+                                            <div>
+                                                <span class="contact_icon {{contact_method.icon_name}}_icon" id="{{contact_method.system_name}}_icon" style="{{ :: contact_method.icon_style }}"></span>
+                                                <span ng-bind="contact_method.display_name" id="display_{{contact_method.system_name}}"></span>
+                                            </div>
+                                        </td>
+                                        <td data-title="[% locale.maketext('Receives') %]" >
+                                            <select class="form-control"
+                                                    ng-model="contact_method.level"
+                                                    name="{{contact_method.system_name}}"
+                                                    id="select_level_for_{{contact_method.system_name}}">
+                                                <option value="[% data.receives_name_to_number.HighOnly %]">[% locale.maketext('High only') %]</option>
+                                                <option value="[% data.receives_name_to_number.HighAndMediumOnly %]">[% locale.maketext('High and Medium only') %]</option>
+                                                <option value="[% data.receives_name_to_number.All %]">[% locale.maketext('All') %]</option>
+                                                <option value="[% data.receives_name_to_number.None %]">[% locale.maketext('None') %]</option>
+                                            </select>
+                                        </td>
+                                        <td data-title="[% locale.maketext('Destination') %]" ng-attr-title="{{ contact_method.contact | splitOnCommaForTitle }}" class="contact_method_display">
+                                            <div ng-repeat="contact in contact_method_contacts = ( contact_method.contact | splitOnComma ) track by $index"
+                                                class="cutoff_with_ellipses"
+                                                ng-bind="contact"
+                                                ng-if="contact_method_contacts.length"
+                                                id="{{contact_method.system_name}}_contact_{{$index}}"></div>
+                                            <div ng-if="!contact_method_contacts.length" title="[% locale.maketext('None') %]" id="{{contact_method.system_name}}_none">[% locale.maketext('None') %]</div>
+                                        </td>
+                                        <td data-title="">
+                                            <div class="form-inline action-group">
+                                                <div class="form-group">
+                                                    <a id="edit_{{contact_method.system_name}}" class="btn btn-link"
+                                                        href="../scripts/editsets?find={{contact_method.system_key}}"
+                                                        target="_blank">
+                                                        <span class="glyphicon glyphicon-pencil"></span>
+                                                        [% locale.maketext('Edit') %]
+                                                    </a>
+                                                </div>
+                                                <div class="form-group">
+                                                    <button class="btn btn-link" type="button"
+                                                            ng-if="main.will_verify && contact_method.verification_api && contact_method.contact"
+                                                            ng-click="main.verify_service(contact_method)"
+                                                            id="verify_{{contact_method.system_name}}"
+                                                            ng-hide="contact_method.verifying">
+                                                        <span class='fas fa-unlink'></span>
+                                                        [% locale.maketext('Test') %]
+                                                    </button>
+                                                    <spinner id="{{contact_method.system_name}}-spinner" class="headerSpinner" title="[% locale.maketext('Testing communication …') %]"></spinner>
+                                                </div>
+                                            </div>
+                                        </td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </uib-tab>
+            <uib-tab heading="[% locale.maketext('Notifications') %]" active="main.show_notifications" id="notification_tab">
+                <div class="tab-content">
+                    <div class="list-container">
+                        <div class="section-body">
+                            <div class="row search-page-container">
+                                <div class="col-xs-12 col-sm-5 col-md-4 col-lg-3">
+                                    <search ng-model="main.meta.search_key"
+                                    ng-change="main.updateFilteredNotifications()"
+                                    id="search_bar"></search>
+                                </div>
+                            </div>
+                            <div class="form-inline">
+                                <div class="form-group advanced-checkbox">
+                                    <span class="input-group-addon">
+                                        <input type="checkbox"
+                                            id="select_all_visable_notifications"
+                                            ng-model="toggleSelected"
+                                            ng-change="main.setSelected(main.filteredNotifications, toggleSelected)"
+                                            cp-indeterminate="{{ ( main.selectedNotifications.length > 0 ) && ( main.selectedNotifications.length < main.filteredNotifications.length ) }}">
+                                    </span>
+                                    <div class="input-group-btn" uib-dropdown>
+                                        <button type="button" class="btn btn-default dropdown-toggle"
+                                                data-toggle="dropdown" uib-dropdown-toggle
+                                                id="dropdown_toggle_select">
+                                            <span class="caret"></span>
+                                            <span class="sr-only">[% locale.maketext('Toggle Dropdown') %]</span>
+                                        </button>
+                                        <ul class="dropdown-menu" role="menu" uib-dropdown-menu>
+                                            <li><a href="" id="select_all_notifications" ng-click="main.setSelected(main.filteredNotifications,true); toggleSelected = true;">[% locale.maketext('All') %]</a></li>
+                                            <li><a href="" id="select_no_notifications" ng-click="main.setSelected(main.filteredNotifications,false); toggleSelected = false;">[% locale.maketext('None') %]</a></li>
+                                        </ul>
+                                    </div>
+                                </div>
+                                <div class="btn-group" ng-show="main.selectedNotifications.length">
+                                    <button type="button" class="btn btn-default" ng-click="main.setLevel(main.selectedNotifications, [% data.eventimportance_name_to_number.Disabled %])" id="set_selected_disabled">[% locale.maketext('Disabled') %]</button>
+                                    <button type="button" class="btn btn-default" ng-click="main.setLevel(main.selectedNotifications, [% data.eventimportance_name_to_number.Low %])" id="set_selected_low">[% locale.maketext('Low') %]</button>
+                                    <button type="button" class="btn btn-default" ng-click="main.setLevel(main.selectedNotifications, [% data.eventimportance_name_to_number.Medium %])" id="set_selected_medium">[% locale.maketext('Medium') %]</button>
+                                    <button type="button" class="btn btn-default" ng-click="main.setLevel(main.selectedNotifications, [% data.eventimportance_name_to_number.High %])" id="set_selected_high">[% locale.maketext('High') %]</button>
+                                </div>
+                            </div>
+                            <table id="notifications_table" role="table" class="table table-striped responsive-table">
+                                <thead>
+                                    <tr>
+                                        <th>
+                                        </th>
+                                        <th>
+                                            <a href="" ng-click="main.orderNotifications('display_name')"
+                                                ng-class="main.selectedHeaderClass('display_name', main.meta)"
+                                                id="order_notifications_by_display_name">
+                                                [% locale.maketext('Alert Type') %]
+                                            </a>
+                                        </th>
+                                        <th class="col-xs-3 col-sm-3 col-md-2 col-lg-2">
+                                            <a href="" ng-click="main.orderNotifications('importance')"
+                                            ng-class="main.selectedHeaderClass('importance', main.meta)"
+                                                id="order_notifications_by_importance">
+                                                [% locale.maketext('Importance') %]
+                                            </a>
+                                        </th>
+                                        <th class="col-xs-1 col-sm-1 col-md-2 col-lg-2">
+                                            [% locale.maketext('Alert List') %]
+                                        </th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <tr ng-repeat="notification in main.filteredNotifications">
+                                        <td>
+                                            <input type="checkbox" ng-model="notification.selected" id="{{notification.system_name}}_selected">
+                                        </td>
+                                        <td data-title="[% locale.maketext('Alert Type') %]">
+                                            <span id="{{notification.system_name}}_display_name">{{notification.display_name}}</span>
+                                            <span id="{{notification.system_name}}_help_text" class="info-block" ng-bind-html="notification.help_text" ng-if="notification.help_text">
+                                            </span>
+                                        </td>
+                                        <td data-title="[% locale.maketext('Importance') %]">
+                                            <select class="form-control"
+                                                    ng-model="notification.importance"
+                                                    ng-disabled="notification.disabled"
+                                                    id="c-{{notification.system_name}}"
+                                                    name="c-{{notification.system_name}}">
+                                                <option value="[% data.eventimportance_name_to_number.Disabled %]">[% locale.maketext('Disabled') %]</option>
+                                                <option value="[% data.eventimportance_name_to_number.Low %]">[% locale.maketext('Low') %]</option>
+                                                <option value="[% data.eventimportance_name_to_number.Medium %]">[% locale.maketext('Medium') %]</option>
+                                                <option value="[% data.eventimportance_name_to_number.High %]">[% locale.maketext('High') %]</option>
+                                            </select>
+                                        </td>
+                                        <td data-title="[% locale.maketext('Alert List') %]">
+                                            <span ng-repeat="contact_method in contact_methods = ( main.PAGE.contactmethods | notificationServiceFilter:notification.importance | orderBy: 'display_name')"
+                                                class="contact_icon {{contact_method.icon_name}}_icon"
+                                                title="{{contact_method.display_name}}"
+                                                id="{{notification.system_name}}_{{contact_method.icon_name}}"
+                                                style="{{ :: contact_method.icon_style }}"
+                                                ng-if="!notification.disabled"></span>
+                                            <span ng-if="!contact_methods.length">[% locale.maketext('None') %]</span>
+                                            <span ng-if="notification.disabled">[% locale.maketext('Disabled') %]</span>
+                                        </td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+               </div>
+            </uib-tab>
+        </uib-tabset>
+        <button type="submit" class="btn btn-primary" id="submit_button">[% locale.maketext('Save') %]</button>
+    </form>
+    <div growl></div>
+</div>
+
+[% PROCESS 'master_templates/cjt2_header_include.tt' %]
+
+<script type="text/javascript">
+    window.app = {};
+    [% SET data.REMOTE_USER = Whostmgr.ENV.REMOTE_USER %]
+    app.PAGE = [% JSON.stringify(data) %];
+</script>
+
+
+[% END #wrapper -%]

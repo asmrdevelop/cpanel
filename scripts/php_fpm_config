@@ -1,0 +1,309 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/php_fpm_config                  Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::php_fpm_config;
+
+use strict;
+use warnings;
+
+use Getopt::Long ();
+
+use Cpanel::Config::Httpd::EA4 ();
+use Cpanel::JSON               ();
+use Cpanel::Logger             ();
+use Cpanel::PHPFPM::Constants  ();
+use Cpanel::PHPFPM::ConvertAll ();
+use Cpanel::PHPFPM::Inventory  ();
+use Cpanel::PHPFPM::Utils      ();
+use Cpanel::Unix::PID::Tiny    ();
+
+use Try::Tiny;
+
+sub usage {
+    my ($msg) = @_;
+
+    print "$msg\n" if defined $msg;
+
+    print <<"EOF";
+$0 --rebuild [--domain=domain]
+
+Rebuild all the php fpm config files, also removes domains w/o a config file.
+Optionally rebuilds only the files for a particular domain.
+
+This will call build_apache_conf, and restart Apache.
+
+$0 --check
+
+   Displays an inventory of FPM files and health status.
+
+$0 --check --json
+
+   Output above check in JSON format.
+
+$0 --convert_all [--noprompt]
+
+   Converts all accounts to PHP-FPM
+   With optional --noprompt arg, the script will not prompt before starting conversion
+
+$0 --help
+
+Show this message.
+
+EOF
+
+    return 0;
+}
+
+our ( $rebuild, $help, $domain, $check, $json, $convert_all, $logfile_path, $noprompt, $schedule_rebuild, $schedule_ensure );
+
+sub _check {
+    my $ref = Cpanel::PHPFPM::Inventory::get_inventory();
+
+    my @users = keys %{$ref};
+    foreach my $user (@users) {
+        next if ( $user eq "orphaned_files" );
+
+        my $user_ref = $ref->{$user};
+
+        my $domains_ref = $user_ref->{'domains'};
+
+        my @domains = keys %{$domains_ref};
+
+        foreach my $domain (@domains) {
+            my $dref       = $domains_ref->{$domain};
+            my $phpversion = $dref->{'phpversion'};
+
+            next if !defined $phpversion;    # cruft file
+
+            print "User $user Domain $domain PHP Version $phpversion\n";
+            if ( $dref->{is_overquota} ) {
+                print "    WARNING Account is OVER QUOTA and may not work correctly\n\n";
+            }
+
+            foreach my $conf ( @{ $dref->{'conf_files'} } ) {
+                print "    Conf File $conf->{'file'}\n";
+                print "    YAML File $conf->{'yaml_path'}\n";
+                print "        Socket :" . $conf->{'socket_status'} . ": :" . $conf->{'socket'} . ":\n";
+
+                my $status = "Status is Good";
+                $status = "Status is in Error" if $conf->{'status'} == 0;
+
+                print "        $status $conf->{'msg'}\n";
+
+                if ( $conf->{'msg'} =~ m/CONF IS OLDER/ ) {
+                    print "    Conf MTIME $conf->{'conf_mtime'}\n";
+                    print "    YAML MTIME $conf->{'yaml_mtime'}\n";
+                }
+            }
+        }
+    }
+
+    foreach my $user (@users) {
+        next if ( $user ne "orphaned_files" );
+        last if ( @{ $ref->{$user} } == 0 );
+
+        print "\nOrphaned Files (PHP FPM Config files without the cPanel YAML file)\n";
+        foreach my $file ( sort @{ $ref->{$user} } ) {
+            print "$file\n";
+        }
+    }
+
+    my @cruft_files = ( @{ $ref->{'cruft'}->{'yaml_files'} }, @{ $ref->{'cruft'}->{'conf_files'} } );
+    my $header      = 0;
+    foreach my $cruft_file (@cruft_files) {
+        if ( !$header ) {
+            $header = 1;
+            print "\nCruft files (files that should be removed)\n";
+        }
+
+        print "$cruft_file\n";
+    }
+
+    return;
+}
+
+sub _convert_all {
+    my ( $logfile_path, $noprompt ) = @_;
+
+    my $logger;
+
+    if ( defined $logfile_path ) {
+        $logger = Cpanel::Logger->new( { 'alternate_logfile' => $logfile_path } );
+    }
+    else {
+        $logger = Cpanel::Logger->new();
+    }
+
+    # Check system usage, prompt for continuing
+    my $information_hashref = Cpanel::PHPFPM::Utils::get_fpm_count_and_utilization();
+    if ( $information_hashref->{'show_warning'} == 1 ) {
+        print "Warning:\n";
+        print "Your server may run out of memory if you enable PHP-FPM on all domains and accounts.\n";
+        print "Make certain that your server possesses enough memory to continue, or you may experience severe data loss.\n";
+        print "This action would enable " . $information_hashref->{'domains_to_be_enabled'} . " domains but can only safely support ";
+        print $information_hashref->{'number_of_new_fpm_accounts_we_can_handle'} . "\n";
+    }
+    else {
+        print "This operation will attempt to convert all domains on the server to use PHP-FPM.\n";
+        print "While it appears the server has enough memory to support all the new domains, you should still be careful not to exceed server resources by proceeding.\n";
+    }
+
+    if ( !$noprompt ) {
+        print "Are you sure you would like to enable PHP-FPM for all domains on this server? (y/n)\n";
+        chomp( my $input = <STDIN> );
+        if ( $input !~ m/^y/i ) {
+            print "Aborting PHP-FPM conversion.\n";
+            return 0;
+        }
+    }
+
+    # Check the touchfile to be sure it's not stale / left over from a misfortunately killed conversion process
+    my $pid_obj               = Cpanel::Unix::PID::Tiny->new();
+    my $convert_pid           = $pid_obj->get_pid_from_pidfile($Cpanel::PHPFPM::Constants::convert_all_pid_file);
+    my $conversion_in_process = Cpanel::PHPFPM::Utils::is_task_still_running( $convert_pid, '^\[php_fpm_config' );
+
+    # If it was a stale pidfile, remove it so we can start anew
+    if ( !$conversion_in_process ) {
+        unlink($Cpanel::PHPFPM::Constants::convert_all_pid_file);
+        $pid_obj->pid_file( $Cpanel::PHPFPM::Constants::convert_all_pid_file, $$, {} );
+        local $0 = '[php_fpm_config] Converting all accounts to use PHP-FPM';
+        try {
+            Cpanel::PHPFPM::ConvertAll::convert_all($logger);
+        }
+        catch {
+            print "Error while converting: $_\n";
+        };
+        unlink($Cpanel::PHPFPM::Constants::convert_all_pid_file);
+    }
+    else {
+        print "A conversion of all domains to PHP-FPM is currently underway.\n";
+    }
+
+    return;
+}
+
+sub script {
+    my (@argv) = @_;
+
+    # using return (usage()) for testability
+    return ( usage("This is not an Easy Apache 4 System") ) if !Cpanel::Config::Httpd::EA4::is_ea4();
+    return ( usage("Must be run as root") )                 if $> != 0;
+
+    local $| = 1;
+
+    my $opts = Getopt::Long::GetOptionsFromArray(
+        \@argv,
+        'rebuild'          => \$rebuild,
+        'domain=s'         => \$domain,
+        'help'             => \$help,
+        'check'            => \$check,
+        'json'             => \$json,
+        'convert_all'      => \$convert_all,
+        'logfile_path=s'   => \$logfile_path,
+        'noprompt'         => \$noprompt,
+        'schedule_rebuild' => \$schedule_rebuild,
+        'schedule_ensure'  => \$schedule_ensure,
+    ) or return ( usage("Invalid parameters") );
+
+    if ( defined $help ) {
+        return ( usage() );
+    }
+
+    if ($rebuild) {
+        require Cpanel::PHPFPM::Tasks;
+        require Cpanel::Hooks;
+        if ($domain) {
+            require Cpanel::PHPFPM::RebuildQueue::Adder;
+            Cpanel::PHPFPM::RebuildQueue::Adder->add($domain);
+            Cpanel::Hooks::hook(
+                {
+                    'category' => 'scripts',
+                    'event'    => 'php_fpm_config::rebuild',
+                    'stage'    => 'pre',
+                },
+                { 'rebuild' => $domain }
+            );
+        }
+        else {
+            Cpanel::Hooks::hook(
+                {
+                    'category' => 'scripts',
+                    'event'    => 'php_fpm_config',
+                    'stage'    => 'pre',
+                },
+                { 'rebuild' => 'all' }
+            );
+        }
+        Cpanel::PHPFPM::Tasks::perform_rebuilds();
+        if ($domain) {
+            Cpanel::Hooks::hook(
+                {
+                    'category' => 'scripts',
+                    'event'    => 'php_fpm_config',
+                    'stage'    => 'post',
+                },
+                { 'rebuild' => $domain }
+            );
+        }
+        else {
+            Cpanel::Hooks::hook(
+                {
+                    'category' => 'scripts',
+                    'event'    => 'php_fpm_config',
+                    'stage'    => 'post',
+                },
+                { 'rebuild' => 'all' }
+            );
+        }
+    }
+    elsif ( $check && $json ) {
+        my $ref = Cpanel::PHPFPM::Inventory::get_inventory();
+
+        print Cpanel::JSON::pretty_dump ($ref);
+    }
+    elsif ($check) {
+        _check();
+    }
+    elsif ($convert_all) {
+        require Cpanel::Hooks;
+        Cpanel::Hooks::hook(
+            {
+                'category' => 'scripts',
+                'event'    => 'php_fpm_config',
+                'stage'    => 'pre',
+            },
+            { 'convert_all' => 1 }
+        );
+        _convert_all( $logfile_path, $noprompt );
+        Cpanel::Hooks::hook(
+            {
+                'category' => 'scripts',
+                'event'    => 'php_fpm_config',
+                'stage'    => 'post',
+            },
+            { 'convert_all' => 1 }
+        );
+    }
+    elsif ($schedule_rebuild) {
+        require Cpanel::ServerTasks;
+        Cpanel::ServerTasks::schedule_task( ['PHPFPMTasks'], $Cpanel::PHPFPM::Constants::delay_for_rebuild, 'rebuild_fpm' );
+        Cpanel::ServerTasks::schedule_task( ['PHPFPMTasks'], 240,                                           'ensure_fpm_on_boot' );
+    }
+    elsif ($schedule_ensure) {
+        require Cpanel::ServerTasks;
+        Cpanel::ServerTasks::schedule_task( ['PHPFPMTasks'], 240, 'ensure_fpm_on_boot' );
+    }
+    else {
+        return ( usage("Invalid Action") );
+    }
+
+    return 0;
+}
+
+exit( script(@ARGV) ) unless caller();
+
+1;

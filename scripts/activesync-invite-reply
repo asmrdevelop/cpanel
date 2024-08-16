@@ -1,0 +1,68 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+# cpanel - scripts/activesync-invite-reply         Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::activesync_invite_reply;
+
+use strict;
+use warnings;
+use parent 'Cpanel::HelpfulScript';
+
+use Cpanel::ActiveSync::InviteReply ();
+
+use constant _OPTIONS => ();
+
+unless ( caller() ) {
+    __PACKAGE__->new(@ARGV)->process() or exit 1;
+}
+
+=head1 NAME
+
+activesync-invite-reply
+
+=head1 USAGE
+
+    activesync-invite-reply [--help]
+
+=head1 DESCRIPTION
+
+Process an ActiveSync invite reply.
+
+This utility is not meant to be run directly.
+
+=cut
+
+sub process {
+    alarm 60;
+
+    Cpanel::ActiveSync::InviteReply::logmsg('Processing an invite reply …');
+
+    my $message = do {
+        local $/;
+        readline STDIN;
+    };
+
+    if ( !$message ) {
+        Cpanel::ActiveSync::InviteReply::logmsg('Nothing came through on stdin');
+        return 1;
+    }
+
+    my $user      = $ENV{REMOTE_USER}        || die 'REMOTE_USER is not set';
+    my $http_auth = $ENV{HTTP_AUTHORIZATION} || die 'HTTP_AUTHORIZATION is not set';
+
+    if ( $message !~ /method=.?REPLY/i ) {
+        Cpanel::ActiveSync::InviteReply::logmsg('This does not appear to be an invite reply. You should pre-screen messages before launching this utility.');
+        return 1;
+    }
+
+    my $ok = eval { Cpanel::ActiveSync::InviteReply::process( $user, $http_auth, $message ) };
+    if ( my $exception = $@ ) {
+        Cpanel::ActiveSync::InviteReply::logmsg($exception);
+    }
+
+    return $ok;
+}
+
+1;

@@ -1,0 +1,46 @@
+[% USE Whostmgr -%]
+[% WRAPPER 'master_templates/master.tmpl' theme="yui"
+    stylesheets = [
+    Whostmgr.find_file_url('css/tweaksettings_optimized.css'),
+    Whostmgr.find_file_url('yui/tabview/assets/skins/sam/tabview.css'),
+    Whostmgr.find_file_url('css/_gentweakpage.css')
+    ]
+    scripts = [
+    Whostmgr.find_file_url('yui/tabview/tabview.js')
+    ]
+    app_key='tweak_settings'
+    warn_linked_nodes=1
+;
+-%]
+
+<form action="[% cp_security_token %]/scripts2/dotweaksettings" method="POST">
+<input type="hidden" name="___has_valid_input" value="1">
+[% IF update_in_progress %]
+
+   <p class="alert_box">[% locale.maketext('In order to prevent conflicts, Tweak Settings may not be altered while a [asis,cPanel amp() WHM]® update is in progress.') %]</p>
+
+[% ELSE %]
+
+    [% SET tweakcfg = { 'display_label' => 1 } -%]
+    [% INCLUDE '_gentweakpage.tmpl' -%]
+    <br />
+        <span class="b2">[% locale.maketext("Notes") %]:</span>
+        <ul>
+            <li>[% locale.maketext("The first time you enable a log statistics program, it will take between 24 and 48 hours for the reports to appear in a user’s [asis,cPanel] interface. If the server is under load, it can take longer than 48 hours for the report to appear.") %]</li>
+            <li>[% locale.maketext( "Disabling cPanel features requires a theme which supports dynamic features.") %]</li>
+            <li>[% locale.maketext( "Items prefaced by a warning icon indicate previously missing options which have received the default setting.") %]</li>
+        </ul>
+    <br />
+    <table class="cellheader">
+        <tr>
+            <td><div>
+                <input type="submit" class="btn-primary" value="[% locale.maketext("Save") %]">
+                </div>
+            </td>
+        </tr>
+    </table>
+    </form>
+
+[% END -%]
+
+[% END -%]

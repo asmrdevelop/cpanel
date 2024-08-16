@@ -1,0 +1,409 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/manage_mysql_profiles           Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::manage_mysql_profiles;
+
+use strict;
+use Try::Tiny;
+
+use Cpanel::JSON                                    ();
+use Getopt::Long                                    ();
+use Cpanel::Backup::Config                          ();
+use Cpanel::Logger                                  ();
+use Cpanel::LoadFile                                ();
+use Cpanel::Exception                               ();
+use Cpanel::Hooks                                   ();
+use Cpanel::DIp::MainIP                             ();
+use Cpanel::SafeFile                                ();
+use Cpanel::SafeRun::Errors                         ();
+use Cpanel::Services::Enabled                       ();
+use Cpanel::MysqlUtils::MyCnf::Basic                ();
+use Cpanel::MysqlUtils::MyCnf                       ();
+use Cpanel::MysqlUtils::Command                     ();
+use Cpanel::MysqlUtils::Connect                     ();
+use Cpanel::MysqlUtils::Quote                       ();
+use Cpanel::MysqlUtils::Integration                 ();
+use Cpanel::MysqlUtils::RemoteMySQL::ActivationJob  ();
+use Cpanel::MysqlUtils::RemoteMySQL::ProfileManager ();
+use Cpanel::Config::LoadCpConf                      ();
+use Cpanel::Sys::Hostname                           ();
+
+exit run(@ARGV) unless caller();
+
+sub run {
+    my @cmdline_args = @_;
+    return usage(1) if !@cmdline_args;
+
+    unless ( $> == 0 && $< == 0 ) {
+        return usage( 1, "[!] This program can only be run by root!\n" );
+    }
+
+    my $opts = {};
+    Getopt::Long::GetOptionsFromArray(
+        \@cmdline_args,
+        'activate=s'              => \$opts->{'activate'},
+        'import=s'                => \$opts->{'import'},
+        'force'                   => \$opts->{'force'},
+        'export=s@'               => \$opts->{'export'},
+        'export_to=s'             => \$opts->{'export_to'},
+        'recreate_active_profile' => \$opts->{'recreate_active_profile'},
+        'help|h'                  => \$opts->{'help'},
+    );
+
+    return usage(0)                                                   if $opts->{'help'};
+    return activate_profile( $opts->{'activate'} )                    if $opts->{'activate'};
+    return import_profiles( $opts->{'import'}, $opts->{'force'} )     if $opts->{'import'};
+    return export_profiles( $opts->{'export'}, $opts->{'export_to'} ) if $opts->{'export'} && scalar @{ $opts->{'export'} };
+    return recreate_active_profile( $opts->{'force'} )                if $opts->{'recreate_active_profile'};
+    return usage(1);
+}
+
+sub recreate_active_profile {
+    my $force = shift;
+    try {
+        my $profile_manager = Cpanel::MysqlUtils::RemoteMySQL::ProfileManager->new();
+
+        my $active_profile = $profile_manager->get_active_profile('dont_die');
+        if ( !$force && $active_profile ) {
+            print "[!] '$active_profile' is already active.\n";
+        }
+        else {
+            print "[*] Recreating active profile …\n";
+            $profile_manager->generate_active_profile_if_none_set($force);
+            $profile_manager->save_changes_to_disk();
+            my $active_profile = $profile_manager->get_active_profile('dont_die');
+            print "[+] New active profile created: $active_profile\n";
+        }
+    }
+    catch {
+        _handle_failure( { 'action' => 'recreate', 'exception' => $_ } );
+    };
+
+    return 0;
+}
+
+sub import_profiles {
+    my ( $input_file, $force ) = @_;
+
+    try {
+        open( my $input_file_fh, '<', $input_file )
+          or die Cpanel::Exception::create( 'IO::FileReadError', [ path => $input_file, error => $! ] );
+
+        my $json = Cpanel::JSON::LoadFile( $input_file_fh, $input_file );
+        die Cpanel::Exception::create( 'IO::FileReadError', [ path => $input_file, error => 'Invalid JSON data' ] )
+          if !$json || ref $json ne 'HASH';
+
+        print "[*] Importing MySQL profiles: " . join( ', ', ( keys %{$json} ) ) . "\n\n";
+        my $profile_manager   = Cpanel::MysqlUtils::RemoteMySQL::ProfileManager->new();
+        my $existing_profiles = $profile_manager->read_profiles();
+
+        my $active_profile_exists = $profile_manager->get_active_profile('dont_die');
+        foreach my $profile_name ( keys %{$json} ) {
+            my $overwrite = $force ? 1 : 0;
+            if ( !$overwrite and exists $existing_profiles->{$profile_name} ) {
+                print "[*] '$profile_name' already exists …\n";
+                next;    # skip
+            }
+
+            # If an active profile is already present, then mark the newly
+            # imported profile as inactive to avoid conflicts.
+            if ( $json->{$profile_name}->{'active'} && $active_profile_exists ) {
+                $json->{$profile_name}->{'active'} = 0;
+            }
+            $profile_manager->create_profile( { 'name' => $profile_name, %{ $json->{$profile_name} } }, { 'overwrite' => $overwrite } );
+            print "[+] '$profile_name' imported.\n";
+        }
+        $profile_manager->save_changes_to_disk();
+    }
+    catch {
+        _handle_failure( { 'action' => 'import', 'exception' => $_ } );
+    };
+
+    return 0;
+}
+
+sub export_profiles {
+    my ( $profiles_to_export_ar, $output_file ) = @_;
+
+    print STDERR "[*] Exporting MySQL profiles: " . join( ', ', @{$profiles_to_export_ar} ) . "\n\n";
+    try {
+        my $profile_manager   = Cpanel::MysqlUtils::RemoteMySQL::ProfileManager->new( { 'read_only' => 1 } );
+        my $existing_profiles = $profile_manager->read_profiles();
+        my $output            = {};
+        my $output_fh;
+
+        if ($output_file) {
+            open $output_fh, '>', $output_file or die Cpanel::Exception::create( 'IOError', 'Failed to open “[_1]” for writing: [_2]', [ $output_file, $! ] );
+            print STDERR "[*] Saving to '$output_file'\n";
+        }
+
+        foreach my $profile_to_export ( @{$profiles_to_export_ar} ) {
+            if ( not exists $existing_profiles->{$profile_to_export} ) {
+                print STDERR "[!] Profile not found: $profile_to_export\n";
+                next;
+            }
+            $output->{$profile_to_export} = $existing_profiles->{$profile_to_export};
+        }
+
+        # If there are any profiles to export, then output the json
+        if ( scalar keys %{$output} ) {
+            print { $output_fh ? $output_fh : \*STDOUT } Cpanel::JSON::pretty_dump($output);
+        }
+        else {
+            print "\n[!] No profiles to export.\n";
+        }
+    }
+    catch {
+        _handle_failure( { 'action' => 'export', 'exception' => $_ } );
+    };
+
+    return 0;
+}
+
+sub activate_profile {
+    my $profile_name = shift;
+
+    Cpanel::Hooks::hook(
+        {
+            'category' => 'Whostmgr',
+            'event'    => 'RemoteMySQL::activate_profile',
+            'stage'    => 'pre',
+        },
+        { 'profile_name' => $profile_name, },
+    );
+
+    my $activation_job  = Cpanel::MysqlUtils::RemoteMySQL::ActivationJob->new($profile_name);
+    my $profile_manager = Cpanel::MysqlUtils::RemoteMySQL::ProfileManager->new();
+    try {
+        my $current_active_profile = $profile_manager->get_active_profile('dont_die');
+
+        # TODO: should we care about situations where the profile being switched to is the same as the active profile?
+        print "[*] Current active MySQL profile: " . ( $current_active_profile || 'N/A' ) . " \n";
+        print "[*] Activating MySQL profile: $profile_name\n\n";
+
+        # Step 1: Validation.
+        $activation_job->start_step('Validating profile');
+        try {
+            $profile_manager->validate_profile($profile_name);
+        }
+        catch {
+            $activation_job->fail_step( 'Validating profile', { 'error' => $_->to_string() } );
+            die Cpanel::Exception::create( 'RemoteMySQL::ActivationFailed', 'Failed to activate [asis,MySQL] profile, “[_1]”: [_2]', [ $profile_name, 'Failed to validate profile' ] );
+        };
+        $activation_job->done_step('Validating profile');
+
+        my $profile = $profile_manager->read_profiles()->{$profile_name};
+
+        # STEP 2: Update local root .my.cnf file
+        $activation_job->start_step('Updating /root/.my.cnf');
+        my $old_my_cnf   = Cpanel::LoadFile::loadfile('/root/.my.cnf');
+        my $is_localhost = Cpanel::Services::Enabled::is_enabled('mysql') && Cpanel::MysqlUtils::MyCnf::Basic::is_local_mysql( $profile->{'mysql_host'} );
+        if ( _update_local_mycnf( $profile, { localhost => $is_localhost } ) ) {
+            $activation_job->done_step('Updating /root/.my.cnf');
+        }
+        else {
+            $activation_job->fail_step( 'Updating /root/.my.cnf', { 'error' => 'Failed to update /root/.my.cnf' } );
+            die Cpanel::Exception::create( 'RemoteMySQL::ActivationFailed', 'Failed to activate [asis,MySQL] profile, “[_1]”: [_2]', [ $profile_name, 'Failed to update /root/.my.cnf' ] );
+        }
+
+        # STEP 3: Verify root cnf changes allows mysql* tools to work. Test with mysqladmin
+        $activation_job->start_step('Testing /root/.my.cnf changes with mysqladmin');
+
+        my $ping_ok = eval {
+            Cpanel::MysqlUtils::Connect::get_dbi_handle();
+            1;
+        };
+
+        if ( !$ping_ok ) {
+            my $err = $@;
+
+            $activation_job->fail_step( 'Testing /root/.my.cnf changes with mysqladmin', { 'error' => $err } );
+
+            $activation_job->start_step('Restoring /root/.my.cnf to previous version');
+            if ( _restore_old_mycnf($old_my_cnf) ) {
+                $activation_job->done_step('Restoring /root/.my.cnf to previous version');
+            }
+            else {
+                $activation_job->fail_step( 'Restoring /root/.my.cnf to previous version', { 'error' => 'Failed to restore previous config.' } );
+            }
+            die Cpanel::Exception::create(
+                'RemoteMySQL::ActivationFailed',
+                'Failed to activate [asis,MySQL] profile, “[_1]”: [_2]',
+                [ $profile_name, 'Failed to connect to MySQL server after updating /root/.my.cnf' ]
+            );
+        }
+        $activation_job->done_step('Testing /root/.my.cnf changes with mysqladmin');
+
+        # STEP 4: Update DB cache
+        $activation_job->start_step('Updating DB Cache');
+        Cpanel::SafeRun::Errors::saferunnoerror('/usr/local/cpanel/scripts/update_db_cache');
+        $activation_job->done_step('Updating DB Cache');
+
+        # STEP 5: Update cPanel Apps using MySQL
+        $activation_job->start_step('Updating cPanel Apps that use MySQL');
+        Cpanel::MysqlUtils::Integration::update_apps_that_use_mysql();
+        $activation_job->done_step('Updating cPanel Apps that use MySQL');
+
+        my $cpconf_ref = Cpanel::Config::LoadCpConf::loadcpconf();
+        if ( !$is_localhost ) {
+
+            # STEP 6: If going to remote host, then transfermysqlusers
+            $activation_job->start_step('Transferring MySQL users to remote MySQL host');
+            Cpanel::SafeRun::Errors::saferunnoerror( '/usr/local/cpanel/bin/transfermysqlusers', '--from', $current_active_profile );
+            $activation_job->done_step('Transferring MySQL users to remote MySQL host');
+
+            # This addresses concerns with edge cases where 'skip_name_resolve' is set
+            # on the remote MySQL server, and we can't depend on the 'hostname' authentication.
+            # Especially, when the mysql server sees the connecting ip as something different than what the 'main ip' is, etc.
+            #
+            # In order to ensure that we are granting access to the 'proper' IP - we check the process list in mysql
+            # to see what the 'connecting' IP is according to the remote MySQL server, and apply the grants on that IP address.
+            my $mainip   = Cpanel::MysqlUtils::Quote::safesqlstring( Cpanel::DIp::MainIP::getmainserverip() );
+            my $hostname = Cpanel::MysqlUtils::Quote::safesqlstring( Cpanel::Sys::Hostname::gethostname() );
+            my $clientip = Cpanel::MysqlUtils::Quote::safesqlstring( Cpanel::MysqlUtils::Command::sqlcmd('SELECT SUBSTRING_INDEX(`host`,":",1) FROM `information_schema`.`processlist` WHERE ID = CONNECTION_ID();') );
+        }
+
+        $profile_manager->mark_profile_as_active($profile_name);
+        $profile_manager->save_changes_to_disk();
+
+        # STEP 9: Update the backup config to not backup directories if remote
+        if ( !$is_localhost ) {
+
+            $activation_job->start_step('Updating backup settings');
+
+            my $backup_conf = Cpanel::Backup::Config::load();
+
+            if ( $backup_conf->{'MYSQLBACKUP'} eq 'both' or $backup_conf->{'MYSQLBACKUP'} eq 'dir' ) {
+
+                $backup_conf->{'MYSQLBACKUP'} = 'accounts';
+                Cpanel::Backup::Config::save($backup_conf);
+            }
+
+            $activation_job->done_step('Updating backup settings');
+        }
+        else {
+            print "No need to adjust backup configuration since we are activating a local MySQL profile\n";
+        }
+
+        $activation_job->mark_job_done();
+    }
+    catch {
+        $activation_job->mark_job_failed();
+        _handle_failure( { 'action' => 'activate', 'exception' => $_ } );
+    };
+
+    Cpanel::Hooks::hook(
+        {
+            'category' => 'Whostmgr',
+            'event'    => 'RemoteMySQL::activate_profile',
+            'stage'    => 'post',
+        },
+        {
+            'profile_name' => $profile_name,
+            'result'       => $activation_job->{progress}{status} eq 'DONE' ? 1 : 0,
+        },
+    );
+
+    return 0;
+}
+
+sub _restore_old_mycnf {
+    my $old_my_cnf = shift;
+    my $mylock     = Cpanel::SafeFile::safeopen( \*MYCNF, '>', '/root/.my.cnf' );
+    if ($mylock) {
+        print MYCNF $old_my_cnf;
+        Cpanel::SafeFile::safeclose( \*MYCNF, $mylock );
+        return 1;
+    }
+    return;
+}
+
+sub _update_local_mycnf {
+    my ( $profile_hr, $opts_hr ) = @_;
+    my $unix_socket_connection = $opts_hr->{'localhost'} && $profile_hr->{'mysql_port'} == 3306;
+    return Cpanel::MysqlUtils::MyCnf::update_mycnf(
+        user  => 'root',
+        items => [
+            {
+                host => ( $unix_socket_connection ? undef : $profile_hr->{'mysql_host'} ),
+                user => $profile_hr->{'mysql_user'},
+                pass => $profile_hr->{'mysql_pass'},
+                port => $profile_hr->{'mysql_port'},
+            }
+        ],
+    );
+}
+
+sub usage {
+    my ( $retval, $msg ) = @_;
+    my $fh = $retval ? \*STDERR : \*STDOUT;
+
+    if ( !defined $msg ) {
+        $msg = <<USAGE;
+$0
+
+Utility to manage the MySQL profiles configured on the server. Available options:
+
+    --import [/path/to/json/file]
+
+            Imports the profiles contained in the specified JSON file.
+            To force import and overwrite any existing profiles use the '--force' switch:
+                $0 --import import.json --force
+
+    --export [profile name]
+
+            Exports one or more profiles.
+            To export more than one profile, specify multiple switches:
+                $0 --export profile1 --export profile2
+
+            To export the profiles to a file, specify the 'export_to' switch:
+                $0 --export profile1 --export_to  export.json
+            Or redirect stdout:
+                $0 --export profile1 > export.json
+
+    --activate [profile name]
+
+            Activates the profile specified.
+
+    --recreate_active_profile
+
+            If no active profile is present on the system, this option will allow you to (re)create
+            the profile. It reads the current '/root/.my.cnf' file and creates a profile based on that information.
+
+            If the 'force' flag is specified, this option will recreate the active profile, regardless of
+            whether one exists or not, based on the content of '/root/.my.cnf'.
+
+    --help
+
+            Displays this help message.
+
+USAGE
+    }
+
+    print {$fh} $msg;
+    return $retval;
+}
+
+sub _handle_failure {
+    my $opts = shift;
+
+    my $action     = $opts->{'action'};
+    my $exceptions = ref $opts->{'exception'} eq 'HASH' ? $opts->{'exception'}->{'exceptions'} : [ $opts->{'exception'} ];
+
+    my $logger = Cpanel::Logger->new();
+    $logger->info( "Failed to $action MySQL profile(s). " . scalar @{$exceptions} . " error(s) occurred." );
+
+    my $index = 1;
+    foreach my $error ( @{$exceptions} ) {
+        $logger->info( "Error $index:  " . Cpanel::Exception::get_string($error) );
+        $index++;
+    }
+
+    return 1;
+}
+
+1;

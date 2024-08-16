@@ -1,0 +1,16 @@
+
+.ifdef SRSENABLED
+
+srs_router_pre:
+  driver=redirect
+  condition = ${if inbound_srs {$local_part} {SRS_SECRET}}
+  data=${srs_recipient}
+
+srs_router_pre_failure:
+  driver    =    redirect
+  # detect inbound bounces which look SRS'd but are invalid
+  condition = ${if inbound_srs {$local_part} {}}
+  allow_fail
+  data      = :fail: Invalid SRS recipient address
+
+.endif

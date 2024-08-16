@@ -1,0 +1,17 @@
+[Unit]
+Description=FPM service for cPanel Daemons
+After=cpanel.service
+ConditionPathExists=!/var/cpanel/dnsonly
+
+[Service]
+Type=forking
+PIDFile=/var/run/cpanel_php_fpm.pid
+ExecStart=/usr/local/cpanel/scripts/restartsrv_cpanel_php_fpm --notconfigured-ok --systemd-service=cpanel_php_fpm
+ExecStop=/usr/local/cpanel/scripts/restartsrv_cpanel_php_fpm --stop --notconfigured-ok --systemd-service=cpanel_php_fpm
+ExecReload=/usr/local/cpanel/scripts/restartsrv_cpanel_php_fpm --restart --notconfigured-ok --systemd-service=cpanel_php_fpm
+LimitNOFILE=infinity
+KillMode=process
+TimeoutStopSec=10
+
+[Install]
+WantedBy=multi-user.target

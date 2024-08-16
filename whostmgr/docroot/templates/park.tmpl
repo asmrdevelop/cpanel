@@ -1,0 +1,53 @@
+[% USE Encoder; -%]
+
+[% content = BLOCK %]
+  [% IF !data.domain %]
+    [% IF !data.nohtml %]<div class="callout callout-warning">[% END %]
+      [% locale.maketext("You must provide the domain on which to park (alias) the new domain.") %]
+    [% IF !data.nohtml %]</div>[% END %]
+  [% ELSIF !data.ndomain %]
+    [% IF !data.nohtml %]<div class="callout callout-warning">[% END %]
+      [% locale.maketext("You must provide the domain to park (alias).") %]
+    [% IF !data.nohtml %]</div>[% END %]
+  [% ELSIF ! data.can_park -%]
+    [% IF !data.nohtml %]<div class="callout callout-danger">[% END %]
+      [% locale.maketext('Access denied.') %]
+    [% IF !data.nohtml %]</div>[% END %]
+  [% ELSIF data.non_root_non_owner -%]
+    [% IF !data.nohtml %]<div class="callout callout-danger">[% END %]
+      [% locale.maketext('Access denied.') %]
+      [% locale.maketext('You do not own the domain “[_1]”.', data.domain.cpanel_safe_html_encode_str()) %]
+    [% IF !data.nohtml %]</div>[% END %]
+  [% ELSIF data.invalid_owner -%]
+    [% IF !data.nohtml %]<div class="callout callout-danger">[% END %]
+      [% locale.maketext('The domain owner for the domain “[_1]” does not exist.', data.domain.cpanel_safe_html_encode_str()) %]
+    [% IF !data.nohtml %]</div>[% END %]
+  [% ELSIF data.no_reseller_server_subdomain -%]
+    [% IF !data.nohtml %]<div class="callout callout-danger">[% END %]
+      [% locale.maketext('Resellers do not have the necessary permissions to create subdomains of the server’s main domain.') %]
+    [% IF !data.nohtml %]</div>[% END %]
+  [% ELSIF ! data.result -%]
+    [% IF !data.nohtml %]<div class="callout callout-danger">[% END %]
+      [% locale.maketext("There was a problem parking (aliasing) the domain “[_1]” on top of the domain “[_2]”: [_3]",  data.ndomain.cpanel_safe_html_encode_str(),  data.domain.cpanel_safe_html_encode_str(), data.reason.cpanel_safe_html_encode_str()) %]
+    [% IF !data.nohtml %]</div>[% END %]
+  [% ELSE -%]
+    [% IF !data.nohtml %]<div class="callout callout-info">[% END %]
+      [% locale.maketext("The system successfully parked (aliased) the domain “[_1]” on top of the domain “[_2]”.", data.ndomain.cpanel_safe_html_encode_str(), data.domain.cpanel_safe_html_encode_str() ) %]
+    [% IF !data.nohtml %]</div>[% END %]
+  [% END -%]
+[% END %]
+
+[%
+
+IF data.nohtml;
+  content;
+ELSE;
+  WRAPPER 'master_templates/master.tmpl'
+    theme = 'bootstrap'
+    breadcrumburl = '/scripts/prepark';
+    content;
+  END;
+END;
+
+-%]
+

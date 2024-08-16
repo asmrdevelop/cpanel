@@ -1,0 +1,67 @@
+<div id="tosView">
+
+    <div cp-loading-panel id="loading" ng-show="uiState.loading">
+        <strong>[% locale.maketext('Information:') %]</strong>
+        [% locale.maketext('The system is checking your account …') %]
+    </div>
+
+    <div id="failed" ng-show="uiState.failed">
+        <cp-alert type="danger" on-toggle-more="toggleMore(show)" id="tosAlert">
+            <span id="overallErrorMessage">
+                <span id="errorMessagePrefix">[% locale.maketext('The system failed to load the [asis,Technical Support Agreement].') %]
+                </span>
+            </span>
+            <p>[% locale.maketext('You may try again or skip the [asis,WHM] portion of the wizard and complete your ticket via the [asis,cPanel Customer Portal].') %]</p>
+
+            <div id="errorMessageBody"
+                 class="ng-hide well"
+                 ng-show="alertDetailsVisible">
+                 {{ alertDetailsMessage }}
+            </div>
+            <div id="errorRemedyButtons">
+                <a id="customerPortalButton" class="btn btn-primary" target="tickets" ng-href="{{ getTicketUrl('cpanel') }}">
+                    [% locale.maketext('Continue in the [asis,cPanel Customer Portal]') %]
+                    <span class="fas fa-external-link-alt"></span>
+                </a>
+                <a id="tryAgainButton" class="btn btn-default" ng-click="loadTechnicalSupportAgreement()">[% locale.maketext('Try again') %]</a>
+                <a id="cancelButton" class="btn btn-link" ng-click="cancel()">[% locale.maketext('Cancel') %]</a>
+            </div>
+        </cp-alert>
+    </div>
+
+    <div id="tos" ng-show="!uiState.loading && !uiState.failed">
+        <h2 id="title" dir="ltr">{{tos.title}}</h2>
+        <hr/>
+
+        <div
+             id="body"
+             dir="ltr"
+             ng-hide="uiState.loading"
+             ng-bind-html="tos.body">
+        </div>
+        <hr>
+        <div class="row">
+            <div id="actions" class="col-md-6 hidden-sm hidden-xs">
+                <a id="btnSave" class="btn btn-sm btn-default"
+                    href="{{tos.download_url}}"
+                    target="_blank">[% locale.maketext('Save') %]</a>
+                <a id="btnNewWindow" class="btn btn-sm btn-default"
+                    href="{{tos.view_url}}"
+                    target="_blank">[% locale.maketext('Open in New Window') %]</a>
+            </div>
+            <div class="col-md-6 col-xs-12">
+                <div class="row">
+                    <div class="col-xs-12">
+                        <div class="pull-right flip">{{tos.version}}</div>
+                    </div>
+                </div>
+                <div class="row">
+                    <div class="col-xs-12">
+                        <div class="pull-right flip">{{tos.create_date_human}}</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+</div>

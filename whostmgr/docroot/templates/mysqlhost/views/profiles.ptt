@@ -1,0 +1,269 @@
+<div class="row">
+    <div class="col-xs-12 ezAccessButtons">
+        <a href="profiles/new"
+            id="topAddProfileBtn"
+            ng-disabled="lastActivation.in_progress"
+            class="btn btn-primary">
+            [%- IF locale.get_html_dir_attr() == 'rtl' -%]
+                <span class="iconButtonLabel">[% locale.maketext('Add Profile') %]</span>
+                <span class="glyphicon glyphicon-plus"></span>
+            [%- ELSE -%]
+                <span class="glyphicon glyphicon-plus"></span>
+                <span class="iconButtonLabel">[% locale.maketext('Add Profile') %]</span>
+            [%- END -%]
+        </a>
+        <a href="profiles/newlocalhost"
+            id="topAddLocalhostProfileBtn"
+            ng-disabled="lastActivation.in_progress"
+            ng-hide="hasLocalhostProfile() || loadingProfiles"
+            class="btn btn-primary">
+            [%- IF locale.get_html_dir_attr() == 'rtl' -%]
+                <span class="iconButtonLabel">[% locale.maketext('Add [asis,Localhost] Profile') %]</span>
+                <span class="glyphicon glyphicon-plus"></span>
+            [%- ELSE -%]
+                <span class="glyphicon glyphicon-plus"></span>
+                <span class="iconButtonLabel">[% locale.maketext('Add [asis,Localhost] Profile') %]</span>
+            [%- END -%]
+        </a>
+    </div>
+</div>
+    <table class="table table-condensed responsive-table">
+        <thead>
+            <tr>
+                <th></th>
+                <th>[% locale.maketext('Profile') %]</th>
+                <th>[% locale.maketext('Host') %]</th>
+                <th>[% locale.maketext('Port') %]</th>
+                <th>[% locale.maketext('User') %]</th>
+                <th>[% locale.maketext('Type') %]</th>
+                <th></th>
+                <th id="actionsHeader">[% locale.maketext('Actions') %]</th>
+                <th class="gearColumn">
+                    <span id="gearMenu" class="dropdown" uib-dropdown>
+                        <a href class="dropdown-toggle"
+                            ng-disabled="lastActivation.in_progress"
+                            uib-dropdown-toggle>
+                          <span class="fas fa-cog fa-lg"></span>
+                        </a>
+                        <ul class="dropdown-menu[%- IF locale.get_html_dir_attr() != 'rtl' -%] dropdown-menu-right[% END %] gear_menu" uib-dropdown-menu>
+                            <li>
+                                <a href ng-click="goToAddProfile()">[% locale.maketext('Add Profile') %]</a>
+                            </li>
+                            <li ng-hide="hasLocalhostProfile()">
+                                <a href ng-click="goToAddLocalhostProfile()">[% locale.maketext('Add [asis,Localhost] Profile') %]</a>
+                            </li>
+                            <li class="divider"></li>
+                            <li>
+                                <a href ng-click="forceLoadProfiles()">[% locale.maketext('Reload Profiles') %]</a>
+                            </li>
+                        </ul>
+                    </span>
+                </th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr id="loadingProfilesNotice" class="info empty-row ng-hide" ng-show="loadingProfiles">
+                <td colspan="9">
+                    <i id="loadingProfilesSpinner" class="fas fa-spinner fa-spin"></i>
+                    <span id="loadingProfilesMessage">[% locale.maketext('Loading database profiles …') %]</span>
+                </td>
+            </tr>
+            <tr id="noProfilesNotice" class="info empty-row ng-hide" ng-show="profileListIsEmpty()">
+                <td colspan="9">
+                    <span id="noProfilesMessage">[% locale.maketext('No database profiles exist.') %]</span>
+                </td>
+            </tr>
+            <tr class="profileDataRow" ng-repeat-start="(name, profile) in profiles" ng-class="{'odd': $index % 2 == 0}">
+                <td class="activateStepsControl onTop">
+                    <a href class="btn btn-link ng-hide" ng-click="lastActivation.expanded = !lastActivation.expanded" ng-show="lastActivation.profile == name">
+                        <span class="fas fa-caret-down"
+                            ng-class="{'fa-rotate-270': !lastActivation.expanded}"
+                            uib-tooltip="[% locale.maketext('Show or hide last activation details.') %]"
+                            tooltip-enable="lastActivation.profile == name"
+                        [%- IF locale.get_html_dir_attr() == 'rtl' -%]
+                            tooltip-placement="left"
+                        [%- ELSE -%]
+                            tooltip-placement="right"
+                        [%- END -%]>
+                        </span>
+                    </a>
+                </td>
+                <td data-title="[% locale.maketext('Name').html() %]">{{profile.name}}</td>
+                <td data-title="[% locale.maketext('Host').html() %]">{{profile.host}}</td>
+                <td data-title="[% locale.maketext('Port').html() %]">{{profile.port}}</td>
+                <td data-title="[% locale.maketext('Account').html() %]">{{profile.account}}</td>
+                <td data-title="[% locale.maketext('Type').html() %]">{{profile.comment}}</td>
+                <td data-title="[% locale.maketext('Status').html() %]" class="profileStatus">
+                    <div class="statusIconContainer"
+                        ng-show="profile.active"
+                        uib-tooltip="[% locale.maketext('Currently active profile.') %]"
+                        tooltip-enable="profile.active">
+                        <svg class="statusIcon" viewBox="0 0 64 64">
+                            <circle cx="32.065" cy="31.834" r="30.3" fill="#39B54A"/>
+                            <path fill="#FFFFFF" d="M47.114 21.903 L30.841 56.771 C30.6 57.224 30.118 57.525 29.575 57.525 C29.454 57.525 29.304 57.495 29.153 57.464 C28.49 57.253 28.098 56.62 28.249 55.987 L34.186 31.637 L21.951 34.68 C21.83 34.711 21.71 34.711 21.589 34.711 C21.257 34.711 20.896 34.59 20.655 34.379 C20.293 34.078 20.173 33.625 20.263 33.203 L26.32 8.341 C26.471 7.768 27.013 7.377 27.646 7.377 L37.531 7.377 C38.284 7.377 38.886 7.95 38.886 8.643 C38.886 8.824 38.825 9.005 38.736 9.185L33.582 23.138 L45.517 20.184 C45.637 20.154 45.758 20.124 45.879 20.124 C46.27 20.124 46.632 20.305 46.902 20.576 C47.235 20.938 47.325 21.451 47.114 21.903Z" style="fill:white;fill-rule:nonzero;"/>
+                        </svg>
+                    </div>
+                </td>
+                <td class="action-buttons" data-title="[% locale.maketext('Actions').html() %]">
+                    <button type="button"
+                        id="validateProfile{{$index}}"
+                        ng-disabled="lastActivation.in_progress"
+                        cp-action="validateProfile(profile.name)"
+                        button-class="btn-link">
+                        <span class="far fa-check-square"></span>
+                        [% locale.maketext('Validate') %]
+                    </button>
+                    <button type="button"
+                        id="activateProfile{{$index}}"
+                        cp-action="confirmActivateProfile(profile)"
+                        auto-disable="false"
+                        button-class="btn-link"
+                        ng-disabled="lastActivation.in_progress">
+                        <span class="fas fa-plug"></span>
+                        [% locale.maketext('Activate') %]
+                    </button>
+                    <a class="btn btn-link altEditProfile" id="altEditProfile{{$index}}"
+                        href="profiles/profile-{{ profile.name }}"
+                        ng-disabled="lastActivation.in_progress"
+                        uib-tooltip="[% locale.maketext('Edit the profile: [_1]', '{{ profile.name }}') %]"
+                        class="btn btn-link">
+                        <span class='glyphicon glyphicon-pencil'></span>
+                        [% locale.maketext('Edit') %]
+                    </a>
+                    <button type="button"
+                        id="deleteProfile{{$index}}"
+                        cp-action="confirmDeleteProfile(profile.name)"
+                        button-class="btn-link"
+                        ng-disabled="disableProfileOperations(profile.name)">
+                        <span class="glyphicon glyphicon-trash"></span>
+                        [% locale.maketext('Delete') %]
+                    </button>
+                </td>
+                <td class="gearColumn" data-title="[% locale.maketext('Edit').html() %]">
+                    <a id="editProfile{{$index}}"
+                        href="profiles/profile-{{ profile.name }}"
+                        ng-disabled="lastActivation.in_progress"
+                        uib-tooltip="[% locale.maketext('Edit the profile: [_1]', '{{ profile.name }}') %]"
+                        class="btn btn-link">
+                        [%- IF locale.get_html_dir_attr() == 'rtl' -%]
+                            <span class="glyphicon glyphicon-chevron-left"></span>
+                        [%- ELSE -%]
+                            <span class="glyphicon glyphicon-chevron-right"></span>
+                        [%- END -%]
+                    </a>
+                </td>
+                <td class="activateStepsControl onBottom ng-hide" ng-show="lastActivation.profile == name">
+                    <div class="text-with-tri-tab">
+                        <div class="text-with-tri-row">
+                            <div class="text-with-tri">
+                                <a href ng-click="lastActivation.expanded = !lastActivation.expanded">
+                                    [% locale.maketext('Last Activation Details') %]
+                                    <span class="fas fa-caret-down"
+                                        ng-class="{'fa-rotate-270': !lastActivation.expanded}">
+                                    </span>
+                                </a>
+                            </div>
+                            <div class="text-with-tri">&nbsp;</div>
+                        </div>
+                    </div>
+                </td>
+            </tr>
+            <tr ng-repeat-end class="callout callout-info steps-callout-row-bottom ng-hide" ng-show="(lastActivation.expanded || lastActivation.in_progress) && name == lastActivation.profile">
+                <td class="callout callout-info steps-callout-bottom" colspan="9">
+                    <h4>Activation Steps</h4>
+                    <ol>
+                        <li ng-repeat="step in lastActivation.steps">
+                            {{step.name}} <i class="fa"
+                                                uib-tooltip="{{ message(step.status) }}"
+                                                tooltip-enable="lastActivation.profile == name"
+                                                ng-class="{'fa-check status-success': step.status == 'DONE', 'fa-times status-danger': step.status == 'FAILED', 'fa-heartbeat status-info': step.status == 'INPROGRESS', 'fa-step-forward status-info': step.status == 'SKIPPED'}"></i>
+                        </li>
+                    </ol>
+                </td>
+            </tr>
+        </tbody>
+    </table>
+<div class="row">
+    <div class="col-xs-12 ezAccessButtons">
+        <a href="profiles/new"
+            id="bottomAddProfileBtn"
+            ng-disabled="lastActivation.in_progress"
+            class="btn btn-primary">
+            [%- IF locale.get_html_dir_attr() == 'rtl' -%]
+                <span class="iconButtonLabel">[% locale.maketext('Add Profile') %]</span>
+                <span class="glyphicon glyphicon-plus"></span>
+            [%- ELSE -%]
+                <span class="glyphicon glyphicon-plus"></span>
+                <span class="iconButtonLabel">[% locale.maketext('Add Profile') %]</span>
+            [%- END -%]
+        </a>
+        <a href="profiles/newlocalhost"
+            id="bottomAddLocalhostProfileBtn"
+            ng-disabled="lastActivation.in_progress"
+            ng-hide="hasLocalhostProfile() || loadingProfiles"
+            class="btn btn-primary">
+            [%- IF locale.get_html_dir_attr() == 'rtl' -%]
+                <span class="iconButtonLabel">[% locale.maketext('Add [asis,Localhost] Profile') %]</span>
+                <span class="glyphicon glyphicon-plus"></span>
+            [%- ELSE -%]
+                <span class="glyphicon glyphicon-plus"></span>
+                <span class="iconButtonLabel">[% locale.maketext('Add [asis,Localhost] Profile') %]</span>
+            [%- END -%]
+        </a>
+    </div>
+</div>
+<script type="text/ng-template" id="confirmprofiledeletion.html">
+    <div class="modal-header">
+        <h4>
+        <span class="glyphicon glyphicon-check"></span>
+        <span class="confirmMessage">[% locale.maketext('Confirm Deletion') %]</span></h4>
+    </div>
+    <div class="modal-body">
+        [% locale.maketext('Do you want to permanently delete the database profile, “[_1]”?', '{{ currentProfileName }}') %]
+    </div>
+    <div class="modal-footer">
+        <button type="button"
+            id="modalContinueBtn"
+            class="btn btn-primary btn-sm"
+            ng-click="$close(currentProfileName);">[% locale.maketext('Continue') %]</button>
+        <button type="button"
+            id="modalCancelBtn"
+            class="btn btn-link btn-sm"
+            ng-click="$dismiss();">[% locale.maketext('Cancel') %]</button>
+    </div>
+</script>
+<script type="text/ng-template" id="confirmprofileactivation.html">
+    <div class="modal-header">
+        <h4>
+        <span class="glyphicon glyphicon-check"></span>
+        <span class="confirmMessage">[% locale.maketext('Confirm Activation') %]</span></h4>
+    </div>
+    <div class="modal-body">
+        <div class="alert alert-warning" ng-if="is_not_supported">
+            <span class="glyphicon glyphicon-exclamation-sign"></span>
+            <div class="alert-message">
+                [% locale.maketext('This profile uses a database version that [asis,cPanel] [output,amp] [asis,WHM] does [output,strong,not] support. After activation, update the database version to ensure that you receive the latest features and security fixes.') %]
+            </div>
+        </div>
+
+        <div class="alert alert-info">
+            <span class="glyphicon glyphicon-exclamation-sign"></span>
+            <div class="alert-message">
+                [% locale.maketext('This operation will reconfigure [asis,cPanel amp() WHM] to use a different database profile. The system will copy all [asis,USAGE] grants to the new profile, but it will not copy any other grants, and it will not copy any databases.') -%]
+            </div>
+        </div>
+
+        <p>[% locale.maketext('Do you want to activate the database profile, “[_1]”?', '{{ currentProfileName }}') %]</p>
+    </div>
+    <div class="modal-footer">
+        <button type="button"
+            id="modalContinueBtn"
+            class="btn btn-primary btn-sm"
+            ng-click="$close(currentProfileName);">[% locale.maketext('Continue') %]</button>
+        <button type="button"
+            id="modalCancelBtn"
+            class="btn btn-link btn-sm"
+            ng-click="$dismiss();">[% locale.maketext('Cancel') %]</button>
+    </div>
+</script>
+

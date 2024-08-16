@@ -1,0 +1,220 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/find_and_fix_rpm_issues         Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::find_and_fix_rpm_issues;
+
+use cPstrict;
+
+use parent qw( Cpanel::HelpfulScript );
+
+use Cpanel::Usage;
+
+use Cpanel::Binaries::Rpm   ();
+use Cpanel::OS              ();
+use Cpanel::Pkgr            ();
+use Cpanel::SafeRun::Simple ();
+use Cpanel::Update::Logger  ();
+
+our $RPM_DB_DIR = '/var/lib/rpm';
+
+exit( __PACKAGE__->new(@ARGV)->run() // 0 ) unless caller;
+
+=encoding utf-8
+
+=head1 NAME
+
+find_and_fix_rpm_issues
+
+=head1 USAGE
+
+scripts/find_and_fix_rpm_issues [--findonly] [--rebuildonly] [--help]
+
+=head1 DESCRIPTION
+
+Detects problems with the rpm database and will rebuild the database
+if it detects problems. Exits 0 if RPM is working properly, or if
+we were able to fix it by rebuilding its database.
+
+This script also detects duplicate cPanel RPMs, removes, and then
+re-installs them if necessary.
+
+    --findonly - Detect and report problems. Do not make any changes.
+
+    --rebuildonly - Unconditionally rebuild the RPM database.
+
+=cut
+
+sub _OPTIONS {
+    return qw( findonly rebuildonly );
+}
+
+# NOTE: Return logic throughout the script is reversed so that $? is 0 for
+# success or 1 for failure.
+sub run {
+    my ($self) = @_;
+
+    my $logger = Cpanel::Update::Logger->new( { 'stdout' => 1, 'log_level' => 'debug', 'timestamp' => 0 } );
+
+    # Bail on non-rpm based s
+    if ( !Cpanel::OS::is_rpm_based() ) {
+        $logger->warn( "find_and_fix_rpm_issues: Cannot be used on a non rpm based distro. Current distro is " . Cpanel::OS::display_name() . "\n" );
+        return;
+    }
+
+    my $findonly       = $self->getopt('findonly');
+    my $rebuildonly    = $self->getopt('rebuildonly');
+    my $rpm_db_is_good = 1;
+
+    if ( !$rebuildonly ) {
+
+        my $status;
+        ( $rpm_db_is_good, $status ) = Cpanel::Pkgr::verify_package_manager_can_install_packages($logger);
+
+        if ($rpm_db_is_good) {
+            my $rpm_db = _dump_rpm_db();
+
+            fix_duplicate_cpanel_rpms( $logger, $rpm_db );
+
+            $rpm_db_is_good = verify_no_duplicate_rpms( $logger, $rpm_db );
+        }
+
+        $logger->info("find_and_fix_rpm_issues: rpm issues have been found") if !$rpm_db_is_good;
+    }
+
+    $rpm_db_is_good = 0 if $rebuildonly;
+
+    if ( !$findonly && !$rpm_db_is_good ) {
+        $logger->info("find_and_fix_rpm_issues: Performing rpm rebuild");
+
+        # A non-zero return from rebuild_rpm_database indicates failure. It just returns $?.
+        rebuild_rpm_database($logger) && return 1;
+
+    }
+
+    remove_cpanel_obsoleted_rpms($logger);
+
+    return 0;
+}
+
+sub rebuild_rpm_database {
+    my ($logger) = @_;
+
+    if ( opendir my $dh, $RPM_DB_DIR ) {
+        while ( my $file = readdir $dh ) {
+            next unless $file =~ m{^__db\.[0-9]+$} && -f "$RPM_DB_DIR/$file";
+            unlink "$RPM_DB_DIR/$file" or do {
+                $logger->info("find_and_fix_rpm_issues: Could not unlink $RPM_DB_DIR/$file: $!");
+                return 1;
+            };
+        }
+        closedir $dh;
+    }
+
+    my $rpm    = Cpanel::Binaries::Rpm->new;
+    my $result = $rpm->cmd( '-vvv', '--rebuilddb' );
+
+    my $exit_code = $result->{'status'} >> 8;
+    if ($exit_code) {
+        $logger->info("find_and_fix_rpm_issues: Rebuilding the rpm database failed with exit code $exit_code:");
+        $logger->debug( $result->{'output'} );
+        return 1;
+    }
+    else {
+        return 0;
+    }
+}
+
+sub _dump_rpm_db {
+    my $rpm    = Cpanel::Binaries::Rpm->new;
+    my $result = $rpm->cmd( qw { -qa --nodigest --nosignature --queryformat }, '%{INSTALLTIME}\t%{NAME}\t%{VERSION}\t%{RELEASE}\t%{ARCH}\t\n' );
+
+    return [ split "\n", $result->{'output'} ];
+}
+
+sub fix_duplicate_cpanel_rpms {
+    my ( $logger, $rpmdb_ar ) = @_;
+
+    my %rpms;
+    my %rpm_erase;
+    foreach my $line (@$rpmdb_ar) {
+        next if index( $line, '.cp' ) == -1;
+
+        my ( $installtime, $name, $version, $release, $arch ) = split( m/\t/, $line );
+
+        # Only fix cp11## rpms.
+        next if ( $release !~ m/cp\d{4}$/ );
+
+        if ( $rpms{$name} ) {
+            $rpm_erase{ sprintf( "%s-%s-%s.%s", $name, $rpms{$name}[0], $rpms{$name}[1], $rpms{$name}[2] ) } = 1;
+            $rpm_erase{ sprintf( "%s-%s-%s.%s", $name, $version,        $release,        $arch ) }           = 1;
+        }
+        else {
+
+            # No duplicate found.
+            $rpms{$name} = [ $version, $release, $arch ];
+
+        }
+    }
+
+    return 0 if !%rpm_erase;
+
+    $logger->info("Duplicate RPMs found.");
+
+    my $rpm      = Cpanel::Binaries::Rpm->new;
+    my @cmd_args = ( qw{-e --nodeps --justdb}, sort { $a cmp $b } keys %rpm_erase );
+
+    $logger->info( "\$> rpm " . join( " ", @cmd_args ) . "\n" );
+    my $result = $rpm->cmd(@cmd_args);
+    $logger->info( $result->{'output'} );
+
+    $logger->info("\$> /usr/local/cpanel/scripts/check_cpanel_pkgs --fix\n");
+    $logger->info( Cpanel::SafeRun::Simple::saferunallerrors(qw{/usr/local/cpanel/scripts/check_cpanel_pkgs --fix --no-digest}) );
+
+    return 0;
+}
+
+# if check_cpanel_rpms or one of its child processes are killed during an rpm transaction, this can put the rpm
+# database in an unstable state as far as what rpms should be installed. This cleans that mistake up after the fact.
+#
+# NEVER kill -9 an rpm command. Bad things can happen!
+
+sub remove_cpanel_obsoleted_rpms ($logger) {
+    my $obsoletes = Cpanel::Pkgr::installed_cpanel_obsoletes();
+    return unless ref $obsoletes && @$obsoletes;    # Nothing is obsolete!
+
+    $logger->info( "Removing obsoleted package(s): " . join( ", ", @$obsoletes ) );
+    $logger->info( Cpanel::Pkgr::remove_packages_nodeps(@$obsoletes) );
+
+    $logger->info("Attempting to fix the local install by running scripts/check_cpanel_pkgs --fix --no-digest");
+    $logger->info( Cpanel::SafeRun::Simple::saferunallerrors(qw{/usr/local/cpanel/scripts/check_cpanel_pkgs --fix --no-digest}) );
+}
+
+# NOTE: The logic here may not be obvious.
+# If the system has duplicate RPMs, this function will return 0, indicating a problem.
+# Otherwise, it will return 1, indicating that it did not detect a problem.
+#
+# (That doesn't mean there isn't a problem; it just means we didn't find one.)
+sub verify_no_duplicate_rpms {
+    my ( $logger, $rpmdb_ar ) = @_;
+    my %rpm_hash;
+    $rpm_hash{ substr( $_, index( $_, "\t" ) + 1 ) }++ for @$rpmdb_ar;
+
+    # Multiple kernel packages are ok
+    delete @rpm_hash{ grep { index( $_, "kernel" ) == 0 } keys %rpm_hash };
+
+    if ( grep { $_ > 1 } values %rpm_hash ) {
+        foreach my $line ( grep { $rpm_hash{$_} > 1 } keys %rpm_hash ) {
+            my ( $name, $version, $release, $arch ) = split( m/\t/, $line );
+            my $dupe_count = $rpm_hash{$line} - 1;
+            $logger->info( "The “$name” package has “$dupe_count” duplicate package" . ( $dupe_count > 1 ? 's' : '' ) . " installed." );
+        }
+        return 0;
+    }
+    return 1;
+}
+
+1;

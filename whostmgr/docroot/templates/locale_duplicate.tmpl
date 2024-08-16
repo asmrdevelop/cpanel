@@ -1,0 +1,24 @@
+[% PROCESS 'master_templates/_defheader.tmpl'
+    theme="yui" -%]
+[%#- all params are validated and cleaned unless otherwise specified -%]
+[%- SET back = '' %]
+
+[%- IF !data.copy_target || !data.copy_args.0 || !data.copy_args.1 -%]
+    [%- IF !data.copy_args.0 -%]
+      <p class="error">Invalid source locale.</p>
+    [% ELSIF !data.copy_args.1 %]
+      <p class="error">Invalid target locale data.</p>
+    [%- END -%]
+
+    [%- back = '?' _ data.back_query_string -%]
+
+[% ELSE %]
+   <pre>[% data.copy_locale( data.copy_args ) %]</pre>
+
+   <p><a href="[% cp_security_token %]/scripts9/download_locale?locale=[% data.copy_args.1 %]">Click here to download</a> '[% data.copy_args.1 %]' in XML format. You can edit the XML and <a href="[% cp_security_token %]/scripts9/upload_locale_form">upload it here</a>.</p>
+   [%- IF !data.cpanel_provided.exists(data.copy_args.0) -%]<p>You may also <a href="[% cp_security_token %]/scripts9/delete_locale_form?locale=[% data.copy_args.0 %]&validate=1&theme=__ALL__">delete the source locale</a> '[% data.copy_args.0 %]'.</p>[%- END -%]
+[% END %]
+
+<p><a href="[% cp_security_token %]/scripts9/locale_duplicate_form[% back %]">Back</a></p>
+
+[% PROCESS 'master_templates/_deffooter.tmpl' theme="yui" -%]

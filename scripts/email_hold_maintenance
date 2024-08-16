@@ -1,0 +1,64 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/email_hold_maintenance          Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::email_hold_maintenance;
+
+use strict;
+use warnings;
+
+use Cpanel::PIDFile ();
+
+use Cpanel::Email::Accounts::HoldMaintenance ();
+use Cpanel::Email::Accounts::Paths           ();
+use Cpanel::FileUtils::Dir                   ();
+
+=encoding utf-8
+
+=head1 NAME
+
+scripts::email_hold_maintenance
+
+=head1 SYNOPSIS
+
+    email_hold_maintenance --help
+
+This script will remove the tracking file for email holds that have been released or
+deleted from the mail queue.
+
+=cut
+
+use constant PIDFILE => '/var/run/email_hold_maintenance.pid';
+
+use parent qw( Cpanel::HelpfulScript );
+
+__PACKAGE__->new(@ARGV)->script() unless caller();
+
+sub script {
+    my ($self) = @_;
+
+    return Cpanel::PIDFile->do(
+        PIDFILE,
+        sub {
+            $self->run();
+        }
+    );
+}
+
+sub _OPTIONS { }
+
+sub run {
+
+    return if !-e $Cpanel::Email::Accounts::Paths::EMAIL_HOLDS_BASE_PATH;
+
+    foreach my $sender ( @{ Cpanel::FileUtils::Dir::get_directory_nodes($Cpanel::Email::Accounts::Paths::EMAIL_HOLDS_BASE_PATH) } ) {
+        Cpanel::Email::Accounts::HoldMaintenance::remove_hold_files_for_sender($sender);
+    }
+
+    return;
+}
+
+1;

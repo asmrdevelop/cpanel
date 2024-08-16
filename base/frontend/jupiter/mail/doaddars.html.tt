@@ -1,0 +1,75 @@
+
+[% SET CPANEL.CPVAR.dprefix = "../" %]
+
+[%
+USE Uapi;
+
+SET add_autoresponder_response = execute("Email", "add_auto_responder", {
+    "email" => RAW_FORM.item("email"),
+    "from" => RAW_FORM.item("from"),
+    "subject" => RAW_FORM.item("subject"),
+    "body" => RAW_FORM.item("arbody"),
+    "domain" => RAW_FORM.item("domain"),
+    "is_html" => RAW_FORM.item("html"),
+    "charset" => RAW_FORM.item("charset"),
+    "interval" => RAW_FORM.item("interval"),
+    "start" => RAW_FORM.item("start"),
+    "stop" => RAW_FORM.item("stop")
+});
+
+action = RAW_FORM.item("action");
+%]
+
+[% WRAPPER '_assets/master.html.tt'
+    app_key = 'autoresponders'
+%]
+
+    <div class="body-content">
+        [% IF add_autoresponder_response.status %]
+            <div class="section">
+                [% IF action == 'create' %]
+                    <h2 id="hdrAddAutoResponders">[% locale.maketext("Add Autoresponder") %]</h2>
+                [% ELSE %]
+                    <h2 id="hdrAddAutoResponders">[% locale.maketext("Modify Autoresponder") %]</h2>
+                [% END %]
+                <div id="addRespondersSuccess" class="alert alert-success">
+                    <span id="addRespondersSuccessImg" class="glyphicon glyphicon-ok-sign"></span>
+                    <div id="addRespondersSuccessMsg" class="alert-message">
+                        [% IF !(ExpVar.expand('$appname') == "webmail") %]
+                            [% IF action == 'create' %]
+                                [% locale.maketext("You successfully created the “[_1]” autoresponder.",FORM.item('email') _ '@' _ FORM.item('domain')) %]</strong>
+                            [% ELSE %]
+                                [% locale.maketext("You successfully modified the “[_1]” autoresponder.",FORM.item('email') _ '@' _ FORM.item('domain')) %]</strong>
+                            [% END %]
+                        [% END %]
+
+                        [% IF (ExpVar.expand('$appname') == "webmail") %]
+                            [% IF action == 'create' %]
+                                [% locale.maketext("You successfully created the “[_1]” autoresponder.",FORM.item('email2')) %]
+                            [% ELSE %]
+                                [% locale.maketext("You successfully modified the “[_1]” autoresponder.",FORM.item('email2')) %]
+                            [% END %]
+                        [% END %]
+                    </div>
+                </div>
+            </div>
+        [% ELSE %]
+            <div class="alert alert-danger" role="alert">
+                <span class="glyphicon glyphicon-remove-sign" aria-hidden="true"></span>
+                <div class="alert-message">
+                    <strong class="alert-title">[% locale.maketext('Error:') %]</strong>
+                    <span class="alert-body">
+                        [% FOREACH err IN add_autoresponder_response.errors %]
+                            [% err.html() %]
+                        [% END %]
+                    </span>
+                </div>
+            </div>
+        [% END %]
+    [% IF (ExpVar.expand('$appname') == "webmail") %]
+        [% INCLUDE _assets/return_link.html.tt return_location='../index.html' return_link_text=locale.maketext('Go Back') %]
+    [% ELSE %]
+        [% INCLUDE _assets/return_link.html.tt return_location='autores.html' return_link_text=locale.maketext('Go Back') %]
+    [% END %]
+    </div>
+[% END %]

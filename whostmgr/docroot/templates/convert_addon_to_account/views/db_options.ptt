@@ -1,0 +1,419 @@
+<div class="ng-hide" ng-show="db_selection_vm.ui.is_loading">
+    <div class="alert alert-info">
+        <div class="alert-message">
+            <i id="loadingSpinner" class="fas fa-spinner fa-spin"></i>
+            [% locale.maketext('Loading …') %]
+        </div>
+    </div>
+</div>
+<div class="ng-hide" ng-show="!db_selection_vm.ui.is_loading && !db_selection_vm.ui.domain_exists">
+    <div class="alert alert-danger">
+        <span class="glyphicon glyphicon-remove-sign"></span>
+        <div class="alert-message">
+            [% locale.maketext('The system could not find the addon domain “[_1]”.', '{{ db_selection_vm.domain_name }}') %]
+            [% locale.maketext('[output,url,_1,Go back,_2].', 'main', { 'id' => 'backToMainView' }) %]
+        </div>
+    </div>
+</div>
+<div ng-hide="db_selection_vm.ui.is_loading || !db_selection_vm.ui.domain_exists">
+    <div class="row">
+        <div class="col-xs-12">
+            <div class="panel panel-default">
+                <div class="panel-heading">
+                    <span class="panel-title">[% locale.maketext('How do you want to transfer your databases?') %]</span>
+                </div>
+                <div class="panel-body">
+                    <label class="radio-inline">
+                        <input type="radio"
+                            name="dbMoveType"
+                            id="dbMove"
+                            ng-model="db_selection_vm.move_type"
+                            value="move"> [% locale.maketext('Move') %]
+                    </label>
+                    <label class="radio-inline">
+                        <input type="radio"
+                            name="dbMoveType"
+                            id="dbCopy"
+                            ng-model="db_selection_vm.move_type"
+                            value="copy"> [% locale.maketext('Copy') %]
+                    </label>
+                    <div class="alert alert-warning panel__alert-bottom" ng-show="db_selection_vm.move_type == 'move'">
+                        <span class="glyphicon glyphicon-exclamation-sign"></span>
+                        <div class="alert-message">
+                            [% locale.maketext('When you move a database, you must also move the associated database users to preserve their privileges.') %]
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="row">
+        <div class="col-xs-12">
+            <div class="panel panel-default">
+                <div class="panel-heading">
+                    <span class="panel-title">[% locale.maketext('Databases for “[_1]”', '{{ db_selection_vm.domain_name }}') %]</span>
+                </div>
+                <div class="panel-body">
+                    <div class="alert alert-info panel__alert-top" ng-show="db_selection_vm.move_type == 'move'">
+                        <span class="glyphicon glyphicon-info-sign"></span>
+                        <div class="alert-message">
+                            [% locale.maketext('When you move a database:') %]
+                            <ul class="panel__alert-list">
+                                <li>[% locale.maketext('The addon domain owner “[_1]” will lose access to the database.', '{{ db_selection_vm.this_domain.details.owner }}') %]</li>
+                                <li>[% locale.maketext('The newly created [asis,cPanel] account “[_1]” will gain full access to the database.', '{{ db_selection_vm.this_domain.account_settings.username }}') %]</li>
+                            </ul>
+                        </div>
+                    </div>
+                    <div id="paginationControls" class="row search-page-container">
+                        <div class="col-xs-12 col-sm-12 col-md-4 col-lg-4">
+                            <search id="filterList"
+                                ng-model="db_selection_vm.dbs.meta.filterValue"
+                                ng-change="db_selection_vm.dbs.searchList()"></search>
+                        </div>
+                        <div class="col-xs-12 col-sm-12 col-md-8 col-lg-8">
+                            <div id="paginator" class="pagination-container pull-right flip hidden-xs hidden-sm">
+                                <page-size id="topPageSize"
+                                    allowed-sizes="db_selection_vm.dbs.meta.pageSizes"
+                                    total-items="db_selection_vm.dbs.meta.totalItems"
+                                    ng-model="db_selection_vm.dbs.meta.pageSize"
+                                    show-all="true"
+                                    ng-change="db_selection_vm.dbs.selectPageSize()">
+                                </page-size>
+                                <uib-pagination id="topPager"
+                                    ng-change="db_selection_vm.dbs.selectPage()"
+                                    ng-model="db_selection_vm.dbs.meta.pageNumber"
+                                    max-size="db_selection_vm.dbs.meta.maxPages"
+                                    items-per-page="db_selection_vm.dbs.meta.pageSize"
+                                    total-items="db_selection_vm.dbs.meta.totalItems"
+                                    direction-links="true"
+                                    boundary-links="true"
+                                    rotate="false"
+                                    first-text="<<"
+                                    last-text=">>"
+                                    previous-text="<"
+                                    next-text=">">
+                                </uib-pagination>
+                            </div>
+                        </div>
+                    </div>
+                    <div id="tableStats" class="row hidden-xs hidden-sm">
+                        <div class="col-xs-8">
+                            <div class="page-stats selected-stats">
+                                <span class="title">[% locale.maketext('Selected:') %]</span>
+                                <span id="selectedCounter" class="badge badge-info">
+                                    {{db_selection_vm.dbs.totalSelected}}
+                                </span>
+                            </div>
+                        </div>
+                        <div class="col-xs-4">
+                            <div class="page-stats pull-right flip">
+                            {{db_selection_vm.dbs.paginationMessage()}}
+                            </div>
+                        </div>
+                    </div>
+                    <div id="mysqlDbTableContainer">
+                        <form id="mysqldb_settings" name="mysqldb_settings" novalidate>
+                        <table id="mysqldb_table" class="table table-striped responsive-table">
+                            <thead>
+                                <tr>
+                                    <th class="checkColumn">
+                                        <div class="btn-group checkbox-group" uib-dropdown is-open="db_selection_vm.dbs.checkDropdownOpen">
+                                            <span class="btn check-box">
+                                                <input type="checkbox" id="selectAll"
+                                                    ng-model="db_selection_vm.dbs.allRowsSelected"
+                                                    title="[% locale.maketext('Select all items on this page') %]"
+                                                    ng-change="db_selection_vm.dbs.selectAll(db_selection_vm.dbs.allRowsSelected)">
+                                            </span>
+                                            <button type="button" class="btn btn-default dropdown-toggle" uib-dropdown-toggle>
+                                                <span class="caret"></span>
+                                                <span class="sr-only">Checkbox Options</span>
+                                            </button>
+                                            <ul class="dropdown-menu" role="menu" uib-dropdown-menu>
+                                                <li><a href="javascript:void(0)" ng-click="db_selection_vm.dbs.clearAllSelections($event)">[% locale.maketext('Clear all selections[comment,action text]') %]</a></li>
+                                            </ul>
+                                        </div>
+                                    </th>
+                                    <th id="ownerHeader">
+                                        <span toggle-sort id="sortDbs" onsort="db_selection_vm.dbs.sortList" sort-meta="db_selection_vm.dbs.meta" sort-field="db_name">
+                                            [% locale.maketext('Database') %]
+                                        </span>
+                                    </th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr id="emptyDbListNotice" class="info empty-row" ng-show="db_selection_vm.dbs.filteredList.length == 0">
+                                    <td colspan="2" id="emptyDbTableMessage">[% locale.maketext('No databases found.') %]</td>
+                                </tr>
+                                <tr ng-repeat="mysqldb in db_selection_vm.dbs.filteredList">
+                                    <td class="checkColumn">
+                                        <input type="checkbox" id="rowSelector{{$index}}"
+                                            title="[% locale.maketext('Select this database') %]"
+                                            ng-model="mysqldb.selected"
+                                            ng-change="db_selection_vm.dbs.selectDb(mysqldb)">
+                                    </td>
+                                    <td class="" data-title="[% locale.maketext('Database') %]">
+                                        <span>{{mysqldb.db_name}}</span>
+                                        <div class="inline-table-form" ng-if="db_selection_vm.move_type == 'copy' && mysqldb.selected">
+                                            <div class="form-group">
+                                                <div class="row">
+                                                    <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                                                        <label for="mysqldb_new_name_{{$index}}">[% locale.maketext('New Database') %]</label>
+                                                    </div>
+                                                </div>
+                                                <div class="row">
+                                                    <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                                                        <div class="input-group">
+                                                            <span class="input-group-addon"
+                                                                id="mysqldb_prefix_{{$index}}"
+                                                                ng-if="db_selection_vm.is_prefixing_enabled">{{ mysqldb.db_prefix }}</span>
+                                                            <input type="text"
+                                                                id="mysqldb_new_name_{{$index}}"
+                                                                name="mysqldb_new_name_{{$index}}"
+                                                                class="form-control"
+                                                                ng-model="mysqldb.db_new_name"
+                                                                required
+                                                                maxlength="{{db_selection_vm.database_name_max_length}}"
+                                                                mysql-db-name>
+                                                        </div>
+                                                    </div>
+                                                    <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                                                        <ul validation-container field-name="mysqldb_new_name_{{$index}}">
+                                                            <li validation-item field-name="mysqldb_new_name_{{$index}}" validation-name="required">
+                                                                [% locale.maketext('You must complete this field.') %]
+                                                            </li>
+                                                            <li validation-item field-name="mysqldb_new_name_{{$index}}" validation-name="db"></li>
+                                                        </ul>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                        </form>
+                        </div>
+                        <div class="row hidden-md hidden-lg">
+                            <div class="col-xs-4">
+                                <div class="page-stats selected-stats">
+                                    <span class="title">[% locale.maketext('Selected') %]</span>
+                                    <span id="selectedCounter" class="badge badge-info">
+                                        {{db_selection_vm.dbs.totalSelected}}
+                                    </span>
+                                </div>
+                            </div>
+                            <div class="col-xs-8">
+                                <div class="page-stats pull-right flip">
+                                    {{db_selection_vm.dbs.paginationMessage()}}
+                                </div>
+                            </div>
+                        </div>
+                        <div class="row search-page-container visible-sm-block visible-xs-block hidden-lg hidden-md">
+                            <div class="col-xs-12 col-sm-12">
+                                <div id="paginatorBottom" class="pagination-container">
+                                    <page-size id="bottomPageSize"
+                                        allowed-sizes="db_selection_vm.dbs.meta.pageSizes"
+                                        total-items="db_selection_vm.dbs.meta.totalItems"
+                                        ng-model="db_selection_vm.dbs.meta.pageSize"
+                                        show-all="true"
+                                        ng-change="db_selection_vm.dbs.selectPageSize()">
+                                    </page-size>
+                                    <uib-pagination id="bottomPager"
+                                        ng-change="db_selection_vm.dbs.selectPage()"
+                                        ng-model="db_selection_vm.dbs.meta.pageNumber"
+                                        max-size="db_selection_vm.dbs.meta.maxPages"
+                                        items-per-page="db_selection_vm.dbs.meta.pageSize"
+                                        total-items="db_selection_vm.dbs.meta.totalItems"
+                                        direction-links="true"
+                                        boundary-links="true"
+                                        rotate="false"
+                                        first-text="<<"
+                                        last-text=">>"
+                                        previous-text="<"
+                                        next-text=">">
+                                    </uib-pagination>
+                                </div>
+                            </div>
+                        </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="row" ng-if="db_selection_vm.move_type == 'move'">
+        <div class="col-xs-12">
+            <div class="panel panel-default">
+                <div class="panel-heading">
+                    <span class="panel-title">[% locale.maketext('Database Users for “[_1]”', '{{ db_selection_vm.domain_name }}') %]</span>
+                </div>
+                <div class="panel-body">
+                    <div class="alert alert-info panel__alert-top" ng-show="db_selection_vm.move_type == 'move'">
+                        <span class="glyphicon glyphicon-info-sign"></span>
+                        <div class="alert-message">
+                            [% locale.maketext('If you move a database user and not a database to which they have access, the user will lose all access to that database.') %]
+                        </div>
+                    </div>
+                    <div id="paginationControls" class="row search-page-container">
+                        <div class="col-xs-12 col-sm-12 col-md-4 col-lg-4">
+                            <search id="filterList"
+                                ng-model="db_selection_vm.users.meta.filterValue"
+                                ng-change="db_selection_vm.users.searchList()"></search>
+                        </div>
+                        <div class="col-xs-12 col-sm-12 col-md-8 col-lg-8">
+                            <div id="paginator" class="pagination-container pull-right flip hidden-xs hidden-sm">
+                                <page-size id="topPageSize"
+                                    allowed-sizes="db_selection_vm.users.meta.pageSizes"
+                                    total-items="db_selection_vm.users.meta.totalItems"
+                                    ng-model="db_selection_vm.users.meta.pageSize"
+                                    show-all="true"
+                                    ng-change="db_selection_vm.users.selectPageSize()">
+                                </page-size>
+                                <uib-pagination id="topPager"
+                                    ng-change="db_selection_vm.users.selectPage()"
+                                    ng-model="db_selection_vm.users.meta.pageNumber"
+                                    max-size="db_selection_vm.users.meta.maxPages"
+                                    items-per-page="db_selection_vm.users.meta.pageSize"
+                                    total-items="db_selection_vm.users.meta.totalItems"
+                                    direction-links="true"
+                                    boundary-links="true"
+                                    rotate="false"
+                                    first-text="<<"
+                                    last-text=">>"
+                                    previous-text="<"
+                                    next-text=">">
+                                </uib-pagination>
+                            </div>
+                        </div>
+                    </div>
+                    <div id="tableStats" class="row hidden-xs hidden-sm">
+                        <div class="col-xs-8">
+                            <div class="page-stats selected-stats">
+                                <span class="title">[% locale.maketext('Selected:') %]</span>
+                                <span id="selectedCounter" class="badge badge-info">
+                                    {{db_selection_vm.users.totalSelected}}
+                                </span>
+                            </div>
+                        </div>
+                        <div class="col-xs-4">
+                            <div class="page-stats pull-right flip">
+                            {{db_selection_vm.users.paginationMessage()}}
+                            </div>
+                        </div>
+                    </div>
+                    <div id="mysqlDbTableContainer">
+                        <form id="mysqldb_settings" name="mysqldb_settings" novalidate>
+                        <table id="mysqldb_table" class="table table-striped responsive-table">
+                            <thead>
+                                <tr>
+                                    <th class="checkColumn">
+                                        <div class="btn-group checkbox-group" uib-dropdown is-open="db_selection_vm.users.checkDropdownOpen">
+                                            <span class="btn check-box">
+                                                <input type="checkbox" id="selectAll"
+                                                    ng-model="db_selection_vm.users.allRowsSelected"
+                                                    title="[% locale.maketext('Select all items on this page') %]"
+                                                    ng-change="db_selection_vm.users.selectAll(db_selection_vm.users.allRowsSelected)">
+                                            </span>
+                                            <button type="button" class="btn btn-default dropdown-toggle" uib-dropdown-toggle>
+                                                <span class="caret"></span>
+                                                <span class="sr-only">Checkbox Options</span>
+                                            </button>
+                                            <ul class="dropdown-menu" role="menu" uib-dropdown-menu>
+                                                <li><a href="javascript:void(0)" ng-click="db_selection_vm.users.clearAllSelections($event)">[% locale.maketext('Clear all selections[comment,action text]') %]</a></li>
+                                            </ul>
+                                        </div>
+                                    </th>
+                                    <th>
+                                        <span toggle-sort id="sortUsers" onsort="db_selection_vm.users.sortList" sort-meta="db_selection_vm.users.meta" sort-field="user_name">
+                                            [% locale.maketext('Database User') %]
+                                        </span>
+                                    </th>
+                                    <th>
+                                        <span id="databasesForUsers">
+                                            [% locale.maketext('Databases') %]
+                                        </span>
+                                    </th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr id="emptyUserListNotice" class="info empty-row" ng-show="db_selection_vm.users.filteredList.length == 0">
+                                    <td colspan="3" id="emptyUserTableMessage">[% locale.maketext('No database users found.') %]</td>
+                                </tr>
+                                <tr ng-repeat="user in db_selection_vm.users.filteredList">
+                                    <td class="checkColumn">
+                                        <input type="checkbox" id="rowSelector{{$index}}"
+                                            title="[% locale.maketext('Select this database user') %]"
+                                            ng-model="user.selected"
+                                            ng-change="db_selection_vm.users.selectUser(user)">
+                                    </td>
+                                    <td class="" data-title="[% locale.maketext('Database User') %]">
+                                        <span>{{user.user_name}}</span>
+                                    </td>
+                                    <td class="" data-title="[% locale.maketext('Databases') %]">
+                                        <div ng-repeat="userdb in user.user_databases">{{userdb}}</div>
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                        </form>
+                        </div>
+                        <div class="row hidden-md hidden-lg">
+                            <div class="col-xs-4">
+                                <div class="page-stats selected-stats">
+                                    <span class="title">[% locale.maketext('Selected') %]</span>
+                                    <span id="selectedCounter" class="badge badge-info">
+                                        {{db_selection_vm.users.totalSelected}}
+                                    </span>
+                                </div>
+                            </div>
+                            <div class="col-xs-8">
+                                <div class="page-stats pull-right flip">
+                                    {{db_selection_vm.users.paginationMessage()}}
+                                </div>
+                            </div>
+                        </div>
+                        <div class="row search-page-container visible-sm-block visible-xs-block hidden-lg hidden-md">
+                            <div class="col-xs-12 col-sm-12">
+                                <div id="paginatorBottom" class="pagination-container">
+                                    <page-size id="bottomPageSize"
+                                        allowed-sizes="db_selection_vm.users.meta.pageSizes"
+                                        total-items="db_selection_vm.users.meta.totalItems"
+                                        ng-model="db_selection_vm.users.meta.pageSize"
+                                        show-all="true"
+                                        ng-change="db_selection_vm.users.selectPageSize()">
+                                    </page-size>
+                                    <uib-pagination id="bottomPager"
+                                        ng-change="db_selection_vm.users.selectPage()"
+                                        ng-model="db_selection_vm.users.meta.pageNumber"
+                                        max-size="db_selection_vm.users.meta.maxPages"
+                                        items-per-page="db_selection_vm.users.meta.pageSize"
+                                        total-items="db_selection_vm.users.meta.totalItems"
+                                        direction-links="true"
+                                        boundary-links="true"
+                                        rotate="false"
+                                        first-text="<<"
+                                        last-text=">>"
+                                        previous-text="<"
+                                        next-text=">">
+                                    </uib-pagination>
+                                </div>
+                            </div>
+                        </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="form-group action-group">
+        <button type="submit"
+            id="save_options"
+            name="save_options"
+            class="btn btn-primary"
+            ng-disabled="db_selection_vm.disableSave(mysqldb_settings)"
+            ng-click="db_selection_vm.saveOptions(mysqldb_settings)">[% locale.maketext("Save Selections") %]</button>
+        <button type="button"
+            id="go_back"
+            name="go_back"
+            ng-click="db_selection_vm.goBack()"
+            class="btn btn-link">[% locale.maketext('Cancel') %]</button>
+    </div>
+</div>

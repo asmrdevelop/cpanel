@@ -1,0 +1,75 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - bin/quota                               Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package bin::quota;
+
+use strict;
+use warnings;
+
+our $FORCE_FALLBACK_TO_QUOTA_BIN = 0;    #for testing
+
+exit( run(@ARGV) ) unless caller();
+
+sub run {
+    my (@argv) = @_;
+    @argv = grep( !m/-v/, @argv );       # we always operate in verbose mode
+    my $user = shift @argv;
+    die_usage() if !defined($user) || @argv;
+
+    my $uid = ( $user =~ /^[0-9]+$/ ) ? $user : getpwnam($user);
+    defined($uid) or die "invalid user\n";
+
+    eval {
+        require Quota;
+        require Cpanel::Quota::Normalized;
+        require Cpanel::Quota::Filesys;
+    };
+    if ( $FORCE_FALLBACK_TO_QUOTA_BIN || $@ ) {
+        return run_quota($uid);
+    }
+
+    my $fs    = Cpanel::Quota::Filesys->new();
+    my @paths = sort keys %{ $fs->get_devices_with_quotas_enabled() };
+
+    my $cols   = join ' ', ('%10s') x 8;
+    my $header = sprintf "%-20s $cols\n", qw(dev blocks quota limit grace files quota limit grace);
+    my $out    = "";
+
+    foreach my $dev (@paths) {
+        my $lookupdev = $fs->get_device_arg_for_quota_module_for_path($dev);
+
+        my @results = Cpanel::Quota::Normalized::query( $lookupdev, $uid );
+        $dev .= "\n" . ( ' ' x 20 ) if length($dev) > 10;
+        if ( @results == 8 ) {
+            @results[ 3, 7 ] = ( '', '' );    # grace
+            $out .= sprintf "%-20s $cols\n", $dev, @results;
+        }
+        elsif (@results) {
+            warn "unexpected results: @results";
+            return run_quota($uid);
+        }
+
+        # backup solution when ENODEV or EINVAL detected
+        return run_quota($uid) if $! && ( $!{ENODEV} || $!{EINVAL} );
+    }
+    print $header, $out if $out;
+
+    return 0;
+}
+
+sub run_quota {
+    my $uid = shift;
+    require Cpanel::SafeRun::Simple;
+    print Cpanel::SafeRun::Simple::saferun( '/usr/bin/quota', '-v', '-u', $uid );
+    return $?;
+}
+
+sub die_usage {
+    die "usage: $0 <user>\n";
+}
+
+1;

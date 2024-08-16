@@ -1,0 +1,52 @@
+[%#
+Variables passed in:
+
+etc_hosts_path   - the path to the hosts file
+resolv_conf_path - the path to the resolv.conf
+warnings         - array of keys that correspond to NOTICE.warnings
+
+For more information about how to customize notification templates, read our documentation at https://go.cpanel.net/notificationtemplates
+
+-%]
+
+[%
+    PROCESS "include/colors.tmpl";
+    PROCESS "include/styles.tmpl";
+
+    WRAPPER 'wrapper/main.html.tmpl';
+
+    NOTICE.email_reason = CPANEL.locale.maketext('[output,abbr,IP,Internet Protocol] address-related problem detected.');
+
+    SET NOTICE.warnings = {
+        resolved_to_wrong_ip            => CPANEL.locale.maketext('The hostname ([_1]) resolves to the “[_2]” [output,abbr,IP,Internet Protocol] address. It should resolve to the “[_3]” [output,abbr,IP,Internet Protocol] address. Ensure that the contents of [_4] are configured correctly, and also that there is a correct [asis,A] record entry for the hostname in the zone file.', NOTICE.host_server, NOTICE.wrong_ip , NOTICE.right_ip, NOTICE.etc_hosts_path ),
+
+        host_not_found                  => CPANEL.locale.maketext('The system failed to resolve the hostname, [_1], to an [output,abbr,IP,Internet Protocol] address. This means either that [_2] is not set up correctly, there is no [output,abbr,DNS,Domain Name Service] entry for “[_1]”, or both. Ensure that the contents of [_2] are configured correctly, and that there is a correct [asis,A] record entry for the hostname in the zone file.', NOTICE.host_server, NOTICE.etc_hosts_path),
+
+        unable_resolve_no_host_binary   => CPANEL.locale.maketext('The system failed to resolve your hostname ([_1]) to an [output,abbr,IP,Internet Protocol] address; no ‘host’ binary found.', NOTICE.host_server),
+    }
+%]
+
+<p>
+    [% CPANEL.locale.maketext('IMPORTANT: Do not ignore this email.'); %]
+</p>
+[% FOREACH problem IN NOTICE.problems %]
+    <p>
+        [% NOTICE.warnings.$problem %]
+    </p>
+[% END %]
+<p>
+    [% CPANEL.locale.maketext('Some or all of these problems can be caused by an incorrect configuration in the [_1] file. Check the file or use the [_2] interface in [asis,WHM] at [output,url,_3,_3,target,_4] to verify that everything is correct.', NOTICE.resolv_conf_path,CPANEL.locale.maketext('Resolver Configuration Wizard'), CPANEL.assemble_whm_url("scripts/setupresolvconf"),'_blank'); %]
+</p>
+<p>
+    [%
+        CPANEL.locale.maketext(
+            'You may be able to automatically correct this problem with the “[_1]” interface under “[_2]” in [asis,WHM] at: [output,url,_3,_3,target,_4].',
+            CPANEL.locale.maketext('Add an A Entry for Your Hostname'),
+            CPANEL.locale.maketext('DNS Functions'),
+            CPANEL.assemble_whm_url("scripts/addaforhost"),
+            '_blank',
+        );
+    %]
+</p>
+
+[% END %]

@@ -1,0 +1,33 @@
+[% USE JSON -%]
+[% WRAPPER 'master_templates/master.tmpl' theme="yui"
+    app_key='edit_questions_and_answers'
+    extrastyle='
+#status {
+    margin: 0 auto;
+    padding: 10px;
+    background-color: #b9ecbe;
+}
+#status_container {
+    margin: 20px;
+    text-align: center;
+}
+'
+-%]
+
+<p class="description">[% locale.maketext("To keep your account secure, WHM will ask you 4 questions when you try to log in from an unrecognized IP address.") %]</p>
+<p class="description">[% locale.maketext('Please set your questions and answers below.') %]</p>
+
+[% IF data.status != "" -%]
+<div id="status_container">
+<span id="status">[% data.status %]</span>
+</div>
+[% ELSE -%]
+<br />
+[% END -%]
+
+[% PROCESS 'security/_security_questions.tmpl'
+    action = "?cmd=edit-secques&formaction=setquestions&key=${data.acct_randkey}"
+    userquestions = data.userquestion
+-%]
+
+[% END #wrapper -%]

@@ -1,0 +1,148 @@
+<div>
+    <p class="info-block">[% locale.maketext('This interface allows you to enable or disable user account backups.') %]</p>
+    <p class="info-block">[% locale.maketext('To enable or disable all users, click [output,em,Account Actions].') %]</p>
+</div>
+
+<!-- API loading indicator -->
+<cp-loading-panel class="col-xs-12 col-sm-6" id="loadingAccounts" ng-show="action.loading">[% locale.maketext('The system is loading the account list.') %]</cp-loading-panel>
+
+<div ng-controller="backupUserSelectionView" ng-if="accountData" class="list-container">
+    <div class="row search-page-container">
+        <div class="col-xs-12 col-sm-12 col-md-4 col-lg-4">
+            <search
+                ng-model="meta.searchText"
+                ng-change="setTable()"
+                placeholder="[% locale.maketext('Filter Users/Domain') %]"></search>
+        </div>
+        <div class="col-xs-12 col-sm-12 col-md-8 col-lg-8">
+            <div class="pagination-container hidden-xs hidden-sm">
+                <page-size
+                    id="pageSize"
+                    allowed-sizes="meta.pageSizes"
+                    total-items="meta.totalItems"
+                    ng-model="meta.pageSize"
+                    show-all="false"
+                    ng-show="showPager"
+                    ng-change="setPageSize()">
+                </page-size>
+                <uib-pagination
+                    id="paginateItems"
+                    total-items="meta.totalItems"
+                    ng-model="meta.pageNumber"
+                    max-size="meta.maxPages"
+                    boundary-links="true"
+                    rotate="false"
+                    previous-text="<"
+                    next-text=">"
+                    first-text="<<"
+                    last-text=">>"
+                    items-per-page="meta.pageSize"
+                    ng-show="showPager"
+                    ng-change="setTable()">
+                </uib-pagination>
+            </div>
+        </div>
+    </div>
+
+    <div class="row">
+        <div class="btn-group col-xs-8" uib-dropdown is-open="checkdropdownOpen" id="actionsDropdown">
+            <button type="button" class="btn btn-default dropdown-toggle" uib-dropdown-toggle id="selectAction" ng-disabled="action.toggling">
+                <span>[% locale.maketext('Account Actions') %]</span>
+                <span class="caret"></span>
+            </button>
+            <ul uib-dropdown-menu class="dropdown-menu" role="menu">
+                <li><a href="#" ng-click="enableAllAccounts(false)" title="[% locale.maketext('Enable all Backups') %]" id="enableAll">[% locale.maketext('Enable all Backups') %]</a></li>
+                <li><a href="#" ng-click="disableAllAccounts(false)" title="[% locale.maketext('Disable all Backups') %]" id="disableAll">[% locale.maketext('Disable all Backups') %]</a></li>
+                <li ng-if="legacyBackupEnabled"><a href="#" ng-click="enableAllAccounts(true)" title="[% locale.maketext('Enable all Legacy') %]" id="enableAllLegacy">[% locale.maketext('Enable all Legacy') %]</a></li>
+                <li ng-if="legacyBackupEnabled"><a href="#" ng-click="disableAllAccounts(true)" title="[% locale.maketext('Disable all Legacy') %]" id="disableAllLegacy">[% locale.maketext('Disable all Legacy') %]</a></li>
+            </ul>
+        </div>
+        <div class="hidden-xs hidden-sm col-xs-4">
+            <div class="page-stats pull-right">
+                {{paginationMessage}}
+            </div>
+        </div>
+    </div>
+
+    <div class="row">
+        <cp-loading-panel class="col-xs-12 col-md-6" id="togglingAccounts" ng-show="action.toggling">[% locale.maketext('Updating') %]</cp-loading-panel>
+        <cp-alert-list  class="col-xs-12 col-md-6" alert-group="'backupUserSelection'"></cp-alert-list>
+    </div>
+
+    <table class="table table-striped responsive-table" ng-disabled="action.toggling">
+        <thead>
+            <tr>
+                <th class="col-sm-3 col-md-3 col-lg-3">
+                    <span
+                        toggle-sort
+                        id="sortUser"
+                        sort-meta="meta"
+                        sort-field="user"
+                        onsort="setTable">
+                        [% locale.maketext('User') %]
+                    </span>
+                </th>
+                <th class="col-sm-3 col-md-3 col-lg-3">
+                    <span
+                        toggle-sort
+                        id="sortDomain"
+                        sort-meta="meta"
+                        sort-field="domain"
+                        onsort="setTable">
+                        [% locale.maketext('Domain') %]
+                    </span>
+                </th>
+                <th ng-if="legacyBackupEnabled" class="col-sm-3 col-md-3 col-lg-3">
+                    <span
+                        toggle-sort
+                        id="sortLegacyBackupEnabled"
+                        sort-meta="meta"
+                        sort-field="legacy_backup"
+                        onsort="setTable">
+                        [% locale.maketext('Legacy') %]
+                    </span>
+                </th>
+                <th class="col-sm-3 col-md-3 col-lg-3">
+                    <span
+                        toggle-sort
+                        id="sortBackupEnabled"
+                        sort-meta="meta"
+                        sort-field="backup"
+                        onsort="setTable">[% locale.maketext('Backups') %]
+                    </span>
+                </th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr ng-repeat="account in filteredAccountList track by account.uid">
+                <td data-title="[% locale.maketext('User') %]">{{account.user}}</td>
+                <td data-title="[% locale.maketext('Domain') %]">{{account.domain}}</td>
+                <td data-title="[% locale.maktext('Legacy') %]" ng-if="legacyBackupEnabled">
+                    <toggle-switch
+                        ng-disabled="action.toggling"
+                        id="toggle_account_active_legacy_backup"
+                        enabled-label="[% locale.maketext('Enable') %]"
+                        disabled-label="[% locale.maketext('Disable') %]"
+                        ng-model="account.legacy_backup"
+                        on-toggle="toggleAccount(account, true)"
+                        no-spinner="true">
+                    </toggle-switch>
+                </td>
+                <td data-title="[%locale.maketext('Backup Enabled') %]">
+                    <toggle-switch
+                        ng-disabled="action.toggling"
+                        id="toggle_account_active_backup"
+                        enabled-label="[% locale.maketext('Enable') %]"
+                        disabled-label="[% locale.maketext('Disable') %]"
+                        ng-model="account.backup"
+                        on-toggle="toggleAccount(account, false)"
+                        no-spinner="true">
+                    </toggle-switch>
+                </td>
+            </tr>
+            <tr ng-hide="accountData.length !== 0" class="info empty-row">
+                <td colspan="3">[% locale.maketext('No accounts.') %]</td>
+            </tr>
+        </tbody>
+    </table>
+</div>

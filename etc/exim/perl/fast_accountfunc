@@ -1,0 +1,19 @@
+sub gethomedir {
+    my $user = shift;
+    require Cpanel::Encoder::Exim;
+    return Exim::expand_string( '${extract{5}{:}{${lookup passwd{' . Cpanel::Encoder::Exim::unquoted_encode_string_literal($user) . '}{$value}}}}' ) || '';
+}
+
+sub getuid {
+    my $user = shift;
+    require Cpanel::Encoder::Exim;
+    my $uid = Exim::expand_string( '${extract{2}{:}{${lookup passwd{' . Cpanel::Encoder::Exim::unquoted_encode_string_literal($user) . '}{$value}}}}' );
+    return defined $uid ? $uid : '';
+}
+
+sub getdomainowner {
+    my $domain = shift;
+    require Cpanel::Encoder::Exim;
+    substr($domain,0,4,'') if index($domain,'www.') == 0;
+    return Exim::expand_string( '${lookup{' . Cpanel::Encoder::Exim::unquoted_encode_string_literal($domain) . '}lsearch{/etc/userdomains}{$value}}' ) || '';
+}

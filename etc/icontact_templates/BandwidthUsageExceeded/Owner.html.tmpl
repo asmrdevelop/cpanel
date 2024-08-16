@@ -1,0 +1,51 @@
+[%#
+Variables passed in:
+
+user           - the user associated with the domain that is at risk of exceeding bandwidth
+user_domain    - the domain at risk of exceeding bandwidth
+host           - the host of the domain / user
+warn           - boolean value to determine if this is a warning or if bandwidth has already been exceeded
+warnpercent    - percentage at which the user or admin is being warned
+bwused         - bandwidth used in Megabytes
+bwlimit        - max allowed bandwidth in Megabytes
+avg_bw_usage   - average bandwidth usage per day
+predicted_bw   - an estimte of the bandwidth predicted to be used at the end of the month
+date_exceeded   - the date (in timestamp) that the bandwidth will be exceeded based on the average bandwidth usage
+
+For more information about how to customize notification templates, read our documentation at https://go.cpanel.net/notificationtemplates
+
+-%]
+
+[%
+    PROCESS "include/colors.tmpl";
+    PROCESS "include/styles.tmpl";
+
+    WRAPPER 'wrapper/main.html.tmpl'
+        NOTICE.email_reason = NOTICE.warn ?
+            CPANEL.locale.maketext('The account “[_1]” with primary domain “[_2]” has reached [numf,_5]% of its bandwidth limit ([format_bytes,_3]/[format_bytes,_4]).', NOTICE.user, NOTICE.user_domain, NOTICE.bwused, NOTICE.bwlimit, NOTICE.warnpercent) : '';
+%]
+
+<p>
+    [% IF NOTICE.warn -%]
+        [% CPANEL.locale.maketext('Average bandwidth used per day: [format_bytes,_1]', NOTICE.avg_bw_usage); %]<br />
+        [% CPANEL.locale.maketext('Projected monthly bandwidth usage: [format_bytes,_1]', NOTICE.predicted_bw); %]<br /><br />
+        [% CPANEL.locale.maketext('At the current rate of usage:'); %]
+        <ul>
+        [% IF NOTICE.predicted_bw > NOTICE.bwlimit -%]
+            <li>[% CPANEL.locale.maketext('The account “[_1]” with primary domain “[_2]” on the server “[_3]” is expected to reach its bandwidth limit on [datetime,_4,date_format_short].', NOTICE.user , NOTICE.user_domain, NOTICE.host, NOTICE.date_exceeded); %]</li>
+            <li>[% CPANEL.locale.maketext('The account “[_1]” with primary domain “[_2]” on the server “[_3]” is expected to exceed its bandwidth limit by [format_bytes,_4].' , NOTICE.user, NOTICE.user_domain, NOTICE.host, NOTICE.predicted_bw - NOTICE.bwlimit); %]</li>
+        [% ELSE -%]
+            <li>[% CPANEL.locale.maketext('The account “[_1]” with primary domain “[_2]” on the server “[_3]” is not expected to exceed its bandwidth limit.',NOTICE.user, NOTICE.user_domain, NOTICE.host); %]</li>
+        [% END -%]
+        </ul>
+    [% ELSE -%]
+        [% CPANEL.locale.maketext('The account “[_1]” with primary domain “[_2]” on the server “[_3]” has reached its bandwidth limit ([format_bytes,_4]/[format_bytes,_5]).', NOTICE.user, NOTICE.user_domain, NOTICE.host, NOTICE.bwused, NOTICE.bwlimit) %]
+    [% END -%]
+</p>
+
+[% UNLESS NOTICE.hasgoodcontact -%]
+    <div style="font-family:[% font_family %];border-top: 2px solid [% medium_gray %]; padding-top:5px; margin-top: 5px; font-size:12px; color: [% med_dark_gray %];">
+    </div>
+[% END -%]
+
+[% END %]

@@ -1,0 +1,284 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - bin/perlpkg                             Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+use warnings;
+use Module::CoreList;
+use Module::Want;
+use Cpanel::Binaries        ();
+use Cpanel::SafeRun::Simple ();
+use Cpanel::SafeRun::Errors ();
+
+use Cwd ();
+
+my $cpanel_perl = Cpanel::Binaries::path('perl');
+my $cpanel_dir  = '/usr/local/cpanel';
+my $script      = $ARGV[-1];
+
+# Be whiny if they passed in a .static script.
+if ( $script =~ m/\.static$/ ) {
+    $script =~ s/\.static$//;
+    die("Did you mean to run: '$0 $script'\n");
+}
+
+my %EMBEDDED_NON_CORE_MODULES = (
+    'Try::Tiny'        => 1,
+    'HTTP::Tiny'       => 1,
+    'cPstrict'         => 1,
+    'File::Path::Tiny' => 1,
+);
+
+my $verbose = grep { $_ eq '--verbose' } @ARGV;
+if ( grep { $_ eq '--no-try-tiny' } @ARGV ) {
+    delete $EMBEDDED_NON_CORE_MODULES{'Try::Tiny'};
+}
+if ( grep { $_ eq '--no-http-tiny' } @ARGV ) {
+    delete $EMBEDDED_NON_CORE_MODULES{'HTTP::Tiny'};
+}
+if ( grep { $_ eq '--no-file-path-tiny' } @ARGV ) {
+    delete $EMBEDDED_NON_CORE_MODULES{'File::Path::Tiny'};
+}
+if ( grep { $_ eq '--no-cpstrict' } @ARGV ) {
+    delete $EMBEDDED_NON_CORE_MODULES{'cPstrict'};
+}
+my $leave_broken = ( grep { $_ eq '--leave-broken' } @ARGV )       ? 1 : 0;
+my $skip_compile = ( grep { $_ eq '--skip-compile-check' } @ARGV ) ? 1 : 0;
+
+my @dash_dir_opts = grep { m{^--dir=} } @ARGV;
+
+my @extra_dirs;
+foreach my $opt (@dash_dir_opts) {
+    my $dir = $opt;
+    $dir =~ s{^--dir=}{};
+    push @extra_dirs, $dir;
+}
+@extra_dirs = reverse sort @extra_dirs;
+
+if ( !-e $script ) {
+    die "$script does not exist";
+}
+
+my $static_script = Cwd::abs_path($script) . '.static';
+$static_script =~ s{//}{/}msg;    # Strip double // in path
+
+my $dependencies = Cpanel::SafeRun::Simple::saferun( $cpanel_perl, "$cpanel_dir/bin/depend", '--requires', @dash_dir_opts, $script );
+die if ( $dependencies =~ m/syspkg_system_module/ );
+$? and die( "Unexpected exit code calling bin/depend: " . ( $? >> 8 ) . "\n" );
+$dependencies =~ s{^\Q$script\E:\s+}{} or die("Unexpected dependency output from bin/depend: $dependencies\n");
+my @modules_to_include = split( /\s+/, $dependencies );
+@modules_to_include = grep { $_ ne $script } @modules_to_include;    # Pop off self.
+
+open( my $script_source_fh, '<', $script )        or die;
+open( my $script_fh,        ">", $static_script ) or die("Failed to open $static_script for write");
+while ( my $line = <$script_source_fh> ) {
+    print {$script_fh} $line;
+    last if ( $line =~ m{^#!\S+/perl} );                             # Stop copying when you get to the #! for perl.
+}
+
+# Inject %INC with load blockers.
+print {$script_fh} "BEGIN { # Suppress load of all of these at earliest point.\n";
+
+# Non code modules we embed.
+foreach ( keys %EMBEDDED_NON_CORE_MODULES ) {
+    my $module = $_;                                                 # Don't alter the hash.
+    $module =~ s{::}{/}g;
+    $module .= '.pm';
+    print {$script_fh} "    \$INC{'$module'} = '${static_script}';\n";
+}
+
+# cPanel modules we're embedding.
+foreach my $module (@modules_to_include) {
+    my $m = $module;
+
+    foreach my $d (@extra_dirs) {
+        $m =~ s{^$d/}{} and last;
+    }
+
+    print {$script_fh} "    \$INC{'$m'} = '${static_script}';\n";
+}
+print {$script_fh} "}\n\n";
+
+my $perldoc_bin = $^X . "doc";
+die qq[$perldoc_bin is not executable] unless -x $perldoc_bin;
+
+# Dump %EMBEDDED_NON_CORE_MODULES as-is.
+foreach my $module ( sort keys %EMBEDDED_NON_CORE_MODULES ) {
+    local $ENV{PERL5LIB};
+    my $module_loc = Cpanel::SafeRun::Simple::saferun( $perldoc_bin, '-lm', $module );
+    chomp $module_loc;
+
+    die qq[Fail to find module location: $perldoc_bin -lm $module] unless length $module_loc;
+
+    open( my $fh, "<", $module_loc ) or die("Failed to open $module_loc for read");
+    print {$script_fh} "{ # --- BEGIN $module\n";
+    while ( my $line = <$fh> ) {
+        last if ( $line =~ m/^__END__/ );    # The only module we embed terminates at __END__ with no pod prior to that.
+        if ( $module eq 'Try::Tiny' ) {
+            $line =~ s/^__PACKAGE__\s*[\n\r]?$/1;/;               # They're trying to be fancy at the end of the module and it's throwing a warning;
+            $line =~ s/^use Exporter/BEGIN   {\nuse Exporter/;    # Inject exporter into a BEGIN block so it works right in fat pack.
+            next if ( $line =~ m{BEGIN \{} );                     # Join the being block we just added to the one that already exists
+        }
+        print {$script_fh} $line;
+    }
+    print {$script_fh} "\n} # --- END $module\n\n\n";
+}
+
+my @packages_injected = map { my $name = $_; $name =~ s{/}{::}g; $name =~ s{\.pm$}{}; $name } @modules_to_include;
+
+# if Cpanel::Exception::CORE is included also consider that Cpanel::Exception is in
+if ( grep { 'Cpanel::Exception::CORE' } @packages_injected ) {
+    push @packages_injected, 'Cpanel::Exception';
+}
+
+my $in_use_base            = 0;
+my $cpan_module_found      = 0;
+my $previous_module        = '';
+my $second_previous_module = '';
+my $third_previous_module  = '';
+my $forth_previous_module  = '';
+my $fifth_previous_module  = '';
+
+my %our_isa_already;
+
+my $safe_to_load = { map { $_ => 1 } qw{vars feature warnings experimental} };
+
+# Dump all the modules depended on in.
+foreach my $module (@modules_to_include) {
+    open( my $fh, "<", $module ) or die("Failed to open $module for read");
+    print {$script_fh} "{ # --- BEGIN $module\n";
+    my $in_pod = 0;
+    while ( my $line = <$fh> ) {
+
+        # Strip POD
+        if ( index( $line, '=' ) == 0 ) {
+            if ( index( $line, '=cut' ) == 0 ) {
+                $in_pod = 0;
+                next;
+            }
+            elsif ( $line =~ m{^=(\w+)} ) {
+                print "  Skipping POD =$1\n" if ($verbose);
+                $in_pod = 1;
+            }
+
+        }
+        next if ($in_pod);
+
+        # Skip DATA sections
+        if ( index( $line, '__' ) > -1 && $line =~ m{^\s*__(END|DATA)__} ) {
+            print "  Stripping a $1 section from $module\n" if ($verbose);
+            last;
+        }
+
+        # Skip comment only lines.
+        my $first_comment = index( $line, '#' );
+        next if $first_comment == 0;                             # '#' at beginning of line - no regexp required
+        next if ( $first_comment > 0 && $line =~ m{^\s+\#} );    # '#' in the middle, let's check for space before it
+
+        if ( $in_use_base || index( $line, 'use ' ) > -1 ) {
+
+            # Comment out use () statements already brougt in.
+            if ( $line =~ m{\buse\s+([\w:]+)\s*(?:[\d._]+\s*)?\(\)} ) {
+                my $script_module = $1;
+                if ( grep { $_ eq $script_module } @packages_injected ) {
+                    $line = '# ' . $line;
+                }
+            }
+            elsif ( $in_use_base || $line =~ m{\buse\s+(?:base|parent)\s+(?:qw[(\{]|["'])?(.+)} ) {
+                my $modules = $in_use_base ? $line : $1;
+                $modules =~ s/\n//g;
+                $modules =~ s/#.*?$//;
+                $modules =~ s/\s*;\s*$//;
+
+                $in_use_base = 1;
+                $in_use_base = 0 if ( $modules =~ s{['"\)\}]}{}g );
+
+                $line = '';
+                foreach my $module_name ( split( m{\s+}, $modules ) ) {
+                    next if !$module || !Module::Want::is_ns($module_name);
+                    $line .= "# use $module_name();\n";
+                    $line .= "our \@ISA;\n" unless $our_isa_already{$module}++;
+                    $line .= 'BEGIN { pu' . "sh \@ISA, qw($module_name); }\n";    # The push is split up to avoid erroneously tripping ArrayHashFuncs
+                }
+            }
+            elsif ( $line =~ m{\buse\s+([\w:]+)\s+qw\((.+)\)} ) {
+                my $module = $1;
+                my $qw     = $2;
+                if ( !$safe_to_load->{$module} ) {
+                    $line = "# $line";
+                    $line .= "INIT { $module->import(qw{$qw}); }\n";
+                }
+            }
+            elsif ( $line =~ m{\buse\s+([\w:]+)\s+['"](.+)['"]} ) {
+                my $module = $1;
+                my $qw     = $2;
+                if ( !$safe_to_load->{$module} ) {
+                    $line = "# $line";
+                    $line .= "INIT { $module->import(qw{$qw}); }\n";
+                }
+            }
+        }
+        print {$script_fh} $line;
+    }
+    print {$script_fh} "\n} # --- END $module\n\n\n";
+    $fifth_previous_module  = $forth_previous_module;
+    $forth_previous_module  = $third_previous_module;
+    $third_previous_module  = $second_previous_module;
+    $second_previous_module = $previous_module;
+    $previous_module        = $module;
+}
+
+$cpan_module_found && die("Cannot generate $static_script due to non-core dependencies\n");
+
+# Dump the script in
+print {$script_fh} "package main;\n\n";
+while ( my $line = <$script_source_fh> ) {
+
+    # Strip simple /ULC path injection.
+    $line =~ s{unshift\s+\@INC\s*,\s*'/usr/local/cpanel'\s*;}{;};
+
+    # Comment out the use in the script if we've got it above
+    if ( $line =~ m{\buse\s+([\w:]+)} ) {
+        my $script_module = $1;
+        if ( grep { $_ eq $script_module } @packages_injected ) {
+            $line = '# ' . $line;
+        }
+    }
+    print {$script_fh} $line;
+}
+
+close $script_fh;
+
+exit 0 if $skip_compile;
+
+# Validate the script compiles with system perl to ensure installations work
+# (auto-build servers are running CentOS 5 so even if a sandbox has a newer perl,
+# the auto-build servers will catch issues that only occur on the older perl).
+my @check;
+
+# upcp and updatenow now use 3rdparty/bin/perl when run.
+my $perl_c = $ENV{'USE_CPANEL_PERL_FOR_PERLSTATIC'} ? '/usr/local/cpanel/3rdparty/bin/perl' : '/usr/bin/perl';
+
+if ( -x $perl_c ) {
+    push @check, split( /\n/, scalar Cpanel::SafeRun::Errors::saferunallerrors( $perl_c, "-c", "-Mstrict", $static_script ) );
+
+    # make sure we perl severe compilation errors, such as out of memory, where no message is output #
+    push @check, 'Does not compile' if !@check && ( $? >> 8 );
+}
+else {
+    push @check, "$perl_c does not exist as a file or is not executable";
+}
+
+# Choke if the script doesn't compile clean.
+if ( @check != 1 || $check[0] !~ m/^\Q$static_script syntax OK\E/ ) {
+    print "$perl_c -c $static_script fails compile check:\n\n";
+    print join( "\n", @check, "\n" );
+    unlink($static_script) unless $leave_broken;
+    exit 1;
+}
+
+print "$check[0]\n";
+exit 0;

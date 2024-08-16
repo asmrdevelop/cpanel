@@ -1,0 +1,91 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/cpdig                           Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::cpdig;
+
+use cPstrict;
+
+=encoding utf-8
+
+=head1 NAME
+
+cpdig
+
+=head1 USAGE
+
+    cpdig <name> <type> [--verbose]
+
+=head1 DESCRIPTION
+
+This script performs a DNS query using cPanel’s DNS resolver.
+Its output should yield the same end results as C<dig +trace $name $type>.
+
+cPanel provides this script solely for diagnostic purposes; no cPanel
+& WHM feature requires its use.
+
+=cut
+
+use parent qw( Cpanel::HelpfulScript );
+
+use Cpanel::DNS::Unbound ();
+use Cpanel::NameServers  ();
+
+use constant _OPTIONS        => ('verbose');
+use constant _ACCEPT_UNNAMED => 1;
+
+exit( __PACKAGE__->new(@ARGV)->run() // 0 ) unless caller;
+
+sub run {
+    my ($self) = @_;
+
+    my ( $name, $type ) = $self->getopt_unnamed();
+    die $self->help() if grep { !$_ } $name, $type;
+
+    $type = uc($type);
+
+    if ( $type eq 'NS' ) {
+
+        # requesting DNS::Unbound is not complete when the NS are not setup correctly
+
+        my $list = Cpanel::NameServers::get_nameservers_for_domain($name) // [];
+        say $_ for @$list;
+
+        return;
+    }
+
+    my $dns = Cpanel::DNS::Unbound->new();
+
+    my $ret = $dns->recursive_queries( [ [ $name, $type ] ] )->[0];
+
+    if ( $self->getopt('verbose') ) {
+        print STDERR $ret->{debug};
+    }
+
+    my $data_ar = $ret->{'decoded_data'} || $ret->{result}{data};
+
+    my %FORMATTERS = (
+        'ARRAY' => sub { "@{$_[0]}" },
+        'HASH'  => sub {
+            join ' ', map { "$_=$_[0]->{$_}" } sort keys %{ $_[0] };
+        }
+    );
+
+    foreach my $item ( @{$data_ar} ) {
+        my $type = ref $item;
+
+        if ( $type ne '' && defined $FORMATTERS{$type} ) {
+            $self->_print( $FORMATTERS{$type}->($item) . "\n" );
+        }
+        else {
+            $self->_print("$item\n");
+        }
+    }
+
+    return;
+}
+
+1;

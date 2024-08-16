@@ -1,0 +1,292 @@
+
+[% SET CPANEL.CPVAR.dprefix = "../" %]
+[% SET CPANEL.CPVAR.debug = "0" %]
+
+[%
+
+SET is_webmail = ExpVar.expand('$appname') == "webmail";
+SET errors = [];
+SET actions = [];
+
+IF CPANEL.CPDATA.item('DEMO');
+    errors.push({
+        message => locale.maketext("This feature is disabled in demo mode."),
+        id      => 'error-demo',
+    });
+ELSIF is_webmail && !( FORM.item('account') == CPANEL.authuser);
+    errors.push({
+        message => locale.maketext("You are not allowed to change settings for the user “[output,strong,_1]”.", FORM.item('account')),
+        id      => 'changeSettingsErrorMsg',
+    });
+ELSIF !is_webmail || FORM.item('account') == CPANEL.authuser;
+    SET method = 'process_messages';
+    SET args = {
+        email => FORM.account
+    };
+
+    SWITCH FORM.action;
+        CASE 'deliverall';
+            args.all_like = 1;
+            method = 'deliver_messages';
+        CASE 'deliver';
+            method = 'deliver_messages';
+        CASE 'deleteall';
+            args.all_like = 1;
+            method = 'delete_messages';
+        CASE 'delete';
+            method = 'delete_messages';
+        CASE 'deliverall,whitelist';
+            args.${'action-1'} = 'whitelist';
+            args.${'action-2'} = 'deliverall';
+        CASE 'deliver,whitelist';
+            args.${'action-1'} = 'whitelist';
+            args.${'action-2'} = 'deliver';
+        CASE 'delete,blacklist';
+            args.${'action-1'} = 'blacklist';
+            args.${'action-2'} = 'delete';
+        CASE 'delete,ignorelist';
+            args.${'action-1'} = 'ignore';
+            args.${'action-2'} = 'delete';
+        CASE DEFAULT;
+            errors.push({
+                message => locale.maketext('The requested action, “[_1]”, is not supported.', FORM.multimsg),
+                id => 'unsupported-action',
+            });
+    END;
+
+    IF errors && errors.size() == 0;
+        # Get the messages to process
+        SET message_count = 0;
+        FOREACH id IN FORM.keys.grep('queuefile-[0-9]+');
+            args.$id = FORM.$id;
+            message_count = message_count + 1;
+        END;
+
+        SET response = execute('BoxTrapper', method, args);
+        IF !response.status;
+            FOREACH error IN response.errors;
+                errors.push({
+                    message => error,
+                    id      => 'error-' _ loop.index(),
+                });
+            END;
+        ELSE;
+            SET actions = response.data();
+            SET some_failed = 0;
+            SET some_warned = 0;
+            SET success_count = 0;
+            SET message = '';
+            FOREACH action IN actions;
+                IF action.failed;
+                    some_failed = some_failed + 1;
+                ELSIF action.warning;
+                    some_warned = some_warned + 1;
+                ELSE;
+                    success_count = success_count + 1;
+                END;
+            END;
+            IF success_count == actions.size();
+                SWITCH FORM.action;
+                    CASE 'deliverall,whitelist';
+                       SET message = locale.maketext("The system whitelisted and delivered all messages with any of the senders from the requested [numerate,_1,message,messages].", message_count);
+                    CASE 'deliver,whitelist';
+                        SET message = locale.maketext("The system whitelisted and delivered the requested [numerate,_1,message,messages].", message_count);
+                    CASE 'deliverall';
+                        SET message = locale.maketext("The system delivered the messages with any of the senders in the requested [numerate,_1,message,messages].", message_count);
+                    CASE 'deliver';
+                        SET message = locale.maketext("The system delivered the requested [numerate,_1,message,messages].", message_count);
+                    CASE 'delete';
+                        SET message = locale.maketext("The system deleted the requested [numerate,_1,message,messages].", message_count);
+                    CASE 'deleteall';
+                       SET message = locale.maketext("The system deleted all the message with the any of the senders from the requested [numerate,_1,message,messages].", message_count);
+                    CASE 'delete,blacklist';
+                        SET message = locale.maketext("The system blacklisted the sender and deleted the [numerate,_1,message,messages].", message_count);
+                    CASE 'delete,ignorelist';
+                        SET message = locale.maketext("The system now ignores the sender and deleted the [numerate,_1,message,messages].", message_count);
+                END;
+            ELSIF some_failed > 0 && success_count > 0;
+                SWITCH FORM.action;
+                    CASE 'deliverall,whitelist';
+                       SET message = locale.maketext("The system whitelisted and delivered all messages with any of the senders from the requested [numerate,_1,message,messages], but there were errors for some of the [numerate,_1,message,messages].", message_count, some_failed);
+                    CASE 'deliver,whitelist';
+                       SET message = locale.maketext("The system whitelisted and delivered some of the requested [numerate,_1,message,messages], but there were errors for [numerate,_2,one of the message,some of the messages].", message_count, some_failed);
+                    CASE 'deliverall';
+                        SET message = locale.maketext("The system delivered the messages with any of the senders in the requested [numerate,_1,message,messages], but there were errors for [numerate,_2,one message,some of the messages].", message_count, some_failed);
+                    CASE 'deliver';
+                        SET message = locale.maketext("The system delivered the requested [numerate,_1,message,messages], but there were errors for [numerate,_2,one message,some of the messages].", message_count, some_failed);
+                    CASE 'delete';
+                       SET message = locale.maketext("The system deleted some of the requested [numerate,_1,message,messages], but there were errors for [numerate,_2,one message,some of the messages].", message_count, some_failed);
+                    CASE 'deleteall';
+                       SET message = locale.maketext("The system deleted all the messages with the any of the senders from the requested [numerate,_1,message,messages], but there were errors for [numerate,_2,one message,some of the messages].", message_count, some_failed);
+                    CASE 'delete,blacklist';
+                        SET message = locale.maketext("The system blacklisted the senders and deleted the [numerate,_1,message,messages], but there were errors for [numerate,_2,one message,some of the messages].", message_count, some_failed);
+                    CASE 'delete,ignorelist';
+                        SET message = locale.maketext("The system now ignores the senders and deleted the [numerate,_1,message,messages], but there were errors for [numerate,_2,one message,some of the messages].", message_count, some_failed);
+                END;
+            ELSIF some_failed > 0 && success_count == 0;
+                SWITCH FORM.action;
+                    CASE 'deliverall,whitelist';
+                       SET message = locale.maketext("The system failed to whitelist and delivered the requested [numerate,_1,message,messages].", message_count);
+                    CASE 'deliver,whitelist';
+                       SET message = locale.maketext("The system failed to whitelist and deliver the requested [numerate,_1,message,messages].", message_count);
+                    CASE 'deliverall';
+                        SET message = locale.maketext("The system failed to deliver the requested [numerate,_1,message,messages].", message_count);
+                    CASE 'deliver';
+                        SET message = locale.maketext("The system failed to deliver the requested [numerate,_1,message,messages].", message_count);
+                    CASE 'delete';
+                       SET message = locale.maketext("The system failed to delete the requested [numerate,_1,message,messages].", message_count);
+                    CASE 'deleteall';
+                       SET message = locale.maketext("The system failed to delete the requested [numerate,_1,message,messages].", message_count);
+                    CASE 'delete,blacklist';
+                        SET message = locale.maketext("The system failed to blacklist the senders and delete the [numerate,_1,message,messages].", message_count);
+                    CASE 'delete,ignorelist';
+                        SET message = locale.maketext("The system failed to ignore the senders and delete the [numerate,_1,message,messages].", message_count);
+                END;
+            ELSIF some_warned > 0;
+                SWITCH FORM.action;
+                    CASE 'deliverall,whitelist';
+                       SET message = locale.maketext("The system whitelisted and delivered all messages with any of the senders from the requested [numerate,_1,message,messages], but there were warnings for [numerate,_2,one of the messages,some of the messages].", message_count, some_warned);
+                    CASE 'deliver,whitelist';
+                       SET message = locale.maketext("The system white listed and delivered the requested [numerate,_1,message,messages], but there were warnings for [numerate,_2,one of the messages,some of the messages].", message_count, some_warned);
+                    CASE 'deliverall';
+                        SET message = locale.maketext("The system delivered the messages with any of the senders in the requested [numerate,_1,message,messages], but there were warnings for [numerate,_2,one message,some of the messages].", message_count, some_warned);
+                    CASE 'deliver';
+                        SET message = locale.maketext("The system delivered the requested [numerate,_1,message,messages], but there were warnings for [numerate,_2,one message,some of the messages].", message_count, some_warned);
+                    CASE 'delete';
+                       SET message = locale.maketext("The system deleted the requested [numerate,_1,message,messages], but there were warnings for [numerate,_2,one of the messages,some of the messages].", message_count, some_warned);
+                    CASE 'deleteall';
+                       SET message = locale.maketext("The system deleted all the message with the any of the senders from the requested [numerate,_1,message,messages], but there were warnings for [numerate,_2,one of the messages,some of the messages].", message_count, some_warned);
+                    CASE 'delete,blacklist';
+                        SET message = locale.maketext("The system blacklisted the sender and deleted the [numerate,_1,message,messages], but there were warnings for [numerate,_2,one of the messages,some of the messages].", message_count, some_warned);
+                    CASE 'delete,ignorelist';
+                        SET message = locale.maketext("The system now ignores the sender and deleted the [numerate,_1,message,messages], but there were warnings for [numerate,_2,one of the messages,some of the messages].", message_count, some_warned);
+                END;
+            END;
+        END;
+    END;
+END;
+%]
+
+[% WRAPPER '_assets/master.html.tt'
+    app_key          = 'boxtrapper',
+    page_stylesheets = ['mail/boxtrapper.css'],
+%]
+<div class="body-content" id="boxtrapper-multi-message-action">
+    <h2 id="hdrBoxtrapperMultiMsg">
+    [% locale.maketext("Updating …") %]
+    </h2>
+
+    [% IF errors.size() > 0;
+        FOREACH error IN errors %]
+    <div class="alert alert-danger" role="alert">
+        <span class='glyphicon glyphicon-remove-sign' aria-hidden="true"></span>
+        <div class='alert-message'>
+            <strong class="alert-title">
+                [% locale.maketext('Error:') %]
+            </strong>
+            <span class="alert-body">
+                <span id="[% error.id %]">
+                    [% error.message.html() %]
+                </span>
+            </span>
+        </div>
+    </div>
+    [%  END %]
+    [% END %]
+
+    [% IF !errors.size() %]
+    <div id="boxtrapperQueue">
+        <p>[% locale.maketext("[asis,BoxTrapper] queue for the account “[output,strong,_1]”.", FORM.item('account')) %]</p>
+    </div>
+
+    [%  IF success_count > 0 %]
+    <div class="alert alert-success" role="alert">
+        <span class='glyphicon glyphicon-ok-sign' aria-hidden="true"></span>
+        <div class='alert-message'>
+            <strong class="alert-title">
+                [% locale.maketext('Success:') %]
+            </strong>
+            <span class="alert-body">
+                <span id="success-overview">
+                    [% message.html() %]
+                </span>
+            </span>
+        </div>
+    </div>
+    [%  ELSIF some_failed > 0 %]
+    <div class="alert alert-danger" role="alert">
+        <span class='glyphicon glyphicon-remove-sign' aria-hidden="true"></span>
+        <div class='alert-message'>
+            <strong class="alert-title">
+                [% locale.maketext('Error:') %]
+            </strong>
+            <span class="alert-body">
+                <span id="failed-overview">
+                    [% message.html() %]
+                </span>
+                <div class="details">
+                    <ul>
+                    [% FOREACH action IN actions;
+                        SET reason = action.reason;
+                        SET serial = reason.to_string();
+                        IF serial;
+                            reason = serial;
+                        END;
+                        IF action.failed %]
+                        <li>
+                            [% reason.html() %]
+                        </li>
+                    [%  ELSIF action.warning %]
+                        <li>
+                            [% reason.html() %]
+                        </li>
+                    [%    END;
+                       END %]
+                    </ul>
+                </div>
+            </span>
+        </div>
+    </div>
+    [%  ELSIF some_warned > 0 %]
+    <div class="alert alert-warning" role="alert">
+        <span class='glyphicon glyphicon-exclamation-sign' aria-hidden="true"></span>
+        <div class='alert-message'>
+            <strong class="alert-title">
+                [% locale.maketext('Warning:') %]
+            </strong>
+            <span class="alert-body">
+                <span id="warning-overview">
+                    [% message.html() %]
+                </span>
+                <div class="details">
+                    <ul>
+                    [% FOREACH action IN actions;
+                        SET reason = action.reason;
+                        SET serial = reason.to_string();
+                        IF serial;
+                            reason = serial;
+                        END;
+                        IF action.warning; %]
+                        <li>
+                            [% reason.html() %]
+                        </li>
+                    [%   END;
+                       END %]
+                    </ul>
+                </span>
+            </span>
+        </div>
+    </div>
+    [%  END %]
+    [% END %]
+
+    <ul class="list-inline text-center">
+        <li>
+            [% INCLUDE _assets/return_link.html.tt id_prefix='lnkShowq', return_location='showq.html' post='1' formdata=FORM return_link_text=locale.maketext('Go Back') %]
+        </li>
+        <li>
+            [% INCLUDE _assets/return_link.html.tt return_location='manage.html' post='1' formdata=FORM return_link_text=locale.maketext('Go Back to BoxTrapper Configuration') %]
+        </li>
+    </ul>
+</div>
+[% END %]

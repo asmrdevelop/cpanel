@@ -1,0 +1,46 @@
+[%#
+Variables passed in:
+
+origin              - the system component from which the request originated
+
+suspicious_user     - a user that has UID 0 and is not 'root' or 'toor'
+reason              - localized reason for what suspicious activity is occurring
+
+For more information about how to customize notification templates, read our documentation at https://go.cpanel.net/notificationtemplates
+
+-%]
+
+[%
+    PROCESS "include/colors.tmpl";
+    PROCESS "include/styles.tmpl";
+    PROCESS "include/code_block.tmpl";
+
+    WRAPPER 'wrapper/main.html.tmpl';
+
+    NOTICE.email_reason = CPANEL.locale.maketext('Possible hack detected.');
+%]
+
+[% IF NOTICE.reason %]
+    <p>
+        [%
+            CPANEL.locale.maketext('The system has detected failed attempts to create new directories or files whose filenames begin with numbers. This usually indicates a root compromise of the server.');
+        %]
+    </p>
+    <p>
+        [%
+            CPANEL.locale.maketext('The exact error encountered was:');
+        %]
+    </p>
+    <p>
+        [% code_block(formatted_code=NOTICE.reason.html()); %]
+    </p>
+[% ELSE %]
+    <p>
+        [% CPANEL.locale.maketext('IMPORTANT: Do not ignore this email.') %]
+    </p>
+    <p>
+        [% CPANEL.locale.maketext('This message is to inform you that the account “[_1]” has user ID 0 ([asis,root] privileges). This may indicate that your system is compromised. To be safe, you should verify that your system is not compromised.', NOTICE.suspicious_user); %]
+    </p>
+[% END %]
+
+[% END %]

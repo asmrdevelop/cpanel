@@ -1,0 +1,116 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/locale_info                     Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+use warnings;
+use Cpanel::Locale        ();
+use Cpanel::SafeDir::Read ();
+use Getopt::Param::Tiny   ();
+use Cpanel::Themes::Get   ();
+use Cpanel::YAML::Syck    ();
+
+my $prm = Getopt::Param::Tiny->new(
+    {
+        'no_args_help' => 1,
+        'help_coderef' => sub {
+            print <<"END_HELP";
+
+Usage: $0 {Options}
+
+Provide information about existing cPanel-based locales.
+
+Options:
+
+   --help                 This help screen
+
+   --list                 List available locales (aside from default's aliases en_us and i_default)
+
+   --locale={locale_tag}  Show information about the locale specified by {locale_tag} (e.g. --locale=en)
+
+   --file                 Show the given locale's file information
+
+   --theme={theme_name}   Same as option "--file" but in the context of the given theme specified by {theme_name} (e.g. --theme=x3)
+
+   --3rdparty             Show the given locale's 3rdparty mapping
+
+END_HELP
+            exit;
+        },
+    }
+);
+
+my $locale = Cpanel::Locale->get_handle();
+
+if ( $prm->param('list') ) {
+    print YAML::Syck::Dump( [ sort 'en', $locale->list_available_locales() ] );
+}
+else {
+
+    my $theme = '';
+    if ( $prm->param('theme') ) {
+
+        # this should be a method and also used in locale compiler
+        my @theme_list;
+        foreach my $theme_dir ( Cpanel::SafeDir::Read::read_dir('/usr/local/cpanel/base/frontend') ) {
+            next if $theme_dir =~ m/^\./;
+            next if -l '/usr/local/cpanel/base/frontend/' . $theme_dir;
+            next if !Cpanel::Themes::Get::is_usable_theme($theme_dir);
+            push @theme_list, $theme_dir;
+        }
+
+        if ( grep { $prm->param('theme') eq $_ } @theme_list ) {
+            $theme = $prm->param('theme');
+            $prm->param( 'file', 1 );    # get into file context
+        }
+        else {
+            print $locale->maketext( qq{Invalid value for \xE2\x80\x9C[_1]\xE2\x80\x9D.}, '--theme' ) . "\n";
+            print $prm->help();
+            exit 1;
+        }
+    }
+
+    my $loc = $prm->param('locale') || '';    # do not default to 'en', promote explicitly asking for what you want
+    my $working_locale;
+    if ( $loc eq 'en' || $loc eq 'en_us' || $loc eq 'i_default' ) {
+        local $Cpanel::CPDATA{'RS'} = $theme;    # TODO: This doesn't seem to work. It works below and from CLI though ...
+        $working_locale = Cpanel::Locale->get_handle('en_us');
+    }
+    else {
+        if ( $loc && grep { $loc eq $_ } $locale->list_available_locales() ) {
+            local $Cpanel::CPDATA{'RS'} = $theme;
+            $working_locale = Cpanel::Locale->get_handle($loc);
+        }
+        else {
+            print $locale->maketext( qq{Invalid value for \xE2\x80\x9C[_1]\xE2\x80\x9D.}, '--locale' ) . "\n";
+            print $prm->help();
+            exit 1;
+        }
+    }
+
+    if ( $prm->param('3rdparty') ) {
+        for my $third_party ( $working_locale->cpanel_get_3rdparty_list() ) {
+            print "$third_party: " . $working_locale->cpanel_get_3rdparty_lang($third_party) . "\n";
+        }
+    }
+    elsif ( $prm->param('file') ) {
+
+        # TODO: one or more --key == "info" about key (does not exist, has this value, etc)
+        print 'CDB File: ' . $working_locale->get_cdb_file_path() . "\n";
+
+        my $class = $working_locale->get_language_class();
+
+        no strict 'refs';
+        print "Version: ${$class . '::VERSION'}\n";
+        print "Encoding: ${$class . '::Encoding'}\n";
+
+        print "Build info:\n" . $working_locale->maketext('__FORENSIC') . "\n";    ## no extract maketext
+    }
+    else {
+        require Cpanel::Locale::Utils::Display;
+        print YAML::Syck::Dump( Cpanel::Locale::Utils::Display::get_locale_menu_hashref($working_locale) );
+    }
+}

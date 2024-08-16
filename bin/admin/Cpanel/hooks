@@ -1,0 +1,89 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - bin/admin/Cpanel/hooks                  Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+#----------------------------------------------------------------------
+# TODO: Refactor this as a modulino that subclasses Cpanel::AdminBin::Script.
+#----------------------------------------------------------------------
+
+use strict;
+
+BEGIN {
+    @INC = grep( !/(^\.|\.\.|\/\.+)/, @INC );
+}
+
+use XML::Simple                    ();
+use Whostmgr::XMLUI                ();
+use Cpanel::AdminBin::Serializer   ();
+use Cpanel::Config::LoadCpUserFile ();
+use Cpanel::Config::HasCpUserFile  ();
+use Cpanel::Sys::Hostname          ();
+use IPC::Open3                     ();
+use Cpanel::PwCache                ();
+use Cpanel::PwCache::Helpers       ();
+use Cpanel::PwDiskCache            ();
+$XML::Simple::PREFERRED_PARSER = "XML::SAX::PurePerl";
+
+alarm(600);
+
+my %SECURE_PWCACHE;
+tie %SECURE_PWCACHE, 'Cpanel::PwDiskCache';
+Cpanel::PwCache::Helpers::init( \%SECURE_PWCACHE );
+
+my $hostname = Cpanel::Sys::Hostname::gethostname();
+
+$SIG{'TERM'} = sub { return; };
+$SIG{'PIPE'} = sub { return; };
+$SIG{'USR1'} = sub { return; };
+$SIG{'USR2'} = sub { return; };
+$SIG{'HUP'}  = sub { return; };
+
+my $uid = $ARGV[0];
+
+my $hookname = <STDIN>;
+chomp($hookname);
+
+if ( $hookname !~ /^[a-zA-Z0-9-_]+\:\:[a-zA-Z0-9-_]+$/ ) {
+    warn "\'$hookname\' is not a valid API function.";
+    exit 1;
+}
+
+$hookname =~ s/\.\.//g;
+$hookname =~ s/\///g;
+
+my ( $user, $gid, $home ) = ( Cpanel::PwCache::getpwuid_noshadow( int($uid) ) )[ 0, 3, 7 ];
+
+if ( !$user ) {
+    die "'$uid' is not a valid user id.\n";
+}
+if ( !Cpanel::Config::HasCpUserFile::has_cpuser_file($user) ) {
+    die "'$user' is not a valid user.\n";
+}
+my $cpdata_ref = Cpanel::Config::LoadCpUserFile::loadcpuserfile($user);
+
+my ( $hookdir, $hook ) = split( /::/, $hookname );
+exit if ( $hookname eq '' || !-x "/usr/local/cpanel/hooks/${hookdir}/${hook}" );
+
+my $check = <STDIN>;
+chomp($check);
+if ( $check ne '.' ) { warn "Error parsing hook input\n"; exit(1); }
+my $sref = Cpanel::AdminBin::Serializer::LoadFile( \*STDIN, $Cpanel::AdminBin::Serializer::MAX_PRIV_LOAD_LENGTH );
+
+Whostmgr::XMLUI::xmlencode( $sref->{'params'}, 1 );
+Whostmgr::XMLUI::xmlencode( $sref->{'result'}, 1 );
+Whostmgr::XMLUI::xmlencode( $cpdata_ref,       1 );
+
+my $hookxml  = XML::Simple::XMLout( $sref,                                                          'RootName' => 'cpanelevent', 'NoAttr' => 1 );
+my $localxml = XML::Simple::XMLout( { 'user' => $user, 'server' => $hostname, 'homedir' => $home }, 'RootName' => 'userinfo',    'NoAttr' => 1 );
+my $cpxml    = XML::Simple::XMLout( $cpdata_ref,                                                    'RootName' => 'CPDATA',      'NoAttr' => 1 );
+my $pid      = IPC::Open3::open3( \*HOOKWRITE, \*HOOKRES, ">&STDERR", '/usr/local/cpanel/hooks/' . $hookdir . '/' . $hook, $uid );
+print HOOKWRITE "<xml>$hookxml\n$cpxml</xml>";
+close(HOOKWRITE);
+while (<HOOKRES>) {
+    print;
+}
+waitpid( $pid, 0 );
+exit( $? >> 8 );

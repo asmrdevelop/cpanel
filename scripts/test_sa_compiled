@@ -1,0 +1,31 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/test_sa_compiled                Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use Mail::SpamAssassin;
+if ($Mail::SpamAssassin::VERSION) {
+    my ($perl_version) = ( $] =~ /^(\d\.\d\d\d)/ );
+    unshift @INC,
+      (
+        -e "/var/lib/spamassassin/compiled/$perl_version/$Mail::SpamAssassin::VERSION"
+        ? "/var/lib/spamassassin/compiled/$perl_version/$Mail::SpamAssassin::VERSION"
+        : "/var/lib/spamassassin/compiled/$Mail::SpamAssassin::VERSION"
+      );
+}
+
+if (@ARGV) {
+    unshift @INC, $ARGV[0];
+}
+
+# used by update_spamassassin_config to determine if sa-compile generated a working body_0 XS module
+eval {
+    require Mail::SpamAssassin::CompiledRegexps::body_0;
+
+    my $string = 'test';
+    my $match  = Mail::SpamAssassin::CompiledRegexps::body_0::scan($string);
+
+    print "ok\n";
+};

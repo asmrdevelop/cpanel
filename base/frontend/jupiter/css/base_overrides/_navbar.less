@@ -1,0 +1,433 @@
+@import (reference) "variables/_main";
+
+@search-input-width: 345px;
+@search-input-width-xs: 245px;
+
+.navbar-cpanel {
+    background-color: @primary-background;
+    border-color: @shade-medium;
+    box-shadow: none;
+}
+
+.navbar-brand {
+    @media (max-width: @screen-sm) {
+        html[dir="ltr"] & {
+            margin-left: inherit;
+        }
+
+        html[dir="rtl"] & {
+            margin-right: inherit;
+        }
+    }
+
+    // Text color for company name (shown if no logo is provided)
+    &.navbar-brand-str {
+        color: rgba(@primary-dark, 80%);
+
+        &:hover {
+            color: @primary-dark;
+        }
+    }
+}
+
+.navbar-brand-logo {
+    max-width: 250px;
+
+    &.navbar-brand-cpan-logo {
+        height: 20px;
+        width: 90px;
+    }
+
+    @media (max-width: @screen-xxs-max) {
+        max-height: @navbar-height;
+    }
+}
+
+@media (max-width: @screen-sm) {
+    // TODO: This is not a good way to handle clearing navbar. Revise once dependency on base.less is removed
+    body {
+        padding-top: (@navbar-height / 2);
+    }
+
+    .navbar-preferences,
+    header .navbar {
+        height: @navbar-height;
+        min-height: @navbar-height;
+    }
+
+    #lnkHeaderDiskUsage,
+    #btnUserPref,
+    #btnMobileHeaderSearch,
+    a.link-buttons,
+    #lnkHeaderHome,
+    .cp-nav-toggle {
+        height: @navbar-height;
+        min-height: @navbar-height;
+    }
+
+    a.link-buttons {
+        // values from desktop from base.less, have to undo a CSS overwrite for mobile which exists in base.less
+        padding: 6px 12px;
+        line-height: 37px;
+    }
+}
+
+.quickFindDiv {
+    // Navbar search input icon
+    &:after {
+        display: inline-block;
+        color: @shade-hard;
+        left: 12px;
+        z-index: 0;
+    }
+
+    html[dir="rtl"] &:after {
+        right: 12px;
+        left: auto;
+    }
+
+    .dropdown-menu {
+        width: 100%;
+
+        @media (min-width: @screen-xs-min) {
+            width: @search-input-width-xs;
+        }
+
+        @media (min-width: @screen-sm-min) {
+            width: @search-input-width;
+        }
+    }
+
+    // NOTE: Navbar search CSS should be refactored to use class rather than ID selectors once base.less dependency is removed.
+    input#txtQuickFind {
+        display: inline-block; // This is needed because Bootstrap only maintains this rule until the xs breakpoint
+        height: 34px;
+        width: @search-input-width-xs;
+
+        @media (min-width: @screen-sm-min) {
+            width: @search-input-width;
+        }
+
+        border-radius: @border-radius;
+        border: @input-border;
+
+        background-color: @input-background;
+        color: @shade-hard;
+        opacity: inherit;
+
+        -webkit-box-shadow: inherit;
+        box-shadow: inherit;
+
+        text-indent: 24px;
+        margin-right: 12px;
+
+        html[dir="rtl"] & {
+            border: @input-border;
+            margin-right: 0;
+            margin-left: 12px;
+        }
+
+        &:active,
+        &:hover,
+        &:focus {
+            background-color: @input-focus-background;
+            border: @input-focus-border;
+            color: @primary-dark;
+            opacity: inherit;
+        }
+    }
+}
+
+.navbar-preferences {
+    .dropdown-menu {
+        overflow: hidden; // Enforce border-radius
+        border-radius: @border-radius;
+        border: 1px solid @shade-medium;
+
+        @media (max-width: @screen-xxs-max) {
+            // Hides bottom border of navbar
+            top: (@navbar-height - 2px);
+            width: 100vw;
+            min-width: 100vw;
+
+            border: none;
+            -webkit-box-shadow: none;
+            box-shadow: none;
+
+            margin-right: 0;
+            margin-left: 0;
+
+            // Allows menu to scroll as needed on landscape mobile devices
+            overflow-y: auto;
+            max-height: calc(100vh - @navbar-height);
+        }
+    }
+
+    // Search results and user preferences dropdown
+    .dropdown-menu > li > a {
+        border-bottom: 1px solid @shade-medium;
+        color: @primary-dark;
+        padding: 15px 20px;
+
+        &:before {
+            color: rgba(@primary-dark, 80%);
+        }
+    }
+
+    // We can't rely on :last-child for the search results,
+    // since they are only hidden and not removed from the DOM.
+    .dropdown-menu > .show-option ~ .show-option > a {
+        border-bottom: none;
+        border-top: 1px solid @shade-medium;
+    }
+
+    .dropdown-menu > li:last-child > a {
+        border-bottom: none;
+        border-top: 1px solid @shade-hard;
+    }
+
+    .dropdown-menu > li > a:hover,
+    .dropdown-menu > li > a:focus,
+    .dropdown-menu > .active > a,
+    .dropdown-menu > .active > a:hover,
+    .dropdown-menu > .active > a:focus {
+        background-color: @shade-light;
+        color: @primary-dark;
+
+        @media (max-width: @screen-xxs-max) {
+            background-color: transparent;
+        }
+    }
+
+    // No search results
+    .dropdown-menu > li[data-type="no-results"] {
+        color: @primary-dark;
+        padding: 15px 20px;
+    }
+
+    #lnkHeaderLogout:before {
+        font-family: "Font Awesome 5 Free";
+        font-weight: 900;
+        content: "\f2f5";
+        display: inline-block;
+        padding: 5px;
+        vertical-align: middle;
+    }
+}
+
+// User menu & notification bell
+#btnUserPref,
+a.link-buttons,
+#btnMobileHeaderSearch,
+#btnMobileClearHeaderSearch {
+    background-color: transparent;
+    color: @icon;
+    border: none;
+    margin: 0;
+
+    &:hover,
+    &:active,
+    &:focus {
+        background-color: transparent;
+        color: @icon-active;
+    }
+}
+
+.btn-notifications {
+    > .notification-badge {
+        color: @primary;
+        background-color: @primary;
+        border-radius: 50%;
+        width: 8px;
+        height: 8px;
+        min-width: 8px;
+        opacity: 1;
+
+        position: absolute;
+        left: 27px;
+        top: 12px;
+    }
+
+    // Hide notification bell when user menu is open on mobile
+    .menu-open & {
+        @media (max-width: @screen-xxs-max) {
+            display: none;
+        }
+    }
+}
+
+.user-preferences-btn {
+    // Fix minor vertical misalignment between notification bell & user icon
+    .user-icon {
+        padding-bottom: 4px;
+    }
+
+    .caret {
+        html[dir="ltr"] & {
+            margin-left: 4px;
+        }
+
+        html[dir="rtl"] & {
+            margin-left: 0;
+            margin-right: 4px;
+        }
+    }
+}
+
+.user-menu-close {
+    display: none;
+}
+
+@media (max-width: @screen-xxs-max) {
+    .dropdown.open {
+        .user-menu-close {
+            display: inline;
+        }
+
+        #userImg,
+        #lblUserNameTxt,
+        #caretImg {
+            display: none;
+        }
+
+        // Prevent user menu button shrinking when user icon becomes "x" icon
+        .user-preferences-btn {
+            min-width: 55px;
+        }
+    }
+}
+
+// Do not show the search button when the user menu is open on mobile
+.menu-open #btnMobileHeaderSearch {
+    display: none;
+}
+
+#userPrefMenu .dropdown-menu {
+    min-width: 330px;
+}
+
+/* Styles specific to the mobile search button and bar */
+
+#btnMobileClearHeaderSearch {
+    display: none;
+    cursor: pointer;
+}
+
+@media (min-width: @screen-xs-min) {
+    // No need to show mobile-specific controls
+    #btnMobileHeaderSearch {
+        display: none;
+    }
+}
+
+@media (max-width: @screen-xxs-max) {
+    // The search input is hidden by default on mobile
+    #typeAheadComponent {
+        display: none;
+    }
+
+    .navbar.search-component-focused {
+        // When the search input is focused, we hide all of the usual elements in the navbar
+        #lnkHeaderHome,
+        #lnkHeaderNotifications,
+        #userPrefMenu,
+        #btnMobileHeaderSearch {
+            display: none;
+        }
+
+        .navbar-preferences {
+            // Remove rules that make it difficult for a simple layout
+            font-size: 1em;
+            position: static;
+            float: none;
+
+            // This also serves no purpose for us and causes shifts
+            &::before {
+                display: none;
+            }
+        }
+
+        #typeahead-menu {
+            border-radius: 0;
+        }
+
+        #txtQuickFind {
+            position: relative;
+            z-index: 1;
+
+            background: transparent;
+            border: none;
+            height: 100%;
+            width: 100%;
+            padding: 0;
+            border-radius: 0;
+            text-indent: 45px;
+
+            html[dir="ltr"] & {
+                padding-right: 0;
+            }
+
+            html[dir="rtl"] & {
+                padding-left: 0;
+            }
+
+            // Overrides for .input-sm since we can't remove the class
+            font-size: 14px;
+            line-height: 1.42857143;
+
+            &:active,
+            &:hover,
+            &:focus {
+                background-color: transparent;
+            }
+        }
+
+        #typeAheadComponent {
+            display: block;
+            height: 100%;
+            padding: 0;
+
+            position: relative;
+
+            #btnMobileClearHeaderSearch {
+                display: inline-block;
+                padding: 10px;
+
+                position: absolute;
+                z-index: 2;
+                top: 50%;
+                transform: translateY(-50%);
+
+                html[dir="ltr"] & {
+                    left: auto;
+                    right: 0;
+                }
+
+                html[dir="rtl"] & {
+                    left: 0;
+                    right: auto;
+                }
+            }
+
+            // This is the search icon that shows up before the input
+            &::after {
+                font-size: 1.33333em; // Equivalent to fa-lg
+                color: @icon;
+                padding: 10px;
+
+                position: absolute;
+                z-index: 0;
+                top: 50%;
+                transform: translateY(-50%);
+
+                html[dir="ltr"] & {
+                    left: 0;
+                }
+
+                html[dir="rtl"] & {
+                    right: 0;
+                }
+            }
+        }
+    }
+}

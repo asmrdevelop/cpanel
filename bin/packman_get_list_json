@@ -1,0 +1,76 @@
+#!/usr/local/cpanel/bin/python-packman
+# -*- coding: utf-8 -*-
+
+# cpanel - bin/packman_get_list_json               Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+# NOTE: We purposefully set this to the system python
+#       because we need to interact with the system yum library.
+
+import sys
+import packman
+
+packman.init_yum()
+
+want_types = {}
+mypatterns = []
+
+if len(sys.argv) > 1 and sys.argv[1] is not None:
+    for type in sys.argv[1].split(","):
+        want_types[type] = 1
+
+if len(sys.argv) > 2 and sys.argv[2] is not None:
+    mypatterns = [sys.argv[2] + "*"]
+
+# We collapse the list of packages, so when fetching 'all'
+# we don't need to fetch the updates available.
+
+if not list(want_types.keys()) or want_types.get("all"):
+    want_types = {"installed": 1, "available": 1, "updates": 0}
+
+# can specify all, installed, updates, available
+
+available_pkgs = []
+installed_pkgs = []
+updatable_pkgs = []
+
+if want_types.get("installed") and want_types.get("available"):
+    ygh = packman.doPackageLists(pkgnarrow="all", patterns=mypatterns)
+    available_pkgs = ygh.available
+    installed_pkgs = ygh.installed
+elif want_types.get("installed"):
+    installed_pkgs = packman.doPackageLists(
+        pkgnarrow="installed", patterns=mypatterns
+    ).installed
+elif want_types.get("available"):
+    available_pkgs = packman.doPackageLists(
+        pkgnarrow="available", patterns=mypatterns
+    ).available
+
+# pkgnarrow='all' does not get updates
+
+if want_types.get("updates"):
+    updatable_pkgs = packman.doPackageLists(
+        pkgnarrow="updates", patterns=mypatterns
+    ).updates
+
+pkg_list = []
+pkgs = available_pkgs + installed_pkgs + updatable_pkgs
+for pkg in pkgs:
+    pkg_list.append(pkg.name)
+
+# remove dupes
+
+pkg_list = set(pkg_list)
+pkg_list = list(pkg_list)
+
+packman.output_json(pkg_list)
+
+# this optimization allows the caller
+# to be unblocked a tiny bit quicker
+
+sys.stdout.close()
+sys.stderr.close()
+sys.exit(0)

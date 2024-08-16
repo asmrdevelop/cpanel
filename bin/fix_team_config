@@ -1,0 +1,192 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - bin/fix_team_config                    Copyright 2023 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package bin::fix_team_config;
+
+use cPstrict;
+
+use Getopt::Long;
+use Cpanel::Config::LoadCpUserFile ();
+use Cpanel::Team::Config           ();
+use Cpanel::Team::Config::Version  ();
+use Cpanel::Team::Constants        ();
+use Cpanel::Validate::Username     ();
+
+my $script = ( $0 =~ m{/([^/]+)$} )[0];    # Snag file name and toss the path.
+
+my %cPanel_releases = (
+    108 => 'v0.2',
+    110 => 'v0.2',
+    112 => 'v1.0',
+);
+
+our $opts;
+
+run(@ARGV) if !caller();
+
+sub run {
+
+    my @argv = @_;
+
+    Getopt::Long::Configure("no_ignore_case");
+    my $ok = Getopt::Long::GetOptionsFromArray(
+        \@argv,
+        "dry-run|n" => \$opts->{dry_run},
+        "detect|d"  => \$opts->{detect},
+        "keep|k"    => \$opts->{keep},
+        "nofix"     => \$opts->{nofix},
+        "remove"    => \$opts->{remove},
+        "all|a"     => \$opts->{do_all},
+        "v"         => \$opts->{verbose},
+        "version:s" => \$opts->{version},
+        "help|h|?"  => \$opts->{help},
+    );
+
+    if ( $opts->{help} ) {
+        _show_help( \*STDOUT );
+        return $ok;
+    }
+
+    if ( !$ok ) {
+        _show_help( \*STDERR );
+        return $ok;
+    }
+
+    $opts->{verbose} = 1 if $opts->{dry_run};    # Dry run forces verbose.
+
+    if ( defined $opts->{version} && length $opts->{version} > 0 ) {
+        if ( $opts->{version} =~ /^\d+$/ ) {     # Probably a cPanel release version
+            if ( exists $cPanel_releases{ $opts->{version} } ) {
+                $opts->{version} = $cPanel_releases{ $opts->{version} };
+            }
+            else {
+                die "Unsupported version: '$opts->{version}'.\n";
+            }
+        }
+        elsif ( $opts->{version} !~ /^v\d+(?:\.\d+)*$/ ) {
+            die "Not a valid version format: '$opts->{version}'.\n";
+        }
+    }
+    my $target_version = $opts->{version} || $Cpanel::Team::Constants::LATEST_CONFIG_VERSION;
+
+    if ( !exists $Cpanel::Team::Config::Version::known_versions{$target_version} ) {
+        die "Unknown target version: '$opts->{version}'.\n";
+    }
+
+    if ( !-e $Cpanel::Team::Constants::TEAM_CONFIG_DIR ) {
+        die "No teams exist on this server.  Nothing to do.\n";
+    }
+    my @teams    = ();
+    my $team_cnt = 0;
+    if ( $opts->{do_all} ) {
+        opendir DH, $Cpanel::Team::Constants::TEAM_CONFIG_DIR or die "Cannot open team configuration directory because $!\n";
+        @teams = sort grep { !-d "$Cpanel::Team::Constants::TEAM_CONFIG_DIR/$_" && !/(?:\.lock-|~$)/ } readdir DH;
+        closedir DH;
+    }
+    else {
+        @teams = @argv;
+    }
+
+    if ( $opts->{remove} && @teams > 1 ) {
+        die "Cannot use --remove option with more than one team at a time.\n";
+    }
+
+    my $detect_cnt = 0;
+
+    foreach my $team_owner (@teams) {
+
+        print "Looking at '$team_owner'.\n" if $opts->{verbose};
+        my $owner_file = "$Cpanel::Team::Constants::TEAM_CONFIG_DIR/$team_owner";
+        my $file_version;
+        if ( -e $owner_file ) {
+            open my $fh, '<', $owner_file or do {
+                print STDERR "Cannot open $owner_file because $!\n";
+                next;
+            };
+            my @lines = <$fh>;
+            close $fh;
+            $file_version = Cpanel::Team::Config::Version::detect_version( $opts, @lines );
+        }
+        else {
+            print STDERR "No such team configuration file: $owner_file\n";
+            next;
+        }
+
+        if ( $opts->{detect} ) {
+            print "$team_owner Team Manager configuration file is version $file_version\n" if defined $file_version;
+            $detect_cnt++;
+            next;
+        }
+        if ( $opts->{keep} ) {
+            $target_version = $file_version;
+        }
+
+        Cpanel::Team::Config::Version::update( $team_owner, $target_version, $opts );
+
+        print( ( $opts->{dry_run} ? "Pretended" : "Completed" ) . " conversion for team owner '$team_owner'.\n" ) if $opts->{verbose};
+        $team_cnt++;
+    }
+    if ( $opts->{detect} ) {
+        print "Version", $detect_cnt == 1 ? '' : 's', " of $detect_cnt team configuration file", $detect_cnt == 1 ? '' : 's', " identified.\n" if $opts->{verbose};
+    }
+    else {
+        print "Dry run: " if $opts->{dry_run};
+        print "$team_cnt conversion", $team_cnt == 1 ? '' : 's', " checked.\n" if $opts->{verbose};
+    }
+    return $ok;
+}
+
+sub _show_help {
+    my $fh = shift // \*STDERR;
+    print $fh <<~"_EOHELP_";
+    Usage: $script [-?|-h|--help] [-v] [--dry-run] [-d|--detect] [-k|--keep] [--nofix] [-a|--all|<team-owner> ...]
+
+        -?, -h, --help
+                 Print this message.
+
+        -v       Verbose mode--print what is being done, as it's being done.
+
+        --version <target-version>
+                 Upgrade/downgrade to <target-version>.  Defaults to latest
+                 version.  <target-version> can be a specific version number
+                 like v0.3 or a cPanel release number like 110.
+
+        --dry-run
+                 Print what will be done, but don't do it!  Forces verbose.
+
+        -d, --detect
+                 Detects team file version and exits.  No changes or other
+                 processing is done.
+
+        -k, --keep
+                 Keep current version.  Checks for corruption and attempts
+                 fix and save as current version.
+
+        --nofix  Skip the attempt to fix bad data.
+
+        --remove Remove team-users whose entries cannot be fixed
+                 automatically.  Use this with caution.  Can only be used with
+                 a single team at a time.  Because of this the --all option
+                 will only run if there's only a single team on the system.
+
+        -a, --all
+                 Fix all team configuration files on a system. Causes any
+                 <team-owner> parameter(s) to be ignored.
+
+        <team-owner>
+                 Team owner account name.  If -a or --all option is given,
+                 then this parameter is ignored.
+
+        For each team-owner or all team-owners on the system, go through
+        the configuration file and fix errors found.  Bring up-to-date to
+        the latest version or target version.  Any invalid values will
+        reset to default values.  Some errors are unrecoverable.
+    _EOHELP_
+    return 0;
+}
+
+1;

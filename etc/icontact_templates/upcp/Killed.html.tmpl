@@ -1,0 +1,42 @@
+[%#
+Variables passed in:
+
+upcp_path      - The text path of the upcp script.
+status         - A text status of the upcp process can be hanging or aborted.
+pid            - The numeric pid of the upcp process.
+sent_to_root   - A default boolean flag sent to all templates that indicates if the message was sent to 'root'.
+log_preview    - An arrayref of 10(or less) line preview of attached log file
+
+For more information about how to customize notification templates, read our documentation at https://go.cpanel.net/notificationtemplates
+
+-%]
+
+[%
+    PROCESS "include/colors.tmpl";
+    PROCESS "include/styles.tmpl";
+    PROCESS "include/code_block.tmpl";
+
+    WRAPPER 'wrapper/main.html.tmpl';
+
+    IF NOTICE.status == 'aborted';
+        NOTICE.email_reason = CPANEL.locale.maketext('The user aborted the [asis,cPanel] [output,amp] [asis,WHM] update, and the system will terminate the update.');
+    ELSE;
+        NOTICE.email_reason = CPANEL.locale.maketext('The [asis,cPanel] [output,amp] [asis,WHM] update process is non-responsive and will be terminated.');
+    END;
+
+%]
+
+<p>
+    [%
+        IF NOTICE.status == 'aborted';
+            CPANEL.locale.maketext('The user pressed [asis,Ctrl-C] and aborted the “[_1]” script.', NOTICE.upcp_path);
+        ELSE;
+            CPANEL.locale.maketext('The system ran the “[_1]” script as [output,abbr,PID,process ID] “[_2]” for longer than 6 hours. The system will terminate this process and run the script again.', NOTICE.upcp_path, NOTICE.pid);
+        END;
+    %]
+</p>
+<p>
+    [% code_block(formatted_code=NOTICE.log_preview.0, title=CPANEL.locale.maketext('Update log preview:')) %]
+</p>
+
+[% END %]

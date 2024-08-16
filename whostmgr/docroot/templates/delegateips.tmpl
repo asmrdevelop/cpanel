@@ -1,0 +1,224 @@
+[% USE CPList -%]
+[% USE CPSort -%]
+[% USE Net -%]
+[% WRAPPER 'master_templates/master.tmpl'
+    theme="yui"
+    app_key='manage_resellers_ip_delegation'
+    extrastyle = '
+label.used {
+    font-style: italic;
+    color: rgb(96, 96, 96);
+}
+.ipchoice .topchoice {
+list-style-type: none;
+}
+.optionblock {
+    padding-left: 30px;
+}
+'
+-%]
+[% IF ! data.valid_user -%]
+Invalid user “[% data.user FILTER html %]”!
+[% ELSE -%]
+[% SET html_safe_user = data.user.html() %]
+[% SET uri_safe_user = data.user.uri() %]
+
+
+<h3 class="simpleheading">[% locale.maketext("IP Address Delegation for “[_1]”", data.user.html()) %]</h3>
+<form method="post" action="[% cp_security_token %]/scripts2/dodelegateips">
+
+<p>
+[% locale.maketext('IP address delegation determines which IP addresses “[_1]” may dedicate to an owned account.', html_safe_user) %]
+[% locale.maketext('Dedicated IP addresses are commonly used for sites that host SSL content and for users who don’t wish to share an IP address.') %]
+<p>
+    [% locale.maketext('A user does not require a dedicated [asis,IP] address to host [asis,SSL] content. However, web browsers that do not support [output,abbr,SNI,Server Name Indication] may see a security warning when they connect to an [asis,SSL] website that is not the “primary” [asis,SSL] website on its [asis,IP] address. Only a user who has a dedicated [asis,IP] address can designate an [asis,SSL] website as the “primary” website on its [asis,IP] address.') %]
+    [% locale.maketext('Microsoft® Internet Explorer™ on Windows XP™ is the most widely used web browser that does not support SNI.') %]
+</p>
+
+<div id="ssl-install-require" style="display:none"></div>
+<ul class="ipchoice">
+    <li class="topchoice">
+        <label><input id="unrestrict_radio" type="radio" name="delegate" [% ! data.restricted && 'checked="checked"' %] value="no" onclick="ip_checkboxes.disable()"> [% locale.maketext('Open Delegation') %] </label>
+        <div class="optionblock">
+            <p>
+                [% locale.maketext('This option allows “[_1]” to dedicate any available IP address to an owned account.', html_safe_user) %]
+            </p>
+        </div>
+    </li>
+    <li class="topchoice">
+        <label><input id="restrict_radio" type="radio" name="delegate" [% data.restricted && 'checked="checked"' %] value="yes" onclick="ip_checkboxes.enable()" /> [% locale.maketext('Restricted Delegation') %] </label>
+        <div class="optionblock">
+            <p>
+                [% locale.maketext('This option restricts “[_1]” to only be able to dedicate one of the checked IP addresses below to an owned account.', html_safe_user) %]
+            </p>
+            <p>
+            <a name="delegated_ips"></a>
+            <div id="ips_div" [% ! data.restricted && 'style="display:none;" ' %]>
+
+            [% locale.maketext('Select which IP addresses “[_1]” may use:', html_safe_user) %]
+            <ul>
+            [% FOR ip = data.ipdata.keys.cpsort( { 'code' => \Net.inet_aton, 'num' => 1, } ) -%]
+            [%
+                SET delegated_to_user = data.ipdata.$ip.delegated.grep("^${data.user}$").size > 0;
+                SET dedicated_to_owned_user = data.dedicatedips.$ip ? 1 : 0;
+                SET dedicated = data.ipdata.$ip.dedicated_user;
+                SET reserved = data.ipdata.$ip.reserved;
+                SET nameserver = data.ipdata.$ip.nameserver;
+#    SET input_disabled = designated || reserved || (delegated_text && ! delegated_to_user);
+            -%]
+            <li>
+            <label [% input_disabled ? 'class="used"' : '' %]>
+            <input type="checkbox" name="ip-[% ip %]" value="1"
+            [%-
+# If its dedicated to an owned user they cannot uncheck it
+                dedicated_to_owned_user || delegated_to_user ? 'checked="checked"' : '';
+                dedicated_to_owned_user || input_disabled ? 'class="used" disabled="disabled"' : ''
+            -%]
+            />
+            [%-
+                ip;
+                IF ip == data.mainsrvip;
+                    ' (Main Server IP)';
+                END;
+                IF ip == data.mainip;
+                    ' (Main Shared IP)';
+                END;
+                IF ip == data.sharedip;
+                    ' ';
+                    locale.maketext("([_1]’s shared IP)", html_safe_user);
+                END;
+                IF data.ipdata.$ip.shared.size > 0;
+                    #sort root first
+                    SET shared_list = data.ipdata.$ip.shared.ungrep('\Aroot\z');
+                    IF shared_list.size < data.ipdata.$ip.shared.size;
+                        shared_list.unshift('root');
+                    END;
+                    IF shared_list.size > 5;
+                        SET others_count = shared_list.size - 4;
+                        ' (' _ locale.maketext('Shared by [_1], [_2], [_3], [_4], and [quant,_5,other,others].',shared_list.0,shared_list.1,shared_list.2,shared_list.3,others_count) _ ')';
+                    ELSE;
+                        ' (' _ locale.maketext('Shared by [list_and,_1].',shared_list) _ ')';
+                    END;
+                END;
+                IF data.ipdata.$ip.delegated.size > 0;
+                    #sort root first
+                    SET delegated_list = data.ipdata.$ip.delegated.ungrep('\Aroot\z');
+                    IF delegated_list.size < data.ipdata.$ip.delegated.size;
+                        delegated_list.unshift('root');
+                    END;
+                    IF delegated_list.size > 5;
+                        SET others_count = delegated_list.size - 4;
+                        ' (' _ locale.maketext('Delegated to [_1], [_2], [_3], [_4], and [quant,_5,other,others].',delegated_list.0,delegated_list.1,delegated_list.2,delegated_list.3,others_count) _ ')';
+                    ELSE;
+                        ' (' _ locale.maketext('Delegated to [list_and,_1].',delegated_list) _ ')';
+                    END;
+                END;
+                IF dedicated;
+                    ' (';
+                    IF dedicated_to_owned_user;
+                        locale.maketext("Dedicated to “[_1]”, owned by “[_2]”.", dedicated, html_safe_user);
+                    ELSE;
+                        locale.maketext('Dedicated to “[_1]”.', dedicated);
+                    END;
+                    ')';
+                END;
+                IF nameserver;
+                    ' (';
+                    locale.maketext('Nameserver “[_1]”.', nameserver);
+                    ')';
+                END;
+                IF reserved;
+                    ' (';
+                    locale.maketext('Reserved');
+                    ')';
+                END;
+            -%]
+            </label>
+            </li>
+            [% END -%]
+            </ul>
+            </div>
+            </p>
+         </div>
+    </li>
+</ul>
+
+<script id="ssl-install-require-template" type="text/html">
+[% SET url_html = cp_security_token _ '/scripts2/editres?res=' _ uri_safe_user _ '#privs_ssl' %]
+[% IF data.acls.ssl %]
+    <p>
+        [% locale.maketext('User “[_1]” has the [output,url,_2,SSL Site Management] privilege.', html_safe_user, url_html) %]
+        [% locale.maketext('This reseller may create SSL hosts for domains that are attached to an account that the reseller owns as the primary domain, a parked domain, a subdomain, or an addon domain.') %]
+    </p>
+    [% IF data.sharedip == data.mainip %]
+    <p>
+        [% SET url_html = cp_security_token _ '/scripts2/delegatemainip?user=' _ uri_safe_user %]
+        [% locale.maketext('If you want this reseller’s accounts to have a unique, shared IP address, then change or set the reseller’s [output,url,_1,assigned shared IP address].', url_html) %]
+    </p>
+    [% END %]
+
+[% ELSE %]
+    [% locale.maketext('For “[_1]” to set up the SSL hosts through WHM, they must have the [output,url,_2,SSL Site Management] privilege.', html_safe_user, url_html) %]
+[% END %]
+
+
+[%
+    locale.maketext(
+        'Alternatively, if a cPanel user account has the “[_1]” feature, the user may set up SSL hosts through cPanel in the [output,strong,SSL/TLS Manager] interface.',
+        'SSL Host Installer',   # Features not translated
+    );
+%]
+
+</script>
+
+
+
+<input type="hidden" name="user" value="[% data.user FILTER html %]" />
+<input type="submit" class="btn-primary" value="Save">
+</form>
+
+<script type="text/javascript">
+var ip_checkboxes = [];
+var inputs = document.getElementsByTagName('input');
+for (var cb=0; cb < inputs.length; cb++ ) {
+    var cur_input = inputs[cb];
+    if (cur_input.type == 'checkbox'
+        && cur_input.name.substr(0,3) == 'ip-'
+        && cur_input.className != 'used'
+    ) {
+        ip_checkboxes.push( cur_input );
+    }
+}
+
+ip_checkboxes.enable = function( disable ) {
+    var disabled_value = !! disable;
+
+    for (var i=0; i < this.length; i++) {
+        this[i].disabled = disabled_value;
+    }
+
+    if (disable) {
+         if (DOM.getStyle( 'ips_div', 'display') !== 'none') {
+            CPANEL.animate.slide_up('ips_div');
+         }
+    } else {
+         if (DOM.getStyle( 'ips_div', 'display') === 'none') {
+            CPANEL.animate.slide_down('ips_div');
+         }
+    }
+}
+ip_checkboxes.disable = function() { this.enable(1) };
+
+//if no existing IP delegation, disable the checkboxes at startup
+ip_checkboxes.enable( document.getElementById('unrestrict_radio').checked );
+
+new CPANEL.widgets.Page_Notice( {
+    level: "info", //can also be "warn", "error", "success"
+    content: DOM.get('ssl-install-require-template').text,
+    container: 'ssl-install-require',
+} );
+DOM.setStyle('ssl-install-require','display','');
+
+</script>
+[% END -%]
+[% END -%]

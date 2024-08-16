@@ -1,0 +1,64 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/get_locale_from_legacy_name_info
+#                                                  Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use Cpanel::Locale::Utils::Legacy ();
+
+if ( !@ARGV || grep /--help/, @ARGV ) {
+    show_help();
+    exit;
+
+}
+elsif ( grep /--man/, @ARGV ) {
+    show_man();
+    exit;
+}
+
+for my $arg (@ARGV) {
+    print "“$arg” maps to “" . Cpanel::Locale::Utils::Legacy::get_new_langtag_of_old_style_langname($arg) . "”\n";
+}
+
+sub show_help {
+
+    print <<"END_HELP";
+Usage: $0 {legacy_style_language_name} [{another_legacy_style_language_name} …]
+
+Map language names used in the cPanel Legacy Language system to the new locale codes used in the Cpanel::Locale system.
+
+Options:
+  --help Show this help screen
+  --man  Show the help screen and additional information
+
+Multiple legacy language names can be specified as input.
+
+Example:
+
+    $0 French
+    $0 fr French italiano spanish-utf8
+    $0 fr French スペイン語 italiano spanish-utf8 中文 DANISH.lng Swedish.special "Heart cPanel"
+END_HELP
+
+}
+
+sub show_man {
+
+    show_help();
+
+    print <<"END_MAN";
+
+The cPanel legacy language system used arbitrary language names for identification.
+The current Cpanel::Locale uses standard ISO language (and territory) codes to identify locales.
+The Cpanel::Locale codes are also based on CLDR (http://cldr.unicode.org) which have locale data
+defined accordingly. This utility is used for looking up the corresponding Cpanel::Locale code.
+
+Any specified language/locale names that cannot be mapped are turned in to “i_” tag codes.
+An “i_” tag is a standard way to create, identify, and work with a non-standard locale
+by prefixing the code with the letter “i” followed by an underscore.
+(e.g. i_abcdef, i_qa)
+END_MAN
+
+}

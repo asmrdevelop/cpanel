@@ -1,0 +1,160 @@
+[% USE CPList -%]
+[% USE CPSort -%]
+[% USE Net -%]
+[% WRAPPER 'master_templates/master.tmpl'
+    theme="yui"
+    app_key='manage_resellers_shared_ip' -%]
+[% IF ! data.valid_user %]
+Invalid user ([% data.user %])!
+[% ELSE -%]
+
+[% SET html_safe_user = data.user.html() %]
+[% SET uri_safe_user = data.user.uri() %]
+
+<h3 class="simpleheading">[% locale.maketext('[output,class,Shared IP for,title] “[_1]”', html_safe_user) %]</h3>
+<p>
+[% locale.maketext('The Shared IP address is used for “[_1]”’s accounts that do not have a dedicated IP address.', html_safe_user) %]
+[% locale.maketext('Your server supports [output,abbr,SNI,Server Name Indication].') %]
+[% locale.maketext('For most users, a shared IP address should be sufficient.') %]
+[% locale.maketext('If your user needs to host SSL content to clients that do not support [output,abbr,SNI,Server Name Indication], that user will need a dedicated IP address.') %]
+[% locale.maketext('Microsoft® Internet Explorer™ on Windows XP™ is the most widely used web browser that does not support SNI.') %]
+</p>
+<p>
+[% SET url_html = cp_security_token _ '/scripts2/changeip' %]
+<br>
+[% locale.maketext('[output,strong,Note]: This change does [output,strong,not] affect accounts that already exist. These accounts can be updated to the new shared IP using the “[output,url,_1,Change Site’s IP Address]” interface.', url_html) %]
+<p>
+[% locale.maketext('Choose the new shared IP for “[_1]”:', html_safe_user) %]
+<form action="[% cp_security_token %]/scripts2/dodelegatemainip">
+<select name="mainip">
+[% FOR ip = data.ipdata.keys.cpsort( { 'code' => \Net.inet_aton, 'num' => 1, } ) -%]
+[%
+    SET delegated_to_user = data.ipdata.$ip.delegated.${data.user};
+    SET dedicated         = data.ipdata.$ip.dedicated_user;
+    SET nameserver = data.ipdata.$ip.nameserver;
+    SET reserved          = data.ipdata.$ip.reserved;
+#    SET input_disabled    = reserved || dedicated || (delegated_text && ! delegated_to_user);
+-%]
+<option [% ip == data.sharedip ? 'selected="selected"' : ''; input_disabled ? 'disabled="disabled"' : '' %] value="[% ip %]">
+[%-
+    ip;
+    IF ip == data.mainsrvip;
+        ' (Main Server IP)';
+    END;
+    IF ip == data.mainip;
+        ' (Main Shared IP)';
+    END;
+    IF ip == data.sharedip;
+        ' ';
+        locale.maketext("([_1]’s Shared IP)", html_safe_user);
+    END;
+
+    IF data.ipdata.$ip.shared.size > 0;
+        #sort root first
+        SET shared_list = data.ipdata.$ip.shared.ungrep('\Aroot\z');
+        IF shared_list.size < data.ipdata.$ip.shared.size;
+            shared_list.unshift('root');
+        END;
+        IF shared_list.size > 5;
+            SET others_count = shared_list.size - 4;
+            ' (' _ locale.maketext('Shared by [_1], [_2], [_3], [_4], and [quant,_5,other,others].',shared_list.0,shared_list.1,shared_list.2,shared_list.3,others_count) _ ')';
+        ELSE;
+            ' (' _ locale.maketext('Shared by [list_and,_1].',shared_list) _ ')';
+        END;
+    END;
+    IF data.ipdata.$ip.delegated.size > 0;
+        #sort root first
+        SET delegated_list = data.ipdata.$ip.delegated.ungrep('\Aroot\z');
+        IF delegated_list.size < data.ipdata.$ip.delegated.size;
+            delegated_list.unshift('root');
+        END;
+        IF delegated_list.size > 5;
+            SET others_count = delegated_list.size - 4;
+            ' (' _ locale.maketext('Delegated to [_1], [_2], [_3], [_4], and [quant,_5,other,others].',delegated_list.0,delegated_list.1,delegated_list.2,delegated_list.3,others_count) _ ')';
+        ELSE;
+            ' (' _ locale.maketext('Delegated to [list_and,_1].',delegated_list) _ ')';
+        END;
+    END;
+    IF dedicated;
+        ' (' _ locale.maketext('Dedicated to [_1].', dedicated) _ ')';
+    END;
+    IF nameserver;
+        " (nameserver $nameserver)";
+    END;
+    IF reserved;
+        ' (reserved)';
+    END;
+-%]
+</option>
+[% END -%]
+</select>
+
+<input type="hidden" name="user" value="[% data.user %]" />
+<input type="submit" class="btn-primary" value="Save" />
+</form>
+
+<div id="ssl-install-require" style="display:none"></div>
+
+<div id="ftp-require" style="display:none"></div>
+
+<script id="ssl-install-require-template" type="text/html">
+[% SET url_html = cp_security_token _ '/scripts2/editres?res=' _ uri_safe_user _ '#privs_ssl' %]
+[% IF data.acls.ssl %]
+    <p>
+        [% locale.maketext('User “[_1]” has the [output,url,_2,SSL Site Management] privilege.', html_safe_user, url_html) %]
+        [% locale.maketext('They may create SSL hosts for domains that are attached to an account they own as the primary, parked, sub-, or addon domain on:') %]
+            <ul>
+                <li>[% locale.maketext('Dedicated IPs') %]</li>
+                <li>[% locale.maketext('Shared IP addresses using [output,acronym,SNI,Server Name Indication]') %]</li>
+                [% IF data.sharedip != data.mainip %]
+                    [% SET url_html = cp_security_token _ '/scripts2/delegatemainip?user=' _ uri_safe_user %]
+                    <li>[% locale.maketext('Their [output,url,_1,assigned Shared IP] “[_2]”[comment,this is a non-sentence option name]', url_html, data.sharedip) %]</li>
+                [% END %]
+            </ul>
+    </p>
+    [% IF data.sharedip == data.mainip %]
+    <p>
+       [% locale.maketext('Note: “[_1]” may not create an SSL host on their shared IP address, [_2], because it is the same as the main shared IP.', html_safe_user, data.sharedip) %]
+       [% locale.maketext('If you wish to provide them with a unique shared IP address, please change their assigned shared IP above.') %]
+    </p>
+    [% END %]
+
+[% ELSE %]
+    [% locale.maketext('For “[_1]” to setup SSL hosts through WHM, they must have the [output,url,_2,SSL Site Management] privilege.', html_safe_user, url_html) %]
+[% END %]
+
+[%
+    locale.maketext(
+        'Alternatively, if a cPanel user account has the “[_1]” feature, the user may set up SSL hosts through cPanel in the [output,strong,SSL/TLS Manager] interface.',
+        'SSL Host Installer',   # Features not translated
+    );
+%]
+</script>
+
+<script id="ftp-require-template" type="text/html">
+<p>
+[% SET url_html = cp_security_token _ '/scripts2/changeip' %]
+[% locale.maketext('If you later change the IP address of a domain through the “[output,url,_1,Change Site’s IP Address]” interface to an address other than the [output,strong,main] Shared IP address, users must connect to “[output,strong,ftp].theirdomain.com” instead of “theirdomain.com” in order to authenticate.',url_html) %]
+</p>
+</script>
+
+<script type="text/javascript">
+new CPANEL.widgets.Page_Notice( {
+    level: "info", //can also be "warn", "error", "success"
+    content: DOM.get('ssl-install-require-template').text,
+    container: 'ssl-install-require',
+} );
+DOM.setStyle('ssl-install-require','display','');
+
+new CPANEL.widgets.Page_Notice( {
+    level: "warn", //can also be "warn", "error", "success"
+    content: DOM.get('ftp-require-template').text,
+    container: 'ftp-require',
+} );
+DOM.setStyle('ftp-require','display','');
+</script>
+
+
+
+[% END -%]
+[% END -%]

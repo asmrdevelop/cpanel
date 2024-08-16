@@ -1,0 +1,138 @@
+[%
+    USE Whostmgr;
+
+    IF data.resellers;
+    SET header = locale.maketext('Email All Resellers');
+    ELSE;
+    SET header = locale.maketext('Email All Users');
+    END;
+
+    WRAPPER 'master_templates/master.tmpl'
+        header = header
+        theme = 'bootstrap'
+        breadcrumburl = '/scripts/emailall' _ (data.resellers ? '?resellers=1' : '');
+-%]
+<p class="description">
+    [% IF data.resellers %]
+    [% locale.maketext('Send an email to all resellers.') %]
+    [% ELSE %]
+    [% locale.maketext('Send an email to all registered users.') %]
+    [% END %]
+</p>
+<form class="layout-medium"
+    action="[% cp_security_token %]/scripts/reallyemailall"
+    method="POST"
+    accept-charset="UTF-8">
+        <div class="form-group">
+            <div class="row">
+                <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                    <label for="fromname">
+                        [% locale.maketext('Sender Name') %]
+                    </label>
+                    <input id="fromname"
+                        name="fromname"
+                        class="form-control"
+                        type="text"
+                        value="[% data.fromname.html %]"
+                        readonly />
+                </div>
+                <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                </div>
+            </div>
+        </div>
+        <div class="form-group">
+            <div class="row">
+                <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                    <label for="frommail">
+                        [% locale.maketext('Sender Email') %]
+                    </label>
+                    <input id="frommail"
+                        name="fromemail"
+                        class="form-control"
+                        type="text"
+                        value="[% data.fromemail.html %]"
+                        readonly />
+                </div>
+                <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                </div>
+            </div>
+        </div>
+        <div class="form-group">
+            <div class="row">
+                <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                    <label for="subject">
+                        [% locale.maketext('Subject') %]
+                    </label>
+                    <input id="subject"
+                        name="subject"
+                        class="form-control"
+                        type="text"
+                        value="[% data.subject.html %]"
+                        size="50"
+                        readonly />
+                </div>
+                <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                </div>
+            </div>
+        </div>
+        <div class="form-group">
+            <div class="row">
+                <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                    <label for="mailbody">
+                        [% locale.maketext('Message Body') %]
+                    </label>
+                    <textarea id="mailbody"
+                        name="body"
+                        class="form-control"
+                        cols="80"
+                        rows="25"
+                        readonly>[% data.body.html %]</textarea>
+                </div>
+                <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                </div>
+            </div>
+        </div>
+        <input type="hidden" name="resellers" value="[% data.resellers.html %]" />
+        <div class="form-group">
+            <div class="row">
+                <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                    <span class="help-block">
+                        [% IF data.resellers %]
+                        [% locale.maketext('Email will [output,em,only] be sent to your resellers.') %]
+                        [% ELSIF data.sendall %]
+                        <input id="sendall"
+                            name="sendall"
+                            type="checkbox"
+                            value="[% data.sendall.html %]"
+                            readonly
+                            checked />
+                        [% locale.maketext("Email [output,em,will] also be sent to your resellers[output,chr,8217] customers.") %]
+                        [% ELSE %]
+                        <input id="sendall"
+                            name="sendall"
+                            type="checkbox"
+                            value="[% data.sendall.html %]"
+                            readonly />
+                        [% locale.maketext("Email [output,em,will not] be sent to your resellers[output,chr,8217] customers.") %]
+                        [% END %]
+                    </span>
+                </div>
+                <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                </div>
+            </div>
+        </div>
+        <div class="form-group">
+            <div class="row">
+                <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                    <input id="submit-button"
+                        type="submit"
+                        class="btn btn-primary"
+                        value="[% locale.maketext('Send') %]" />
+                </div>
+                <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                </div>
+            </div>
+        </div>
+    </div>
+</form>
+[% END -%]

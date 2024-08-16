@@ -1,0 +1,42 @@
+[%
+    SET rmscript = '/scripts/rmwheel';
+    SET addscript = '/scripts/addwheel';
+
+    WRAPPER 'master_templates/master.tmpl'
+        app_key = data.app_key,
+        theme   = "yui";
+%]
+<div class='brickcontainer'><div class='brickcontainer2'>
+[% PROCESS '_brickstart.tmpl' bricktitle="Remove a user from the ${data.group} group" -%]
+<form method="POST" action='[% cp_security_token _ rmscript %]'>
+<input type='hidden' name='compilers' value='[% data.compilers %]' />
+<select name='user' size='8'>
+[% FOR user=data.group_users.sort -%]
+<option value="[% user %]" [% IF user == 'root'; ' disabled="disabled"'; END %]>[% user %]</option>
+[% END -%]
+</select>
+<br />
+<input type='submit' class='btn-primary' value='Remove from Group' />
+</form>
+[% PROCESS '_brickend.tmpl' -%]
+<br />
+[% PROCESS '_brickstart.tmpl' bricktitle="Add a user to the ${data.group} group" -%]
+<form method="POST" action='[% cp_security_token _ addscript %]'>
+<input type='hidden' name='compilers' value='[% data.compilers %]' />
+<select name='user' size='8'>
+[% FOR user=data.non_group_users.sort -%]
+<option value="[% user %]">[% user %]</option>
+[% END -%]
+</select>
+<br />
+<input type='submit' class='btn-primary' value='Add to Group' />
+</form>
+[% PROCESS '_brickend.tmpl' -%]
+<br />
+[% IF data.compilers == 1 -%]
+<b>Note:</b> This group controls which users can use the system's compilers.
+[% ELSE -%]
+<b>Note:</b> This group controls which users can use the system's `su` utility.
+[% END -%]
+</div></div>
+[% END -%]

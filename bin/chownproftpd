@@ -1,0 +1,37 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - bin/chownproftpd                        Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+
+use Cpanel::ConfigFiles ();
+use Cpanel::SafeDir::MK ();
+
+Cpanel::SafeDir::MK::safemkdir( $Cpanel::ConfigFiles::FTP_PASSWD_DIR, 0751 );
+
+my $quiet = grep m/^--quiet$/, @ARGV;
+my $force = grep m/^--force$/, @ARGV;
+
+if ( -e "/var/cpanel/proftpdconvert" && !$force ) { exit(); }
+
+open( PROFTPDCONVERT, ">/var/cpanel/proftpdconvert" );
+close(PROFTPDCONVERT);
+
+my $proftpdgrp = int( ( getgrnam('proftpd') )[2] );
+chown( 0, ${proftpdgrp}, $Cpanel::ConfigFiles::FTP_PASSWD_DIR );
+
+opendir( PROFTPD, $Cpanel::ConfigFiles::FTP_PASSWD_DIR );
+print "Updating ftp permissions...";
+while ( my $user = readdir(PROFTPD) ) {
+    next if ( $user eq "" );
+    if ( -f "$Cpanel::ConfigFiles::FTP_PASSWD_DIR/${user}" ) {
+        $quiet || print ".." . $user . "..";
+        chown( 0, ${proftpdgrp}, "$Cpanel::ConfigFiles::FTP_PASSWD_DIR/${user}" );
+        chmod( 0640, "$Cpanel::ConfigFiles::FTP_PASSWD_DIR/${user}" );
+    }
+}
+closedir(PROFTPD);
+print "Done\n";

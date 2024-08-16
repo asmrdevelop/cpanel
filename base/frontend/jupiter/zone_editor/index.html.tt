@@ -1,0 +1,168 @@
+[%
+USE Services;
+USE Api2;
+USE Uapi;
+USE CPList;
+USE LinkedNode;
+
+SET nvdata = execute( 'NVData', 'get', { 'names' => 'zones_per_page|domains_per_page' } );
+SET CPANEL.CPVAR.dprefix = "../";
+
+SET has_simple_feature = CPANEL.feature('simplezoneedit');
+SET has_adv_feature = CPANEL.feature('zoneedit');
+SET has_dnssec_feature = CPANEL.feature('dnssec');
+SET has_mx_feature = CPANEL.feature('changemx');
+
+SET zones_per_page = nvdata.data.0.value;
+SET domains_per_page = nvdata.data.1.value;
+SET base_domains_result = Api2.exec('DomainLookup','getbasedomains');
+
+SET theme = CPANEL.CPDATA.RS;
+
+SET RECORD_TYPES = {
+    "A" => {
+        "featureNeeded" => ["simple", "advanced"],
+        "template" => "recordTemplates/a.ptt",
+        "viewTemplate" => "viewRecordTemplates/default.ptt",
+        "priority" => 1
+    },
+    "AAAA" => {
+        "featureNeeded" => ["advanced"],
+        "template" => "recordTemplates/aaaa.ptt",
+        "viewTemplate" => "viewRecordTemplates/default.ptt",
+        "priority" => 2
+    },
+    "CAA" => {
+        "featureNeeded" => ["advanced"],
+        "template" => "recordTemplates/caa.ptt",
+        "viewTemplate" => "viewRecordTemplates/caa.ptt",
+        "priority" => 3
+    },
+    "CNAME" => {
+        "featureNeeded" => ["simple", "advanced"],
+        "template" => "recordTemplates/cname.ptt",
+        "viewTemplate" => "viewRecordTemplates/default.ptt",
+        "priority" => 4
+    },
+    "DMARC" => {
+        "featureNeeded" => ["advanced"],
+        "template" => "recordTemplates/dmarc.ptt",
+        "priority" => 5
+    },
+    "MX" => {
+        "featureNeeded" => ["mx"],
+        "template" => "recordTemplates/mx.ptt",
+        "viewTemplate" => "viewRecordTemplates/mx.ptt",
+        "priority" => 6
+    },
+    "SRV" => {
+        "featureNeeded" => ["advanced"],
+        "template" => "recordTemplates/srv.ptt",
+        "viewTemplate" => "viewRecordTemplates/srv.ptt",
+        "priority" => 7
+    },
+    "TXT" => {
+        "featureNeeded" => ["advanced"],
+        "template" => "recordTemplates/txt.ptt",
+        "viewTemplate" => "viewRecordTemplates/txt.phtml",
+        "priority" => 8
+    },
+};
+
+SET VIEW_TEMPLATES = [
+    "views/domain_selection.ptt",
+    "views/manage.ptt",
+    "views/dnssec.ptt",
+    "views/dnssec_generate.ptt",
+    "views/dnssec_ds_records.ptt",
+    "views/dnssec_import.ptt",
+    "views/dnssec_export.ptt",
+    "views/dnssec_dnskey.ptt",
+    "views/a_record_form.html",
+    "views/cname_record_form.html",
+    "views/mx_record_form.html",
+    "viewRecordTemplates/caa.ptt",
+    "viewRecordTemplates/mx.ptt",
+    "viewRecordTemplates/srv.ptt",
+    "viewRecordTemplates/default.ptt",
+    "viewRecordTemplates/txt.phtml"
+];
+
+WRAPPER '_assets/master.html.tt'
+    app_key = 'zone_editor'
+    include_legacy_stylesheets = 0
+    include_legacy_scripts = 0
+    include_cjt = 0
+    use_master_bootstrap = 0
+    page_stylesheets = [
+        'zone_editor/index.css'
+    ]
+    show_breadcrumb = 1
+    ;
+-%]
+
+[% IF has_simple_feature || has_mx_feature || has_adv_feature -%]
+
+    <div class="body-content">
+        <p id="descDns" class="description">
+            [% locale.maketext("DNS converts domain names into computer-readable IP addresses. Use this feature to manage DNS zones. For more information, read the [output,url,_1,documentation,target,_2,id,_3].", "//go.cpanel.net/zoneeditor", "_blank", "lnkZoneEditorDocumentation") %]
+        </p>
+        [% IF LinkedNode.has_linkages() %]
+        <callout callout-type="warning" callout-heading="[% locale.maketext('Warning') %]" class="ng-cloak">
+            <p>[% locale.maketext('This domain’s owner, “[_1]”, uses a linked node. Errors in this user’s [asis,DNS] records may corrupt the account’s use of that linkage. [output,strong,Proceed with extreme caution.]', CPANEL.user); %]</p>
+        </callout>
+        [% END %]
+        <!-- NOTE: leave the alert-group in single quotes -->
+        <cp-alert-list alert-group="'zoneEditor'"></cp-alert-list>
+        <div id="viewContent"
+             class="ng-cloak section"
+             ng-view
+             ng-cloak></div>
+    </div>
+    <script type="text/javascript">
+        PAGE.securityToken = [% cp_security_token.json %];
+        PAGE.theme = [% theme.json %];
+        PAGE.has_simple_feature = [% has_simple_feature ? 'true' : 'false' %];
+        PAGE.has_adv_feature = [% has_adv_feature ? 'true' : 'false' %];
+        PAGE.has_dnssec_feature = [% has_dnssec_feature ? 'true' : 'false' %];
+        PAGE.has_mx_feature = [% has_mx_feature ? 'true' : 'false' %];
+        PAGE.domains = [% base_domains_result.json() %];
+        PAGE.zones_per_page = [% zones_per_page || 'null' %];
+        PAGE.domains_per_page = [% domains_per_page || 'null' %];
+        PAGE.isRTL = document.getElementsByTagName("HTML")[0].getAttribute("dir") === "rtl";
+        PAGE.RECORD_TYPES = [% RECORD_TYPES.json() %];
+    </script>
+
+    [% PROCESS '_assets/cjt2_header_include.tt' %]
+
+    [% FOREACH record_type_key IN RECORD_TYPES.keys %]
+    [% SET template = RECORD_TYPES.$record_type_key.template %]
+    <script id="[% template %]" type="text/ng-template">
+        [% PROCESS "shared/js/zone_editor/$template" %]
+    </script>
+    [% END %]
+
+    [% FOREACH view_template IN VIEW_TEMPLATES %]
+    <script id="[% view_template %]" type="text/ng-template">
+        [% PROCESS "shared/js/zone_editor/$view_template" %]
+    </script>
+    [% END %]
+
+    <script id="views/dnssec_sidebar_help.html.tt" type="text/ng-template">
+        [% PROCESS "zone_editor/views/dnssec_sidebar_help.html.tt" %]
+    </script>
+
+[% ELSE -%]
+
+<div class="body-content">
+    <div class="alert alert-danger">
+        <span class="glyphicon glyphicon-remove-sign" aria-hidden="true"></span>
+        <div class="alert-message">
+            [% locale.maketext('This feature is not available to your account.'); %]
+        </div>
+    </div>
+</div>
+
+[% END -%]
+
+[% END #wrapper -%]

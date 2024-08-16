@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>cPanel & WHM OAuth2 Callback</title>
+</head>
+<body>
+    <p>Finishing authentication...</p>
+
+    <script language="javascript">
+        var hasCallback = window.opener.oauth2Callback ? true : false;
+
+        // Figure out the correct port
+        var port = location.port;
+        if (!port && hasCallback) {
+            // Only do this further resolution for the
+            // newer code paths via callback. It breaks the
+            // older code path used in the redirect for
+            // Grant cPanel Support.
+            if (location.protocol === "https:") {
+                port = 443;
+            } else if (location.protocol === "http:") {
+                port = 80;
+            }
+        }
+
+        // Build the redirect URI
+        var redirectUri = location.protocol + "//" + location.hostname +
+                          ":" + port + location.pathname;
+
+        // Build the whole search
+        var search = location.search.substring(1) + "&redirect_uri=" + redirectUri;
+
+        if(hasCallback) {
+            // For the ticket wizard callback and
+            // other users of the cjt2 based tools/
+            window.opener.oauth2Callback(search);
+        } else {
+            // For the grant cPanel support application which
+            // does not use a callback method.
+            if (window.opener.location.search.substring(1)) {
+                search += "&" + window.opener.location.search.substring(1);
+            }
+
+            window.opener.location.search = "?" + search;
+        }
+
+        window.close();
+    </script>
+</body>
+</html>

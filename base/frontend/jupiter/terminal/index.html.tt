@@ -1,0 +1,64 @@
+[%#
+# base/frontend/jupiter/terminal/index.html.tt Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+-%]
+[% USE NVData -%]
+[% CPANEL.CPVAR.dprefix = '../' %]
+
+[%# This page should expand to the viewport width rather than
+    following the usual Paper Lantern constraint on max-width.
+-%]
+
+[% WRAPPER '_assets/master.html.tt'
+    app_key => 'terminal',
+    use_master_bootstrap => 0,
+    include_legacy_stylesheets = 0
+    include_legacy_scripts = 0
+    include_cjt = 0
+    page_stylesheets = [
+        'libraries/xtermjs/xterm.min.css'
+    ]
+-%]
+
+[% PROCESS '_assets/cjt2_header_include.tt' %]
+
+<div class="body-content">
+    [% IF CPANEL.ENV.SHELL == '/bin/false' %]
+    <p class="description">
+        [% locale.maketext('This interface requires shell access to be enabled for your account.') %]
+        [% locale.maketext('To activate shell access, contact your service provider.') %]
+    </p>
+    [% ELSE %]
+    <p class="description">[% locale.maketext('This interface provides command line access to your account on the server.') %]</p>
+
+    <div id="viewContent" ng-controller="BaseController as base" class="section" ng-cloak>
+        <cp-alert-list alert-group="'myalerts'"></cp-alert-list>
+
+        <div ng-if="terminal_warning_accepted">
+            <cp-terminal></cp-terminal>
+        </div>
+        <div ng-if="!terminal_warning_accepted">
+            <div class="callout callout-warning">
+                <div class="callout-heading">[% locale.maketext('Warning') %]</div>
+                <p>
+                    [% locale.maketext('[output,strong,Exercise extreme caution if you use this interface.] Misuse of command line tools can corrupt or even destroy your data.') %]
+                </p>
+                <p><button class="btn btn-primary" ng-click="acceptWarning()">[% locale.maketext('I understand and want to proceed.') %]</button></p>
+            </div>
+        </div>
+    </div>
+    [% END %]
+</div>
+
+<script>
+    [% SET terminal_warning_accepted = NVData.get('terminal_warning_accepted'); -%]
+    if (!window.PAGE) {
+        window.PAGE = {};
+    }
+
+    PAGE.terminal_warning_accepted = [% terminal_warning_accepted ? 'true' : 'false' %];
+</script>
+
+[% END -%]

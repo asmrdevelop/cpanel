@@ -1,0 +1,605 @@
+<div class="section-body">
+        <div id="loadingSettingsMsg" class="ng-hide" ng-show="!backupConfigLoaded">
+                <i class="fas fa-spinner fa-spin"></i>
+                <span>[% locale.maketext("Loading settings …") %]</span>
+        </div>
+        <form name="backup_config_form" id="backupConfigForm" ng-if="backupConfigLoaded" novalidate>
+            <div class="form-group">
+                <div class="row">
+                    <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                        <h3 id="backup_status">[% locale.maketext('Backup Status') %]</h3>
+                    </div>
+                </div>
+                <div class="row">
+                    <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                        <input type="checkbox" id="enable_backups_toggle" ng-model="formData.backupenable" ng-change="enableBackupConfig()"><label for="enable_backups_toggle">[% locale.maketext('Enable Backups') %]</label>
+                        <p class="text-muted">[% locale.maketext('Toggle backup activity.') %]</p>
+                    </div>
+                </div>
+                <div class="row">
+                    <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                        <h3>[% locale.maketext('Global Settings') %]</h3>
+                    </div>
+                </div>
+                <div class="row">
+                    <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                        <p>[% locale.maketext('[output,strong,Backup Type]') %]</p>
+                        <input type="radio" ng-model="formData.backuptype" value="compressed" id="type_compressed" name="backup_type" ng-disabled="!formEnabled" /><span><label for="type_compressed">[% locale.maketext('Compressed') %]</label></span>
+                        <p class="text-muted">[% locale.maketext('Save all of your information, use less disk space, but take more time to create a backup.') %]</p>
+                        <input type="radio" ng-model="formData.backuptype" value="uncompressed" id="type_uncompressed" name="backup_type" ng-disabled="!formEnabled" /><span><label for="type_uncompressed">[% locale.maketext('Uncompressed') %]</label></span>
+                        <p class="text-muted">[% locale.maketext('Save all of your information, use more disk space, but take less time to complete a backup.') %]</p>
+                        <input type="radio" ng-model="formData.backuptype" value="incremental" id="type_incremental" name="backup_type" ng-disabled="!formEnabled" /><span><label for="type_incremental">[% locale.maketext('Incremental') %]</label></span>
+                        <p class="text-muted">[% locale.maketext('Only save the information that has changed since your last backup.') %]</p>
+                    </div>
+                </div>
+                <div class="row">
+                    <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                        <div id="incremental_warning" class="alert alert-warning" ng-if="formData.backuptype === 'incremental'">
+                            <span class="glyphicon glyphicon-warning-sign"></span>
+                            <p class="alert-message">[% locale.maketext('When you select incremental backups, the system will [output,strong,not] change or alter the state of your existing non-incremental backup destinations.') %]</p>
+                            <p class="alert-message">[% locale.maketext('You can [output,strong,only] use the [asis,Rsync] transport with incremental backups.') %]</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+    <div class="form-group">
+        <div class="row">
+            <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+<input
+    type="checkbox"
+    id="check_disk_space_toggle"
+    ng-model="formData.check_min_free_space"
+    ng-disabled="!formEnabled">
+        <label for="check_disk_space_toggle">[% locale.maketext('[output,strong,Check the Available Disk Space]') %]</label>
+                <p class="text-muted">[% locale.maketext('If you enable this option and the available disk space is less than the amount that you specified, the system will not run the backup.') %]</p>
+            </div>
+        </div>
+        <div class="row">
+            <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                <div class="input-group">
+                    <input
+                        type="number"
+                        ng-model="formData.min_free_space"
+                        class="form-control"
+                        ng-min="1"
+                        ng-max="formData.min_free_space_unit === 'percent' ? 99 : 9900000000000"
+                        id="min_free_space" name="min_free_space"
+                        ng-disabled="!formData.check_min_free_space || !formEnabled"
+                        ng-required="formData.check_min_free_space"
+                        positive-integer
+                        ng-keydown="noDecimalPoints($event)"
+                        ng-paste="onlyNumbers($event)" />
+                    <span class="input-group-addon zero-width"></span>
+                    <select name="min_free_space_unit" id="min_free_space_unit" class="form-control" ng-model="formData.min_free_space_unit" ng-disabled="!formData.check_min_free_space || !formEnabled">
+                        <option value="percent">%</option>
+                        <option value="MB">[% locale.maketext('MB') %]</option>
+                    </select>
+                </div>
+            </div>
+            <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6" ng-if="backup_config_form.min_free_space.$error.required || backup_config_form.min_free_space.$error.min || backup_config_form.min_free_space.$error.max || backup_config_form.min_free_space.$error.number || backup_config_form.min_free_space.$error.positiveInteger">
+                <ul class="validation-container">
+                    <li class="validation validation-error" ng-if="backup_config_form.min_free_space.$error.required || backup_config_form.min_free_space.$error.min || backup_config_form.min_free_space.$error.number || backup_config_form.min_free_space.$error.positiveInteger">
+                        <span class="glyphicon glyphicon-exclamation-sign"></span>
+                        <span class="validation-message">
+                            [% locale.maketext('You must enter an integer greater than zero.') %]
+                        </span>
+                    </li>
+                    <li class="validation validation-error" ng-if="backup_config_form.min_free_space.$error.max && formData.min_free_space_unit === 'percent'">
+                        <span class="glyphicon glyphicon-exclamation-sign"></span>
+                        <span class="validation-message">
+                           [% locale.maketext('You must enter a value of less than 100 percent.') %]
+                        </span>
+                    </li>
+                    <li class="validation validation-error" ng-if="backup_config_form.min_free_space.$error.max && formData.min_free_space_unit === 'MB'">
+                        <span class="glyphicon glyphicon-exclamation-sign"></span>
+                        <span class="validation-message">
+                           [% locale.maketext('You must enter a value of less than 9900000000000 MB (990 petabytes).') %]
+                        </span>
+                    </li>
+                </ul>
+            </div>
+        </div>
+        <div class="row">
+            <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                <p>[% locale.maketext('[output,strong,Maximum Destination Backup Timeout]') %]</p>
+                <p class="text-muted">[% locale.maketext('Enter the number of seconds during which the destination backup will attempt to run.') %] [%locale.maketext('If the destination backup attempt is not successful during this time, it will time out and stop.') %]</p>
+            </div>
+        </div>
+        <div class="row">
+            <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                <div class="input-group">
+                    <input
+                        type="number"
+                        name="maximum_timeout"
+                        id="maximum_timeout"
+                        ng-model=formData.maximum_timeout
+                        class="form-control"
+                        ng-min="300"
+                        ng-max="50000"
+                        ng-disabled="!formEnabled"
+                        required
+                        positive-integer
+                        ng-keydown="noDecimalPoints($event)"
+                        ng-paste="onlyNumbers($event)" />
+                    <span class="input-group-addon">[% locale.maketext('seconds') %]</span>
+                </div>
+            </div>
+            <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6" ng-if="backup_config_form.maximum_timeout.$dirty && (backup_config_form.maximum_timeout.$error.required || backup_config_form.maximum_timeout.$error.min || backup_config_form.maximum_timeout.$error.max || backup_config_form.maximum_timeout.$error.number || backup_config_form.maximum_timeout.$error.positiveInteger)">
+                <ul class="validation-container">
+                    <li class="validation validation-error" ng-if="backup_config_form.maximum_timeout.$error.required">
+                        <span class="glyphicon glyphicon-exclamation-sign"></span>
+                        <span class="validation-message">
+                            [% locale.maketext('You must enter a value.') %]
+                        </span>
+                    </li>
+                    <li class="validation validation-error" ng-if="backup_config_form.maximum_timeout.$error.min || backup_config_form.maximum_timeout.$error.max">
+                        <span class="glyphicon glyphicon-exclamation-sign"></span>
+                        <span class="validation-message">
+                            [% locale.maketext('You must enter a timeout value between [numf,_1] and [numf,_2] seconds.', '300', '50000') %]
+                        </span>
+                    </li>
+                    <li class="validation validation-error" ng-if="backup_config_form.maximum_timeout.$error.positiveInteger || backup_config_form.maximum_timeout.$error.number">
+                        <span class="glyphicon glyphicon-exclamation-sign"></span>
+                        <span class="validation-message">
+                            [% locale.maketext('You must enter a positive integer value.') %]
+                        </span>
+                    </li>
+                </ul>
+            </div>
+        </div>
+        <div class="row">
+            <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                <p>[% locale.maketext('[output,strong,Maximum Backup Restoration Timeout]') %]</p>
+                <p class="text-muted">[% locale.maketext('Enter the number of seconds during which the system will attempt to run the backup restoration.') %] [% locale.maketext('If the restoration cannot complete in the specified time, it will cancel.') %]</p>
+            </div>
+        </div>
+        <div class="row">
+            <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                <div class="input-group">
+                    <input
+                        type="number"
+                        name="maximum_restore_timeout"
+                        id="maximum_restore_timeout"
+                        ng-model="formData.maximum_restore_timeout"
+                        class="form-control"
+                        ng-min="600"
+                        ng-max="86400"
+                        ng-disabled="!formEnabled"
+                        required
+                        positive-integer
+                        ng-keydown="noDecimalPoints($event)"
+                        ng-paste="onlyNumbers($event)" />
+                    <span class="input-group-addon">[% locale.maketext('seconds') %]</span>
+                </div>
+            </div>
+            <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6" ng-if="backup_config_form.maximum_restore_timeout.$dirty && (backup_config_form.maximum_restore_timeout.$error.required || backup_config_form.maximum_restore_timeout.$error.min || backup_config_form.maximum_restore_timeout.$error.max || backup_config_form.maximum_restore_timeout.$error.number || backup_config_form.maximum_restore_timeout.$error.positiveInteger)">
+                <ul class="validation-container">
+                    <li class="validation validation-error" ng-if="backup_config_form.maximum_restore_timeout.$error.required">
+                        <span class="glyphicon glyphicon-exclamation-sign"></span>
+                        <span class="validation-message">
+                            [% locale.maketext('You must enter a value.') %]
+                        </span>
+                    </li>
+                    <li class="validation validation-error" ng-if="backup_config_form.maximum_restore_timeout.$error.min || backup_config_form.maximum_restore_timeout.$error.max">
+                        <span class="glyphicon glyphicon-exclamation-sign"></span>
+                        <span class="validation-message">
+                            [% locale.maketext('You must enter a timeout value between [numf,_1] and [numf,_2] seconds.', '600', '86400') %]
+                        </span>
+                    </li>
+                    <li class="validation validation-error" ng-if="backup_config_form.maximum_restore_timeout.$error.positiveInteger || backup_config_form.maximum_restore_timeout.$error.number">
+                        <span class="glyphicon glyphicon-exclamation-sign"></span>
+                        <span class="validation-message">
+                            [% locale.maketext('You must enter a positive integer value.') %]
+                        </span>
+                    </li>
+                </ul>
+            </div>
+        </div>
+    </div>
+    <div class="form-group">
+        <div class="row">
+            <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                <h3>[% locale.maketext('Scheduling and Retention') %]</h3>
+            </div>
+        </div>
+        <div class="row">
+            <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                <input type="checkbox" ng-model="formData.backup_daily_enable" id="set_daily_backup" ng-disabled="!formEnabled" /><span>[% locale.maketext('Daily Backup') %]</span>
+            </div>
+        </div>
+        <div class="row" ng-if="formData.backup_daily_enable">
+            <div class="col-xs-offset-1 col-sm-offset-1 col-md-offset-1 col-lg-offset-1 col-xs-11 col-sm-5 col-md-5 col-lg-5">
+                <div ng-repeat="dailyDay in dailyDays track by $index">
+                    <input type="checkbox" class="backup_daily" name="daily_backup_{{dailyDay}}" id="daily_backup_{{dailyDay}}" ng-checked="formData.backupdays[$index]" ng-click="handleDaysToggle($index,backup_config_form)" ng-disabled="!formEnabled" /><span>{{dailyDay}}</span>
+                </div>
+            </div>
+            <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6" ng-if="formData.backup_daily_enable && selectedDays.length === 0">
+                <ul class="validation-container">
+                    <li class="validation validation-error">
+                        <span class="glyphicon glyphicon-exclamation-sign"></span>
+                        <span class="validation-message">
+                            [% locale.maketext('You must select at least one day.') %]
+                        </span>
+                    </li>
+                </ul>
+            </div>
+        </div>
+        <div class="row" ng-if="formData.backup_daily_enable">
+            <div class="col-xs-offset-1 col-sm-offset-1 col-md-offset-1 col-lg-offset-1 col-xs-11 col-sm-5 col-md-5 col-lg-5">
+                <p>[% locale.maketext('[output,strong,Retention]') %]</p>
+                <p class="text-muted">[% locale.maketext('Enter the number of daily backups that you wish to keep in the system at one time.') %]</p>
+            </div>
+        </div>
+        <div class="row" ng-if="formData.backup_daily_enable">
+            <div class="col-xs-offset-1 col-sm-offset-1 col-md-offset-1 col-lg-offset-1 col-xs-11 col-sm-5 col-md-5 col-lg-5">
+                <div class="input-group">
+                    <input
+                        type="number"
+                        name="backup_daily_retention"
+                        ng-model="formData.backup_daily_retention"
+                        class="form-control"
+                        id="daily_retention"
+                        ng-min="1"
+                        ng-max="9999"
+                        ng-disabled="!formEnabled"
+                        ng-required="formData.backup_daily_enable"
+                        positive-integer
+                        ng-keydown="noDecimalPoints($event)"
+                        ng-paste="onlyNumbers($event)" />
+                    <span class="input-group-addon">[% locale.maketext('backups') %]</span>
+                </div>
+            </div>
+            <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6" ng-if="backup_config_form.backup_daily_retention.$error.required || backup_config_form.backup_daily_retention.$error.min || backup_config_form.backup_daily_retention.$error.max || backup_config_form.backup_daily_retention.$error.number || backup_config_form.backup_daily_retention.$error.positiveInteger">
+                <ul class="validation-container">
+                    <li class="validation validation-error" ng-if="backup_config_form.backup_daily_retention.$error.required || backup_config_form.backup_daily_retention.$error.min || backup_config_form.backup_daily_retention.$error.max || backup_config_form.backup_daily_retention.$error.number || backup_config_form.backup_daily_retention.$error.positiveInteger">
+                        <span class="glyphicon glyphicon-exclamation-sign"></span>
+                        <span class="validation-message">
+                            [% locale.maketext('You must enter an integer between 1 and 9999.') %]
+                        </span>
+                    </li>
+                </ul>
+            </div>
+        </div>
+        <div class="row" ng-if="formData.backup_daily_enable">
+            <div class="col-xs-offset-1 col-sm-offset-1 col-md-offset-1 col-lg-offset-1 col-xs-11 col-sm-5 col-md-5 col-lg-5">
+                <input type="checkbox" ng-model="formData.force_prune_daily" id="daily_strict_enforce" ng-disabled="!formEnabled" /><span>[% locale.maketext('Strictly enforce retention, regardless of backup success.') %]</span>
+                <p class="text-muted">[% locale.maketext('For more information, read our [output,url,_1,Backup Configuration,_2,_3] documentation.', 'https://go.cpanel.net/whmdocsBackupRetention','target','_blank') %]</p>
+            </div>
+        </div>
+        <div class="row">
+            <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                <input type="checkbox" ng-model="formData.backup_weekly_enable" id="backup_weekly" ng-disabled="!formEnabled" /><span>[% locale.maketext('Weekly Backup') %]</span>
+            </div>
+        </div>
+        <div class="row" ng-if="formData.backup_weekly_enable">
+            <div class="col-xs-offset-1 col-sm-offset-1 col-md-offset-1 col-lg-offset-1 col-xs-11 col-sm-5 col-md-5 col-lg-5">
+                <div ng-repeat="weeklyDay in weeklyDays track by $index">
+                    <input type="radio" value="{{weeklyDay}}" name="weekly_backup_day" ng-checked="formData.backup_weekly_day === $index" id="weekly_backup_{{weeklyDay}}" ng-click="handleDayToggle($index,backup_config_form)" ng-disabled="!formEnabled" /><span>{{weeklyDay}}</span>
+                </div>
+            </div>
+        </div>
+        <div class="row" ng-if="formData.backup_weekly_enable">
+            <div class="col-xs-offset-1 col-sm-offset-1 col-md-offset-1 col-lg-offset-1 col-xs-11 col-sm-5 col-md-5 col-lg-5">
+                <p>[% locale.maketext('[output,strong,Retention]') %]</p>
+                <p class="text-muted">[% locale.maketext('Enter the number of weekly backups that you wish to keep in the system at one time.') %]</p>
+            </div>
+        </div>
+        <div class="row" ng-if="formData.backup_weekly_enable">
+            <div class="col-xs-offset-1 col-sm-offset-1 col-md-offset-1 col-lg-offset-1 col-xs-11 col-sm-5 col-md-5 col-lg-5">
+                <div class="input-group">
+                    <input
+                        type="number"
+                        name="backup_weekly_retention"
+                        ng-model="formData.backup_weekly_retention"
+                        class="form-control"
+                        id="weekly_retention"
+                        ng-min="1"
+                        ng-max="9999"
+                        ng-disabled="!formEnabled"
+                        ng-required="formData.backup_weekly_enable"
+                        positive-integer
+                        ng-keydown="noDecimalPoints($event)"
+                        ng-paste="onlyNumbers($event)" />
+                    <span class="input-group-addon">[% locale.maketext('backups') %]</span>
+                </div>
+            </div>
+            <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6" ng-if="backup_config_form.backup_weekly_retention.$error.required || backup_config_form.backup_weekly_retention.$error.min || backup_config_form.backup_weekly_retention.$error.max || backup_config_form.backup_weekly_retention.$error.number || backup_config_form.backup_weekly_retention.$error.positiveInteger">
+                <ul class="validation-container">
+                    <li class="validation validation-error" ng-if="backup_config_form.backup_weekly_retention.$error.required || backup_config_form.backup_weekly_retention.$error.min || backup_config_form.backup_weekly_retention.$error.max || backup_config_form.backup_weekly_retention.$error.number || backup_config_form.backup_weekly_retention.$error.positiveInteger">
+                        <span class="glyphicon glyphicon-exclamation-sign"></span>
+                        <span class="validation-message">
+                            [% locale.maketext('You must enter an integer between 1 and 9999.') %]
+                        </span>
+                    </li>
+                </ul>
+            </div>
+        </div>
+        <div class="row" ng-if="formData.backup_weekly_enable">
+            <div class="col-xs-offset-1 col-sm-offset-1 col-md-offset-1 col-lg-offset-1 col-xs-11 col-sm-5 col-md-5 col-lg-5">
+                <input type="checkbox" ng-model="formData.force_prune_weekly" id="weekly_strict_enforce" ng-disabled="!formEnabled" /><span>[% locale.maketext('Strictly enforce retention, regardless of backup success.') %]</span>
+                <p class="text-muted">[% locale.maketext('For more information, read our [output,url,_1,Backup Configuration,_2,_3] documentation.', 'https://go.cpanel.net/whmdocsBackupRetention','target','_blank') %]</p>
+            </div>
+        </div>
+        <div class="row">
+            <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                <input type="checkbox" ng-model="formData.backup_monthly_enable" id="backup_monthly" ng-disabled="!formEnabled" /><span>[% locale.maketext('Monthly Backup') %]</span>
+            </div>
+        </div>
+        <div class="row" ng-if="formData.backup_monthly_enable">
+            <div class="col-xs-offset-1 col-sm-offset-1 col-md-offset-1 col-lg-offset-1 col-xs-11 col-sm-5 col-md-5 col-lg-5">
+                <input type="checkbox" id="monthly_first" ng-model="monthlyBackupBool.first" ng-click="handleMonthlyToggle('first')" value="first" ng-disabled="!formEnabled" /><span>[% locale.maketext('The 1st day of the month.') %]</span>
+                <input type="checkbox" id="monthly_fifteenth" ng-model="monthlyBackupBool.fifteenth" ng-click="handleMonthlyToggle('fifteenth')" value="fifteenth" ng-disabled="!formEnabled" /><span>[% locale.maketext('The 15th day of the month.') %]</span>
+            </div>
+            <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6" ng-if="formData.backup_monthly_enable && !monthlyBackupBool.first && !monthlyBackupBool.fifteenth">
+                <ul class="validation-container">
+                    <li class="validation validation-error" ng-if="formData.backup_monthly_enable && !monthlyBackupBool.first && !monthlyBackupBool.fifteenth">
+                        <span class="glyphicon glyphicon-exclamation-sign"></span>
+                        <span class="validation-message">
+                            [% locale.maketext('You must select at least one day.') %]
+                        </span>
+                    </li>
+                </ul>
+            </div>
+        </div>
+        <div class="row" ng-if="formData.backup_monthly_enable">
+            <div class="col-xs-offset-1 col-sm-offset-1 col-md-offset-1 col-lg-offset-1 col-xs-11 col-sm-5 col-md-5 col-lg-5">
+                <p>[% locale.maketext('[output,strong,Retention]') %]</p>
+        <p class="text-muted">[% locale.maketext('Enter the number of monthly backups that you wish to keep in the system at one time.') %]</p>
+            </div>
+        </div>
+        <div class="row" ng-if="formData.backup_monthly_enable">
+            <div class="col-xs-offset-1 col-sm-offset-1 col-md-offset-1 col-lg-offset-1 col-xs-11 col-sm-5 col-md-5 col-lg-5">
+                <div class="input-group">
+                    <input
+                        type="number"
+                        name="backup_monthly_retention"
+                        ng-model="formData.backup_monthly_retention"
+                        class="form-control"
+                        id="monthly_retention"
+                        ng-min="1"
+                        ng-max="9999"
+                        ng-disabled="!formEnabled"
+                        ng-required="formData.backup_monthly_enable"
+                        ng-keydown="noDecimalPoints($event)"
+                        ng-paste="onlyNumbers($event)"
+                        positive-integer />
+                    <span class="input-group-addon">[% locale.maketext('backups') %]</span>
+                </div>
+            </div>
+            <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6" ng-if="backup_config_form.backup_monthly_retention.$error.required || backup_config_form.backup_monthly_retention.$error.min || backup_config_form.backup_monthly_retention.$error.max || backup_config_form.backup_monthly_retention.$error.number || backup_config_form.backup_monthly_retention.$error.positiveInteger">
+                <ul class="validation-container">
+                    <li class="validation validation-error" ng-if="backup_config_form.backup_monthly_retention.$error.required || backup_config_form.backup_monthly_retention.$error.min || backup_config_form.backup_monthly_retention.$error.max || backup_config_form.backup_monthly_retention.$error.number || backup_config_form.backup_monthly_retention.$error.positiveInteger">
+                        <span class="glyphicon glyphicon-exclamation-sign"></span>
+                        <span class="validation-message">
+                            [% locale.maketext('You must enter an integer between 1 and 9999.') %]
+                        </span>
+                    </li>
+                </ul>
+            </div>
+        </div>
+        <div class="row" ng-if="formData.backup_monthly_enable">
+            <div class="col-xs-offset-1 col-sm-offset-1 col-md-offset-1 col-lg-offset-1 col-xs-11 col-sm-5 col-md-5 col-lg-5">
+                <input type="checkbox" ng-model="formData.force_prune_monthly" id="monthly_strict_enforce" ng-disabled="!formEnabled" /><span>[% locale.maketext('Strictly enforce retention, regardless of backup success.') %]</span>
+                <p class="text-muted">[% locale.maketext('For more information, read our [output,url,_1,Backup Configuration,_2,_3] documentation.', 'https://go.cpanel.net/whmdocsBackupRetention','target','_blank') %]</p>
+            </div>
+        </div>
+        <div class="row">
+            <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6" ng-if="!formData.backup_daily_enable && !formData.backup_weekly_enable && !formData.backup_monthly_enable">
+                <ul class="validation-container">
+                    <li class="validation validation-error" ng-if="!formData.backup_daily_enable && !formData.backup_weekly_enable && !formData.backup_monthly_enable">
+                        <span class="glyphicon glyphicon-exclamation-sign"></span>
+                        <span class="validation-message">
+                            [% locale.maketext('You must select at least one backup timing setting.') %]
+                        </span>
+                    </li>
+                </ul>
+            </div>
+        </div>
+    </div>
+    <div class="form-group">
+        <div class="row">
+            <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                <h3>[% locale.maketext('Files') %]</h3>
+                <p class="text-muted">[% locale.maketext('Select the files that you want to include in a backup.') %]</p>
+            </div>
+        </div>
+        <div class="row">
+            <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                <input type="checkbox" ng-model="formData.backupaccts" id="account_backup" ng-disabled="!formEnabled" /><span><label for="account_backup">[% locale.maketext('Back up User Accounts') %]</label></span>
+                <button type="button" class="btn btn-default" id="select_users_btn" ng-click="redirectToSelectUsers()" ng-disabled="!formEnabled">[% locale.maketext('Select Users') %]</button>
+                <p class="text-muted">[% locale.maketext('Root users can toggle a user account backup or assign a specific backup system to a user.') %]</p>
+            </div>
+        </div>
+        <div class="row" ng-if="formData.backupaccts">
+            <div class="col-xs-offset-1 col-sm-offset-1 col-md-offset-1 col-lg-offset-1 col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                <input id="suspend_account_toggle" type="checkbox" ng-model="formData.backupsuspendedaccts" ng-disabled="!formEnabled"><label for="suspend_account_toggle">[% locale.maketext('[output,strong,Back up Suspended Accounts]') %]</label>
+                <p class="text-muted">[% locale.maketext('Toggle backups for suspended accounts.') %]</p>
+            </div>
+        </div>
+        <div class="row" ng-if="formData.backupaccts">
+            <div class="col-xs-offset-1 col-sm-offset-1 col-md-offset-1 col-lg-offset-1 col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                <input id="access_log__toggle" type="checkbox" ng-model="formData.backuplogs" ng-disabled="!formEnabled"><label for="access_log__toggle">[% locale.maketext('[output,strong,Back up Access Logs]') %]
+            </div>
+        </div>
+        <div class="row" ng-if="formData.backupaccts">
+            <div class="col-xs-offset-1 col-sm-offset-1 col-md-offset-1 col-lg-offset-1 col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                <input id="backup_bandwidth_toggle" type="checkbox" ng-model="formData.backupbwdata" ng-disabled="!formEnabled"><label for="backup_bandwidth_toggle">[% locale.maketext('[output,strong,Back up Bandwidth Data]') %]</label>
+            </div>
+        </div>
+        <div class="row" ng-if="formData.backupaccts">
+            <div class="col-xs-offset-1 col-sm-offset-1 col-md-offset-1 col-lg-offset-1 col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                <input id="local_zone_toggle" type="checkbox" ng-model="formData.localzonesonly" ng-disabled="!formEnabled"><label for="local_zone_toggle">[% locale.maketext('[output,strong,Use Local DNS]') %]</label>
+                <p class="text-muted">[% locale.maketext('Confine the domain lookup to this server only and do not query the DNS cluster.') %]</p>
+            </div>
+        </div>
+        <div class="row">
+            <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                <input type="checkbox" ng-model="formData.backupfiles" id="set_backup_system_files" ng-disabled="!formEnabled" /><span><label for="set_backup_system_files">[% locale.maketext('Back up System Files') %]</label></span>
+            </div>
+        </div>
+        <div class="row">
+            <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                <p class="text-muted">[% locale.maketext('[output,strong,Recommended.] Supports server restoration.') %]</p>
+            </div>
+            <div class="row">
+                <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6" ng-if="!formData.backupaccts && !formData.backupfiles">
+                    <ul class="validation-container">
+                        <li class="validation validation-error" ng-if="!formData.backupaccts && !formData.backupfiles">
+                            <span class="glyphicon glyphicon-exclamation-sign"></span>
+                            <span class="validation-message">
+                                [% locale.maketext('You must select at least one set of files to back up.') %]
+                            </span>
+                        </li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="form-group">
+        <div class="row">
+            <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                <h3>[% locale.maketext('Databases') %]</h3>
+                <p class="text-muted">[% locale.maketext('Select the databases that you want to include in a backup.') %]</p>
+            </div>
+        </div>
+        <div class="row">
+            <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                <p>[% locale.maketext('[output,strong,Back up SQL Databases]') %]</p>
+            </div>
+        </div>
+        <div class="row">
+            <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                <div>
+                    <input type="radio" ng-model="formData.mysqlbackup" name="set_sql_database" id="backup_sql_database_per_acct" value="accounts" ng-disabled="!formEnabled" /><span><label for="backup_sql_database_per_acct">[% locale.maketext('Per Account Only') %]</label></span>
+                    <p class="text-muted">[% locale.maketext('Use the “[_1]” command to create backup files with the “[_2]” file extension for each account.', 'mysqldump', '.sql') %]</p>
+                </div>
+                <div>
+                    <input type="radio" ng-model="formData.mysqlbackup" name="set_sql_database" id="backup_sql_database_entire_dir" value="dir"
+                    [% IF data.is_remote_mysql %]
+                        ng-disabled="true"
+                    [% ELSE %]
+                        ng-disabled="!formEnabled"
+                    [% END %]
+                        /><span><label for="backup_sql_database_entire_dir">[% locale.maketext('Entire Data Directory') %]</label></span>
+                    <p class="text-muted">[% locale.maketext('Back up all files in the “[_1]” directory.', data.mysql_data_dir.html) %]</p>
+                </div>
+                <div>
+                    <input type="radio" ng-model="formData.mysqlbackup" name="set_sql_database" id="backup_sql_database_per_acct_and_entire_dir" value="both"
+                    [% IF data.is_remote_mysql %]
+                        ng-disabled="true"
+                    [% ELSE %]
+                        ng-disabled="!formEnabled"
+                    [% END %]
+                        /><span><label for="backup_sql_database_per_acct_and_entire_dir">[% locale.maketext('Per Account and Entire Data Directory') %]</label></span>
+                    <p class="text-muted">[% locale.maketext('Back up all files in the “[_1]” directory, and use the “[_2]” command to create backup files with the “[_3]” extension for each account.', data.mysql_data_dir.html, 'mysqldump', '.sql') %]</p>
+                </div>
+                <div id="msyqlWarning" class="callout callout-warning" ng-if="formData.mysqlbackup == 'both' || formData.mysqlbackup == 'dir'">
+                    [% locale.maketext("[output,strong,Warning:] Exercise extreme caution if you select this setting.") %] [% locale.maketext("This setting backs up the data directory without stopping the database service.") %]
+                    [% locale.maketext("This action may cause [asis,InnoDB] issues with the data directory backup.") %]
+                    <p ng-if="formData.mysqlbackup == 'both'"><br />[% locale.maketext("This will not affect “[_1]” backups.", 'mysqldump') %]</p>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="form-group">
+        <div class="row">
+            <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                <h3>[% locale.maketext('Configure the Backup Directory') %]</h3>
+            </div>
+        </div>
+        <div class="row">
+            <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                <p>[% locale.maketext('[output,strong,Default Backup Directory]') %]</p>
+                <p class="text-muted">[% locale.maketext('You must enter an absolute path to the local backup directory.') %]</p>
+            </div>
+        </div>
+        <div class="row">
+            <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                <input type="text" name="backup_directory" class="form-control" ng-pattern="absolutePathRegEx" ng-model="formData.backupdir" id="backup_directory" ng-disabled="!formEnabled" required/>
+            </div>
+            <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6" ng-if="backup_config_form.backup_directory.$error.pattern || backup_config_form.backup_directory.$error.required">
+                <ul class="validation-container">
+                    <li class="validation validation-error" ng-if="backup_config_form.backup_directory.$error.pattern">
+                        <span class="glyphicon glyphicon-exclamation-sign"></span>
+                        <span class="validation-message">
+                            [% locale.maketext('You must enter the backup destination path with a forward slash to be a valid absolute path.') %]
+                        </span>
+                    </li>
+                    <li class="validation validation-error" ng-if="backup_config_form.backup_directory.$error.required">
+                        <span class="glyphicon glyphicon-exclamation-sign"></span>
+                        <span class="validation-message">
+                            [% locale.maketext('You must enter a backup path.') %]
+                        </span>
+                    </li>
+                </ul>
+            </div>
+        </div>
+        [% IF data.are_quotas_on %]
+            <div class="row">
+                <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                    <div class="callout callout-info">
+                        [% locale.maketext('The system does not apply quota limits to the default backup directory, /backup.') %] [% locale.maketext('To avoid performance degradation, we recommend that you store backups in a quota-disabled filesystem.') %]
+                    </div>
+                </div>
+            </div>
+        [% END %]
+        <div class="row">
+            <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                <p>[% locale.maketext('[output,strong,Backup Staging Directory]') %]</p>
+                <p class="text-muted">[% locale.maketext('You must enter an absolute path. The backup staging directory temporarily stores a remote backup’s files and directories during a backup restoration. The directory empties once the system restores the backup.') %]</p>
+            </div>
+        </div>
+        <div class="row">
+            <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                <input type="text" name="staging_directory" class="form-control" ng-pattern="absolutePathRegEx" ng-model="formData.remote_restore_staging_dir" id="staging_directory" ng-disabled="!formEnabled" required/>
+            </div>
+            <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6" ng-if="backup_config_form.staging_directory.$error.pattern || backup_config_form.staging_directory.$error.required">
+                <ul class="validation-container">
+                    <li class="validation validation-error" ng-if="backup_config_form.staging_directory.$error.pattern">
+                        <span class="glyphicon glyphicon-exclamation-sign"></span>
+                        <span class="validation-message">
+                            [% locale.maketext('You must enter an absolute path.') %]
+                        </span>
+                    </li>
+                    <li class="validation validation-error" ng-if="backup_config_form.staging_directory.$error.required">
+                        <span class="glyphicon glyphicon-exclamation-sign"></span>
+                        <span class="validation-message">
+                            [% locale.maketext('You must enter a backup staging directory path.') %]
+                        </span>
+                    </li>
+                </ul>
+            </div>
+        </div>
+        <div class="row">
+            <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                <div class="callout callout-info">
+                    [% locale.maketext('The system restores backups one at a time. The backup staging directory must be large enough to contain the largest remote backup file that you wish to restore.') %]
+                </div>
+            </div>
+        </div>
+        <div class="row">
+            <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                <input type="checkbox" ng-model="formData.keeplocal" id="set_backups_retain" ng-disabled="!formEnabled" /><label for="set_backups_retain">[% locale.maketext('Retain Backups in the Default Backup Directory') %]</label>
+                <p class="text-muted">[% locale.maketext('Retain backups in the default local backup directory, even after the system transfers the backups to another destination.') %]</p>
+                <p class="text-muted">[% locale.maketext('If you disable this option, the system will delete the backups after they move to another destination.') %]</p>
+            </div>
+        </div>
+        <div class="row">
+            <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                <input type="checkbox" id="mount_backup_toggle" ng-model="formData.backupmount" ng-disabled="!formEnabled" ng-checked="formData.backupmount"><label for="mount_backup_toggle">[% locale.maketext('Mount Backup Drive as Needed') %]</label>
+                <p class="text-muted">[% locale.maketext('Requires a separate drive or other mount point.') %]</p>
+            </div>
+        </div>
+    </div>
+    <div class="row">
+        <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+            <button type="submit"
+                    id="save_config_btn" cp-action="saveConfiguration(backup_config_form)" ng-disabled="!backup_config_form.$dirty || !backup_config_form.$valid ||
+                    (formData.backup_daily_enable && selectedDays.length === 0) ||
+                    (formData.backup_monthly_enable && !monthlyBackupBool.first && !monthlyBackupBool.fifteenth) ||
+                    (!formData.backup_daily_enable && !formData.backup_weekly_enable && !formData.backup_monthly_enable)">[% locale.maketext('Save Configuration') %]</button>
+            <button type="reset" class="btn btn-default" id="reset_config" ng-disabled="backup_config_form.$pristine" ng-click="resetConfiguration(backup_config_form)">[% locale.maketext('Reset') %]</button>
+        </div>
+    </div>
+</form>
+</div>

@@ -1,0 +1,46 @@
+
+=encoding utf-8
+
+=head1 NAME
+
+/etc/exim.pl.local - Perl functions for exim that are loaded by /etc/exim.pl
+
+=cut
+
+my $VALIASES_DIR       = '/etc/valiases';
+my $VDOMAINALIASES_DIR = '/etc/vdomainaliases';
+
+my $outgoing_mail_suspended_message;
+my $outgoing_sender;
+my $outgoing_sender_domain;
+my $outgoing_sender_counted_domain;
+my $outgoing_sender_sysuser;
+my $outgoing_sender_is_mailman;
+my $outgoing_sender_archive_directory = 'outgoing';
+my $mail_gid;
+my $nobody_uid;
+my $nobody_gid;
+my $mailtrap_gid;
+my $check_mail_permissions_domain     = '';
+my $check_mail_permissions_sender     = '';
+my $check_mail_permissions_msgid      = '';
+my $check_mail_permissions_data       = '';
+my $check_mail_permissions_is_mailman = 0;
+my $enforce_mail_permissions_data     = '';
+my $primary_hostname;
+my %uid_cache  = ( 0      => 'root', 47         => 'mailnull', 99       => 'nobody' );
+my %user_cache = ( 'root' => 0,      'mailnull' => 47,         'nobody' => 99 );
+my $reattempt_message = 'Message will be reattempted later';
+my $sender_lookup;
+my $sender_lookup_method;
+
+# TEST VARIABLES
+my $check_mail_permissions_result;
+
+my %file_exists_cache;
+
+sub file_exists {
+    return $file_exists_cache{ $_[0] } if exists $file_exists_cache{ $_[0] };
+    $file_exists_cache{ $_[0] } = -e $_[0] ? 1 : 0;
+    return $file_exists_cache{ $_[0] };
+}

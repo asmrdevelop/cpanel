@@ -1,0 +1,188 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/transfer_accounts_as_root       Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::transfer_accounts_as_root;
+
+use cPstrict;
+
+=encoding utf-8
+
+=head1 USAGE
+
+    transfer_accounts_as_root --host=the.source --user=hank
+
+=head1 DESCRIPTION
+
+This utility transfers one or more accounts from a remote server
+to the local one.
+
+The parameters are:
+
+=over
+
+=item * C<--host> - The remote (source) hostname or IP address. Required.
+
+=item * C<--user> - The name of a user to transfer. May be given multiple times.
+
+=item * C<--sshkey> - (optional) The name of the C<root> user’s SSH key to use
+to log in on the remote server. This takes the place of password authentication.
+
+=item * C<--session> - (optional) An argument, in C<key=value> format, to give
+to the C<create_remote_root_transfer_session> API call. May be given 0 or more times.
+
+=item * C<--enqueue> - (optional) An argument, in C<key=value> format, to give
+to the C<enqueue_transfer_item> API call. May be given 0 or more times.
+
+=back
+
+=head1 AUTHENTICATION
+
+This script supports the following authentications:
+
+=over
+
+=item * Password for C<root>, given on STDIN.
+
+=item * SSH key for C<root>, named as the C<--sshkey> argument. The
+key’s passphrase is given on STDIN.
+
+=back
+
+=head1 CAVEATS (B<IMPORTANT!>)
+
+This script is a simple interface to WHM’s account-transfer APIs. As such,
+it exhibits some important differences from WHM’s “Transfer Tool”:
+
+=over
+
+=item * “Live Transfer” mode is B<disabled> by default. To enable it, pass
+C<--enqueue=live_transfer=1>.
+
+=item * By default a transfer requires either SSH access or valid TLS on
+the remote (source) server. If neither is available, instruct the transfer
+session to attempt invalid TLS by passing
+C<--session=comm_transport=whostmgr_insecure> to this script.
+
+=item * SSH access to the rem
+
+=item * There are fewer “guard rails” in place. For example, as of this
+writing the system will enqueue a transfer of an account that doesn’t actually
+exist on the source server. (Future cPanel & WHM versions may improve on this.)
+
+=back
+
+=head1 SEE ALSO
+
+F</usr/local/cpanel/scripts/transfer_account_as_user> is like this script
+but authenticates to the source server as the user.
+
+=cut
+
+#----------------------------------------------------------------------
+
+use parent qw(
+  Cpanel::CLI::TransferAccounts
+);
+
+__PACKAGE__->new(@ARGV)->run() if !caller;
+
+use constant _OPTIONS => (
+    __PACKAGE__->SUPER::_OPTIONS(),
+    'user=s@',
+    'sshkey=s',
+);
+
+#----------------------------------------------------------------------
+
+sub run ($self) {
+    my ( $host, $usernames_ar ) = $self->parse_opts();
+
+    my $authn_username = 'root';
+
+    my ( $prompt, $prompt_var, @authn_args );
+
+    if ( my $sshkey_name = $self->getopt('sshkey') ) {
+        push @authn_args, ( sshkey_name => $sshkey_name );
+
+        if ( _does_key_need_passphrase($sshkey_name) ) {
+            $prompt     = "Enter “$sshkey_name”’s passphrase:";
+            $prompt_var = 'sshkey_passphrase';
+        }
+        else {
+            $self->say("“$sshkey_name” is unencrypted, so no passphrase is needed.");
+        }
+    }
+    else {
+        $prompt     = "Enter “$authn_username”’s password on “$host”:";
+        $prompt_var = 'password';
+    }
+
+    if ($prompt) {
+        my $secret = $self->get_secret($prompt);
+
+        push @authn_args, ( $prompt_var => $secret );
+    }
+
+    #----------------------------------------------------------------------
+
+    my $guard = $self->create_session_and_aborter(
+        'create_remote_root_transfer_session',
+        {
+            user => $authn_username,
+            host => $host,
+            @authn_args,
+        },
+    );
+
+    $self->enqueue_users( 'AccountRemoteRoot', $usernames_ar );
+
+    $self->do_transfer_and_finish();
+
+    return;
+}
+
+sub _does_key_need_passphrase ($keyname) {
+    require Cpanel::SSH;
+
+    my ($keys_ar) = Cpanel::SSH::_listkeys(
+        private => 1,
+        public  => 0,
+    );
+
+    my $key_data_hr;
+
+    for my $key_hr (@$keys_ar) {
+        next if $key_hr->{'file'} ne $keyname;
+
+        $key_data_hr = $key_hr;
+        last;
+    }
+
+    if ( !$key_data_hr ) {
+        my @keynames = sort map { $_->{'file'} } @$keys_ar;
+
+        my $msg = join(
+            "\n",
+            "No key exists named “$keyname”.",
+            q<>,
+            "Available keys are:",
+            ( map { "\t• $_" } @keynames ),
+            q<>,
+        );
+
+        die $msg;
+    }
+
+    return $key_data_hr->{'encrypted'};
+}
+
+# Needed for Cpanel::SSH
+sub main::hasfeature {
+    return 1;
+}
+
+1;

@@ -1,0 +1,30 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - bin/checkvirtfs                         Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+
+$ENV{'PATH'} = "/bin:/usr/bin:/usr/local/bin";
+
+my $cpargs = '-fa';
+my $uid    = $ARGV[0];
+
+opendir( PROC, "/proc" );
+my @PROCS = readdir(PROC);
+closedir(PROC);
+@PROCS = grep( /^\d+$/, @PROCS );
+@PROCS = grep( !/^$/,   @PROCS );
+
+foreach my $proc (@PROCS) {
+    next if ( ( stat("/proc/${proc}") )[4] ne $uid );
+
+    open( STATUS, "/proc/${proc}/cmdline" );
+    my $status = <STATUS>;
+    close(STATUS);
+    if ( $status =~ /jailshell/i ) { exit(1); }
+}
+
+exit(0);

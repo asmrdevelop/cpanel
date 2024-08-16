@@ -1,0 +1,622 @@
+<div class="row">
+    <div class="col-xs-12">
+        <p ng-show="isLoading()"
+            class="alert alert-info"
+            ng-cloak
+            role="alert">
+            <span id="spinner_profile" class="fas fa-spinner fa-spin" title="[% locale.maketext('Loading profiles …') %]"></span>
+            [% locale.maketext('Loading profiles …') %]
+        </p>
+
+
+        <section ng-show="!isLoading()">
+            <div class="row">
+                <div class="col-xs-12">
+                    <div class="row currentPackagePanel">
+                        <div class="col-xs-12 col-md-7">
+                            <div class="row">
+                                <div class="col-xs-12 currentPackageLabel" aria-describedby="active_profile_tags">
+                                    <h3>[% locale.maketext("Currently Installed Packages") %]</h3>
+                                    <a id="toggleRecommendations" class="label label-warning"
+                                        href="javascript:void(0)"
+                                        ng-show="activeProfile.recommendationsExist"
+                                        ng-click="showRecommendations(activeProfile)"
+                                        tabindex="0">
+                                        {{ activeProfile.recommendationLabel }}
+                                    </a>
+                                </div>
+                            </div>
+                            <div class="row">
+                                <div class="col-xs-12">
+                                    <span class="contains-title">[% locale.maketext("Contains") %]</span>
+                                    <span class="contains-item" id="active_profile_tags">
+                                        {{ activeProfile.tagsAsString }}
+                                    </span>
+                                    <button class="btn btn-link"
+                                        id="viewProfileButton_activeProfile"
+                                        title="[% locale.maketext("Show all packages currently installed on the system.") %]"
+                                        ng-click="viewProfile(activeProfile)">
+                                        <span class="glyphicon glyphicon-list-alt" aria-hidden="true"></span>
+                                        [% locale.maketext("View all packages[comment,no punctuation needed for button text]") %]
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-xs-12 col-md-5 text-dir-right">
+                            <button type="button"
+                                id="customizeButton_activeProfile"
+                                class="btn btn-primary"
+                                ng-click="customizeCurrentProfile(activeProfile)">
+                                [% locale.maketext("Customize") %]
+                            </button>
+                            <button id="btnConvertToProfile"
+                                class="btn btn-default"
+                                ng-class="{ 'active': convertProfile.show }"
+                                ng-click="showPopover('convert');"
+                                type="button"
+                                data-toggle="collapse"
+                                data-target="#convertProfilePopup"
+                                aria-expanded="false"
+                                aria-controls="convertProfilePopup">
+                                <span class="glyphicon glyphicon-export"></span>
+                                [% locale.maketext("Convert to profile[comment,button title]") %]
+                            </button>
+                        </div>
+                    </div>
+                    <!-- Convert to Profile popover section -->
+                    <div class="row">
+                        <div class="col-xs-12" ng-show="convertProfile.show">
+                            <div class="pop-over right top">
+                                <save-as-profile id-prefix="convertProfile"
+                                    packages="activeProfile.pkgs"
+                                    action-handler="convertProfile"
+                                    save-button-text="[% locale.maketext('Convert') %]"
+                                    show="{{ convertProfile.show }}"
+                                    on-save-success="loadProfiles()"
+                                    on-cancel="convertProfile.show = false">
+                                </save-as-profile>
+                            </div>
+                        </div>
+                    </div>
+                    <!-- Recommendation container -->
+                    <div class="row">
+                        <div class="col-xs-12">
+                            <section id="recommendations_container" ng-show="activeProfile.showRecommendations" class="alert alert-warning alert-dismissable" tabindex="-1">
+                                <button type="button"
+                                        aria-hidden="true"
+                                        id="btnHideRecos"
+                                        class="close pull-right flip"
+                                        ng-click="hideRecommendations(activeProfile)"
+                                        title="[% locale.maketext('Hide Recommendations') %]">
+                                    <span class="fas fa-times" ></span>
+                                </button>
+                                <div id="reco_pkg_{{ pkg }}" ng-repeat-start="(pkg, recosData) in activeProfile.recommendations track by pkg">
+                                    <div id="reco_item_{{$index}}" class="reco-item" ng-repeat="reco in recosData.recosList track by $index" ng-show="reco.show">
+                                        <h4 aria-describedby="foot_note_{{$index}}">{{reco.displayName}} *</h4>
+                                        <p>
+                                            <span ng-class="{'text-danger': reco.level == 'danger'}" ng-bind-html="reco.desc"></span>
+                                            <a href="{{ reco.url }}" target="_blank" ng-show="reco.url">
+                                                [% locale.maketext("Learn More") %]
+                                            </a>
+                                        </p>
+                                        <ul class="fa-ul">
+                                            <li ng-repeat="option in reco.options track by $index"
+                                                class="bullet"
+                                                ng-show="option.show">
+                                                <span class="fa-stack" title="{{option.title}}" ng-class="{'text-success': option.recommended}">
+                                                  <i class="fa-li fas fa-certificate fa-stack-1x"></i>
+                                                  <i class="fa-li fas fa-ban fa-stack-2x text-danger"
+                                                    ng-show="option.recommended == false"></i>
+                                                </span>
+                                                <span class="bullet-item" ng-class="{'text-danger': option.level == 'danger'}" ng-bind-html="option.text">
+                                                </span>
+                                                <a href="{{ option.url }}" target="_blank" ng-show="option.url">
+                                                    [% locale.maketext("Learn More") %]
+                                                </a>
+                                                <ul>
+                                                    <li id="reco_option_item_{{ item }}"
+                                                        class="res-pkg-item reco-option-list-item"
+                                                        ng-repeat="item in option.items track by $index"
+                                                        ng-bind-html="item">
+                                                    </li>
+                                                </ul>
+                                            </li>
+                                        </ul>
+                                    </div>
+                                </div>
+                                <div class="foot-note" id="foot_note_{{$index}}">*{{ recosData.footNote }}</div>
+                                <hr class="reco-separator" ng-repeat-end />
+                                <button class="btn btn-default"
+                                    ng-click="hideRecommendations(activeProfile)"
+                                    aria-label="[% locale.maketext('Hide Recommendations') %]">
+                                    [% locale.maketext("Hide Recommendations") %]
+                                </button>
+                            </section>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Available Profiles Section -->
+            <div class="row">
+                <div class="col-xs-6">
+                    <h3>
+                        [% locale.maketext("Available Profiles") %]
+                    </h3>
+                </div>
+                <div class="col-xs-6 text-dir-right">
+                    <!-- Upload Profile section -->
+                    <button class="btn btn-default upload-btn"
+                        ng-class="{ 'active': upload.show }"
+                        type="button"
+                        data-toggle="collapse"
+                        data-target="#uploadPopup"
+                        aria-expanded="false"
+                        aria-controls="uploadPopup"
+                        ng-click="showPopover('upload');">
+                        <span class="fas fa-upload"></span>
+                        [% locale.maketext("Upload a profile[comment,button title]") %]
+                    </button>
+                </div>
+            </div>
+            <div class="row">
+                <div class="col-xs-12 col-sm-4"></div>
+                <!-- UPLOAD PROFILES CONTAINER -->
+                <div class="col-xs-12 col-sm-8" ng-show="upload.show">
+                    <div class="pop-over right top-upload">
+                        <div id="uploadPopup"
+                            class="upload-popover well">
+                            <form id="form_upload_profile" name="formUpload">
+                                <div class="section">
+                                    <button type="button"
+                                            id="btnCloseUpload"
+                                            class="close pull-right flip"
+                                            ng-click="cancelUpload()"
+                                            uib-tooltip="[% locale.maketext('Close') %]"
+                                            aria-label="[% locale.maketext('Close') %]">
+                                        <span aria-hidden="true" class="fas fa-times"></span>
+                                    </button>
+                                    <div class="form-group">
+                                        <div class="row">
+                                            <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                                                <label id="lblUploadProfile" for="style">
+                                                    [% locale.maketext('Profile to Upload') %]
+                                                </label>
+                                            </div>
+                                            <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                                            </div>
+                                        </div>
+                                        <uib-accordion close-others="true">
+                                            <div uib-accordion-group
+                                                class="panel-default"
+                                                heading="[% locale.maketext('Browse local file[comment,heading title]') %]"
+                                                is-disabled="upload.disableLocalSec"
+                                                is-open="upload.localSecIsOpen">
+                                                <!-- Upload from local file system. -->
+                                                <div class="row">
+                                                    <div class="col-xs-12">
+                                                        <div class="upload-field">
+                                                            <span class="btn-wrap">
+                                                                <input id="profile_file"
+                                                                    name="profile_file"
+                                                                    type="file"
+                                                                    required
+                                                                    ng-change="readValidateContent()"
+                                                                    ng-model="upload.profile"
+                                                                    file-model="upload.profile"
+                                                                    file-type="['application/json', 'text/json']"
+                                                                    file-size />
+                                                                <span id="btnProfileBrowse" class="btn btn-default">[% locale.maketext('Browse') %]</span>
+                                                            </span>
+                                                            <span trigger-for="profile_file">
+                                                                <span class="far fa-file-alt fa-lg" ng-show="upload.profile.name"></span>
+                                                                <span id="profile_filename" class="filename">{{upload.profile.name}}</span>
+                                                            </span>
+                                                            <span class="help-block">
+                                                                [% locale.maketext('You [output,strong,must] upload your profile as a “[output,em,.json]” file.') %] [% locale.maketext('The file [output,strong,must] contain a name and at least one package.') %] [% locale.maketext('Learn more on [output,url,_1,How to create a Profile,target,_blank].', "https://go.cpanel.net/EA4profile") %]
+                                                            </span>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                                <!-- Validation section (Upload from local file system) -->
+                                                <div class="row">
+                                                    <div id="profile_upload_errors"
+                                                        class="col-xs-12">
+                                                        <ul class="validation-container"
+                                                            ng-show="formUpload.profile_file.$invalid && formUpload.profile_file.$dirty">
+                                                            <li class="validation validation-error"
+                                                                ng-show="formUpload.profile_file.$error.required">
+                                                                <span class="glyphicon glyphicon-exclamation-sign"></span>
+                                                                <span class="validation-message">
+                                                                    [% locale.maketext('You [output,strong,must] upload your profile as a “[output,em,.json]” file.') %]
+                                                                </span>
+                                                            </li>
+                                                            <li class="validation validation-error"
+                                                                ng-show="formUpload.profile_file.$error.filetype">
+                                                                <span class="glyphicon glyphicon-exclamation-sign"></span>
+                                                                <span class="validation-message">
+                                                                    [% locale.maketext('You [output,strong,must] upload your profile as a “[output,em,.json]” file.') %]
+                                                                </span>
+                                                            </li>
+                                                            <li class="validation validation-error"
+                                                                ng-show="formUpload.profile_file.$error.fileSize">
+                                                                <span class="glyphicon glyphicon-exclamation-sign"></span>
+                                                                <span class="validation-message">
+                                                                    [% locale.maketext('You [output,strong,cannot] upload an empty file.') %]
+                                                                </span>
+                                                            </li>
+                                                            <li class="validation validation-error"
+                                                                ng-show="formUpload.profile_file.$error.content">
+                                                                <span class="glyphicon glyphicon-exclamation-sign"></span>
+                                                                <span class="validation-message">
+                                                                    [% locale.maketext('The file [output,strong,must] contain a name and at least one package.') %]
+                                                                </span>
+                                                            </li>
+                                                            <li class="validation validation-error"
+                                                                ng-show="formUpload.profile_file.$error.invalidformat">
+                                                                <span class="glyphicon glyphicon-exclamation-sign"></span>
+                                                                <span class="validation-message">
+                                                                    [% locale.maketext('Invalid JSON.') %]
+                                                                </span>
+                                                            </li>
+                                                            <li class="validation validation-error"
+                                                                ng-show="formUpload.profile_file.$error.invalidfilename">
+                                                                <span class="glyphicon glyphicon-exclamation-sign"></span>
+                                                                <span class="validation-message">
+                                                                    [% locale.maketext('Filename [output,strong,cannot] include the following characters: [list_and,_1]', ["/", "NUL"]) %]
+                                                                </span>
+                                                            </li>
+                                                        </ul>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                            <div uib-accordion-group
+                                                class="panel-default"
+                                                heading="[% locale.maketext('Retrieve from URL[comment,heading title]') %]"
+                                                is-disabled="upload.disableUrlSec"
+                                                is-open="upload.urlSecIsOpen">
+                                                <!-- Upload from URL -->
+                                                <section id="urlInputSection" ng-hide="upload.url.showFilenameInput">
+                                                    <div class="row">
+                                                        <div class="col-xs-12">
+                                                            <div class="input-group">
+                                                                <input id="profile_file_url"
+                                                                    name="profile_file_url"
+                                                                    ng-required="upload.urlSecIsOpen"
+                                                                    class="form-control"
+                                                                    placeholder="[% locale.maketext('Type or Paste URL') %]"
+                                                                    type="url"
+                                                                    ng-pattern="/^(http|https):\/\/(.*)/"
+                                                                    ng-model="upload.url.value" />
+                                                                <span class="input-group-btn">
+                                                                    <button type="button"
+                                                                        class="btn btn-default"
+                                                                        ng-disabled-="formUpload.profile_file_url.$dirty"
+                                                                        title="[% locale.maketext('Click to retrieve data from URL.') %]"
+                                                                        ng-click="getAndValidateUploadDataFromURL()">
+                                                                        <span class='fas fa-check'></span>
+                                                                    </button>
+                                                                </span>
+                                                            </div>
+                                                            <span class="help-block">
+                                                                [% locale.maketext('You [output,strong,must] upload your profile as a “[output,em,.json]” file.') %] [% locale.maketext('The file [output,strong,must] contain a name and at least one package.') %] [% locale.maketext('Learn more on [output,url,_1,How to create a Profile,target,_blank].', "https://go.cpanel.net/EA4profile") %]
+                                                            </span>
+                                                        </div>
+                                                    </div>
+                                                </section>
+                                                <section id="urlUploadFilenameInputSection" ng-show="upload.url.showFilenameInput">
+                                                    <div class="row">
+                                                        <div class="col-xs-12">
+                                                            <p>
+                                                                <span class="far fa-check-circle fa-lg text-success"></span>
+                                                                [% locale.maketext("Retrieved content from url.") %]
+                                                                <a href="javascript:void(0)"
+                                                                    ng-click="resetUploadUrl()">
+                                                                    <span class="fas fa-pencil-alt fa-lg"></span>
+                                                                    [% locale.maketext("Change URL") -%]
+                                                                </a>
+                                                            </p>
+                                                        </div>
+                                                    </div>
+                                                    <div class="row">
+                                                        <div class="col-xs-12">
+                                                            <div class="form-group">
+                                                                <label for="txtUploadUrlFilename" class="sr-only">
+                                                                    [% locale.maketext("Filename") %]
+                                                                </label>
+                                                                <div class="input-group">
+                                                                    <input type="text"
+                                                                        name="txtUploadUrlFilename"
+                                                                        id="txtUploadUrlFilename"
+                                                                        placeholder="[% locale.maketext('Filename') %]"
+                                                                        ng-required="upload.urlSecIsOpen"
+                                                                        ng-model="upload.url.filename"
+                                                                        class="form-control"
+                                                                        ng-change="validateFilenameInput()" />
+                                                                    <div class="input-group-addon">
+                                                                        [% locale.maketext("[asis,.json]") %]
+                                                                    </div>
+                                                                </div>
+                                                                <span class="help-block">
+                                                                    [% locale.maketext("Required.") %]
+                                                                    [% locale.maketext('Filename [output,strong,cannot] be [list_or_quoted,_1].', [".", ".."]) %]
+                                                                    [% locale.maketext('Filename [output,strong,cannot] include the following characters: [list_and,_1]', ["/", "NUL"]) %]
+                                                                </span>
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                </section>
+                                                <!-- Upload URL validations -->
+                                                <div class="row">
+                                                    <div id="profile_upload_errors"
+                                                        class="col-xs-12">
+                                                        <ul id="valFileUploadUrl" class="validation-container"
+                                                            ng-show="formUpload.profile_file_url.$invalid && formUpload.profile_file_url.$dirty">
+                                                            <li class="validation validation-error"
+                                                                ng-show="formUpload.profile_file_url.$error.required">
+                                                                <span class="glyphicon glyphicon-exclamation-sign"></span>
+                                                                <span class="validation-message">
+                                                                    [% locale.maketext('You [output,strong,must] upload your profile as a “[output,em,.json]” file.') %]
+                                                                </span>
+                                                            </li>
+                                                            <li class="validation validation-error"
+                                                                ng-show="formUpload.profile_file_url.$error.url">
+                                                                <span class="glyphicon glyphicon-exclamation-sign"></span>
+                                                                <span class="validation-message">
+                                                                    [% locale.maketext('URL [output,strong,must] start with a protocol ([output,abbr,HTTP,Hyper Text Transfer Protocol] or [output,abbr,HTTPS,Hyper Text Transfer Protocol Secure]).') %]
+                                                                </span>
+                                                            </li>
+                                                            <li class="validation validation-error"
+                                                                ng-show="formUpload.profile_file_url.$error.filetype">
+                                                                <span class="glyphicon glyphicon-exclamation-sign"></span>
+                                                                <span class="validation-message">
+                                                                    [% locale.maketext('You [output,strong,must] upload your profile as a “[output,em,.json]” file.') %]
+                                                                </span>
+                                                            </li>
+                                                            <li class="validation validation-error"
+                                                                ng-show="formUpload.profile_file_url.$error.fileSize">
+                                                                <span class="glyphicon glyphicon-exclamation-sign"></span>
+                                                                <span class="validation-message">
+                                                                    [% locale.maketext('You [output,strong,cannot] upload an empty file.') %]
+                                                                </span>
+                                                            </li>
+                                                            <li class="validation validation-error"
+                                                                ng-show="formUpload.profile_file_url.$error.content">
+                                                                <span class="glyphicon glyphicon-exclamation-sign"></span>
+                                                                <span class="validation-message">
+                                                                    [% locale.maketext('The file [output,strong,must] contain a name and at least one package.') %]
+                                                                </span>
+                                                            </li>
+                                                            <li class="validation validation-error"
+                                                                ng-show="formUpload.profile_file_url.$error.invalidformat">
+                                                                <span class="glyphicon glyphicon-exclamation-sign"></span>
+                                                                <span class="validation-message">
+                                                                    [% locale.maketext('Invalid JSON.') %]
+                                                                </span>
+                                                            </li>
+                                                            <li class="validation validation-error"
+                                                                ng-show="formUpload.profile_file_url.$error.invalidfilename">
+                                                                <span class="glyphicon glyphicon-exclamation-sign"></span>
+                                                                <span class="validation-message">
+                                                                    [% locale.maketext('Filename [output,strong,cannot] include the following characters: [list_and,_1]', ["/", "NUL"]) %]
+                                                                </span>
+                                                            </li>
+                                                        </ul>
+                                                        <ul id="valUploadUrlFilename"
+                                                            validation-container
+                                                            field-name="txtUploadUrlFilename">
+                                                            <validation-item
+                                                                field-name="txtUploadUrlFilename"
+                                                                validation-name="required">
+                                                                [% locale.maketext("Filename is required.") %]
+                                                            </validation-item>
+                                                            <validation-item
+                                                                field-name="txtUploadUrlFilename"
+                                                                validation-name="valFilename">
+                                                                    <span ng-bind-html="upload.url.filenameValMsg"></span>
+                                                            </validation-item>
+                                                        </ul>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </uib-accordion>
+                                        <div class="row">
+                                            <div class="col-xs-12" ng-class="{ 'animate-highlight' : upload.highlightOverwrite }">
+                                                <div class="checkbox">
+                                                    <label>
+                                                        <input type="checkbox" ng-model="upload.overwrite">
+                                                        [% locale.maketext("Overwrite an existing profile[comment,checkbox title.]") %]
+                                                    </label>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div class="form-group">
+                                        <button id="btnUpload"
+                                                type="submit"
+                                                spinner-id="spinnerUpload"
+                                                cp-action="uploadProfile()"
+                                                ng-disabled="formUpload.$invalid || !formUpload.$dirty">
+                                            [% locale.maketext("Upload") %]
+                                        </button>
+                                        <button id="btnCancelStyleUpload"
+                                                type="button"
+                                                class="btn btn-link"
+                                                ng-click="cancelUpload()">
+                                            [% locale.maketext("Cancel") %]
+                                        </button>
+                                    </div>
+                                </div>
+                            </form>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-xs-12">
+                    <p class="description">
+                        [% locale.maketext("Click [output,class,Provision,highlight] to install packages in a profile. Click [output,class,Customize,highlight] to use a profile as template and add or remove packages. For more information about profiles read [output,url,_1,EasyApache 4 - Create a Profile,target,_blank].", "https://go.cpanel.net/EA4profile") %]
+                    </p>
+                </div>
+            </div>
+            <!-- Alert when no profiles are available -->
+            <div class="row">
+                <div class="col-xs-12" ng-show="noProfiles">
+                    <p id="noProfilesText" class="alert alert-warning" role="alert">
+                        [% locale.maketext("No profiles are installed on your machine.") %]
+                        <br>
+                        [% locale.maketext("Please install [asis,ea-profiles-cpanel] to install the default cPanel profiles.") %]
+                    </p>
+                </div>
+            </div>
+
+            <!-- Available Profiles List -->
+            <div class="row profilesSection" ng-hide="errorOccurred">
+                <div class="col-xs-12 profile-col"
+                    ng-if="profileList.length"
+                    ng-repeat="profile in profileList track by $index">
+                    <div class="panel panel-default profile-panel"
+                        ng-class="{ 'callout callout-warning' : !profile.isValid }">
+                        <div class="panel-body">
+                            <div class="row">
+                                <div class="col-xs-12 col-md-9">
+                                    <div class="row">
+                                        <div class="col-xs-12 profile-title">
+                                            {{ profile.name }}
+                                            <span class="label label-info">{{ profile.profileType }}</span>
+                                           <span id="toggleInfo_{{ profile.id }}"
+                                                class="glyphicon glyphicon-info-sign text-primary"
+                                                aria-hidden="true"
+                                                title="[% locale.maketext("Toggle this profile description.") %]"
+                                                ng-click="profile.showDescription = !profile.showDescription"> </span>
+                                            <button class="sr-only"
+                                                ng-click="profile.showDescription = !profile.showDescription">
+                                                [% locale.maketext("Toggle this profile description.") %]
+                                            </button>
+                                        </div>
+                                    </div>
+                                    <div class="row">
+                                        <div class="col-xs-12">
+                                            <span class="contains-title">[% locale.maketext("Contains") %]</span>
+                                            <span class="contains-item">
+                                                {{ profile.tagsAsString }}
+                                            </span>
+                                            <button id="viewProfileButton_{{ profile.id }}"
+                                                class="btn btn-link"
+                                                title="[% locale.maketext("Show all packages provided by this profile.") %]"
+                                                ng-click="viewProfile(profile)">
+                                                <span class="glyphicon glyphicon-list-alt"></span>
+                                                [% locale.maketext("View all packages[comment,no punctuation needed for button text]") %]
+                                            </button>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="col-xs-12 col-md-3">
+                                    <div class="row" ng-hide="profile.showValidationWarning">
+                                        <div class="col-xs-12 text-dir">
+                                            <button type="button"
+                                                id="customizeButton_{{ profile.id }}"
+                                                class="btn btn-default"
+                                                title="[% locale.maketext("Use this profile as a template.") %]"
+                                                ng-click="proceedNext(profile, true)">
+                                                [% locale.maketext("Customize") %]
+                                            </button>
+                                            <button type="button"
+                                                id="provisionButton_{{ profile.id }}"
+                                                class="btn btn-default"
+                                                title="[% locale.maketext("Provide all the packages in this profile.") %]"
+                                                ng-click="proceedNext(profile, false)">
+                                                [% locale.maketext("Provision") %]
+                                            </button>
+                                            <a id="download_{{ profile.id }}"
+                                                class="btn"
+                                                href="[% cp_security_token %]/scripts7/{{ profile.downloadUrl }}">
+                                                <span class="fas fa-download"></span>
+                                                [% locale.maketext("Download") %]
+                                            </a>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="row" ng-show="profile.showDescription" role="alert">
+                                <div class="col-xs-12 description">
+                                    {{ profile.desc }}
+                                </div>
+                            </div>
+                            <!-- List unsupported packages in profile -->
+                            <div id="unsupportedPkgs_{{ profile.id }}" class="row" ng-hide="profile.isValid">
+                                <div class="col-xs-12 text-warning">
+                                    [% locale.maketext("This profile includes the following packages that are not supported on this server:") %]
+                                    <ul>
+                                        <li ng-repeat="pkg in profile.validation_data.not_on_server_without_prefix track by $index">
+                                            {{ pkg }}
+                                        </li>
+                                    </ul>
+                                </div>
+                            </div>
+                            <!-- Prompt to warn of unsupported packages -->
+                            <div class="row" ng-show="profile.showValidationWarning">
+                                <div class="col-xs-12 col-md-8 text-warning">
+                                    [% locale.maketext("The system will not install the unsupported packages. Do you wish to continue?") %]
+                                </div>
+                                <div class="col-xs-12 col-md-4 text-dir">
+                                    <button id="yes_{{ profile.id }}" class="btn btn-primary"
+                                        ng-click="continueAction(profile)">
+                                        [% locale.maketext("Continue") %]
+                                    </button>
+                                    <a id="cancelLink_{{ profile.id }}"
+                                        href="javascript:void(0)"
+                                        ng-click="reset(profile)"
+                                        class="btn btn-link">
+                                        [% locale.maketext("Cancel") %]
+                                    </a>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+    </div>
+</div>
+
+<!-- View Profile Modal box -->
+<script type="text/ng-template" id="profileModalContent.tmpl">
+<div class="modal-header">
+    <h3 class="modal-title" id="profileModalLabel">[% locale.maketext("View Profile") %]</h3>
+</div>
+<div class="modal-body">
+    <h3>{{ modalData.name }}</h3>
+    <p>{{ modalData.desc }}</p>
+    <hr>
+    <!-- List missing profiles -->
+    <div id="missingPkgs_{{ modalData.id }}" class="row" ng-hide="modalData.isValid">
+        <div class="col-xs-12">
+            <div class="text-warning alert alert-warning" role="alert">
+                [% locale.maketext("This profile includes the following packages that are not supported on this server:") %]
+                <ul>
+                    <li ng-repeat="pkg in modalData.validation_data.not_on_server_without_prefix track by $index">
+                        {{ pkg }}
+                    </li>
+                </ul>
+            </div>
+        </div>
+    </div>
+    <div id="group_{{type}}" class="list-group"
+        ng-repeat="(type, packageInfo) in modalData.pkgs track by $index">
+        <div class="list-group-item ea-profile-category">
+            <h4 class="list-group-item-heading">
+                {{ packageInfo.name }}
+            </h4>
+            <ul class="list-unstyled">
+            <li id="item_{{package}}" class="list-group-item-text package"
+                ng-repeat="package in packageInfo.packages  track by $index">
+                {{ package }}
+            </li>
+            </ul>
+        </div>
+    </div>
+
+</div>
+<div class="modal-footer">
+    <button class="btn btn-primary" ng-click="closeModal()">[% locale.maketext("Close") %]</button>
+</div>
+</script>

@@ -1,0 +1,39 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/eximconfgen                     Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+use Cpanel::Exim::Config ();
+
+my $want_acls      = @ARGV && grep( /\-aclblock/, @ARGV ) ? 1 : 0;
+my $want_template  = @ARGV && grep( /\-template/, @ARGV ) ? 1 : 0;
+my %OPTS           = ();
+my $use_alt_config = @ARGV && grep( /--local/,       @ARGV ) ? 1 : 0;
+my $acl_dry_run    = @ARGV && grep( /--acl_dry_run/, @ARGV ) ? 1 : 0;
+if ($use_alt_config) {
+    foreach my $alt_config ( grep( /--local/, @ARGV ) ) {
+        my ( $filetype, $file ) = $alt_config =~ /--([^=]+)=(.*)$/;
+        $OPTS{$filetype} = $file;
+    }
+}
+$OPTS{'acl_dry_run'} = 1 if $acl_dry_run;
+
+my $exim_cfgobj = Cpanel::Exim::Config->new( 'fetch_acls' => $want_acls, %OPTS );
+
+$exim_cfgobj->{'no_validate'}     = $want_acls;    #fetch_acls generates a template
+$exim_cfgobj->{'no_ensure_setup'} = 1;
+
+my %CFDATA = $exim_cfgobj->generate_config_file();
+
+if ($want_acls) {
+    print $CFDATA{'cf'}->{'ACLBLOCK'};
+}
+elsif ($want_template) {
+    print $CFDATA{'template'};
+}
+else {
+    print $CFDATA{'cfg'};
+}

@@ -1,0 +1,155 @@
+[%
+
+SET total_usage_meter_width = 400;
+
+IF NOTICE.usage_type == "inodes";
+  SET progress_bar_width = (total_usage_meter_width * NOTICE.used_inodes) div NOTICE.total_inodes;
+  SET percentage = 100 * (NOTICE.total_inodes - NOTICE.available_inodes) / NOTICE.total_inodes;
+ELSE;
+  SET progress_bar_width = (total_usage_meter_width * NOTICE.used_bytes) div NOTICE.total_bytes;
+  SET percentage = 100 * (NOTICE.total_bytes - NOTICE.available) / NOTICE.total_bytes;
+END;
+
+SET percentage_disp = ((100 * percentage) div 1) / 100;
+SET usage_meter_remaining_width = total_usage_meter_width - progress_bar_width;
+-%]
+
+
+[%
+    PROCESS "include/colors.tmpl";
+    PROCESS "include/icons.tmpl";
+    PROCESS "include/styles.tmpl";
+    PROCESS "include/code_block.tmpl";
+    PROCESS "include/progress_bar.tmpl";
+
+    WRAPPER 'wrapper/main.html.tmpl';
+
+    NOTICE.email_reason = CPANEL.locale.maketext('Disk usage warning');
+%]
+
+    <p>
+        [% IF NOTICE.usage_type == 'blocks' -%]
+            [% CPANEL.locale.maketext('The filesystem “[_1]” mounted at “[_2]” reached “[_3]” status because you currently use [numf,_4]% of its available blocks.', NOTICE.filesystem, NOTICE.mount, NOTICE.notify_type, percentage_disp, NOTICE.usage_type ); %]
+        [% ELSIF NOTICE.usage_type == 'inodes' -%]
+            [% CPANEL.locale.maketext('The filesystem “[_1]” mounted at “[_2]” reached “[_3]” status because you currently use [numf,_4]% of its available inodes.', NOTICE.filesystem, NOTICE.mount, NOTICE.notify_type, percentage_disp, NOTICE.usage_type ); %]
+        [% ELSE -%]
+            Unknown notification type ([% NOTICE.notify_type %])!
+        [% END -%]
+    </p>
+
+    <table style="
+        margin: 5px 10px;
+        border: 2px solid [% medium_gray %];
+        padding: 0;"
+        cellpadding="5" cellspacing="0"
+        width="[% content_width - 20 %]px">
+        <tbody>
+            [% IF NOTICE.notify_type %]
+                <tr style="background-color:[% light_gray %]">
+                    <th align="left">[% CPANEL.locale.maketext('Notification Type') %]:</th>
+                    <td align="left">
+                        [% NOTICE.notify_type FILTER html %]
+                        [% get_icon(icon=NOTICE.notify_type) %]
+                    </td>
+                </tr>
+            [% END %]
+            <tr style="background-color:[% white %]">
+                <th align="left">[% CPANEL.locale.maketext('Server') %]:</th>
+                <td align="left">[% NOTICE.hostname FILTER html %]</td>
+            </tr>
+            <tr style="background-color:[% light_gray %]">
+                <th align="left">[% CPANEL.locale.maketext('Primary [output,abbr,IP,Internet Protocol] Address') %]:</th>
+                <td align="left">[% NOTICE.mainip FILTER html %]</td>
+            </tr>
+            <tr style="background-color:[% white %]">
+                <th align="left">[% CPANEL.locale.maketext('Filesystem') %]:</th>
+                <td align="left">[% NOTICE.filesystem FILTER html %]</td>
+            </tr>
+            <tr style="background-color:[% light_gray %]">
+                <th align="left">[% CPANEL.locale.maketext('Mount Point') %]:</th>
+                <td >[% NOTICE.mount FILTER html %]</td>
+            </tr>
+            <tr style="background-color:[% white %]">
+                <th align="left">[% CPANEL.locale.maketext('Percent Used') %]:</th>
+                <td >[% progress_bar(percent_full=percentage_disp) %]</td>
+            </tr>
+            [% IF NOTICE.usage_type == "inodes" %]
+            <tr style="background-color:[% light_gray %]">
+                <th align="left">[% CPANEL.locale.maketext('[asis,Inode] Usage') %]:</th>
+                <td align="left">
+                    <table>
+                        <tr>
+                            <td align="left">
+                                [% CPANEL.locale.maketext('Used') %]:
+                            </td>
+                            <td align="left">
+                                [% CPANEL.locale.numf(NOTICE.used_inodes) %]
+                            </td>
+                        </tr>
+                        <tr>
+                            <td align="left">
+                                [% CPANEL.locale.maketext('Available') %]:
+                            </td>
+                            <td align="left">
+                                [% CPANEL.locale.numf(NOTICE.available_inodes) %]
+                            </td>
+                        </tr>
+                        <tr>
+                            <td align="left">
+                                [% CPANEL.locale.maketext('Total') %]:
+                            </td>
+                            <td align="left">
+                                [% CPANEL.locale.numf(NOTICE.total_inodes) %]
+                            </td>
+                        </tr>
+                    </table>
+                </td>
+            </tr>
+            [% ELSE %]
+            <tr style="background-color:[% light_gray %]">
+                <th align="left">[% CPANEL.locale.maketext('Disk Block Usage') %]:</th>
+                <td align="left">
+                    <table>
+                        <tr>
+                            <td align="left">
+                                [% CPANEL.locale.maketext('Used') %]:
+                            </td>
+                            <td align="left">
+                                [% CPANEL.locale.format_bytes(NOTICE.used_bytes) %]
+                            </td>
+                        </tr>
+                        <tr>
+                            <td align="left">
+                                [% CPANEL.locale.maketext('Available') %]:
+                            </td>
+                            <td align="left">
+                                [% CPANEL.locale.format_bytes(NOTICE.available) %]
+                            </td>
+                        </tr>
+                        <tr>
+                            <td align="left">
+                                [% CPANEL.locale.maketext('Total') %]:
+                            </td>
+                            <td align="left">
+                                [% CPANEL.locale.format_bytes(NOTICE.total_bytes) %]
+                            </td>
+                        </tr>
+                    </table>
+                </td>
+            </tr>
+            [% END %]
+            <tr style="background-color:[% white %]">
+                <th align="left" >[% CPANEL.locale.maketext('[asis,ChkServd] Version') %]:</th>
+                <td >[% NOTICE.chkservd_version %]</td>
+            </tr>
+        </tbody>
+    </table>
+
+    <p>[% CPANEL.locale.maketext('Configure system disk usage notifications') %]:<br>
+        <a href="[% NOTICE.tweaksettings_system_diskusage_url %]">[% NOTICE.tweaksettings_system_diskusage_url %]</a>
+    </p>
+    <p>[% CPANEL.locale.maketext('Disable [output,abbr,HTML,Hypertext Markup Language] notifications') %]:<br>
+        <a href="[% NOTICE.tweaksettings_chkservd_plaintext_notify_url %]">[% NOTICE.tweaksettings_chkservd_plaintext_notify_url %]</a>
+    </p>
+
+[% END %]

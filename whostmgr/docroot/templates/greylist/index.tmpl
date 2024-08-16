@@ -1,0 +1,138 @@
+[%
+    USE Whostmgr;
+    USE JSON;
+
+    SET on_switch_text = "ON";
+    SET off_switch_text = "OFF";
+    IF (locale.get_language_tag() != "en");
+        # These characters should not be translated.
+        on_switch_text = "I";
+        off_switch_text = "O";
+    END;
+
+    WRAPPER 'master_templates/master.tmpl'
+        app_key = 'greylisting'
+        header = locale.maketext('[asis,Greylisting]'),
+        breadcrumburl = '/scripts7/greylist',
+        base = '/scripts7/greylist/',
+        stylesheets = [
+            Whostmgr.find_file_url('/templates/greylist/index.min.css'),
+            Whostmgr.find_file_url('/templates/greylist/angular-toggle-switch-bootstrap.min.css'),
+            Whostmgr.find_file_url('/templates/greylist/angular-toggle-switch.min.css')
+        ],
+        warn_linked_nodes => 1,
+        theme='bootstrap',
+        CJT2_EXCLUSIVE = 1;
+%]
+<div id="content"
+     class="ng-cloak"
+     ng-cloak>
+    <p>[% locale.maketext("[asis,Greylisting] defends email users against spam. When enabled, the mail server will temporarily reject any email from a sender the server does not recognize. If the email is legitimate, the originating server will try again after a delay. After sufficient time has elapsed, the server will accept the email.") %]</p>
+    <div ng-controller="baseController">
+        <div id="enable_disable_control">
+            <div class="enable_disable_row">
+                <div class="enable_disable_cell">
+                    <div role="checkbox"
+                        id="greylist_status_toggle"
+                        class="toggle-switch"
+                        tabindex="0"
+                        aria-checked="{{ greylistEnabled }}"
+                        aria-label="[% locale.maketext("Enable [asis,Greylisting]") %]"
+                        ng-click="toggle_status()"
+                        ng-keyup="handle_keyup($event)"
+                        ng-keydown="handle_keydown($event)"
+                        ng-class="{disabled: changing_status}">
+                        <div id="greylist_status_toggle" class="toggle-switch-animate" ng-class="{'switch-off': !greylistEnabled, 'switch-on': greylistEnabled}">
+                            <span class="switch-left">
+                                [% on_switch_text %]
+                            </span>
+                            <span class="knob">{{knobLabel}}</span>
+                            <span class="switch-right">
+                                [% off_switch_text %]
+                            </span>
+                        </div>
+                    </div>
+                </div>
+                <div class="enable_disable_cell" ng-hide="greylistEnabled || changing_status">
+                    <div class="led led-red"></div>
+                </div>
+                <div class="enable_disable_cell" ng-hide="!greylistEnabled || changing_status">
+                    <div class="led led-green"></div>
+                </div>
+                <div class="enable_disable_cell" ng-hide="!changing_status">
+                    <span class="fas fa-spinner fa-spin"></span>
+                </div>
+                <div class="enable_disable_cell" ng-hide="changing_status">
+                    <span class="greylist_status_message" ng-hide="!greylistEnabled">[% locale.maketext('[asis,Greylisting] is [output,strong,Enabled]') %]</span>
+                    <span class="greylist_status_message" ng-hide="greylistEnabled">[% locale.maketext('[asis,Greylisting] is [output,strong,Disabled]') %]</span>
+                </div>
+            </div>
+        </div>
+        <div id="tabContainer" ng-show="greylistEnabled">
+            <ul class="nav nav-tabs">
+                <li ng-class="{active: currentRoute === '/config'}"><a href="config">[% locale.maketext('Configuration Settings') %]</a></li>
+                <li ng-class="{active: currentRoute === '/trusted'}"><a href="trusted">[% locale.maketext('Trusted Hosts') %]</a></li>
+                <li ng-class="{active: currentRoute === '/commonproviders'}"><a href="commonproviders">[% locale.maketext('Common Mail Providers') %]</a></li>
+                <li ng-class="{active: currentRoute === '/reports'}"><a href="reports">[% locale.maketext('Reports') %]</a></li>
+            </ul>
+            <div class="tab-content" ng-view></div>
+        </div>
+    </div>
+    <div growl></div>
+</div>
+
+<script type="text/javascript">
+    var PAGE = PAGE || {};
+
+    PAGE.security_token = [% cp_security_token.json() %];
+    PAGE.is_enabled = [% data.cpgreylist_config.is_enabled.json() %];
+    PAGE.is_exim_enabled = [% data.cpgreylist_config.is_exim_enabled.json() %];
+    PAGE.initial_block_time_mins = [% data.cpgreylist_config.initial_block_time_mins.json() %];
+    PAGE.must_try_time_mins = [% data.cpgreylist_config.must_try_time_mins.json() %];
+    PAGE.record_exp_time_mins = [% data.cpgreylist_config.record_exp_time_mins.json() %];
+    PAGE.spf_bypass = [% data.cpgreylist_config.spf_bypass.json() || 0 %];
+    PAGE.current_locale = [% locale.get_language_tag().json() %];
+
+    PAGE.config_default = [% data.item('DEFAULT').json() %];
+
+</script>
+
+<script type="text/ng-template" id="modal/confirmTrustedHostDeletion.html">
+    <div class="modal-header">
+        <h4><span class="glyphicon glyphicon-check"></span><span class="confirm_message">[% locale.maketext('Confirm Deletion') %]</span></h4>
+    </div>
+    <div class="modal-body">
+        {{deleteConfirmationMessage()}}
+    </div>
+    <div class="modal-footer">
+        <button class="btn btn-primary btn-sm" ng-click="deleteIps(is_single_deletion)">[% locale.maketext('Continue') %]</button>
+        <button class="btn btn-link btn-sm" ng-click="cancelDeletion()">[% locale.maketext('Cancel') %]</button>
+    </div>
+</script>
+<script type="text/ng-template" id="modal/confirmTrustedHostsDeleteAll.html">
+    <div class="modal-header">
+        <h4><span class="glyphicon glyphicon-check"></span><span class="confirm_message">[% locale.maketext('Confirm Deletion') %]</span></h4>
+    </div>
+    <div class="modal-body">
+        [% locale.maketext("Do you want to permanently delete all records from the Trusted Hosts list?") %]
+    </div>
+    <div class="modal-footer">
+        <button class="btn btn-primary btn-sm" ng-click="deleteAll()">[% locale.maketext('Continue') %]</button>
+        <button class="btn btn-link btn-sm" ng-click="cancelDeleteAll()">[% locale.maketext('Cancel') %]</button>
+    </div>
+</script>
+<script type="text/ng-template" id="modal/dismissNetblockGrowl.html">
+    <div class="modal-header">
+        <h4><span class="glyphicon glyphicon-check"></span><span class="confirm_message">[% locale.maketext('Hide Permanently') %]</span></h4>
+    </div>
+    <div class="modal-body">
+        <p>[% locale.maketext("Do you want to permanently hide this notification?") %]</p>
+    </div>
+    <div class="modal-footer">
+        <button class="btn btn-primary btn-sm" ng-click="hideNetblockGrowlPermanently()">[% locale.maketext('Yes') %]</button>
+        <button class="btn btn-link btn-sm" ng-click="cancelHideNetblockNotice()">[% locale.maketext('No') %]</button>
+    </div>
+</script>
+
+[% PROCESS 'master_templates/cjt2_header_include.tt' %]
+[% END %]

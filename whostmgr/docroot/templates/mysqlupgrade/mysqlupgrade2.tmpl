@@ -1,0 +1,246 @@
+[% PROCESS 'master_templates/_defheader.tmpl'
+    header = locale.maketext('Upgrade Database Version (Step [numf,_1] of [numf,_2])', 2, 5)
+
+    breadcrumburl = '/scripts/mysqlupgrade'
+    theme = 'bootstrap'
+    extrastyle = '
+        .no-bold { font-weight: normal; display: block;}
+        .center { text-align: center; }
+        .inline-block { display: inline-block; }
+        .alert-danger .alert-message ul li { color: #333; }
+        .margin-top { margin-top: 10px; }
+';
+    SET can_do_checkers = ( data.selected_version.html() <= '10.0' && data.selected_version.html() >= '8.0' && data.current_version.html() == '5.7' );
+-%]
+    <div id="content">
+        [% IF !data.fatal && can_do_checkers %]
+            <div id="myslshellChecker">
+                <h3>MySQL Upgrade Checker via MySQLShell (optional)</h3>
+                <p>This utility verifies whether your MySQL 5.7 server is ready for an upgrade to MySQL 8.</p>
+                <div id="runOutputStatusMsg" style="display: none"></div>
+                <pre id="runOutputContainer" style="display: none; height: 40rem;" class="well"></pre>
+                <button type="button" id="installAndRunChecker" class="btn btn-default" onclick="window.installAndRunChecker();">
+                    [% locale.maketext("Run Checker") %]
+                </button>
+            </div>
+        [% END %]
+        <h2>[% locale.maketext('Upgrade Warnings') %]</h2>
+        <p>
+            [% locale.maketext('The upgrade script has checked your system to see if an upgrade is possible at this time.') %]
+            [% IF data.warnings.size == 0 %]
+                [% locale.maketext('The system has not encountered any problems specific to your configuration.') %]
+            [% ELSE %]
+                [% locale.maketext('The system encountered warnings specific to your configuration.') %]
+            [% END %]
+        </p>
+        [% IF data.fatal %]
+            <div class="alert alert-danger" id="alertFatalWarnings" role="alert">
+                <span class="glyphicon glyphicon-remove-sign" aria-hidden="true"></span>
+                <div class="alert-message">
+                    <strong class="alert-title">[% locale.maketext('Error:') %]</strong>
+                    <span class="alert-body">
+                        [%locale.maketext('An upgrade on your system is not possible at this time!') %]
+                        [%locale.maketext('Please correct the following errors before you attempt to upgrade:') %]
+                        <ul class="margin-top">
+                            [% FOREACH fatals = data.warnings %]
+                                [% NEXT IF fatals.severity != 'Fatal' %]
+                                <li id="fatal-warning-[% loop.count() %]">[% fatals.message %]</li>
+                            [% END %]
+                        </ul>
+                    </span>
+                </div>
+            </div>
+            <form action="[% cp_security_token %]/scripts/mysqlupgrade" method="get" id="mysql_upgrade_form_0">
+                <input type="hidden" name="step" value="1">
+                <input type="hidden" name="selected_version" value="[% data.selected_version.html() %]">
+                <input type="hidden" name="current_version" value="[% data.current_version.html() %]">
+                <div class="form-group">
+                    <button type="submit" id="back_button" class="btn btn-default">[% locale.maketext('Go Back') %]</button>
+                </div>
+            </form>
+        [% ELSE %]
+            <form action="[% cp_security_token %]/scripts/mysqlupgrade" method="post" id="mysql_upgrade_form_1">
+                <input type="hidden" name="step" value="3">
+                <input type="hidden" name="selected_version" value="[% data.selected_version.html() %]">
+                <input type="hidden" name="current_version" value="[% data.current_version.html() %]">
+                [% IF data.warnings.size != 0 %]
+                <div>
+                <p>
+                <b>[% locale.maketext('Please click the checkbox next to each warning to indicate that you understand the potential consequences of this upgrade.') %] </b>
+                </p>
+                </div>
+                <div>
+                    <table id="system_warnings" class="table table-striped responsive-table">
+                    <thead>
+                    <tr>
+                        <th>&nbsp;</th>
+                        <th>[%locale.maketext('Severity') %]</th>
+                        <th>[%locale.maketext('Message') %]</th>
+                    </tr>
+                    </thead>
+                    <tbody>
+                    [% FOREACH warn = data.warnings %]
+                        [% NEXT IF warn.severity == 'Fatal' %]
+                        <tr [% IF warn.severity == 'Critical' %]class="warning"[% END %]>
+                            <td class="center" data-title="[% locale.maketext('Confirm') %]">
+                                <input type="checkbox" name="boxes" id="warning_[% loop.count() %]">
+                            </td>
+                            <td data-title="[%locale.maketext('Severity') %]">
+                                <label class="no-bold" for="warning_[% loop.count() %]">
+                                    [% warn.severity %]
+                                </label>
+                            </td>
+                            <td data-title="[%locale.maketext('Message') %]">
+                                <label class="no-bold" for="warning_[% loop.count() %]">
+                                    [% warn.message %]
+                                </label>
+                            </td>
+                        </tr>
+                    [% END %]
+                    </tbody>
+                    </table>
+                </div>
+                [% END %]
+                <div class="form-group">
+                    <button type="submit" id="continue_button" class="btn btn-primary" disabled>[% locale.maketext('Continue') %]</button>
+                    </form>
+                    <form action="[% cp_security_token %]/scripts/mysqlupgrade" method="get" id="mysql_upgrade_form_0" class="inline-block">
+                        <input type="hidden" name="step" value="1">
+                        <input type="hidden" name="selected_version" value="[% data.selected_version.html() %]">
+                        <input type="hidden" name="current_version" value="[% data.current_version.html() %]">
+                        <button type="submit" id="back_button" class="btn btn-default">[% locale.maketext('Go Back') %]</button>
+                    </form>
+                </div>
+        [% END %]
+        </div>
+    </div>
+    <script type="text/javascript">
+        function update_continue_button() {
+            var cont_disabled = false;
+            var form = document.forms["mysql_upgrade_form_1"];
+            if ( form ) {
+                var boxes = form.querySelectorAll('input[type="checkbox"][name="boxes"]');
+                var checked = form.querySelectorAll('input[type="checkbox"][name="boxes"]:checked');
+                if ( boxes.length !== checked.length ) {
+                    cont_disabled = true;
+                }
+                document.getElementById("continue_button").disabled = cont_disabled;
+            }
+        }
+
+        window.addEventListener("load", function() {
+            var form = document.forms["mysql_upgrade_form_1"];
+            if ( form ) {
+                var boxes = form.querySelectorAll('input[type="checkbox"][name="boxes"]');
+                for (var i = 0, len = boxes.length; i < len; i++) {
+                    boxes[i].addEventListener("click", update_continue_button);
+                }
+            }
+            // Update continue button now -- there may be no checkboxes,
+            // or the user checks all boxes before event listeners are added.
+            update_continue_button();
+        });
+
+        [% IF can_do_checkers %]
+        window.installAndRunChecker = function () {
+            'use strict';
+            var btn = document.getElementById("installAndRunChecker");
+            btn.innerHTML = "<span class=\"fa fa-spin fa-spinner\"></span>"
+            btn.disabled = true;
+            var upgradeDiv = document.getElementById('runOutputContainer');
+            upgradeDiv.style.display = "block";
+            upgradeDiv.textContent = '';
+            var msgElem = document.getElementById("runOutputStatusMsg");
+            msgElem.style.display = "none";
+            msgElem.classList.remove("alert", "alert-danger", "alert-info");
+            msgElem.textContent = '';
+            let ccElem = document.getElementById('contentContainer');
+            ccElem.scrollTo(0,ccElem.scrollHeight);
+            CPANEL.api({
+                func: "background_mysql_upgrade_checker_run",
+                catch_api_errors: true,
+                callback: {
+                    success: function(o) {
+                        var log_entry = o.cpanel_data.log_entry,
+                            pid = o.cpanel_data.pid,
+                            metadata = { "CHILD_ERROR": "?" };
+                        let url = `wss://${window.location.host}[% data.CP_SECURITY_TOKEN %]/websocket/LogStreamer?log_entry=${log_entry}&pid=${pid}`;
+
+                        var ws = new WebSocket(url);
+                        ws.onerror = function(e) {
+                            msgElem.classList.add("alert", "alert-danger");
+                            msgElem.textContent = e.data;
+                            msgElem.style.display = "block";
+
+                            // Don't need to close the conn, as the error does this already
+                        };
+
+                        ws.onmessage = function(e) {
+                            if(e.data.charAt(0) === '.') {
+
+                                // Decode the message, as it is JSON line.
+                                // These are used to set metadata.
+                                let parsed = JSON.parse(e.data.substr(1));
+                                if( parsed && Array.isArray(parsed) ) {
+                                    for (let i = 0; i < parsed.length; i++) {
+                                        if( i % 2 ) { // odd
+                                            continue;
+                                        }
+                                        metadata[parsed[i]] = parsed[i + 1];
+                                    }
+                                }
+                            } else {
+                                upgradeDiv.textContent += e.data.replace(/\.\./g,'.');
+                                upgradeDiv.scrollTo(0,upgradeDiv.scrollHeight);
+                            }
+                        };
+
+                        ws.onclose = function(e) {
+                            if (e.code === 1011) {
+                                msgElem.classList.add("alert", "alert-danger");
+                                msgElem.textContent = e.reason;
+                                msgElem.style.display = 'block';
+                            }
+                            else if ( metadata.CHILD_ERROR && (metadata.CHILD_ERROR !== "?") ) {
+                                var chld_err = "" + metadata.CHILD_ERROR;
+                                let msgElem = document.getElementById("runOutputStatusMsg");
+                                if (chld_err === "0") {
+                                    msgElem.classList.add("alert", "alert-info");
+                                    msgElem.textContent = LOCALE.maketext("Check executed successfully. Review the log below.");
+                                    msgElem.style.display = "block";
+
+                                } else {
+                                    msgElem.classList.add("alert", "alert-danger");
+                                    msgElem.textContent = chld_err;
+                                }
+                            } else {
+                                msgElem.classList.add("alert", "alert-danger");
+                                msgElem.textContent = LOCALE.maketext(
+                                    "The log transmission for “[_1]” did not include a final status for the check. This may indicate a failure. Check the “[_2]” file for more information.", 'mysqlshell', '/var/cpanel/logs/' + log_entry + '/txt'
+                                );
+                            }
+                            btn.textContent = LOCALE.maketext("Run Checker Again");
+                            btn.disabled = false;
+                        };
+                        return false;
+
+                    },
+                    failure: function(o) {
+                        msgElem.classList.add("alert", "alert-danger");
+                        var error = LOCALE.maketext("Request timed out.");
+                        if (o && o.status > 0) {
+                            error = String(o.cpanel_error || o.error || o).html_encode();
+                        }
+                        msgElem.textContent = error;
+                        btn.textContent = LOCALE.maketext("Run Checker Again");
+                        btn.disabled = false;
+                    },
+                    timeout: 5000
+                }
+            });
+            return false;
+        }
+        [% END %]
+    </script>
+
+[% PROCESS 'master_templates/_deffooter.tmpl' -%]

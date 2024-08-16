@@ -1,0 +1,177 @@
+[%#
+Variables passed in:
+
+origin                  - the system component from which the request originated
+ip_address              - the IP address from which the request originated
+ip_address_is_public    - whether the “ip_address” is public (i.e., not a loopback, private, &c.)
+reverse_dns_hostnames   - arrayref of whatever a reverse DNS lookup returned, if successful
+country_name            - the name of the country that GeoIP reports is where the IP address’s computer is
+country_code            - the two-letter country code of the “country_name”
+country_lookup_error    - whatever error may have prevented getting a “country_name”
+
+ip                      - ip for the created account
+useip                   - if assigned a dedicated ip.  displays as 'y/n'
+has_cgi                 - if CGI access is allowed.  displays as 'y/n'
+user                    - username for account created
+user_domain             - domain for the account created
+password                - plain text password for account created - may not always be displayed
+cpanel_mod              - what theme  the user sees.  ex: 'x3' or 'paper_lantern'
+home_root               - the user's home directory root
+quota                   - the disk quota in bytes.  will be 'unlimited' for unlimited.
+nameservers             - the name servers assigned to the user
+contact_email           - the contact email for the user
+package                 - what was assigned to the user on account creation
+feature_list            - what was assigned to the user on account creation
+locale                  - the localization code for the user.  ex: 'en' for English
+env_remote_user         - the account that created this one.
+env_user                - user roll action was performed as(ex: root if has root privileges )
+sent_to_root            - A default boolean flag sent to all templates that indicates if the message was sent to 'root'
+
+For more information about how to customize notification templates, read our documentation at https://go.cpanel.net/notificationtemplates
+
+-%]
+
+[%
+    PROCESS "include/colors.tmpl";
+    PROCESS "include/styles.tmpl";
+
+    WRAPPER 'wrapper/main.html.tmpl';
+
+    NOTICE.email_reason = CPANEL.locale.maketext('New Account created.');
+%]
+
+[% IF NOTICE.useip == "y" %]
+    [% NOTICE.ip_type = CPANEL.locale.maketext('Dedicated'); %]
+[% ELSE %]
+    [% NOTICE.ip_type = CPANEL.locale.maketext('Shared'); %]
+[% END %]
+
+[% IF NOTICE.has_cgi == "y" %]
+    [% NOTICE.cgi_support = CPANEL.locale.maketext('Enabled'); %]
+[% ELSE %]
+    [% NOTICE.cgi_support = CPANEL.locale.maketext('Disabled'); %]
+[% END %]
+
+[% IF NOTICE.quota == "unlimited" %]
+    [% NOTICE.quota_formatted = CPANEL.locale.maketext('Unlimited'); %]
+[% ELSE %]
+    [% NOTICE.quota_formatted = CPANEL.locale.maketext('[format_bytes,_1]', NOTICE.quota * 1024 * 1024); %]
+[% END %]
+
+<table>
+    <tbody>
+        <tr>
+            <th align="right">
+                [% CPANEL.locale.maketext('Domain'); %]:
+            </th>
+            <td align="left">
+                [% NOTICE.user_domain %]
+            </td>
+        </tr>
+        <tr>
+            <th align="right">
+                [% CPANEL.locale.maketext('[output,abbr,IP,Internet Protocol] Address'); %]:
+            </th>
+            <td align="left">
+                [% NOTICE.ip %] ([% NOTICE.ip_type %])
+            </td>
+        </tr>
+        <tr>
+            <th align="right">
+                [% CPANEL.locale.maketext('[output,abbr,CGI,Common Gateway Interface] Access'); %]:
+            </th>
+            <td align="left">
+                [% NOTICE.cgi_support %]
+            </td>
+        </tr>
+        <tr>
+            <th align="right">
+                [% CPANEL.locale.maketext('Username'); %]:
+            </th>
+            <td align="left">
+                [% NOTICE.user %]
+            </td>
+        </tr>
+        <tr>
+            <th align="right">
+                [% CPANEL.locale.maketext('Password'); %]:
+            </th>
+            <td align="left">
+                [% NOTICE.password %]
+            </td>
+        </tr>
+        <tr>
+            <th align="right">
+                [% CPANEL.locale.maketext('[asis,cPanel] Theme'); %]:
+            </th>
+            <td align="left">
+                [% NOTICE.cpanel_mod %]
+            </td>
+        </tr>
+        <tr>
+            <th align="right">
+                [% CPANEL.locale.maketext('Home Directory Root'); %]:
+            </th>
+            <td align="left">
+                [% NOTICE.home_root %]
+            </td>
+        </tr>
+        <tr>
+            <th align="right">
+                [% CPANEL.locale.maketext('Quota'); %]:
+            </th>
+            <td align="left">
+                [% NOTICE.quota_formatted %]
+            </td>
+        </tr>
+        [% FOREACH nameserver IN NOTICE.nameservers %]
+            [% IF nameserver.length %]
+                <tr>
+                    <th align="right">
+                        [% CPANEL.locale.maketext('Name Server [_1]', loop.count); %]:
+                    </th>
+                    <td align="left">
+                        [% nameserver %]
+                    </td>
+                </tr>
+            [% END %]
+        [% END %]
+        <tr>
+            <th align="right">
+                [% CPANEL.locale.maketext('Contact Email'); %]:
+            </th>
+            <td align="left">
+                [% NOTICE.contact_email %]
+            </td>
+        </tr>
+        <tr>
+            <th align="right">
+                [% CPANEL.locale.maketext('Package'); %]:
+            </th>
+            <td align="left">
+                [% NOTICE.cpanel_package %]
+            </td>
+        </tr>
+        <tr>
+            <th align="right">
+                [% CPANEL.locale.maketext('Feature List'); %]:
+            </th>
+            <td align="left">
+                [% NOTICE.feature_list %]
+            </td>
+        </tr>
+        <tr>
+            <th align="right">
+                [% CPANEL.locale.maketext('Locale'); %]:
+            </th>
+            <td align="left">
+                [% NOTICE.locale %]
+            </td>
+        </tr>
+    </tbody>
+</table>
+<p>
+    [% CPANEL.locale.maketext('“[_1]” set up the account.', NOTICE.env_remote_user.html() ); %]
+</p>
+
+[% END %]

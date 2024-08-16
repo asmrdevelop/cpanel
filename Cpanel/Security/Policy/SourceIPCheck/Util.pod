@@ -1,0 +1,114 @@
+
+# cpanel - Cpanel/Security/Policy/SourceIPCheck/Util.pod
+#                                                  Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+=head1 NAME
+
+Cpanel::Security::Policy::SourceIPCheck::Util - Utilities for SourceIPCheck plugin
+
+=head1 SYNOPSIS
+
+    use Cpanel::Security::Policy::SourceIPCheck::Util;
+
+=head1 DESCRIPTION
+
+This module contains utility methods needed for access to the security questions
+and iplists.
+
+=head1 INTERFACE
+
+=head2 NUM_QUESTIONS
+
+Constant giving the total number of security questions available.
+
+=head2 QUESTIONS_PER_BOX
+
+Constant giving the number of questions in each of the question lists.
+
+=head2 validatesecquestions( $formref, $result )
+
+Verify that the answers in the $formref hash are reasonable for the security
+questions. This involves making sure the question indices are valid and that
+the answers are of reasonable length.
+
+If any fail, return false and modify $result to mark the questions invalid.
+
+=head2 resetsecquestions( $dir, $user )
+
+Remove the security questions for the user $user from the security policy
+directory $dir.
+
+=head2 savesecquestions( $dir, $question, $user )
+
+Save the security questions for $user to the security policy directory $dir
+from the hash referenced by $question.
+
+Logs and exceptions if unable to write file to disk.
+
+=head2 loadsecquestions( $dir, $question, $user )
+
+Load the security questions for $user from the security policy directory $dir
+into the hash referenced by $question.
+
+=head2 deauthorize_ip( $dir, $user, $match_ip )
+
+Given the security policy directory $dir, deauthorize the $match_ip for $user.
+
+=head2 authorize_ip( $dir, $user, $match_ip )
+
+Given the security policy directory $dir, authorize the $match_ip for $user.
+
+=head2 has_security_questions( $dir, $user )
+
+Given the security policy directory $dir, return true if the user $user has any
+security questions.
+
+=head2 digest_user( $user )
+
+Generate a digest of the user name based on an MD5 hash of the name.
+The result is a printable string.
+
+=head2 digest_answer( $answer, $user )
+
+Generate a digest of the $answer based on an MD5 hash of the answer using
+the $user as salt. The result is a printable string.
+
+=head1 DIAGNOSTICS
+
+=over
+
+=item C<< I am missing the users remote ip.  Security Policy requires exec termination. >>
+
+No IP address is supplied, terminating.
+
+=back
+
+
+=head1 CONFIGURATION AND ENVIRONMENT
+
+Cpanel::Security::Policy::SourceIPCheck::Util requires no configuration files or environment variables.
+
+=head1 DEPENDENCIES
+
+L<Cpanel::SafeFile>, L<Storable>, L<Cpanel::SafeDir::MK>, L<Cpanel::PwCache>,
+L<Crypt::Passwd::XS>, and L<Cpanel::Logger>.
+
+=head1 INCOMPATIBILITIES
+
+None reported.
+
+=head1 BUGS AND LIMITATIONS
+
+No bugs have been reported.
+
+=head1 AUTHOR
+
+G. Wade Johnson  C<< wade@cpanel.net >>
+
+=head1 LICENSE AND COPYRIGHT
+
+Copyright (c) 2011, cPanel, Inc. All rights reserved.
+This code is subject to the cPanel license. Unauthorized copying is prohibited

@@ -1,0 +1,36 @@
+[%
+WRAPPER 'master_templates/master.tmpl'
+        theme          = 'bootstrap',
+        app_key        = 'delete_a_dns_zone',
+        breadcrumburl  = '/scripts/killdnslist',
+        stylesheets    = [ '/templates/killdnsconfirm.min.css' ]
+-%]
+<div class="section">
+    <div class="col-xs-12 col-sm-12 col-md-6 col-lg-6">
+    [% IF data.dnslist.size %]
+        <p class="description">[% locale.maketext('Are you sure you want to delete these zones?')%]</p>
+        <div id="wrap">
+            <form action="[% cp_security_token %]/scripts/killdns" action="post">
+                <div class="form-group panel panel-default">
+                    <ul id="dns-list">
+                    [% FOR dns IN data.dnslist.sort() %]
+                        <li>
+                            <div class="checkbox">
+                                <label>
+                                    <input type="checkbox" name="killdns" value="[% dns %]" checked="checked" />
+                                    <span>[% dns %]</span>
+                                </label>
+                            </div>
+                        </li>
+                    [% END %]
+                    </ul>
+                </div>
+                <div class="form-group"><button type="submit" class="btn btn-primary">[% locale.maketext('Delete') %]</button></div>
+            </form>
+        </div>
+    [% ELSE %]
+        <p class="errors">[% locale.maketext('No domains were selected for deletion.') %]</p>
+    [% END %]
+    </div>
+</div>
+[% END -%]

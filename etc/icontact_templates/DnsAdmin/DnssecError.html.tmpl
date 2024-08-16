@@ -1,0 +1,40 @@
+[%#
+Variables passed in:
+
+zone                - the zone with failed DNSSEC records.
+failed_peers        - array of failed peers
+cluster_status_url  - cluster status page url
+dnssec_script       - the script and arguments to run to resync the DNSSEC keys
+
+For more information about how to customize notification templates, read our documentation at https://go.cpanel.net/notificationtemplates
+
+-%]
+
+[%
+    PROCESS "include/colors.tmpl";
+    PROCESS "include/styles.tmpl";
+    PROCESS "include/code_standout.tmpl";
+    WRAPPER 'wrapper/main.html.tmpl';
+
+    NOTICE.email_reason = CPANEL.locale.maketext("[output,abbr,DNSSEC,Domain Name System Security Extensions] key synchronization failure for “[_1]”.", NOTICE.zone.html);
+%]
+<p>
+[% CPANEL.locale.maketext("The following [asis,DNS] Cluster members are not serving [asis,DNSSEC] records for zone “[_1]”.", NOTICE.zone.html) %]
+</p>
+<p>
+[% FOR peer IN NOTICE.failed_peers.sort;
+    code_standout(command=peer.html);
+END -%]
+</p>
+<p>
+[% CPANEL.locale.maketext("[output,abbr,DNSSEC,Domain Name System Security Extensions] keys were recently synchronized to the [asis,cPanel] [output,abbr,DNS,Domain Name System] Cluster for the zone “[_1]”. Some cluster members don’t currently serve [output,abbr,DNSSEC,Domain Name System Security Extensions] records for this zone. This may cause failed [output,abbr,DNS,Domain Name System] resolution if your server queries these nameservers.", NOTICE.zone.html) %]
+</p>
+[% CPANEL.locale.maketext("To fix this issue, visit the [output,url,_1,DNS Cluster Status Interface] and resolve any issues with the cluster.",NOTICE.cluster_status_url.html) %]
+</p>
+<p>
+[% CPANEL.locale.maketext("Then, run the following script from command line as the root user to resynchronize the [output,abbr,DNSSEC,Domain Name System Security Extensions] keys.") %]
+</p>
+<p>
+[% code_standout(command=NOTICE.dnssec_script.html) %]
+</p>
+[% END %]

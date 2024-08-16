@@ -1,0 +1,58 @@
+
+[% SET CPANEL.CPVAR.dprefix = "../" %]
+
+[% WRAPPER '_assets/master.html.tt'
+    app_key = 'boxtrapper'
+%]
+    <div class="body-content">
+        [% IF CPANEL.CPDATA.item('DEMO');
+            locale.maketext("This feature is disabled in demo mode.");
+        %]
+        [% ELSE %]
+            [%
+                IF (!RAW_FORM.item('account'));
+                    SET status = {
+                        status => 0,
+                        errors_as_string => locale.maketext("The “[_1]” parameter is required, and you must pass a valid string value.", 'account')
+                    };
+                ELSIF (ExpVar.expand('$appname') == "webmail" && !( FORM.item('account') == CPANEL.authuser));
+                    SET status = {
+                        status => 0,
+                        errors_as_string => locale.maketext("You are not allowed to change settings for the user “[_1]”.",FORM.item('account'))
+                    };
+                ELSIF (!RAW_FORM.item('listtype') || !RAW_FORM.item('listtype').match('^(allow|block|ignore)list$') );
+                    SET status = {
+                        status => 0,
+                        errors_as_string => locale.maketext("You must pass the “[_1]” parameter with the value of [list_or_quoted,_2].", 'listtype', ['allowlist', 'blocklist', 'ignorelist'])
+                    };
+                ELSE;
+                    SET rules = RAW_FORM.item('page').split('\r?\n');
+                        IF !rules.size;
+                            SET rules = [ "" ];
+                        END;
+                    SET status = execute("BoxTrapper", "set_" _ RAW_FORM.item('listtype'), {
+                        'email' => RAW_FORM.item('account'),
+                        'rules' => rules
+                    });
+                END;
+            %]
+
+            [% IF !status.status %]
+            <div id="saveChangesErrorMsg" class="alert alert-danger">
+                <span class="glyphicon glyphicon-remove-sign"></span>
+                <div class="alert-message">
+                [% locale.maketext("The system encountered an error when it tried to save the list changes: “[_1]”.", status.errors_as_string.html()) %]
+                </div>
+            </div>
+            [% ELSE %]
+            <div id="saveChangesSuccessMsg" class="alert alert-success">
+                <span class="glyphicon glyphicon-ok-sign"></span>
+                <div class="alert-message">
+                [% locale.maketext("Your changes have been saved.") %]
+                </div>
+            </div>
+            [% END %]
+        [% END %]
+        [% INCLUDE _assets/return_link.html.tt return_location='editlists.html' formdata=FORM post='1' return_link_text=locale.maketext('Go Back') %]
+    </div>
+[% END %]

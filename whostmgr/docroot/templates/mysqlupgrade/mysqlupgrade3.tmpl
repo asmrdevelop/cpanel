@@ -1,0 +1,67 @@
+[% PROCESS 'master_templates/_defheader.tmpl'
+    header = locale.maketext('Upgrade Database Version (Step [numf,_1] of [numf,_2])', 3, 5)
+    breadcrumburl = '/scripts/mysqlupgrade',
+    theme = 'bootstrap'
+    extrastyle = '
+        .inline-block { display: inline-block; }
+';
+    USE Mysql;
+-%]
+<div id="content">
+    <p>[% locale.maketext('The rest of the upgrade process requires no user input, but you can perform it interactively.') %]</p>
+    <h4 class="section-heading"> [% locale.maketext('Upgrade Type') %] </h4>
+    <div class="section-body">
+        <form id="mysql_upgrade_form_3" name="mysql_upgrade_form_3" action="[% cp_security_token %]/scripts/mysqlupgrade" method="post">
+        <input type="hidden" name="selected_version" value="[% data.selected_version.html() %]">
+        <input type="hidden" name="current_version" value="[% data.current_version.html() %]">
+        <input type="hidden" name="step" value="4">
+        <div class="radio">
+            <label>
+                <input type=radio name="upgrade_type" id="unattended_sub1" value="unattended_automatic">
+                [% locale.maketext('Unattended Upgrade') %]
+            </label>
+            <span class="help-block">
+                [% locale.maketext('This option automatically completes the upgrade process.') %]
+            </span>
+        </div>
+        <div class="radio">
+            <label>
+                <input type=radio name="upgrade_type" id="interactive_upgrade" value="interactive">
+                [% locale.maketext('Interactive Upgrade') %]
+            </label>
+            <span class="help-block">
+                [% locale.maketext('This option steps you through the upgrade process. This process includes the update of your database version.') %]
+            </span>
+        </div>
+        <div class="form-group inline-block">
+            <button type="submit" id="continue_button" class="btn btn-primary" disabled>[% locale.maketext('Continue') %]</button>
+        </form>
+        <form action="[% cp_security_token %]/scripts/mysqlupgrade" method="get" id="mysql_upgrade_form_2" class="inline-block">
+            <input type="hidden" name="step" value="2">
+            <input type="hidden" name="selected_version" value="[% data.selected_version.html() %]">
+            <input type="hidden" name="current_version" value="[% data.current_version.html() %]">
+            <button type="submit" id="back_button" class="btn btn-default">[% locale.maketext('Go Back') %]</button>
+        </form>
+        </div>
+    </div>
+</div>
+<script type="text/javascript">
+    function update_continue_button() {
+        var radios = document.forms["mysql_upgrade_form_3"].upgrade_type;
+        var checked = false;
+        for (var i = 0, len = radios.length; i < len; i++) {
+            if (radios[i].checked) {
+                checked = true;
+                break;
+            }
+        }
+        document.getElementById("continue_button").disabled = !checked;
+    }
+    window.addEventListener("load", function() {
+        var radios = document.forms["mysql_upgrade_form_3"].upgrade_type;
+        for (var i = 0, len = radios.length; i < len; i++) {
+            radios[i].addEventListener("click", update_continue_button);
+        }
+    });
+</script>
+[% PROCESS 'master_templates/_deffooter.tmpl' -%]

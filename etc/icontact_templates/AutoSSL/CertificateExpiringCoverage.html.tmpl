@@ -1,0 +1,92 @@
+[%#
+
+This template is sent when a certificate is in the “orange zone”
+and a currently-covered domain fails DCV.
+
+Notify when [asis,AutoSSL] defers certificate renewal because a domain on the current certificate has failed [output,abbr,DCV,Domain Control Validation].
+This notification is only sent after [asis,AutoSSL] has deferred the renewal at least half of the renewal period.
+
+
+
+Variables passed in:
+
+certificate     - instance of Cpanel::SSL::Objects::Certificate
+
+vhost_name      - the name of the virtual host onto which the SSL cert is installed
+
+vhost_domains   - the (sorted) list of domains that point to the virtual host
+
+ssl_tls_manager_url  - URL to the SSL/TLS manager
+
+ssl_tls_wizard_url  - URL to the SSL/TLS wizard
+
+ssl_tls_status_url  - URL to the SSL/TLS Status Page
+
+enabled_providers_count - The number of enabled providers in the SSL/TLS wizard
+
+autossl_problems - AutoSSL Problems Entries for the vhost
+
+autossl_provider - The module name of the AutoSSL provider
+
+remaining_time      - The duration of time until the certificate expires in seconds.
+
+remaining_time_localized      - The duration of time until the certificate expires.
+
+For more information about how to customize notification templates, read our documentation at https://go.cpanel.net/notificationtemplates
+
+-%]
+
+[%
+    PROCESS "include/colors.tmpl";
+    PROCESS "include/styles.tmpl";
+    PROCESS 'include/zebra_table.tmpl';
+    PROCESS 'include/code_block.tmpl';
+    PROCESS "include/certificate_info_extended.tmpl";
+    PROCESS 'AutoSSL/includes/autossl_problems_table.tmpl';
+    PROCESS "SSL/includes/market_upgrade_options.tmpl";
+
+    SET covered_domains = [];
+    FOREACH vhost_domain IN NOTICE.vhost_domains;
+        IF vhost_domain.covered;
+            covered_domains.push(vhost_domain);
+        END;
+    END;
+
+    #NB: This notice only fires in event of partial DCV failure.
+    #Total DCV failure goes to AutoSSL::CertificateExpiring.
+    SET expire_message = CPANEL.locale.maketext('[_1]: [asis,AutoSSL] would normally renew this certificate now, but [numf,_2] of the website’s secured domains just failed [output,abbr,DCV,Domain Control Validation]. To provide you with more time to resolve [numerate,_2,this problem,these problems], [asis,AutoSSL] will defer the renewal until [datetime,_3,date_format_medium] at [datetime,_3,time_format_medium] [asis,UTC]. After that time, [asis,AutoSSL] will request a replacement certificate that excludes any domains that fail [asis,DCV].', NOTICE.vhost_name, NOTICE.old_dcv_failures.size, NOTICE.replace_after_time);
+
+    IF NOTICE.remaining_time > 0;
+      SET remain_message = CPANEL.locale.maketext('At the time of this notice, the certificate will expire in [_1].', NOTICE.remaining_time_localized);
+    ELSE;
+      SET remain_message = '<span style="color: ' _ dark_red _ '">' _ CPANEL.locale.maketext('At the time of this notice, the certificate expired “[_1]” ago.', NOTICE.remaining_time_localized.remove('^-') ) _ '</span>';
+    END;
+
+    SET NOTICE.email_reason = expire_message _ " " _ remain_message;
+
+    WRAPPER 'wrapper/main.html.tmpl';
+%]
+
+<p>
+    [% CPANEL.locale.maketext('[asis,AutoSSL] did [output,strong,not] renew the certificate for “[_1]”. [output,strong,You must take action to keep this site secure.]', NOTICE.vhost_name) %]
+</p>
+
+[% autossl_problems_table( autossl_problems=NOTICE.autossl_problems, autossl_provider=NOTICE.autossl_provider, ssl_tls_status_url=NOTICE.ssl_tls_status_url ) %]
+
+[%
+
+CPANEL.locale.maketext('The certificate that is installed on this website contains the following properties:');
+
+certificate_info_extended( certificate=NOTICE.certificate );
+
+-%]
+
+[%
+    market_upgrade_options(
+        enabled_providers_count=NOTICE.enabled_providers_count,
+        ssl_tls_wizard_url=NOTICE.ssl_tls_wizard_url,
+        certificate=NOTICE.certificate
+    );
+%]
+
+[% END #wrapper %]

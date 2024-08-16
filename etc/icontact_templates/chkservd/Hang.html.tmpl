@@ -1,0 +1,62 @@
+[%
+    PROCESS "include/colors.tmpl";
+    PROCESS "include/styles.tmpl";
+    PROCESS 'include/system_info_views.html.tmpl';
+    PROCESS "include/system_info_table.tmpl";
+
+    SET NOTICE.service_name = 'chkservd';
+    SET NOTICE.notification_type = 'hang';
+    SET NOTICE.show_chkservd_version = 1;
+-%]
+
+[%
+    PROCESS "include/colors.tmpl";
+    PROCESS "include/styles.tmpl";
+    PROCESS "include/code_block.tmpl";
+    PROCESS "include/code_inline.tmpl";
+    WRAPPER 'wrapper/main.html.tmpl';
+
+    NOTICE.email_reason = CPANEL.locale.maketext('The [asis,chkservd] process has become non-responsive.');
+%]
+    <p>
+        [%
+            CPANEL.locale.maketext('The [asis,chkservd] subprocess with [output,abbr,PID,process ID] “[_1]” ran for “[_2]”. The system terminated this sub-process when it exceeded the time allowed between checks, which is “[_3]”. To determine why, check the “[_4]” and “[_5]” files.',
+                NOTICE.child_pid,
+                split_time_view.print(NOTICE.child_run_time),
+                split_time_view.print(NOTICE.check_interval),
+                code_inline(term=NOTICE.cpanel_chkservd_log_path),
+                code_inline(term=NOTICE.cpanel_tailwatchd_log_path) );
+        %]
+    </p>
+    <p>
+        [% CPANEL.locale.maketext('You likely received this notification as a symptom of a larger problem. If your server is experiencing a high load, we recommend that you investigate the cause. If you continue to receive this notification, it is likely that your system is unable to handle demand or there is a misconfiguration that delays restarts.'); %]
+    </p>
+    <p>
+        [% CPANEL.locale.maketext('If you are sure that no misconfigurations exist, you should consider gradually increasing the following options in [asis,WHM]’s “[_1]” feature: “[_2]”, “[_3]”, or both.',
+            CPANEL.locale.maketext('Tweak Settings'),
+            'The number of times ChkServd allows a previous check to complete before termination',     # Not translated
+            'The number of seconds between chkservd service checks',   # Not translated
+            );
+        %]
+        (<a href="[% NOTICE.chkservd_tweaksetting_url %]">[% NOTICE.chkservd_tweaksetting_url %]</a>)
+    </p>
+
+    <p>
+        [% system_info_table() %]
+    </p>
+
+    <p>[% CPANEL.locale.maketext('Configure [asis,chkservd]') %]:<br>
+        <a href="[% NOTICE.chkservd_tweaksetting_url %]">[% NOTICE.chkservd_tweaksetting_url %]</a>
+    </p>
+    <p>[% CPANEL.locale.maketext('Disable [output,abbr,HTML,Hypertext Markup Language] notifications') %]:<br>
+        <a href="[% NOTICE.chkservd_plaintext_notify_tweaksettings_url %]">[% NOTICE.chkservd_plaintext_notify_tweaksettings_url %]</a>
+    </p>
+
+    <p>
+        [% FOREACH log IN NOTICE.log_preview %]
+            [% SET loop_index = loop.index; %]
+            [% code_block(formatted_code=log, title=CPANEL.locale.maketext('Preview of “[_1]”', NOTICE.log_preview_name.$loop_index) ) %]
+        [% END %]
+    </p>
+
+[% END %]

@@ -1,0 +1,64 @@
+[%#
+
+# cpanel - whostmgr/docroot/templates/terminal/index.tmpl
+#                                                  Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+-%]
+[%
+    USE Whostmgr;
+    USE JSON;
+    USE NVData;
+
+    SET PAGE_BASE = '/scripts12/terminal/';
+    SET PAGE_NAME = Whostmgr.get_page_name_by_url(PAGE_BASE);
+
+    WRAPPER 'master_templates/master.tmpl'
+        breadcrumburl = PAGE_BASE,
+        base = PAGE_BASE,
+        stylesheets = [
+            rtl_bootstrap,
+            Whostmgr.find_file_url('/libraries/xtermjs/xterm.min.css'),
+        ],
+        theme='bootstrap'
+        CJT2_EXCLUSIVE = 1
+        app_key='terminal';
+
+    PROCESS 'master_templates/cjt2_header_include.tt';
+%]
+
+
+<div id="content"
+    ng-controller="BaseController as base"
+    ng-cloak
+>
+    <p class="description">[% locale.maketext('This interface provides command line access to the server’s “[_1]” account.', 'root') %]</p>
+
+    <cp-alert-list alert-group="'myalerts'"></cp-alert-list>
+
+    <div ng-if="terminal_warning_accepted">
+        <cp-terminal></cp-terminal>
+    </div>
+    <div ng-if="!terminal_warning_accepted">
+        <div class="callout callout-warning">
+            <div class="callout-heading">[% locale.maketext('Warning') %]</div>
+            <p>
+                [% locale.maketext('[output,strong,Exercise extreme caution if you use this interface.] Misuse of command line tools can destroy data or even render your server unusable.') %]
+            </p>
+            <p><button class="btn btn-primary" ng-click="acceptWarning()">[% locale.maketext('I understand and want to proceed.') %]</button></p>
+        </div>
+    </div>
+</div>
+
+<script>
+    [% SET terminal_warning_accepted = NVData.get('terminal_warning_accepted'); -%]
+    if (!window.PAGE) {
+        PAGE = {};
+    }
+
+    PAGE.terminal_warning_accepted = [% terminal_warning_accepted ? 'true' : 'false' %];
+</script>
+
+[% END #wrapper -%]

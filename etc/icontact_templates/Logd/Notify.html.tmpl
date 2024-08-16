@@ -1,0 +1,44 @@
+[%#
+Variables passed in:
+
+origin                - the system component from which the request originated
+log_preview           - An arrayref of 10(or less) line preview of attached log file
+cpanel_error_log_path - The path to the cpanel error log
+cpanel_stats_log_path - The path to the cpanel stats log
+bandwidth_type
+user_domain           - The domain name that was being processed when the timeout occurred
+
+For more information about how to customize notification templates, read our documentation at https://go.cpanel.net/notificationtemplates
+
+-%]
+
+[%
+    PROCESS "include/colors.tmpl";
+    PROCESS "include/styles.tmpl";
+    PROCESS "include/system_info_table.tmpl";
+    PROCESS "include/code_inline.tmpl";
+    PROCESS "include/code_block.tmpl";
+    WRAPPER 'wrapper/main.html.tmpl';
+
+    NOTICE.email_reason = CPANEL.locale.maketext('Bandwidth processing timeout.');
+%]
+
+<p>
+    [% CPANEL.locale.maketext('The system timed out while it processed “[_1]” bandwidth for the domain “[_2]”.', NOTICE.bandwidth_type, NOTICE.user_domain) %]
+</p>
+<p>
+    [% CPANEL.locale.maketext('The system may be overloaded, the user’s bandwidth data may be corrupt, or the server may be receiving an unusually high level of traffic.') %]
+</p>
+    [% CPANEL.locale.maketext('The server’s current health statistics are:') %]
+</p>
+<p>
+    [% system_info_table() %]
+</p>
+<p>
+    [% CPANEL.locale.maketext('If the system’s health statistics are within normal parameters, you should examine the following logs in order to determine the cause of the timeout:') %]
+    [% code_block(formatted_code=NOTICE.log_preview.0, title=CPANEL.locale.maketext('[asis,cPanel] Stats Log: [_1]', code_inline(term=NOTICE.cpanel_stats_log_path) )) %]
+    [% code_block(formatted_code=NOTICE.log_preview.1, title=CPANEL.locale.maketext('[asis,cPanel] Error Log: [_1]', code_inline(term=NOTICE.cpanel_error_log_path) )) %]
+    [% CPANEL.locale.maketext('The last few lines of these logs in reverse order have been included in this message.'); %]
+</p>
+
+[% END %]

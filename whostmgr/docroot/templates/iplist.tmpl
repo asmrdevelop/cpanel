@@ -1,0 +1,155 @@
+[% WRAPPER 'master_templates/master.tmpl' theme="yui"
+    app_key = 'show_or_delete_current_ip_addresses'
+    stylesheets = ['/templates/backup/common.min.css',
+                    '/templates/listips/listips.min.css'],
+    scripts = ['/cjt/ajaxapp.js',
+                '/js/sorttable.js',
+                '/templates/listips/listips.js']
+-%]
+
+[%~ PROCESS '_ajaxapp.tmpl' -%]
+
+<div id="ipnotices">
+    <div id="defaultNotice" class="notice">
+        <div class="notice-content">
+            [%~ locale.maketext('You cannot remove IP addresses that are in use. You must first remove the accounts with which they are associated or switch the domains to a new IP address.') ~%]
+        </div>
+    </div>
+    <div id="contextNotice" class="notice notice-hidden">
+        <div id="contextNoticeContent" class="notice-content error-notice-content"></div>
+        <div id="contextNoticeClose">×</div>
+    </div>
+</div>
+
+[%~ SET nat_mode = data.is_nat ~%]
+
+<div id="natModeContent">
+    [% IF nat_mode %]<h3>[% locale.maketext('NAT Mode') %]</h3>[% END %]
+    <div id="formDryDock">
+        <div id="natPublicIpEdit">
+            <div class="formRow">
+                <div class="formCell"><button id="saveEditedIp" class="btn-primary" id="savePublicIp">[% locale.maketext('Save') %]</button></div>
+                <div class="formCell"><a id="cancelIpEdit" href="javascript:void(0);">[% locale.maketext('Cancel') %]</a></div>
+            </div>
+        </div>
+        <div id="natConfirmDelete">
+            <div class="formRow">
+                <div class="formCell"><button class="btn-primary" id="deleteNatEntry">[% locale.maketext('Confirm Delete') %]</button></div>
+                <div class="formCell"><a id="cancelNatEntryDelete" href="javascript:void(0);">[% locale.maketext('Cancel') %]</a></div>
+            </div>
+        </div>
+    </div>
+
+    [%~ SET error_condition = 0 ~%]
+    [%~ SET error_public_ip = '' ~%]
+
+[%# Adds a duplicate public ip error message to the the table %]
+[%~ BLOCK duplicate_error_row ~%]
+    <tr class="dupError" data-publicip="[%~ error_public_ip ~%]">
+        <td colspan="6">A single public IP address cannot be assigned to more than one local IP address.</td>
+    </tr>
+[%~ END ~%]
+
+[%# Given an ip address, returns a sort key so ip columns sorts correctly %]
+[%~ MACRO ip_sort_custom_key(ip) BLOCK ~%]
+    sorttable_customkey="
+    [%~ FOREACH segment IN ip.split('\.') ~%]
+        [%~ FILTER format("%03d") ~%]
+            [% segment %]
+        [%~ END ~%]
+    [%~ END ~%]
+    "
+[%~ END ~%]
+
+[%# Given an ethernet interface, returns a sort key so interface column sorts correctly %]
+[%~ MACRO if_sort_custom_key(if) BLOCK ~%]
+    sorttable_customkey="
+    [%~ IF (matches = if.match('(eth\d+):cp(\d+)')) ~%]
+        [%~ matches.0 ~%]:cp[%~ FILTER format("%02d") ~%][%~ matches.1 ~%][%~ END ~%]
+    [%~ ELSE ~%]
+        [%~ if ~%]
+    [%~ END ~%]
+    "
+[%~ END ~%]
+
+[%# Adds a row to the ip list table for each entry in the source data structure ~%]
+[%~ BLOCK table_row ~%]
+    [% IF ! row_data.error_row.defined  && error_condition != 0 && error_public_ip != '' %]
+        [% PROCESS duplicate_error_row public_ip %]
+        [% status_class = '' %]
+        [% error_condition = 0 %]
+        [% error_public_ip = '' %]
+    [% END %]
+    [%~ IF row_data.removable ~%]
+        [%~ delete_class = 'delete' ~%]
+    [%~ ELSE ~%]
+        [%~ delete_class = 'delete hidden' ~%]
+    [%~ END ~%]
+    [%~ current_row = current_row + 1 ~%]
+    [%~ current_row_id = "row_$current_row" ~%]
+    [%~ current_stripe = '' ~%]
+    [%~ IF current_row % 2 == 0 ~%]
+        [%~ current_stripe = ' class="evenRow"' ~%]
+    [%~ END ~%]
+<tr id="[%~ current_row_id ~%]"[%~ current_stripe ~%]>
+    <td id="[%~ current_row_id ~%]If" [% if_sort_custom_key( row_data.interface ) %]>[%~ row_data.interface ~%]</td>
+    <td id="[%~ current_row_id ~%]LocalIp" [% ip_sort_custom_key(row_data.local_ip) %]>[%~ row_data.local_ip ~%]</td>
+    <td>[%~ row_data.notes ~%]</td>
+    [%~ IF nat_mode ~%]
+    <td id="[%~ current_row_id ~%]PublicIp" class="pubIp"
+        [%~ IF row_data.error_row.defined ~%]
+            [%~ error_condition = row_data.error_row ~%]
+            [%~ error_public_ip = row_data.public_ip ~%]
+            [%~ status_class = ' natError' ~%]
+        [% END %]
+        [%~ IF row_data.public_ip.defined && row_data.public_ip != '' ~%]
+            [% ip_sort_custom_key(row_data.public_ip) %]>
+            [%~ row_data.public_ip ~%]
+        [%~ ELSE ~%]
+            >
+            [%~ status_class = ' natWarning' ~%]
+            [%~ locale.maketext('Not Routable') ~%]
+        [%~ END ~%]
+    </td>
+    [%~ END ~%]
+    <td id="[% current_row_id %]Status" class="natStatus[% status_class %]">
+    </td>
+    [%~ IF nat_mode ~%]
+    <td id="[% current_row_id %]Actions" class="buttons" sorttable_customkey="[% row_data.removable %]">
+        <ul class="mappingActions">
+            <li class="validate"><a href="javascript:void(0)" class="validateMappingBtn" title="[% locale.maketext('Validate “[_1]”', row_data.local_ip) %]">[% locale.maketext('Validate') %]</a></li>
+            <li class="edit"><a href="javascript:void(0)" class="editMappingBtn" title="[% locale.maketext('Edit “[_1]”', row_data.public_ip) %]">[% locale.maketext('Edit') %]</a></li>
+        [% ELSE %]
+        <td id="[% current_row_id %]Actions" class="buttons" sorttable_customkey="[% row_data.removable %]"><ul class="mappingActions nonNat">
+        [%~ END ~%]
+            <li class="[% delete_class %]"><a href="javascript:void(0)" class="deleteMappingBtn" title="[% locale.maketext('Delete “[_1]”', row_data.local_ip) %]">[% locale.maketext('Delete') %]</a></li>
+        </ul>
+    </td>
+</tr>
+[%~ END ~%]
+    <div id="tableContainer">
+        <table id="natlist" class="sortable" cellpadding="8" cellspacing="0">
+            <thead>
+                <tr id="tableHeader">
+                    <th>[%~ locale.maketext('Interface') ~%]</th>
+                    <th>[%~ IF nat_mode ~%][%~ locale.maketext('Local IP') ~%][%~ ELSE ~%][%~ locale.maketext('IP') ~%][%~ END ~%]</th>
+                    <th>[% locale.maketext('Notes') %]</th>
+                    [%~ IF nat_mode ~%]
+                        <th>[%~ locale.maketext('Public IP') ~%]</th>
+                    [%~ END ~%]
+                    <th class="status sorttable_nosort"></th>
+                    <th class="actions">[%~ locale.maketext('Actions') ~%]</th>
+                </tr>
+            </thead>
+            <tbody>
+                [%~ FOREACH row_details IN data.table_data ~%]
+                    [%~ PROCESS table_row row_data = row_details ~%]
+                [%~ END ~%]
+                [%~ IF error_condition != 0 && error_public_ip != '' ~%]
+                    [%~ PROCESS duplicate_error_row public_ip ~%]
+                [%~ END ~%]
+            </tbody>
+        </table>
+    </div>
+</div>
+[%~ END ~%]

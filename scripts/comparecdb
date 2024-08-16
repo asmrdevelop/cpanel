@@ -1,0 +1,46 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/comparecdb                      Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use Fcntl    ();
+use CDB_File ();
+
+if ( $ARGV[0] eq '--bincheck' ) {
+    print "BinCheck ok\n";
+    exit();
+}
+
+if ( defined $ARGV[0] && -e $ARGV[0] && defined $ARGV[1] && -e $ARGV[1] ) {
+    my %CDB_FILE_A;
+    my $ta = tie %CDB_FILE_A, 'CDB_File', $ARGV[0];
+    die "$ARGV[0] does not appear to be a valid CDB file." if !$ta;
+
+    my %CDB_FILE_B;
+    my $tb = tie %CDB_FILE_B, 'CDB_File', $ARGV[1];
+    die "$ARGV[1] does not appear to be a valid CDB file." if !$tb;
+
+    my %b_copy = (%CDB_FILE_B);    # we need a copy since you can't delete() from this tied-readonly hash
+
+    # does A exist in B
+    for my $k ( sort keys %CDB_FILE_A ) {
+        if ( !exists $CDB_FILE_B{$k} ) {
+            print "$ARGV[1] is missing “$k”\n";
+        }
+        else {
+            delete $b_copy{$k};    # we've seen it
+        }
+    }
+
+    # any keys in B that were not in A
+    for my $y ( sort keys %b_copy ) {
+        print "$ARGV[1] has additional “$y”\n";
+    }
+}
+else {
+    print "This tool is for comparing the contents of 2 CDB files.\n";
+    print "Example: $0 /var/cpanel/locale/themes/x3/en.cdb /var/cpanel/locale/themes/x3/fr.cdb\n\n";
+    print "Usage: $0 [cdb file a] [cdb file b]\n";
+}

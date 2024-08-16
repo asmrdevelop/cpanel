@@ -1,0 +1,310 @@
+[%# This needs to be kept in sync with its WHM counterpart. %]
+[%# action, userquestions (hash) %]
+[% USE Api2 -%]
+[% USE JSON -%]
+[%
+#----------------------------------------------------------------
+# Developer Notes:
+#----------------------------------------------------------------
+# 1) Extract out the css and js into seperate files and minify
+# 2) Replace the YUI2/CJT1 with angularjs or just javascript.
+# 3) Remove the popup for validation.
+#----------------------------------------------------------------
+%]
+
+<link rel="stylesheet" type="text/css" href="[% MagicRevision('/unprotected/yui/assets/skins/sam/autocomplete.css') %]" />
+<link rel="stylesheet" type="text/css" href="[% MagicRevision('/unprotected/yui/container/assets/container.css') %]" />
+
+<style type="text/css">
+html {
+    min-width: 320px;
+}
+
+.yui-skin-sam input.yui-ac-input {
+    position: static;
+    width: auto;
+}
+
+.combobox {
+    border: 1px solid #aaaaaa;
+    display: inline-block;
+}
+
+.combobox input {
+    border: 0;
+    border-right: 1px solid #aaaaaa;
+    padding: 2px;
+}
+
+.combobox a {
+    display: inline-block;
+    padding: 0 2px;
+}
+
+.combobox a:hover {
+    text-decoration: none;
+}
+
+.cjt-text-input-placeholder {
+    opacity: .5;
+    text-align: center;
+    font-style: italic;
+}
+
+#userform {
+    text-align: center; /* Center the continue button on < 480px */
+}
+
+tr.answer td {
+    padding-bottom: 20px;
+}
+
+.cjt_validation_error {
+    margin-top: 5px;
+}
+
+/* Reset a lot of the odd padding/margin/height/width rules in styles_v2 */
+
+#security-container {
+    width: auto;
+}
+
+#security-sub-container {
+    height: auto;
+    width: auto;
+    position: relative;  /* Put the container back in the document flow to push the cPanel logo down appropriately */
+    left: 0;
+}
+
+#security-sub {
+    height: auto;
+    padding-left: inherit;
+}
+
+#security-sub .login-rt {
+    padding: 0;
+}
+
+.security_policy .copyright {
+    margin-top: 30px;
+}
+
+</style>
+
+<script src="[% MagicRevision('/yui-gen/data/data.js') %]"></script>
+<script src="[% MagicRevision('/yui/autocomplete/autocomplete.js') %]"></script>
+<script src="[% MagicRevision('/cjt/combobox.js') %]"></script>
+
+<script>
+(function() {
+    var questions = [% Api2.exec('SourceIPCheck','samplequestions').json() || '[]' %];
+    var selected_questions = [% userquestions.json() || '[]' %];
+
+    var VALID = {};
+
+    /**
+     * Validate that the answer has a reasonable length
+     *
+     * @method answerMinLengthValidator
+     * @return {Boolean}
+     */
+    function answerMinLengthValidator() {
+        var value = this.el.value.trim();
+        return value.length >= 2;
+    };
+
+    /**
+     * Validate that the question has a reasonable length
+     *
+     * @method questionMinLengthValidator
+     * @return {Boolean}
+     */
+    function questionMinLengthValidator() {
+        var val = this.el.value.trim();
+        return (val.length >= 2);
+    };
+
+    /**
+     * Factory method to generate a q/a section validator function.
+     *
+     * @method makeQuestionAnswerValidator
+     * @param  {Validator} questionValidator
+     * @param  {Validator} answerValidator
+     * @return {Function}
+     */
+    function makeQuestionAnswerValidator(questionValidator, answerValidator) {
+        /**
+         * Run the the question and answer validation routines.
+         *
+         * @method validate
+         * @private
+         */
+        return function validate() {
+            questionValidator.verify();
+            if(questionValidator.is_valid()) {
+                var el = answerValidator.validators[0].el;
+                if (el.value !== el.defaultValue) {
+                    answerValidator.verify();
+                }
+            }
+        };
+    }
+
+    /**
+     * Factory method to make a select function for the current q & a section.
+     *
+     * @method makeOnSelectHandler
+     * @param  {Function} validateFn
+     * @param  {Validator} questionValidator
+     * @param  {HtmlInputElement} answerInputEl
+     * @return {Function}
+     */
+    function makeOnSelectHandler(validateFn, questionValidator, answerInputEl) {
+        return function() {
+            validateFn();
+        }
+    }
+
+    /**
+     * Checked that the current question is not the same as
+     * any of the other questions. This is needed since the
+     * use can supply any question they want.
+     *
+     * @method  questionIsUnique
+     * @return {Boolean}
+     */
+    function questionIsUnique() {
+        var thisQuestionEl = this.el;
+        if (thisQuestionEl.value == thisQuestionEl.defaultValue) {
+            return true; // not yet initialized. ignore it for now.
+        }
+
+        var questionEls = document.querySelectorAll(".security_question");
+        var hasDuplicates = false;
+
+        for(var i = 0, l = questionEls.length; i < l; i++) {
+            var questionEl = questionEls[i];
+            if (questionEl.id !== thisQuestionEl.id &&           // Not the current question
+                questionEl.value !== questionEl.defaultValue) {  // Not comparing to an unset question
+                if (questionEl.value === thisQuestionEl.value) {
+                    hasDuplicates = true;
+                }
+            }
+        }
+
+        return !hasDuplicates;
+    }
+
+    /**
+     * Initialize the form
+     *
+     * @method  init
+     * @private
+     */
+    var init = function() {
+        // Setup the validators for
+        // the questions & answers
+        for (var i = 1; i <= 4; i++) {
+            // NOTE: There are 4 sets of questions generated.
+            // So this look divides the questions list into 4 groups
+            // of 7:
+            //   questions 0-7,
+            //   questions 8-13,
+            //   questions 14-21,
+            //   ...
+            var currentQuestions = questions.slice(7 * (i - 1), 7 + 7 * (i - 1));
+            var questionInputEl = DOM.get("q" + i + "ques");
+            var questionExpanderEl = DOM.get("q" + i + "_expander");
+            var answerInputEl = DOM.get("q" + i + "answer");
+
+            // Remove the current question from the available questions
+            // so we can only have one of the n questions with that question.
+            if ( questionInputEl.value && (currentQuestions.indexOf(questionInputEl.value) === -1) ) {
+                currentQuestions.unshift(questionInputEl.value);
+            }
+
+            // Attach the dropdown part of the combo to each question
+            var cb = new CPANEL.widgets.Combobox( questionInputEl, null, currentQuestions, {
+                    expander: questionExpanderEl
+                } );
+            cb.formatResult = cb.formatEscapedResult;
+
+            // Build the question validation
+            var questionValidator = new CPANEL.validate.validator("[% locale.maketext('Question') %]" + " " + LOCALE.numf(i));
+            questionValidator.add(questionInputEl, "max_length($input$,128)", "[% locale.maketext('The question cannot be longer than 128 characters.') %]", null, { no_width_height: 1 });
+            questionValidator.add(questionInputEl, questionMinLengthValidator, "[% locale.maketext('The question must be at least 2 characters long.') %]", null, { no_width_height: 1 });
+            questionValidator.add(questionInputEl, questionIsUnique, "[% locale.maketext('The question must be unique.') %]", null, { no_width_height: 1 });
+            questionValidator.attach();
+
+            // Build the answer validation
+            var answerValidator = new CPANEL.validate.validator("[% locale.maketext('Answer') %]" + " " + LOCALE.numf(i));
+            answerValidator.add(answerInputEl, "max_length($input$,128)", "[% locale.maketext('The answer cannot be longer than 128 characters.') %]", null, { no_width_height: 1 });
+
+            answerValidator.add(answerInputEl, answerMinLengthValidator, "[% locale.maketext('The answer must be at least 2 characters long.') %]", null, { no_width_height: 1 });
+
+            // Attach the section Q & A valiators to run if there is a
+            // change in the question via typing or the dropbox selection
+            var validateFn = makeQuestionAnswerValidator(questionValidator, answerValidator);
+            EVENT.on( questionInputEl, "keydown", validateFn );
+            EVENT.on( questionInputEl, "keyup", validateFn );
+            EVENT.on( questionInputEl, "blur", validateFn );
+            EVENT.on( questionInputEl, "input", validateFn );
+            cb.itemSelectEvent.subscribe( makeOnSelectHandler(validateFn, questionValidator, answerInputEl) );
+
+            if (questionInputEl.defaultValue) {
+                YAHOO.util.Dom.setAttribute(
+                    answerInputEl,
+                    "placeholder",
+                    "[% locale.maketext('No change') %]"
+                );
+            }
+
+            VALID["q" + i] = questionValidator;
+            VALID["a" + i] = answerValidator;
+            VALID["a" + i].attach();
+        }
+
+        CPANEL.validate.attach_to_form("submit-button", VALID);
+
+        // Move the focus to the first question
+        // so keyboard users don't have to tab
+        // around.
+        DOM.get("q1ques").focus();
+    }
+
+    YAHOO.util.Event.onDOMReady(init);
+
+})();
+</script>
+
+<form name="userform" id="userform" action="[% action FILTER html %]" method="post">
+    <input type="hidden" name="formaction" value="setquestions" />
+
+    <table>
+    [% FOR i = [1 .. 4] -%]
+        <tr class="question-row">
+            <td class="label-cell">
+                <label for="q[%i%]">[% locale.maketext('Question [numf,_1]:',i) %]</label>
+            </td>
+            <td class="field-cell">
+                <div class="combobox"><input id="q[%i%]ques" name="q[%i%]ques" class="security_question" value="[% userquestions.$i FILTER html %]" size="50" placeholder="[% locale.maketext('Select a security question, or enter your own.') %]" /><span id="q[%i%]_expander" class="security_question_expander">▼</span>
+                </div>
+                <div id="q[%i%]ques_error" class="security_question_error show_inline"></div>
+            </td>
+        </tr>
+        <tr class="answer">
+            <td class="label-cell">
+                <label for="q[%i%]answer">[% locale.maketext('Answer [numf,_1]:', i) %]</label>
+            </td>
+            <td class="field-cell">
+                <input id="q[%i%]answer" class="security_question_answer" name="q[%i%]answer" size="50" />
+                <div id="q[%i%]answer_error" class="show_inline"></div>
+            </td>
+        </tr>
+    [% END -%]
+    </table>
+
+    <button type="submit" id="submit-button" class="input-button" />
+        [% locale.maketext("Continue") %]
+    </button>
+</form>

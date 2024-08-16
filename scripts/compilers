@@ -1,0 +1,103 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/compilers                       Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+use warnings;
+
+use Cpanel::DataStore ();
+use Cpanel::NSCD      ();
+use Cpanel::SSSD      ();
+
+my $set     = 0;
+my $enabled = int getcompilerstatus();
+my $opt     = $ARGV[0] // q{};
+if ( $opt eq 'off' ) { $enabled = 0; $set = 1; }
+if ( $opt eq 'on' )  { $enabled = 1; $set = 1; }
+
+my $cstatus = Cpanel::DataStore::fetch_ref('/var/cpanel/compilerstatus.db');
+if ( !defined $cstatus->{'enabled'} ) {
+    $cstatus->{'enabled'} = $enabled;
+    Cpanel::DataStore::store_ref( '/var/cpanel/compilerstatus.db', $cstatus );
+}
+if ( $opt eq 'restore' ) { $enabled = int $cstatus->{'enabled'}; $set = 1; }
+if ( !$set ) {
+    showcompilerstatus();
+    exit();
+}
+
+$cstatus->{'enabled'} = int $enabled;
+Cpanel::DataStore::store_ref( '/var/cpanel/compilerstatus.db', $cstatus );
+
+my @COMPILERS   = qw( gcc cc c89 c99 cc1 g++ c++ kgcc .*-c++ .*-g++ ld );
+my @SEARCHDIRS  = qw( /usr/bin /usr/local/bin );
+my @PROTECTDIRS = qw( /usr/lib/gcc-lib /usr/local/lib/gcc-lib );
+
+if ( !getgrnam('compiler') ) {
+    if ( -e '/usr/sbin/pw' ) {
+        system( '/usr/sbin/pw', 'groupadd', 'compiler' );
+    }
+    else {
+        system( '/usr/sbin/groupadd', '-r', 'compiler' );
+    }
+    Cpanel::NSCD::clear_cache('group');
+    Cpanel::SSSD::clear_cache();
+}
+
+my $gid = int( ( getgrnam('compiler') )[2] );
+
+foreach my $dir (@SEARCHDIRS) {
+    foreach my $compiler (@COMPILERS) {
+        if ( -e "${dir}/${compiler}" ) {
+            if ($enabled) {
+                chmod( 0755, "${dir}/${compiler}" );
+            }
+            else {
+                chmod( 0750, "${dir}/${compiler}" );
+                chown 0, $gid, "${dir}/${compiler}";
+            }
+        }
+    }
+}
+foreach my $protectdir (@PROTECTDIRS) {
+    next unless opendir( PD, $protectdir );
+    my @FL = readdir(PD);
+    @FL = grep( !/^\./, @FL );
+    close(PD);
+    foreach my $fl (@FL) {
+        if ($enabled) {
+            chmod( 0755, "${protectdir}/${fl}" );
+        }
+        else {
+            chmod( 0750, "${protectdir}/${fl}" );
+            chown 0, $gid, "${protectdir}/${fl}";
+        }
+    }
+}
+
+showcompilerstatus();
+
+sub getcompilerstatus {
+    my $cc = '/usr/bin/cc';
+    while ( readlink($cc) ) {
+        $cc = readlink($cc);
+    }
+    if ( $cc !~ /^\// ) { $cc = '/usr/bin/' . $cc; }
+    my $mode = ( stat($cc) )[2] & 0777;
+    if ( $mode > 0750 ) {
+        return 1;
+    }
+    return 0;
+}
+
+sub showcompilerstatus {
+    if ( getcompilerstatus() ) {
+        print "Compilers are enabled for unprivileged users.\n";
+    }
+    else {
+        print "Compilers are disabled for unprivileged users.\n";
+    }
+}

@@ -1,0 +1,48 @@
+[%
+    # needed in the main template and this template
+    # since we process both
+    PROCESS "include/code_inline.tmpl";
+    PROCESS "include/code_standout.tmpl";
+    PROCESS "include/code_block.tmpl";
+%]
+
+<p>
+  [% CPANEL.locale.maketext('During a routine check, [asis,cPanel] [output,amp] [asis,WHM] found the following files marked as immutable in the “[_1]” directory.', NOTICE.cpanel_root) %]
+  [% CPANEL.locale.maketext('A complete list of the immutable files is at the end of this message.') %]
+  [% code_block(formatted_code=NOTICE.log_preview.0, title=CPANEL.locale.maketext('File List Preview:')) %]
+</p>
+<p>
+   [% CPANEL.locale.maketext('The system cannot update immutable files, and they may cause unforeseen problems with [asis,cPanel] [output,amp] [asis,WHM].') %]
+</p>
+<p>
+  [% CPANEL.locale.maketext('If you do not want the [asis,cPanel] update process “[_1]” to update these files, add them to the “[_2]” file instead of making them immutable.', NOTICE.upcp_path, NOTICE.cpanelsync_exclude_file); %]
+  [% CPANEL.locale.maketext('Use of the [asis,cpanelsync.exclude] file has the following advantages:'); %]
+  <ol>
+    <li>
+          [% CPANEL.locale.maketext('It allows the system to update [asis,cPanel] [output,amp] [asis,WHM], but does not update your designated files.') %]
+    </li>
+    <li>
+          [% CPANEL.locale.maketext('It stores a list of the immutable files in a central location on your server for easy reference.') %]
+     </li>
+  </ol>
+</p>
+<p>
+  [% CPANEL.locale.maketext('To learn more about how to use the “[_1]” file, read our [output,url,_2,documentation,target,_3].', NOTICE.cpanelsync_exclude_file, NOTICE.cpanelsync_exclude_documentation_url,'_blank') %]
+</p>
+<p>
+  [% CPANEL.locale.maketext('To ensure the health of your [asis,cPanel] [output,amp] [asis,WHM] system, we recommend the following:') %]
+  <ol>
+    <li>
+          [% CPANEL.locale.maketext('Log in to your server as the [asis,root] user via [asis,SSH].'); %]
+    </li>
+    <li>
+          [% CPANEL.locale.maketext('For each immutable file, execute the following commands:') %]
+          [% code_standout(command=NOTICE.chattr_command  _ ' /path/to/file', in_list=1) %]
+          [% code_standout(command='echo "/path/to/file" >> ' _ NOTICE.cpanelsync_exclude_file, in_list=1) %]
+    </li>
+     <li>
+        [% CPANEL.locale.maketext('Execute the following command to re-sync the files in your [asis,cPanel] [output,amp] [asis,WHM] installation:') %]
+        [% code_standout(command=NOTICE.upcp_sync_command, in_list=1) %]
+    </li>
+  </ol>
+</p>

@@ -1,0 +1,27 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+my @LOGDIRS = (
+    "/var/spool/exim",
+    "/var/spool/exim_incoming"
+);
+
+my $tendays  = ( 60 * 60 * 24 * 10 );
+my $keeptime = ( time() - $tendays );
+
+foreach my $logdir (@LOGDIRS) {
+    opendir( LOGDIR, "${logdir}/msglog" );
+    my @MSGS = readdir(LOGDIR);
+    closedir(LOGDIR);
+
+    foreach my $log (@MSGS) {
+        if ( $log =~ /^\w+\-\w+-\w+$/
+            && !-e "${logdir}/input/${log}-H" ) {
+            my $modtime = ( stat("${logdir}/msglog/${log}") )[9];
+            if ( $modtime < $keeptime ) {
+                print "Removing stable file ${logdir}/msglog/${log}..";
+                unlink("${logdir}/msglog/${log}");
+                print "..Done\n";
+            }
+        }
+    }
+}

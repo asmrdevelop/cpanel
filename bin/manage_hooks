@@ -1,0 +1,471 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - bin/manage_hooks                        Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package cpanel::bin::manage_hooks;
+
+use strict;
+use warnings;
+
+use Cpanel::Usage ();
+use Cwd;
+use Cpanel::JSON          ();
+use Cpanel::SafeRun::Full ();
+
+use Cpanel::Hooks::Manage ();
+
+if ( $< != 0 ) {
+    print "This script may only be executed by root\n";
+    exit 1;
+}
+
+our %INPUT_ARGS;
+
+unless ( caller() ) {
+    if ( __PACKAGE__->script(@ARGV) ) {
+        exit;
+    }
+    exit 1;
+}
+
+#### SPECIAL NOTE ABOUT CLI arguments (aka descriptor switches)
+# The '--action' switch allow need precision for "manual" manipulation
+#  of StdHooks.  When a describe pattern is not implemented or when a specific
+#  hook needs to be added/deleted, this flag will behave as either:
+#   * subroutine to envoke within the given module
+#   * cli arguments to the given script
+# Note, if used as a cli args for a script, and those arguments begin '--XXX' or
+#  '-XXX', they must be passed in one of the following ways:
+#   * equalsign immediately followed by (single|double) quotes
+#      * ex: --action='--XXX --YYY'
+#   * nested in (single|double) quote pair
+#      * ex: --action '"--XXX" "--YYY"'
+#  Without one of those explicit constructs, Cpanel::Usage will swallow the
+#   script-destined args as a switch belonging to /ulc/bin/manage_hooks.
+sub script {    ## no critic qw(Subroutines::ProhibitExcessComplexity) - different story, different project, different day
+    my ( $class, @ARGS ) = @_;
+
+    # SOMEDAY: would be nice to have contextual usage help; til then do brief usage output and exit
+    Cpanel::Usage::wrap_options( {}, \@ARGS, sub { do_help(); exit; }, \%INPUT_ARGS );
+
+    # NOTE: set this to blank strings as they are interpolated in error
+    #  statements throughout this modulino and have string comparisons/regex
+    #  made against them
+    $INPUT_ARGS{'manage_action'} = $ARGS[0] || '';
+    $INPUT_ARGS{'exectype'}      = $ARGS[1] || '';
+    $INPUT_ARGS{'hook'}          = $ARGS[2] || '';
+
+    if ( defined $INPUT_ARGS{'namespace'} && !defined $INPUT_ARGS{'category'} ) {
+        $INPUT_ARGS{'category'} = $INPUT_ARGS{'namespace'};
+        print STDERR "WARNING: Using deprecated flag --namespace, please use --category instead.\n";
+    }
+
+    if ( defined $INPUT_ARGS{'function'} && !defined $INPUT_ARGS{'event'} ) {
+        $INPUT_ARGS{'event'} = $INPUT_ARGS{'function'};
+        print STDERR "WARNING: Using deprecated flag --function, please use --event instead.\n";
+    }
+
+    if ( $INPUT_ARGS{'manage_action'} eq 'add' || $INPUT_ARGS{'manage_action'} eq 'del' || $INPUT_ARGS{'manage_action'} eq 'delete' ) {
+        if ( !$INPUT_ARGS{'exectype'} ) {
+            print qq{Management actions "add" and "delete" require that an execution type is defined, example:\n};
+            print qq{\tbin/manage_hooks add script /var/someapp/myhook.pl --param=value ...\n};
+            return;
+        }
+        if ( !$INPUT_ARGS{'hook'} ) {
+            print qq{Management actions "add" and "delete" require that a hook is defined, example:\n};
+            print qq{\tbin/manage_hooks add module SomeApp::MyHookfunc --param=value ...\n};
+            return;
+        }
+    }
+
+    if ( $INPUT_ARGS{'manage_action'} eq 'list' ) {
+        my $output_format = $INPUT_ARGS{'output'};
+        return do_list($output_format);
+    }
+
+    # OK, so now if we are adding/removing hooks, we should probably sanity
+    # check them as well, as some hook modules may have been updated or
+    # "went away", leaving the system in a broken state unless we clean up
+    # after them.
+    return Cpanel::Hooks::Manage::prune() if $INPUT_ARGS{'manage_action'} eq 'prune';
+
+    # Process additions
+    if ( $INPUT_ARGS{'manage_action'} eq 'add' ) {
+        if ( $INPUT_ARGS{'manual'} ) {
+            return do_add(1);
+        }
+
+        my $hooks_data = load_hooks_data( $INPUT_ARGS{'exectype'}, $INPUT_ARGS{'hook'} );
+
+        if ( ref $hooks_data eq 'ARRAY' ) {
+            my $result = 1;
+            my @added_hooks;
+
+            # note this means we add until we find a failure, at that point
+            #  we rollback any added entries and return failure
+            foreach my $described_hook ( @{$hooks_data} ) {
+                $described_hook->{'exectype'} = $INPUT_ARGS{'exectype'};
+                $result = do_add( 0, %{$described_hook} );
+                last if !$result;
+                push @added_hooks, $described_hook;
+            }
+            if ( !$result ) {
+                warn "There was a failure adding a hook, removing all hooks contained with in.  Please contact the maintainer of this hook for assistance.\n";
+                foreach my $described_hook (@added_hooks) {
+                    do_del( 0, %{$described_hook} );
+                }
+                return;
+            }
+            return 1;
+        }
+        elsif ( ref $hooks_data eq 'HASH' ) {
+            $hooks_data->{'exectype'} = $INPUT_ARGS{'exectype'};
+            my $result = do_add( 0, %{$hooks_data} );
+            if ( !$result ) {
+                warn "There was a failure adding a hook, removing all hooks contained with in.  Please contact the maintainer of this hook for assistance.\n";
+                return;
+            }
+            return 1;
+        }
+        else {
+            if ($Cpanel::Hooks::Manage::ERRORMSG) {
+                print STDERR $Cpanel::Hooks::Manage::ERRORMSG;
+                $Cpanel::Hooks::Manage::ERRORMSG = undef;
+            }
+
+            print qq{WARNING: No "describe" pattern found in $INPUT_ARGS{'exectype'}. };
+            print qq{It is HIGHLY recommended to pass the "--manual" when providing hook descriptors on the command line.\n};
+            return do_add(1);
+        }
+    }
+    elsif ( $INPUT_ARGS{'manage_action'} eq 'del' || $INPUT_ARGS{'manage_action'} eq 'delete' ) {
+        if ( $INPUT_ARGS{'manual'} ) {
+            return do_del(1);
+        }
+        my $hooks_data = load_hooks_data( $INPUT_ARGS{'exectype'}, $INPUT_ARGS{'hook'} );
+        if ( ref $hooks_data eq 'ARRAY' ) {
+            my $return_value = 1;
+
+            # note this means that all hooks will be removed
+            #  if one of many fails, the total result is failure, despite
+            #  several deleted entries
+            foreach my $described_hook ( @{$hooks_data} ) {
+                my $result = do_del( 0, %{$described_hook} );
+                if ( !$result ) {
+                    warn "There was a failure removing a hook.\n";
+                    $return_value = undef;
+                }
+            }
+            return $return_value;
+        }
+        elsif ( ref $hooks_data eq 'HASH' ) {
+            my $result = do_del( 0, %{$hooks_data} );
+            if ( !$result ) {
+                warn "There was a failure removing a hook.\n";
+                return;
+            }
+            return 1;
+        }
+        else {
+            print qq{WARNING: No "describe" pattern found in $INPUT_ARGS{'exectype'}. };
+            print qq{It is recommended to pass the "--manual" when providing hook descriptors on the command line.\n};
+            return do_del(1);
+        }
+    }
+    elsif ( $INPUT_ARGS{'manage_action'} eq 'fullhelp' ) {
+
+        # elected for verbose help
+        return do_help(1);
+    }
+    elsif ( $INPUT_ARGS{'manage_action'} eq 'help' ) {
+
+        # elected for help
+        return do_help(0);
+    }
+    else {
+
+        # gave wrong input; they need help
+        do_help(0);
+        return;
+    }
+}
+
+sub do_list {
+    my ($output_format) = @_;
+    if ( !$output_format ) {
+        $output_format = 'HUMAN';
+    }
+    elsif ( $output_format !~ /JSON/i ) {
+        print "Invalid output format requested: $output_format\n";
+        print "\tValid formats include:\n\t\t * 'JSON'\n\t\t * 'HUMAN' [default].\n";
+        return;
+    }
+    my $hooks_db = Cpanel::Hooks::Manage::load_all_hooks();
+
+    if ( $output_format =~ /HUMAN/i ) {
+
+        # Iterate over each category of calls, e.g. Cpanel, PkgAcct, WHM
+        foreach my $call_category ( keys %{$hooks_db} ) {
+            next if defined $INPUT_ARGS{'category'} && $INPUT_ARGS{'category'} ne $call_category;
+            print "$call_category:\n";
+
+            #Iterate over each event within a category, e.g. "Api2::Email::listpopswithdisk"
+            foreach my $hooked_event ( keys %{ $hooks_db->{$call_category} } ) {
+                print "\t$hooked_event:\n";
+                my $num_hooks = 0;
+
+                # iterate over each hook contained within a specific event as there can be multiple hooks per event
+                foreach my $cpanel_hook ( @{ $hooks_db->{$call_category}->{$hooked_event} } ) {
+                    print "\t\t--\n" if $num_hooks != 0;
+
+                    # iterate over each element of information per hook, e.g. 'hook', 'exectype', 'stage' etc
+                    foreach my $hook_info ( keys %{$cpanel_hook} ) {
+                        print "\t\t$hook_info: " . $cpanel_hook->{$hook_info} . "\n";
+                    }
+                    $num_hooks++;
+                }
+            }
+        }
+    }
+    else {
+        print Cpanel::JSON::Dump($hooks_db);
+    }
+    return 1;
+}
+
+sub do_add {
+    my ( $manual, %OPTS ) = @_;
+
+    Cpanel::Hooks::Manage::_change_legacy_opts( \%OPTS );
+
+    if ($manual) {
+        if ( !$INPUT_ARGS{'hook'} || !defined $INPUT_ARGS{'event'} || !$INPUT_ARGS{'exectype'} || !defined $INPUT_ARGS{'category'} || !defined $INPUT_ARGS{'stage'} ) {
+            print qq{The "add" management action requires that a module or script name is specified example:\n};
+            print "\tbin/manage_hooks add module My::Module\n\n";
+            print "Options can also be manually specified using the following params --category, --event and --stage are defined, example:\n";
+            print "\tbin/manage_hooks add script /var/MyApp/hooks/something.pl --category=Whostmgr --event=Accounts::Create --stage=pre\n\n";
+            print "See --help for more information\n";
+            return;
+        }
+
+        %OPTS = (
+            'hook'     => $INPUT_ARGS{'hook'},
+            'event'    => $INPUT_ARGS{'event'},
+            'exectype' => $INPUT_ARGS{'exectype'},
+            'category' => $INPUT_ARGS{'category'},
+            'stage'    => $INPUT_ARGS{'stage'},
+        );
+
+        $OPTS{'escalateprivs'} = $INPUT_ARGS{'escalateprivs'} if defined $INPUT_ARGS{'escalateprivs'};
+        $OPTS{'weight'}        = $INPUT_ARGS{'weight'}        if defined $INPUT_ARGS{'weight'};
+        $OPTS{'rollback'}      = $INPUT_ARGS{'rollback'}      if defined $INPUT_ARGS{'rollback'};
+        $OPTS{'check'}         = $INPUT_ARGS{'check'}         if defined $INPUT_ARGS{'check'};
+
+        if ( $INPUT_ARGS{'action'} ) {
+            if ( $INPUT_ARGS{'exectype'} eq 'module' ) {
+                $OPTS{'hook'} .= '::' . $INPUT_ARGS{'action'};
+            }
+            elsif ( $INPUT_ARGS{'exectype'} eq 'script' ) {
+                $OPTS{'hook'} .= ' ' . $INPUT_ARGS{'action'};
+            }
+        }
+    }
+    my $result = Cpanel::Hooks::Manage::add(%OPTS);
+
+    if ( !$result ) {
+        print STDERR $Cpanel::Hooks::Manage::ERRORMSG . "\n";
+        return;
+    }
+    elsif ( $result eq 'OK' ) {
+        print "Added hook for " . $OPTS{'category'} . "\:\:" . $OPTS{'event'} . " to hooks registry\n";
+        return 1;
+    }
+    elsif ( $result eq 'SKIPPED' ) {
+        print "Adding hook for " . $OPTS{'category'} . "\:\:" . $OPTS{'event'} . " to hooks registry was skipped, as hook $OPTS{'exectype'} action '$OPTS{'hook'}' is already registered\n";
+        return 1;
+    }
+}
+
+sub do_del {
+    my ( $manual, %OPTS ) = @_;
+
+    Cpanel::Hooks::Manage::_change_legacy_opts( \%OPTS );
+
+    if ($manual) {
+        if ( !$INPUT_ARGS{'hook'} || !defined $INPUT_ARGS{'event'} || !defined $INPUT_ARGS{'category'} || !$INPUT_ARGS{'exectype'} ) {
+            print qq{The "delete" management action requires that a module or script name is specified example:\n};
+            print "\tbin/manage_hooks del module My::Module\n\n";
+            print "Options can also be manually specified --category and --event are defined, example:\n";
+            print "\tbin/manage_hooks del script /var/MyApp/hooks/something.pl --category=Whostmgr --event=Accounts::Create --stage=pre\n\n";
+            print "See --help for more information\n";
+            return;
+        }
+
+        %OPTS = (
+            'hook'     => $INPUT_ARGS{'hook'},
+            'event'    => $INPUT_ARGS{'event'},
+            'category' => $INPUT_ARGS{'category'},
+            'exectype' => $INPUT_ARGS{'exectype'},
+        );
+        $OPTS{'escalateprivs'} = $INPUT_ARGS{'escalateprivs'} if defined $INPUT_ARGS{'escalateprivs'};
+        $OPTS{'weight'}        = $INPUT_ARGS{'weight'}        if defined $INPUT_ARGS{'weight'};
+        $OPTS{'stage'}         = $INPUT_ARGS{'stage'}         if defined $INPUT_ARGS{'stage'};
+
+        if ( $INPUT_ARGS{'action'} ) {
+            if ( $INPUT_ARGS{'exectype'} eq 'module' ) {
+                $OPTS{'hook'} .= '::' . $INPUT_ARGS{'action'};
+            }
+            elsif ( $INPUT_ARGS{'exectype'} eq 'script' ) {
+                $OPTS{'hook'} .= ' ' . $INPUT_ARGS{'action'};
+            }
+        }
+    }
+    my $res = Cpanel::Hooks::Manage::delete(%OPTS);
+
+    if ($res) {
+        print "Deleted hook " . $OPTS{'hook'} . " for " . $OPTS{'category'} . "\:\:" . $OPTS{'event'} . " in hooks registry\n";
+        return 1;
+    }
+    else {
+        print $Cpanel::Hooks::Manage::ERRORMSG . "\n";
+        return;
+    }
+
+}
+
+sub load_hooks_data {
+    my ( $exec_type, $hook ) = @_;
+    if ( $exec_type eq 'script' ) {
+        my $full_hook = ($hook) ? Cwd::abs_path($hook) : undef;
+        if ( !defined $full_hook ) {
+            $Cpanel::Hooks::Manage::ERRORMSG = qq{The provided script hook "$hook" does not exist on the filesystem};
+            return;
+        }
+
+        my $output = Cpanel::SafeRun::Full::run( 'program' => $full_hook, 'args' => ['--describe'] );
+
+        if ( $output->{'stderr'} ne '' ) {
+            print STDERR 'The script, when executed with --describe printed data via STDERR: ' . $output->{'stderr'} . "\n";
+        }
+        if ( $output->{'stdout'} ne '' ) {
+            my $hook_data;
+
+            # NOTE: Cpanel::JSON::Load() will not error on a string missing an
+            #  opening french brace, i.e., "}blah".  Instead it simply
+            #  return the passed string back :( ...so, we check that here
+            #
+            my $has_minimum_json_markup = () = $output->{'stdout'} =~ m/[{]/;
+
+            if ($has_minimum_json_markup) {
+
+                # This is eval'd to allow us to have a "pretty" error message rather
+                #  unfriendly perl-specific output
+                eval { $hook_data = Cpanel::JSON::Load( $output->{'stdout'} ); };
+
+                if ($@) {
+                    $Cpanel::Hooks::Manage::ERRORMSG = "Hook failed to return proper JSON data\n";
+                    return;
+                }
+
+                return $hook_data;
+            }
+            else {
+                $Cpanel::Hooks::Manage::ERRORMSG = "Hook failed to return proper JSON data\n";
+                return;
+            }
+        }
+        else {
+
+            # The script hook appears to not have returned anything
+            return;
+        }
+    }
+
+    elsif ( $exec_type eq 'module' ) {
+        my ($module) = $hook =~ /(^[a-zA-Z0-9_\:]+)$/;
+        local @INC = ( @INC, '/var/cpanel/perl5/lib' );
+
+        # we MUST have access to the module
+        eval " require $module; 1 ";
+        if ($@) {
+            $Cpanel::Hooks::Manage::ERRORMSG = $@;
+            return;
+        }
+
+        # module *should* have describe(), but it's possible to provide all
+        #  descriptors via CLI options
+        my $hooks_data;
+        eval {
+            if ( my $cr = $module->can('describe') ) {
+                $hooks_data = $cr->();
+            }
+        };
+
+        return $hooks_data;
+    }
+    else {
+
+        # this should never happen, but let's check for the case anyways
+        $Cpanel::Hooks::Manage::ERRORMSG = 'Cpanel::Hooks::Manage::load_hook_data called with an invalid exec_type';
+        return;
+    }
+}
+
+sub do_help {
+    my ($full) = @_;
+    print <<EOM;
+This utility is used for managing hooks in cPanel/WHM.  Please run `manage_hooks fullhelp` or consult the documentation on sdk.cpanel.net for more detailed information including what hooks are available.
+
+syntax: bin/manage_hooks management_action [(script|module) hook --param=value]
+
+Examples:
+manage_hooks add module Module::Name
+manage_hooks add script /myhook --category=System --event=upcp --stage=pre
+manage_hooks prune
+manage_hooks list
+
+EOM
+    if ($full) {
+        print <<EOM;
+Available Actions:
+  add (script|module) hookpath
+            Add a new hook, Params:
+                Required:
+                    --category
+                    --event
+                    --stage
+                Optional:
+                    --escalateprivs (if exectype == script)
+                    --weight
+  del (script|module) hookpath
+            Remove all hooks matching the parameters provided
+                Required:
+                    --category
+                    --event
+                Optional:
+                    --escalateprivs
+                    --weight
+                    --stage
+  prune
+            Automatically remove all hooks that are registered yet the script
+            or module that executes/describes the hook has been deleted.
+  list
+            List all hooks that currently exist in the system.
+
+EOM
+    }
+    print <<EOM;
+Parameters:
+  --category   The category of the event that you want to add, delete or list. Example: "--category=PkgAcct"
+  --event      The event that you wish to hook into, required for "add" or "delete". Example: "--event=Api2::Email::addpop"
+  --stage      The stage of execution that you wish to hook into.  Required for  "add". Example: "--stage=pre"
+  --weight     The weight of the hook, specifies order of execution, Lower is executed first. Example: "--weight=10"
+  --escalateprivs   Whether a hook should be run as the user or root.  Only valid with script hooks. Example: "--escalateprivs"
+EOM
+    return 1;
+}
+
+1;

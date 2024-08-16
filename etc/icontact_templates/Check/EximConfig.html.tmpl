@@ -1,0 +1,24 @@
+[%#
+Variables passed in:
+
+email_reason - The reason for the email
+action       - The configuration reset action
+
+For more information about how to customize notification templates, read our documentation at https://go.cpanel.net/notificationtemplates
+
+-%]
+
+[%
+    PROCESS "include/colors.tmpl";
+    PROCESS "include/styles.tmpl";
+    WRAPPER 'wrapper/main.html.tmpl';
+    PROCESS "include/code_block.tmpl";
+    NOTICE.email_reason = CPANEL.locale.maketext('Unable to automatically update the [asis,Exim] configuration on: [_1]', NOTICE.host_server);
+
+%]
+
+  [% PROCESS "Check/includes/EximConfig.ResetHeader.html.tmpl" %]
+  [% SET include_file = "Check/includes/EximConfig." _ NOTICE.action _ ".html.tmpl" %]
+  [% PROCESS $include_file %]
+
+[% END %]

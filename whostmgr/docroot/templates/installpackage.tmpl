@@ -1,0 +1,92 @@
+[% WRAPPER 'master_templates/master.tmpl'
+    theme = 'bootstrap'
+    app_key = 'install_an_rpm'
+    extrastyle='
+        .inline-search-input {
+            display: inline-block;
+            width: 60%;
+        }
+
+        .inline-search-btn {
+            display: inline-block;
+        }
+    '%]
+
+<div id="content">
+    <form action="[% cp_security_token %]/scripts2/installpackage" method="post">
+        <div class="form-group">
+            <label for="search_pattern">
+                [% locale.maketext("Provide a partial package name:") %]
+            </label>
+            <div class="row">
+                <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                    <input type="text" id="search_pattern"
+                        class="form-control inline-search-input"
+                        placeholder="Search pattern"
+                        title="Search for packages."
+                        [% IF data.search_pattern %]value="[% data.search_pattern | html %]"[% END %]
+                        autofocus="true"
+                        name="search_pattern">
+                    <button id="btnSearch" class="btn btn-primary inline-search-btn" type="submit">
+                        [% locale.maketext("Search") %]
+                    </button>
+                    <span class="help-block">
+                        [% locale.maketext("Enter a search pattern for the package name you would like to install.") %]
+                    </span>
+            </div>
+        </div>
+    </form>
+</div>
+
+<div>
+    [% IF data.too_many -%]
+    <div class="alert alert-warning" role="alert">
+        <span class="glyphicon glyphicon-info-sign" aria-hidden="true"></span>
+        <div class="alert-message">
+            <span class="alert-body">
+                [% locale.maketext("[output,strong,Warning:] Too many results were found from your search. Not all results were displayed. Please try a more specific search") %]
+            </span>
+        </div>
+    </div>
+    [% END -%]
+
+    [% IF data.search_pattern %]
+    <table class="table table-striped">
+        <thead>
+            <tr>
+                <th>[% locale.maketext("Package") %]</th>
+                <th>[% locale.maketext("Version") %]</th>
+                <th>[% locale.maketext("Repo") %]</th>
+                <th>[% locale.maketext("Arch") %]</th>
+                <th>[% locale.maketext("Description") %]</th>
+                <th></th>
+            </tr>
+        </thead>
+        <tbody>
+        [% FOR package = data.packages.sort('name') -%]
+        <tr>
+            <td>[% package.name | html %]</td>
+            <td>[% package.version | html %]</td>
+            <td>[% package.repo | html %]</td>
+            <td>[% package.arch | html %]</td>
+            <td>[% package.description | html %]</td>
+            <td>
+                <a class="btn btn-primary"
+                    href="[% cp_security_token %]/scripts2/doinstallpackage?installpkgs=[% package.name_and_arch | uri %]">
+                    [% locale.maketext("Install") %]
+                </a>
+            </td>
+        </tr>
+        [% END -%]
+        [% IF ! data.packages.size %]
+        <tr class="info empty-row">
+            <td colspan="6">
+                [% locale.maketext("No matches found for pattern: [output,strong,_1]",data.search_pattern) %]
+            <td>
+        </tr>
+        [% END %]
+        </tbody>
+    </table>
+    [% END %]
+</div>
+[% END # WRAPPER %]

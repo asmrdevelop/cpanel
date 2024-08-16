@@ -1,0 +1,157 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/check_mysql                     Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::check_mysql;
+
+use strict;
+use warnings;
+
+use Cpanel::Services::Enabled        ();
+use Cpanel::ConfigFiles              ();
+use Cpanel::Daemonizer::Tiny         ();
+use Cpanel::FileUtils::Open          ();
+use Cpanel::FindBin                  ();
+use Cpanel::DB::Reserved             ();
+use Cpanel::MysqlUtils::MyCnf::Basic ();
+use Cpanel::MysqlUtils::Dir          ();
+use Cpanel::Alarm                    ();
+use Cpanel::Unix::PID::Tiny          ();
+use Cpanel::Imports;
+
+exit script(@ARGV) unless caller;
+
+sub report_errors {
+    my ($errors) = @_;
+
+    require Cpanel::Notify;
+    Cpanel::Notify::notification_class(
+        'class'            => 'Check::MySQL',
+        'application'      => 'Check::MySQL',
+        'constructor_args' => [
+            'origin' => 'check_mysql',
+            'report' => $errors,
+        ]
+    );
+
+    return;
+}
+
+sub run_mysqlcheck {
+    my ( $mysqlcheck, $db ) = @_;
+
+    my @output = `LANG=C $mysqlcheck -u root -m --silent --databases $db 2>&1`;
+    return @output;
+}
+
+sub daemon_process {
+    my ($uxpd) = @_;
+    $uxpd->pid_file('/var/run/check_mysql.pid');    # update our pid file to new sporked PID
+
+    # These are the databases we analyze
+    my @databases = grep { !m/^pg_/ && !m/^postgres$/ && !m/^test$/ } Cpanel::DB::Reserved::get_reserved_database_names();
+
+    my $timeout_seconds = 64800;                                                        # 64800 seconds == 18 hours
+    my $mysqlcheck      = Cpanel::FindBin::findbin("mysqlcheck");
+    my $mysqldir        = Cpanel::MysqlUtils::Dir::getmysqldir() || '/var/lib/mysql';
+    my %errors;
+    my %processed;
+    my $ret = eval {
+
+        # must go out of scope to stop and clean up, ick on a stick
+        my $timeout = Cpanel::Alarm->new( $timeout_seconds, sub { die "time out\n" } );
+        for my $db (@databases) {
+            if ( $db ne 'mysql' && !-d "$mysqldir/$db" ) {    # if mysql is missing then @output contains an error
+                $processed{$db} = 1;
+                next;
+            }
+
+            logger->info("starting mysqlcheck on $db (PID $$)");
+            my @output = run_mysqlcheck( $mysqlcheck, $db );
+            if ( grep { /error: 2002: Can't connect/ } @output ) {
+                logger->warn("mysqlcheck can't connect to MySQL");
+                return 0;
+            }
+            logger->info("mysqlcheck of $db is finished (PID $$)");
+            my $oops = purge_warnings( \@output );
+            if ($oops) {
+                logger->warn("mysqlcheck found errors on $db: $oops");
+                $errors{$db} = $oops;
+            }
+            else {
+                logger->info("mysqlcheck found no errors on $db");
+            }
+            $processed{$db} = 2;
+        }
+        return 1;
+    };
+    return if defined $ret && $ret == 0;
+
+    for my $db (@databases) {
+        next if exists $processed{$db};
+        next if $db ne 'mysql' && !-d "$mysqldir/$db";    # in case the timeout happened right before $processed{$db} = 1; we just won a race!
+        my $timeout_hours = $timeout_seconds / 60 / 60;
+        $errors{$db} = "not checked because mysqlcheck has been running for $timeout_hours hours (large data? $mysqldir partition full?)";
+    }
+
+    if ( keys %errors ) {
+        report_errors( \%errors );
+    }
+
+    return;
+}
+
+sub script {
+    local $ENV{'HOME'} = '/root';
+
+    die "/usr/local/cpanel/scripts/check_mysql is currently disabled.\n" if -e '/etc/check_mysql_disable';
+
+    die "MySQL is disabled.\n" unless Cpanel::Services::Enabled::is_enabled('mysql');
+
+    # This script is not written in a way so as to support remote mysql servers
+    die "Remote MySQL database servers are not supported.\n" if Cpanel::MysqlUtils::MyCnf::Basic::is_remote_mysql();
+
+    # this can be an expensive and thus time consuming thing so only allow one run at a time and give it a large timeout (via $timeout_seconds)
+    my $uxpd = Cpanel::Unix::PID::Tiny->new();
+    die "/usr/local/cpanel/scripts/check_mysql is currently running.\n" if !$uxpd->pid_file('/var/run/check_mysql.pid');
+
+    my $pid = Cpanel::Daemonizer::Tiny::run_as_daemon(
+        sub {
+            Cpanel::FileUtils::Open::sysopen_with_real_perms( \*STDERR, $Cpanel::ConfigFiles::CPANEL_ROOT . '/logs/error_log', 'O_WRONLY|O_APPEND|O_CREAT', 0600 );
+            open( STDOUT, '>&', \*STDERR ) || warn "Failed to redirect STDOUT to STDERR";
+            daemon_process($uxpd);
+        }
+    );
+
+    print locale->maketext( "“[_1]” will complete in the background (process ID [_2]).", 'check_mysql', $pid ) . "\n";
+
+    return 0;
+}
+
+sub purge_warnings {
+    my ($output_ar) = @_;
+
+    my $full_output = '';
+
+    # Loop through each line get rid of warnings
+    my $previous_line = '';
+    foreach my $line (@$output_ar) {
+        chomp $line;
+
+        # Skip the warnings and a non-Error-error: http://bugs.mysql.com/bug.php?id=30487
+        if ( $line =~ /^([iI]nfo|[nN]ote|[wW]arning)/ || $line =~ m/Error\s*:\s*You can't use locks with log tables\./ ) {
+            $previous_line = '';
+            next;
+        }
+
+        # We only allow a line if it is not followed by a warning
+        $full_output .= $previous_line . "\n" if $previous_line;
+        $previous_line = $line;
+    }
+
+    $full_output .= $previous_line . "\n" if $previous_line;
+    return $full_output;
+}

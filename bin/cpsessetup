@@ -1,0 +1,117 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - bin/cpsessetup                          Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package bin::cpsessetup;
+
+use strict;
+use warnings;
+use Cpanel::LoadFile           ();
+use Cpanel::Sys::User          ();
+use Cpanel::PwCache            ();
+use Cpanel::Debug              ();
+use Cpanel::Session::Constants ();
+
+our $VERSION = 1.0;
+
+### This version number should match the values in /u/l/c/bin/cpses_pam_ctl
+### and /u/l/c/src/pam_cpses/pam_cpses.c
+my $pam_cpses_version = '1.1';
+
+__PACKAGE__->script(@ARGV) unless caller;
+
+sub script {
+
+    # TODO: This modulino needs to have its core functionality moved to
+    # a module and have its test coverage improved.  Once done the
+    # install/* scripts should call the module directly instead of
+    # loading this modulino.
+    create_sys_users_if_needed();
+
+    create_cpses_dirs_if_needed();
+
+    enable_cpses_pam();
+
+    return process_cpses_setup_modules();
+}
+
+sub create_sys_users_if_needed {
+
+    # check and create cpses user if missing
+    eval {
+        Cpanel::Sys::User->new(
+            login             => 'cpses',
+            is_system_account => 1,                     # uid < UID_MIN
+            homedir           => '/var/cpanel/cpses',
+            permissions       => 750,
+            force             => 1
+        )->sanity_check( create_if_missing => 1, verbose => 1 );
+
+    };
+    print "Cannot fix user 'cpses': $@\n" if $@;
+
+    return;
+}
+
+sub create_cpses_dirs_if_needed {
+    my ( $cpses_uid, $cpses_gid ) = ( Cpanel::PwCache::getpwnam('cpses') )[ 2, 3 ];
+    {
+        no warnings 'once';
+        foreach my $dir ( $Cpanel::Session::Constants::CPSES_DIR, $Cpanel::Session::Constants::CPSES_KEYS_DIR, $Cpanel::Session::Constants::CPSES_MAILMAN_DIR, $Cpanel::Session::Constants::CPSES_LOOKUP_DIR ) {
+            mkdir $dir, 0750 if !-e $dir;
+            chown 0, $cpses_gid, $dir;
+        }
+    }
+    return;
+}
+
+sub enable_cpses_pam {
+
+    if ( !-e '/var/cpanel/version/cpses_pam_ctl'
+        || Cpanel::LoadFile::loadfile('/var/cpanel/version/cpses_pam_ctl') ne $pam_cpses_version ) {
+        system '/usr/local/cpanel/bin/cpses_pam_ctl', '--enable';
+        if ( open( my $cp_fh, '>', '/var/cpanel/version/cpses_pam_ctl' ) ) {
+            print {$cp_fh} $pam_cpses_version;
+            close($cp_fh);
+        }
+    }
+
+    return;
+}
+
+sub process_cpses_setup_modules {
+
+    if ( opendir( my $cpses_dh, '/usr/local/cpanel/Cpanel/Cpses/Setup' ) ) {
+        my @modules = grep( m/\.pm$/, readdir($cpses_dh) );
+        foreach my $modulepm (@modules) {
+            my $module = $modulepm;
+            $module =~ s/\.pm$//;
+
+            eval "require Cpanel::Cpses::Setup::$module";    ## no critic qw(BuiltinFunctions::ProhibitStringyEval)
+            if ($@) {
+                Cpanel::Debug::log_warn("Failed to load: Cpanel::Cpses::Setup::$module: $@");
+                next;
+            }
+            my $obj = eval { "Cpanel::Cpses::Setup::$module"->new(); };
+            if ($@) {
+                Cpanel::Debug::log_warn("Failed to create: Cpanel::Cpses::Setup::$module: $@");
+                next;
+            }
+            eval { $obj->activate(); };
+            if ($@) {
+                Cpanel::Debug::log_warn("Failed to ensure: Cpanel::Cpses::Setup::$module: $@");
+                next;
+            }
+        }
+
+    }
+    else {
+        return ( 0, "Failed to open /usr/local/cpanel/Cpanel/Cpses/Setup: $!" );
+    }
+    return ( 1, "Setup completed" );
+}
+
+1;

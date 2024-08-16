@@ -1,0 +1,30 @@
+#!/usr/local/cpanel/3rdparty/bin/python2
+# -*- coding: utf-8 -*-
+
+# cpanel - bin/safe_dump_pickle                    Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+import sys
+
+sys.path.insert(0, '/usr/local/cpanel/lib/python2')
+
+import cPanel
+
+MAX_PICKLE_FILE_SIZE = 1024 * 1024 * 32
+
+
+def main(argv):
+    if len(argv) < 3:
+        print 'usage: safe_dump_pickle <file> <sysuser>'
+        return 1
+
+    filename = argv[1]
+    sysuser = argv[2]
+
+    sys.stdout.write(cPanel.json_to_pickle(cPanel.export_pickle_as_json(filename, sysuser, MAX_PICKLE_FILE_SIZE)))
+
+
+if __name__ == '__main__':
+    raise SystemExit(main(sys.argv))

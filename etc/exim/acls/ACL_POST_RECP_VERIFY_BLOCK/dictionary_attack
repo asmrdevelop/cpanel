@@ -1,0 +1,16 @@
+
+
+  warn
+    log_message = "Detected Dictionary Attack (Let $rcpt_fail_count bad recipients though before engaging)"
+    condition = ${if > {${eval:$rcpt_fail_count}}{4}{yes}{no}}
+    set acl_m7 = 1
+
+  warn
+    condition = ${if eq {${acl_m7}}{1}{1}{0}}
+    ratelimit = 0 / 1h / strict / per_conn
+    log_message = "Increment Connection Ratelimit - $sender_fullhost because of Dictionary Attack"
+
+  drop
+    condition = ${if eq {${acl_m7}}{1}{1}{0}}
+    message = "Number of failed recipients exceeded.  Come back in a few hours."
+

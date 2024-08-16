@@ -1,0 +1,53 @@
+[% WRAPPER 'master_templates/master.tmpl' theme="yui" header=feed.title app_key='change_log' %]
+<style type="text/css">
+    .error { font-size: 120%; color: red; }
+    .all_changelogs, .atom_url, .feed_date, .feed_author { margin: .25em 1em; }
+    .rss-icon { height: 1em; width: 1em; border: 0; float: right; }
+    @media (min-width: 767px) {
+        .all_changelogs { margin .25em 2em; }
+        #feed_info { float: right; margin: -4em 4em 0em 1em; }
+        .atom_url, .feed_date, .feed_author { float: right; clear: both; margin-bottom: 0.2em; margin-left: 0; }
+    }
+    .feed_date {color: #777;  font-size: 9px;  margin-top: 0.5em; }
+    .feed_author { color: gray; margin-bottom: 1em; }
+    div.entry {     border:1px solid #e1e1e1; padding:1px; background: #fff; margin: 0.5em 2em; clear: both; }
+    .entry_title { font-size: 16px; font-weight: bold ; color: #04586C; margin: 0.6em 0em 0em 1em; float: left; display: block; width: 100%;}
+    .entry_date  { color: #666; margin: 0.3em 1em 0.9em 1.6em; float: left; display: block; width: 100%; }
+    .entry_content { background: #ebebeb; padding: 0.5em 10px; color: #666; }
+    ul {padding: 20px; list-style-position: outside;  }
+    li{line-height: 16px; }
+    .entry_head{background: #E2E2E2; height: 65px;}
+    .status {margin:1em 0 0 2em;}
+    #breadcrumbs_list { background: transparent; }
+</style>
+[% IF feed.error != '' -%]
+    <div class="error">[% feed.error %]</div>
+[% ELSE -%]
+    <div class="all_changelogs"><a href="https://go.cpanel.net/changelog" target="_blank">Change logs for all versions</a></div>
+    <div id="feed_info">
+        [%- IF feed.entries -%]
+        <div class="atom_url">
+            <a href="[% feed.self %]" target="_blank">Change Log feed for [% feed.version_text %]&nbsp;<img src="[% MagicRevision('/rss.png') %]" class="rss-icon" /></a>
+        </div>
+        [%- END -%]
+        <div class="atom_url">
+            <a href="[% feed.all_link_ %]" target="_blank">Change Log feed for all versions&nbsp;<img src="[% MagicRevision('/rss.png') %]" class="rss-icon" /></a>
+        </div>
+        <div class="feed_date">Feed: [% feed.updated %]</div>
+        <div class="feed_author">[% feed.author %]</div>
+    </div>
+    [%- IF feed.entries -%]
+    [%- FOREACH e IN feed.entries -%]
+        <div class="entry">
+        <div class="entry_head">
+            <div class="entry_title">[% e.title %]</div>
+            <div class="entry_date">Entry: [% e.updated %]</div></div>
+            <div class="entry_content">[% e.content %]</div>
+        </div>
+    [%- END -%]
+    [%- ELSE -%]
+        <div class="status">No change log entries for [% feed.version_ %]</div>
+    [%- END -%]
+[% END -%]
+[% END -%]
+

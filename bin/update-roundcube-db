@@ -1,0 +1,339 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - bin/update-roundcube-db                 Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+## cpdev: installs to /usr/local/cpanel/base/3rdparty/roundcube
+
+package cpanel::bin::update_roundcube;
+
+use strict;
+use warnings;
+
+use Cpanel::Config::LoadCpConf       ();
+use Cpanel::Config::CpConfGuard      ();
+use Cpanel::Email::RoundCube         ();
+use Cpanel::Email::RoundCube::DBI    ();
+use Cpanel::Exception                ();
+use Cpanel::LoadFile                 ();
+use Cpanel::LoadModule               ();
+use Cpanel::Debug                    ();
+use Cpanel::MysqlUtils::InnoDB       ();
+use Cpanel::MysqlUtils::MyCnf::Basic ();    ## case 44546
+use Cpanel::MysqlUtils::Version      ();
+use Cpanel::Server::Type             ();
+
+exit( script(@ARGV) // 0 ) unless caller();
+
+sub script {
+    return if _is_dnsonly();
+
+    my $daemonize = !grep { $_ eq '--foreground' } @ARGV;
+
+    my $cpconf = Cpanel::Config::LoadCpConf::loadcpconf();
+
+    my $mysql_version = Cpanel::MysqlUtils::Version::mysqlversion();
+
+    ## Exit if Roundcube has been converted to SQLite
+    my $sqlite_version = $0 =~ s/-db/-sqlite-db/r;
+    if ( exists $cpconf->{'roundcube_db'} && $cpconf->{'roundcube_db'} eq 'sqlite' ) {
+        print "Roundcube is configured to use SQLite.\n";
+        print "This update is for Roundcube using MySQL. Running $sqlite_version.\n";
+        exec $sqlite_version, @ARGV;
+        die "Failed to exec $sqlite_version";
+    }
+    elsif (
+        !-e '/var/cpanel/i_accept_my_roundcube_may_be_broken_by_1_6'    # if you want a probably broken roundcube, here you go
+        && (
+            Cpanel::MysqlUtils::Version::cmp_versions( $mysql_version, '5.6' ) <= 0        # MySQL 5.6 and below do not support the key length
+            || Cpanel::MysqlUtils::Version::cmp_versions( $mysql_version, '10.0' ) == 0    # MariaDB 10.0 has the same issue with the key length
+        )
+    ) {
+        print "Roundcube 1.6+ does not support the installed version of MySQL/MariaDB ($mysql_version).\n";
+        print "Your users' Roundcube databases will be converted to SQLite automatically!\n";
+
+        _daemonize() if $daemonize;
+
+        Cpanel::LoadModule::load_perl_module('Cpanel::SafeRun::Object');
+        Cpanel::SafeRun::Object->new_or_die( 'program' => '/usr/local/cpanel/scripts/convert_roundcube_mysql2sqlite' );
+
+        return 0;
+    }
+
+    _daemonize() if $daemonize;
+
+    # None of the args are consulted in here, so don't pass them in
+    update_roundcube();
+
+    if ( exists $cpconf->{'roundcube_db'} && $cpconf->{'roundcube_db'} eq 'mysql_plus_sqlite' ) {
+        print "Update for Roundcube using MySQL complete. Now running $sqlite_version to update those.\n";
+        exec $sqlite_version, @ARGV;
+        die "Failed to exec $sqlite_version";
+    }
+
+    return 0;    # for now preserved original behavior and always exit 0
+}
+
+sub _is_dnsonly {
+    return unless Cpanel::Server::Type::is_dnsonly();
+
+    Cpanel::Debug::log_warn("bin/update-roundcube-db is disabled on dnsonly server");
+
+    return 1;
+}
+
+#Named args:
+#   dbh:    optional, a DBD::mysql handle to use
+sub update_roundcube {
+    my (%opts) = @_;
+
+    return if _is_dnsonly();
+
+    my ( $dbh, $mysql_has_roundcube_db ) = _check_update_roundcube(%opts);
+    return _do_update_roundcube( %opts, dbh => $dbh, mysql_has_roundcube_db => $mysql_has_roundcube_db );
+}
+
+#opts can be:
+#   dbh - a Cpanel::DBI::Mysql instance (useful for testing/mocking)
+sub _check_update_roundcube {
+    my (%opts) = @_;
+
+    my $dbh = $opts{'dbh'};
+
+    if ( !$dbh ) {
+        my $mysql_user = Cpanel::MysqlUtils::MyCnf::Basic::getmydbuser('root') || 'root';
+        my $mysql_host = Cpanel::MysqlUtils::MyCnf::Basic::getmydbhost('root') || 'localhost';
+        my $mysql_port = Cpanel::MysqlUtils::MyCnf::Basic::getmydbport('root') || 3306;
+
+        $dbh = Cpanel::Email::RoundCube::DBI::mysql_db_connect( undef, $mysql_host, $mysql_user, Cpanel::MysqlUtils::MyCnf::Basic::getmydbpass('root'), undef, $mysql_port );
+        if ( !$dbh ) {
+            Cpanel::Debug::log_die("Failed to connect to MySQL install at $mysql_host");
+        }
+    }
+
+    my $has_innodb = Cpanel::MysqlUtils::InnoDB::is_enabled_on_dbh($dbh);
+
+    ## rcube has required InnoDB since 0.2-beta
+    if ( !$has_innodb ) {
+        die "Roundcube requires that MySQL support InnoDB tables, but your MySQL installation does not support them.\n";
+    }
+
+    my $dbs_ar                 = $dbh->selectall_arrayref('SHOW DATABASES');
+    my $mysql_has_roundcube_db = grep { $_->[0] eq 'roundcube' } @$dbs_ar;
+
+    return ( $dbh, $mysql_has_roundcube_db );
+}
+
+# Case 117993, deal with partially installed RoundCube on install
+sub _attempt_chown_fix_for_roundcube {
+
+    Cpanel::Email::RoundCube::lock_roundcube_for_update();
+
+    # case 103369, upgrading db "died" and left the updating lock
+    # in place so roundcube could not run.
+    # By doing this in an eval, we can report an error
+    # and remove the locking file.
+
+    my $eval_ret = eval { return Cpanel::Email::RoundCube::perform_chown_fix(); };
+
+    my $error_string = $@;
+
+    # unlock always here
+    Cpanel::Email::RoundCube::unlock_roundcube_after_update();
+
+    if ( !defined $eval_ret ) {
+        Cpanel::Debug::log_info("Error occurred during chown fix\n$error_string");
+        return;    # modeled after the schema update failure from above
+    }
+    else {
+        Cpanel::Debug::log_info("Roundcube has succeeded doing the chown fix");
+    }
+
+    return $eval_ret;
+}
+
+sub _do_update_roundcube {
+    my (%opts) = @_;
+
+    my ( $dbh, $has_db ) = @opts{qw( dbh  mysql_has_roundcube_db )};
+
+    my $version = Cpanel::Email::RoundCube::get_active_version();
+
+    ###
+    Cpanel::Email::RoundCube::init_roundcube_data_dir();
+
+    my $version_before_update = Cpanel::Email::RoundCube::get_stored_version();
+
+    if ($version_before_update) {
+        Cpanel::Debug::log_info("Roundcube update from $version_before_update to $version in progress.");
+    }
+    else {
+        Cpanel::Debug::log_info("Roundcube $version install in progress.");
+    }
+    Cpanel::Email::RoundCube::lock_roundcube_for_update();
+
+    # case 103369, upgrading db "died" and left the updating lock
+    # in place so roundcube could not run.
+    # By doing this in an eval, we can report an error
+    # and remove the locking file.
+
+    my $eval_ret = eval {
+        my $dest_dir = $Cpanel::Email::RoundCube::ROUNDCUBE_DEST_DIR;
+
+        ##############################
+        ## DATABASE
+
+        my $valid_archive;
+        if ( $ENV{'CPANEL_ROUNDCUBE_INSTALL_VERSION'} ) {
+
+            # the RPM will have already archived the database #
+            $valid_archive = 1;
+        }
+        else {
+            $valid_archive = $has_db && Cpanel::Email::RoundCube::archive_mysql_roundcube($dbh);
+        }
+        Cpanel::Email::RoundCube::prune_mysql_roundcube_archives();
+
+        my ( $ok, $msg ) = _add_mysql_roundcube_grants($dbh);
+        return ( 0, $msg ) if !$ok;
+
+        my $success;
+        if ($has_db) {
+            $success = update_mysql_roundcube_db($dbh);
+        }
+        else {
+            $success = initialize_mysql_roundcube_db($dbh);
+        }
+
+        if ($success) {
+            Cpanel::Debug::log_info("Schema update to $version was successful");
+        }
+        else {
+            warn $dbh->errstr();
+
+            if ($valid_archive) {
+                print "Restoring previous Roundcube data\n";
+
+                $dbh->do('DROP DATABASE roundcube');
+                _create_mysql_roundcube_db($dbh);
+
+                Cpanel::Email::RoundCube::restore_latest_mysql_archive($dbh);
+            }
+
+            return;
+        }
+        ##############################
+
+        my $cpconf_guard = Cpanel::Config::CpConfGuard->new();
+
+        if ( $cpconf_guard->{'data'}{'roundcube_db'} && $cpconf_guard->{'data'}{'roundcube_db'} eq 'mysql_plus_sqlite' ) {
+            Cpanel::Email::RoundCube::generate_hybrid_config( $dest_dir, $dbh );
+        }
+        else {
+            Cpanel::Email::RoundCube::generate_roundcube_config_mysql( $dest_dir, $dbh );
+        }
+
+        Cpanel::Email::RoundCube::write_version_file();
+
+        # process any install tasks after the new version is inplace, including schema backed up and updated #
+        if ( Cpanel::Email::RoundCube::process_custom_roundcube_install_file($dest_dir) ) {
+            return 1;
+        }
+
+        # Only set it if it isn't already set
+        if ( !$cpconf_guard->{'data'}{'roundcube_db'} ) {
+            $cpconf_guard->{'data'}{'roundcube_db'} = 'mysql';
+            $cpconf_guard->save();
+        }
+
+        return 1;
+    };
+
+    my $error_string = $@;
+
+    # unlock always here
+    Cpanel::Email::RoundCube::unlock_roundcube_after_update();
+
+    if ( !defined $eval_ret ) {
+        Cpanel::Debug::log_info("Error occurred during upgrade\n$error_string");
+        return;    # modeled after the schema update failure from above
+    }
+    else {
+        Cpanel::Debug::log_info("Roundcube updated to $version");
+    }
+
+    return $eval_ret;
+}
+
+sub _create_mysql_roundcube_db {
+    my ($dbh) = @_;
+
+    $dbh->do('CREATE DATABASE IF NOT EXISTS roundcube');
+
+    my $rc_dbh = $dbh->clone(
+        {
+            Username               => 'roundcube',
+            Password               => Cpanel::Email::RoundCube::get_roundcube_password(),
+            mysql_multi_statements => 1,
+            database               => 'roundcube',
+        }
+    );
+
+    # Will auto-apply initial schema in this case since nothing is in there.
+    return update_mysql_roundcube_db($dbh);
+}
+
+sub _add_mysql_roundcube_grants {
+    my ($dbh) = @_;
+
+    return Cpanel::Email::RoundCube::handle_mysql_roundcube_grants(
+        'roundcube',
+        $dbh,
+    );
+}
+
+#Call this to return a $dbh that always points to the `roundcube` db.
+sub _ensure_use_of_roundcube_db {
+    my ($dbh) = @_;
+
+    my $db_all = $dbh->selectall_arrayref('SELECT DATABASE()');
+    if ( !$db_all->[0][0] || ( $db_all->[0][0] ne 'roundcube' ) ) {
+        $dbh = $dbh->clone();
+        $dbh->do('USE roundcube');
+    }
+
+    return $dbh;
+}
+
+#Call this when MySQL doesn't have the `roundcube` database.
+sub initialize_mysql_roundcube_db {
+    my ($dbh) = @_;
+
+    my $success = _create_mysql_roundcube_db($dbh);
+
+    $dbh = _ensure_use_of_roundcube_db($dbh);
+
+    return $success;
+}
+
+#Call this when MySQL already has the `roundcube` database.
+sub update_mysql_roundcube_db {
+    my ($dbh) = @_;
+
+    my ($RCUBE_VERSION) = Cpanel::Email::RoundCube::get_version_info();
+
+    $dbh = _ensure_use_of_roundcube_db($dbh);
+
+    return Cpanel::Email::RoundCube::DBI::ensure_schema_update( $dbh, 'mysql', $RCUBE_VERSION );
+}
+
+sub _daemonize {
+    print STDERR "$0: running in the background.\n";
+    require Cpanel::Daemonizer::Simple;
+    Cpanel::Daemonizer::Simple::daemonize();
+    return;
+}
+
+1;

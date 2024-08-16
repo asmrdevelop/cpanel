@@ -1,0 +1,44 @@
+[% 
+    SET current_users = Whostmgr.get_users_count(); 
+    SET max_users = Whostmgr.get_max_users();
+-%]
+<div class="alert alert-warning">
+    <span class="glyphicon glyphicon-exclamation-sign"></span>
+    <div class="alert-message">
+        <strong>[% locale.maketext('Warning:') %]</strong>
+        <p>
+            [% IF max_users == 1 %]
+                [% locale.maketext('Your system uses a single-user [asis,cPanel amp() WHM] license, but there [numerate,_1,is,are] already [quant,_1,user,users].', current_users) %]
+            [% ELSE -%]
+                [% locale.maketext('Your system’s license allows up to [quant,_1,user,users], but there [numerate,_2,is,are] already [quant,_2,user,users].', max_users, current_users) %]
+            [% END -%]
+
+            [% IF Whostmgr.hasroot() -%]
+                [% 
+                    SET excess = current_users - max_users;
+                    SET custom_url = Whostmgr.get_custom_url();
+                    SET cpanel_url = cp_security_token _ '/scripts12/license_purchase_status/checkout?upgrade=1&current_users=' _ current_users;
+                    SET upgrade_link = custom_url ? custom_url : cpanel_url;
+                    SET terminate_link = cp_security_token _ '/scripts4/multikillacct/';
+                -%]
+                [% IF !excess -%]
+                    [% IF current_users == 1 -%]
+                        [% locale.maketext('You must [output,url,_1,upgrade your license] or [output,url,_2,terminate the user account] before you can create a new account.', upgrade_link, terminate_link) %]
+                    [% ELSE -%]
+                        [% locale.maketext('You must [output,url,_1,upgrade your license] or [output,url,_2,terminate a user account] before you can create a new account.', upgrade_link, terminate_link) %]
+                    [% END -%]
+                [% ELSE -%]
+                    [% SET user_excess_msg_portion = locale.maketext('[comment,inserted into another phrase]terminate [quant,_1,account,accounts]', excess + 1) %]
+                    [% locale.maketext('You must [output,url,_1,upgrade your license] or [output,url,_2,_3] before you can create a new one.', upgrade_link, terminate_link, user_excess_msg_portion) %]
+                [% END -%]
+            [% ELSE -%]
+                [% SET public_contact = Whostmgr.get_public_contact(); -%]
+                [% IF public_contact %]
+                    [%- locale.maketext('Ask your server administrator, “[output,url,_1,_2,target,_blank]”, to upgrade the server’s license.', public_contact.url, public_contact.name) -%]
+                [% ELSE %]
+                    [%- locale.maketext('Ask your server administrator to upgrade the server’s license.') -%]
+                [% END %]
+            [% END -%]
+        </p>
+    </div>
+</div>

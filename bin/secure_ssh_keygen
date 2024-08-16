@@ -1,0 +1,196 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - bin/secure_ssh_keygen                   Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package secure_ssh_keygen;
+
+use strict;
+use Expect;
+
+use Cpanel::Binaries ();
+use Cpanel::JSON     ();
+use Cpanel::Usage    ();
+
+my %COMMANDS = (
+    NEWKEY             => \&CMD_newkey,
+    PUBKEY_FROM_SECKEY => \&CMD_pubkey_from_seckey
+);
+
+# Note that for exit codes, ssh-keygen seems to universally use 1 for failure
+use constant SUCCESS         => 0;
+use constant KEYGEN_ERROR    => 1;
+use constant FLAG_ERROR      => 2;
+use constant JSON_ERROR      => 3;
+use constant PARAMETER_ERROR => 4;
+
+sub run {
+    my @argv = @_;
+    my $from_stdin;
+    my $json;
+
+    # Process arguments
+    return SUCCESS if Cpanel::Usage::wrap_options( \@argv, \&usage, { stdin => \$from_stdin, json => \$json } );
+    if ($from_stdin) {
+        local $/ = undef;
+        $json = <STDIN>;
+    }
+    if ( !$json ) {
+        print "No JSON input data supplied. Try --help for usage information\n";
+        return FLAG_ERROR;
+    }
+
+    my $data = eval { Cpanel::JSON::Load($json) };
+
+    if ( $data->{command} && defined $COMMANDS{ $data->{command} } ) {
+        my ( $exit_code, $output ) = &{ $COMMANDS{ $data->{command} } }($data);
+        print $output;
+        return $exit_code;
+    }
+    else {
+        print "Missing or invalid command specified in JSON data.\n";
+        return JSON_ERROR;
+    }
+}
+
+sub CMD_pubkey_from_seckey {
+    my $data     = shift;
+    my $password = $data->{password};
+    my $file     = $data->{seckey_file};
+
+    if ( !defined $password ) {
+        $password = '';
+    }
+    elsif ( $password =~ /[\r\n]/ ) {
+        return ( PARAMETER_ERROR, "Password must not contain a newline!\n" );
+    }
+
+    if ( !defined $file || $file =~ /\0/ || !-e $file ) {
+        return ( PARAMETER_ERROR, "Invalid private key file.\n" );
+    }
+
+    # It doesn't appear that ssh-keygen has gettext support
+    # but the Expect logic requires english
+    local %ENV = %ENV;
+    $ENV{LANG} = 'C';
+
+    my $generated_pubkey = '';
+    my $exp              = Expect->new();
+    $exp->log_stdout(0);
+    $exp->raw_pty(1);
+    $exp->spawn( ssh_keygen(), '-y', '-f', $file ) or die "Failed to spawn ssh-keygen: $!\n";
+
+    $exp->expect(
+        30,
+        [
+            'Enter passphrase:' => sub {
+                my $self = shift;
+                $self->send("$password\n");
+                exp_continue_timeout;
+            }
+        ],
+        [
+            'eof' => sub {
+                my $self = shift;
+                $generated_pubkey = $self->before();
+                $generated_pubkey =~ s/\A\s+//;
+            }
+        ],
+    );
+
+    my $exit_status = $exp->exitstatus() >> 8;
+    return ( $exit_status, $generated_pubkey );
+}
+
+sub CMD_newkey {
+    my $data     = shift;
+    my $password = $data->{password};
+    my $file     = $data->{seckey_file};
+    my $type     = $data->{type};
+    my $bits     = $data->{bits};
+    my $comment  = $data->{comment} || '';
+
+    if ( $password =~ /[\r\n]/ ) {
+        return ( PARAMETER_ERROR, "Password may not contain a newline!\n" );
+    }
+
+    if ( !defined $file || $file =~ /\0/ ) {
+        return ( PARAMETER_ERROR, "Invalid private key file.\n" );
+    }
+
+    if ( $type ne 'rsa' && $type ne 'dsa' ) {
+        return ( PARAMETER_ERROR, "Invalid key type.\n" );
+    }
+
+    if ( $bits !~ /\A\d+\z/ ) {
+        return ( PARAMETER_ERROR, "Invalid bits.\n" );
+    }
+
+    # It doesn't appear that ssh-keygen has gettext support
+    # but the Expect logic requires english
+    local %ENV = %ENV;
+    $ENV{LANG} = 'C';
+
+    my $keygen_output = '';
+    my $exp           = Expect->new();
+    $exp->log_stdout(0);
+    $exp->raw_pty(1);
+    $exp->spawn( ssh_keygen(), '-t', $type, '-b', $bits, '-f', $file, '-C', $comment ) or die "Failed to spawn ssh-keygen: $!\n";
+
+    $exp->expect(
+        300,
+        [
+            qr/Enter (same )?passphrase[^:]*:/ => sub {
+                my $self = shift;
+                $keygen_output .= $self->before() . $self->match();
+                $self->send("$password\n");
+                exp_continue_timeout;
+            }
+        ],
+        [
+            'Overwrite (y/n)?' => sub {
+                my $self = shift;
+                $keygen_output .= $self->before() . $self->match();
+                $self->send("y\n");
+                exp_continue_timeout;
+            }
+        ],
+    );
+
+    $keygen_output .= $exp->before();
+    $exp->hard_close();
+    my $exit_status = $exp->exitstatus() >> 8;
+    return ( $exit_status, $keygen_output );
+}
+
+sub ssh_keygen {
+    my $ssh_keygen = Cpanel::Binaries::path('ssh-keygen');
+    -x $ssh_keygen or die "Could not locate ssh-keygen";
+    return $ssh_keygen;
+}
+
+sub usage {
+    print <<EO_USAGE;
+secure_ssh_keygen [--stdin] [--json=<data>]
+
+  This script wraps the standard ssh-keygen provided with OpenSSH so that
+  passwords are not passed as command line arguments visible to other
+  accounts on the system.
+
+OPTIONS:
+
+  --help   This help screen
+  --stdin  Read input from STDIN in JSON format
+  --json   Provide JSON input as a command line argument (testing purposes only)
+
+EO_USAGE
+    return;
+}
+
+unless ( caller() ) {
+    exit run(@ARGV);
+}
+
+1;

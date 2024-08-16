@@ -1,0 +1,52 @@
+
+[% SET CPANEL.CPVAR.dprefix = "../" %]
+
+[%
+    SET reset_result = execute("BoxTrapper", 'reset_email_template', {'email' => RAW_FORM.item('account'), 'template' => RAW_FORM.item('form')});
+%]
+[% WRAPPER '_assets/master.html.tt'
+    app_key = 'boxtrapper'
+    page_stylesheets = ['mail/boxtrapper.css']
+%]
+
+<div class="body-content">
+
+    <div id="descResetBoxTrapper">
+        [% locale.maketext("Reset [asis,BoxTrapper] messages for “[output,strong,_1]”.", FORM.item('account')) %] <br/><br/>
+    </div>
+    <p id="descRequestMessageReset">
+        [% IF !reset_result.status %]
+            [% FOREACH error IN reset_result.errors %]
+                <div class="alert alert-danger" role="alert">
+                    <span class='glyphicon glyphicon-remove-sign' aria-hidden="true"></span>
+                    <div class='alert-message'>
+                        <strong class="alert-title">
+                            [% locale.maketext('Error:') %]
+                        </strong>
+                        <span class="alert-body">
+                                <span id="error-[% loop.index() %]">
+                                    [% error.html() %]
+                                </span>
+                            </span>
+                    </div>
+                </div>
+            [% END %]
+        [% ELSE %]
+            <div class="alert alert-success" role="alert">
+                <span class="glyphicon glyphicon-ok-sign" aria-hidden="true"></span>
+                <div class="alert-message">
+                    <strong class="alert-title">
+                        [% locale.maketext('Success:') %]
+                    </strong>
+                    <span class="alert-body">
+                        [% locale.maketext("The requested message has been reset.") %]
+                    </span>
+                </div>
+            </div>
+        [% END %]
+    </p>
+
+    [% INCLUDE _assets/return_link.html.tt return_location='editmsgs.html' post='1' formdata=FORM return_link_text=locale.maketext('Go Back') %]
+
+</div>
+[% END %]

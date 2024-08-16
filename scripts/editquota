@@ -1,0 +1,115 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/editquota                       Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+use warnings;
+use Cpanel::CachedCommand::Utils ();
+use Cpanel::FindBin              ();
+use Cpanel::Quota::Blocks        ();
+use Cpanel::Quota::OverCache     ();
+use Cpanel::Locale 'lh';
+$| = 1;
+
+if ( !@ARGV ) {
+    print "Usage: editquota <user> <?M>\n";
+    exit 1;
+}
+
+my $user     = $ARGV[0];
+my $quota    = $ARGV[1];
+my $quotaoff = $ARGV[2] || '';
+
+if ( !defined $user || ( ( $user =~ m/^\d+$/ && !getpwuid($user) ) && !getpwnam($user) ) ) {
+    print "Invalid user\n";
+    print "Usage: editquota <user> <?M>\n";
+    exit 1;
+}
+
+if ( !defined $quota || ( $quota !~ m/^\d+(?:\.\d+)?M$/i && $quota !~ m/unlimited/i ) ) {
+    print "Invalid quota\n";
+    print "Usage: editquota <user> <?M>\n";
+    exit 1;
+}
+
+my %cmd = (
+    'quotaon'  => undef,
+    'quotaoff' => undef,
+    'edquota'  => undef,
+);
+my @missing_cmds;
+foreach my $cmd_name ( keys %cmd ) {
+    $cmd{$cmd_name} = Cpanel::FindBin::findbin($cmd_name);
+    if ( !-x $cmd{$cmd_name} ) {
+        push @missing_cmds, $cmd_name;
+    }
+}
+if ( scalar @missing_cmds ) {
+    print "Incomplete quota kit: unable to edit quotas.\n";
+    print 'Missing commands: ', join( ', ', @missing_cmds ), "\n";
+    exit 1;
+}
+
+if ( $user =~ m/^\d+$/ ) {
+    $user = ( getpwuid($user) )[0];
+}
+
+if ( $user =~ /^cpanel(phpmyadmin|phppgadmin|roundcube)$/ ) {
+    $quota = 0;
+}
+
+if ( $quota !~ m/unlimited/i ) {
+    $quota =~ s/M$//i;
+
+    # Round up or down to the nearest whole MB.
+    $quota = sprintf( '%.0f', $quota );
+}
+else {
+    $quota = 0;
+}
+
+########################################################################
+
+my $quota_in_blocks = $quota * 1024;
+my $cpanel_quota_blocks;
+
+eval {
+    $cpanel_quota_blocks = Cpanel::Quota::Blocks->new();
+    $cpanel_quota_blocks->set_user($user)->set_limits( { soft => $quota_in_blocks, hard => $quota_in_blocks } );
+};
+if ( my $exception = $@ ) {
+    if ( eval { $exception->isa('Cpanel::Exception::Quota::NotEnabled') } ) {
+        print lh()->maketext( "Filesystem quotas are not enabled. The “[_1]” user does not require any changes.", $user ) . "\n";
+        exit;
+    }
+    else {
+        die $exception;
+    }
+}
+
+# This script used to say "Using Universal Quota Support (quota=.......)" because it
+# was using /scripts/pedquota to make the change.
+print lh()->maketext( "The quota for the “[_1]” user is now [_2] MB ([_3] blocks).", $user, $quota, $quota_in_blocks ) . "\n";
+
+########################################################################
+
+# Invalidate the repquota.datastore file but leave it in case something
+# does not care about the valitity period (ie account transfer getacctlist)
+if ( -e '/var/cpanel/repquota.cache' ) {
+    utime 0, 0, '/var/cpanel/repquota.cache';
+}
+if ( -e '/var/cpanel/repquota.datastore' ) {
+    utime 0, 0, '/var/cpanel/repquota.datastore';
+}
+
+# Update quota file mtimes
+$cpanel_quota_blocks->update_mtimes_to_clear_cache();
+
+# Remove cached quota command result for user
+my $cached_command = Cpanel::CachedCommand::Utils::_get_datastore_filename( '/usr/local/cpanel/bin/quota', $user );
+unlink $cached_command if -e $cached_command;
+
+Cpanel::Quota::OverCache::unset_user_at_blocks_quota($user);

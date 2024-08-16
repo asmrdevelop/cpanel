@@ -1,0 +1,30 @@
+[% USE Whostmgr %]
+[% WRAPPER 'master_templates/master.tmpl'
+    theme = 'bootstrap'
+ -%]
+<div id="setup">
+    [% IF data.apache_version.match("1.3") -%]
+    <p class="alert alert-info">[% locale.maketext("Piped logging is not currently supported for [asis,Apache] version 1.3.") %]</p>
+    [% ELSE -%]
+    <p>[% locale.maketext("This interface allows you to enable or disable piped logging of [asis,Apache] access logs and bytes logs.") %]</p>
+    <p>[% locale.maketext("If you enable or disable this feature, the system must restart both [asis,Apache] and [asis,cpanellogd], which will happen after you save this setting.") %]</p>
+    [% IF data.status -%]
+    <p class="text-info">[% data.status %]</p>
+    [% END -%]
+    [% IF data.error -%]
+    <p class="text-danger">Error: [% data.error %]</p>
+    [% END -%]
+    <form name="mainform" id="mainform" action="piped_log_configuration" method="POST">
+       <div id="fields">
+        <div class="checkbox">
+            <label for="enable_piped_logs">
+                <input type="checkbox" id="enable_piped_logs" name="enable_piped_logs" value="1" [% IF data.enable_piped_logs %]checked="checked" [%END%]/>
+                Enable Piped Apache Logs
+            <label/>
+        </div>
+        <input class="btn btn-primary" type="submit" id="cmd" name="cmd" value="[% locale.maketext('Save') %]" />
+       </div>
+    </form>
+    [% END -%]
+</div>
+[% END -%]

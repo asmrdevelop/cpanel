@@ -1,0 +1,49 @@
+[%
+    USE Uapi;
+    USE Whostmgr;
+-%]
+[% IF ! Whostmgr.is_wp2 %]
+<div class="propertyEditor">
+    <div class="propertyLabel">
+        [% locale.maketext('WordPress websites with Vulnerability Protection') %]
+        <img
+            src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAsAAAALCAYAAACprHcmAAABDklEQVQoFV1QvUrGQBBcEAVRG00IfrnMbHYrfQQrW8EXsPcBFDtr38JCS3vxB0XQws7KHwRFULHxGSyUS3Lhiwf3w8zszN6KjC0D1p165tRrJ089cG2Mbp8AzKA3Tv39vw28LMsyNMo8z2eN+t6IwNt6saaITERXg750+KOITIpVup3cACzH4prcKYpiJoQw7+BP5K3SDWn76+LBV4PeO/jl5EqMduhn665H4uBTcm4cwIcQwnQU1uRmz4F3Ej/QAzGOPNGgqwY9GODgsRh0awB2Yoeej+MxRbppfPQEuN/1epgwoz6LyFQzPpJLRv1O5OAG32w0QiNMR1mWC07uGXkVJ2TQi7ribpZlc0nzB7u/bMEnxpzhAAAAAElFTkSuQmCC"
+            alt="(?)"
+            title="[% locale.maketext('Use -1 for unlimited. Vulnerability Protection requires enabled WP Toolkit Deluxe for an account. Single site licenses, if enabled, do not count towards the license limits') | html %]"
+            style="cursor:pointer;"
+        />
+    </div>
+    <div class="propertyValue">
+        <input id="WP_TOOLKIT_VIRTUAL_PATCHES_SUBSCRIPTION_LIMIT" type="number" size="10" min="-1" name="WP_TOOLKIT_VIRTUAL_PATCHES_SUBSCRIPTION_LIMIT" value="[% data.defaults.WP_TOOLKIT_VIRTUAL_PATCHES_SUBSCRIPTION_LIMIT | html %]" />
+    </div>
+</div>
+<div class="propertyEditor">
+    <div class="propertyLabel"><label for="WP_TOOLKIT_PROVISION_NEW_SITE">[% locale.maketext('Autoinstall WordPress upon account creation') %]</label></div>
+    <div class="propertyValue">
+        <input id="WP_TOOLKIT_PROVISION_NEW_SITE" type="checkbox" name="WP_TOOLKIT_PROVISION_NEW_SITE" value="1"[% IF data.defaults.WP_TOOLKIT_PROVISION_NEW_SITE %] checked="checked"[% END %] />
+    </div>
+</div>
+[% END -%]
+<div class="propertyEditor">
+    <div class="propertyLabel">
+        [% locale.maketext('Autoinstall Set') %]
+        <img
+            src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAsAAAALCAYAAACprHcmAAABDklEQVQoFV1QvUrGQBBcEAVRG00IfrnMbHYrfQQrW8EXsPcBFDtr38JCS3vxB0XQws7KHwRFULHxGSyUS3Lhiwf3w8zszN6KjC0D1p165tRrJ089cG2Mbp8AzKA3Tv39vw28LMsyNMo8z2eN+t6IwNt6saaITERXg750+KOITIpVup3cACzH4prcKYpiJoQw7+BP5K3SDWn76+LBV4PeO/jl5EqMduhn665H4uBTcm4cwIcQwnQU1uRmz4F3Ej/QAzGOPNGgqwY9GODgsRh0awB2Yoeej+MxRbppfPQEuN/1epgwoz6LyFQzPpJLRv1O5OAG32w0QiNMR1mWC07uGXkVJ2TQi7ribpZlc0nzB7u/bMEnxpzhAAAAAElFTkSuQmCC"
+            alt="(?)"
+            title="[% locale.maketext('Select a plugin & theme set to be automatically installed on all WordPress sites created via WP Toolkit under user accounts with this package') | html %]"
+            style="cursor:pointer;"
+        />
+    </div>
+[%
+USE WpToolkitPlugin;
+SET result = execute_wpt_command('sets', '-operation', 'list');
+%]
+    <div class="propertyValue">
+        <select id="WP_TOOLKIT_MANDATORY_SET" name="WP_TOOLKIT_MANDATORY_SET" value="[% data.defaults.WP_TOOLKIT_MANDATORY_SET | html %]">
+            <option value="0" style="font-style:italic;">[% locale.maketext('(do not install a set)') %]</option>
+                [% FOREACH set IN result -%]
+                    <option value="[%= set.id %]"[% IF data.defaults.WP_TOOLKIT_MANDATORY_SET == set.id %] selected[% END %]>[%= set.name %]</option>
+                [% END -%]
+        </select>
+    </div>
+</div>

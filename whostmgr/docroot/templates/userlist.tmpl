@@ -1,0 +1,768 @@
+[% USE CPHash -%]
+[% USE JSON -%]
+[% USE HTMLOptions -%]
+[% USE Whostmgr -%]
+<link rel="stylesheet" type="text/css" href="[% MagicRevision('/yui/autocomplete/assets/skins/sam/autocomplete.css') %]" />
+<style type="text/css">
+.htable {
+    margin: 0 auto;
+    padding:0;
+    border-collapse: separate;
+    border-spacing: 1px;
+    height: 226px;
+}
+
+.htable td {
+    padding-left: 5px;
+    padding-right: 5px;
+    border-right: 0 none;
+}
+
+.htable th {
+    background: #ccc;
+    height: 22px;
+    white-space: nowrap;
+}
+
+.searchmod {
+    text-align:center;
+}
+
+#brick1, #brick2, #brick3 {
+    text-align: center;
+    padding: 0;
+    border-collapse: collapse;
+    width: 800px;
+}
+
+#brick2, #brick3 {
+    margin-top: 15px;
+}
+
+#brick1 td.col3 {
+    text-align: center;
+    border-right:0;
+}
+
+#brick1 td.col2 {
+    text-align: left;
+}
+
+#brick1 td.col2 table {
+    width: 100%;
+}
+
+.brick th {
+    padding-left: 10px;
+    padding-right: 10px;
+}
+
+#brick1 td.col2 td.scol1 {
+    text-align: left;
+    border-right: 0px;
+    vertical-align: top;
+    padding-top: 0px;
+    width: 65%;
+}
+
+#brick1 td.col2 td.scol1 table {
+    height: 183px;
+    width: 100%;
+}
+
+#brick1 td.col2 table {
+    height: 226px;
+}
+
+#brick1 td.col2 td.scol2 {
+    padding-top: 0;
+    border-right: 0;
+}
+
+#acctinfo {
+    text-align: center;
+    vertical-align: middle;
+    display: inline-block;
+    margin-left: 5px;
+    margin-right: 5px;
+}
+
+#acctinfo span {
+    vertical-align: middle;
+    text-align: center;
+    width: 250px;
+    display: inline-block;
+}
+
+#brick1 td.col2 td.scol1 table {
+    text-align: left;
+    border-collapse: collapse;
+    margin-top: 1px;
+    height: 226px;
+}
+
+#brick1 td.col2 td.scol1 table td.heavybg,
+#brick1 td.col2 td.scol1 table td.lightbg {
+    padding-left: 5px;
+    padding-right: 5px;
+    text-align: center;
+    font-weight: bold;
+    vertical-align: top;
+}
+
+#brick1 td.col2 td.scol1 table td.heavybg {
+    height: 16px;
+}
+
+#brick1 td.col2 td.scol1 table tr.search td.lightbg {
+    height: 18px;
+}
+
+select {
+    width: 99%;
+}
+
+.button-group button {
+    padding: 6px 12px;
+    font-size: 13px;
+    font-family: inherit;
+}
+.button-group button:hover,
+.button-group button.hover {
+    border-width: 1px;
+}
+
+[% IF cfg.show_new_search %]
+div#searchautocomplete,
+div#searchautocomplete2 {
+    text-align: left;
+}
+
+input#searchinput, input#searchinput2 {
+    position: relative;
+    width: 98%;
+}
+
+[% END %]
+[% IF ! cfg.skip_legacy_search %]
+#brick2 tr th,
+#brick2 tr td {
+    text-align: left;
+}
+#brick2 tr td table {
+    text-align: center;
+    width: 100%;
+    margin: 0 auto;
+}
+#brick2 tr td table td.ls-col1 {
+    text-align: right;
+    vertical-align: middle;
+    width: 10%;
+    border-right: 0;
+    height: 26px;
+}
+#brick2 tr td table td.ls-col2 {
+    text-align: left;
+    vertical-align:top;
+    width: 40%;
+    border-right: 0;
+    height: 26px;
+}
+#brick2 tr td table td.ls-col3 {
+    text-align: right;
+    vertical-align: middle;
+    width: 10%;
+    border-right: 0;
+    height: 26px;
+}
+#brick2 tr td table td.ls-col4 {
+    text-align: left;
+    vertical-align: top;
+    width: 40%;
+    border-right: 0;
+    height: 26px;
+}
+
+.selectors td,
+.search td {
+    text-align: left;
+}
+
+#userselectEl,
+#domainselectEl {
+    width: 99%;
+}
+
+.section_title {
+    text-align: left;
+}
+[% END %]
+</style>
+
+[% IF ! cfg.skip_opening_form_tag %]
+<form action="[% cfg.form_tag_action_param %]" name="fmain" onsubmit="return select_user();">
+<script type="text/javascript">
+    var dialog_opts = {
+        width: "400px",
+        fixedcenter: true,
+        visible: false,
+        modal: true,
+        draggable: false,
+        close: true,
+        constraintoviewport: true,
+        effect: {
+            effect: CPANEL.animate.ContainerEffect.FADE_MODAL,
+            duration: 0.25
+        }
+    };
+
+    var select_user_opts = YAHOO.lang.merge(dialog_opts, {
+        "buttons": [{
+            "text": "[% locale.maketext("OK") %]",
+            "isDefault": true,
+            "handler": function() {
+                select_user_dialog.hide();
+                return false;
+            }
+        }]
+    });
+
+    var select_user_dialog = new YAHOO.widget.SimpleDialog("sudlg", select_user_opts);
+    select_user_dialog.setHeader("<div class=\"lt\"></div><span>" + "[% locale.maketext("Error") %]" +
+        "</span><div class=\"rt\"></div>");
+    select_user_dialog.cfg.queueProperty("text", "[% locale.maketext('You must select an account to proceed.') %]");
+    select_user_dialog.render(document.body);
+
+    var select_user = function() {
+        var domainEl = DOM.get("domainselectEl");
+        var userEl = DOM.get("userselectEl");
+        var account_selected = (domainEl.selectedIndex !== -1) &&
+                               (userEl.selectedIndex !== -1);
+
+        if (!account_selected) {
+            select_user_dialog.show();
+            return false;
+        }
+    }
+</script>
+[% END %]
+
+[% IF data.description_text -%]
+<div class="topdescriptionbox">
+    <p class='description'>[% data.description_text %]</p>
+</div>
+[% END -%]
+
+[% IF ! cfg.skip_outer_table %]
+<table>
+    <tr>
+        <td>
+[% END %]
+        [% FOR pair = Whostmgr.FORM %]
+            <input type="hidden" name="[% pair.key FILTER html %]" value="[% pair.value FILTER html %]" />
+        [% END %]
+
+            <table id="brick1" class="datatable brick">
+                <tr>
+                    <th class="section_title">[% data.selection_title ? data.selection_title : locale.maketext("Account Selection")%]</th>
+                </tr>
+                <tr>
+                    <td class="cell col2">
+                        <table>
+                            <tr>
+                                <td class="scol1">
+                                    <table>
+                                        <tr>
+                                            <td class="heavybg">[% locale.maketext('Domains') %]</td>
+                                            <td class="heavybg">[% locale.maketext('Users') %]</td>
+                                        </tr>
+                                        [% IF cfg.skip_legacy_search && cfg.show_new_search %]
+                                        <!-- AutoComplete begins -->
+                                        <tr class="search">
+                                            <td class="lightbg">
+                                                <div id="searchautocomplete2">
+                                                    <input id="searchinput2">
+                                                    <div id="searchcontainer2"></div>
+                                                </div>
+                                            </td>
+                                            <td class="lightbg">
+                                                <div id="searchautocomplete">
+                                                    <input id="searchinput">
+                                                    <div id="searchcontainer"></div>
+                                               </div>
+                                            </td>
+                                        </tr>
+                                        <!-- AutoComplete ends -->
+                                        [% END %]
+                                        [% IF cfg.skip_legacy_search && cfg.show_new_search %]
+                                        [% SET select_rows = 10 %]
+                                        [% END %]
+                                        [% IF !cfg.skip_legacy_search && !cfg.show_new_search %]
+                                        [% SET select_rows = 12 %]
+                                        [% END %]
+                                        <tr class="selectors">
+                                            <td class="lightbg">
+                                                <select size="[%select_rows%]" id="domainselectEl" name="domain" onChange="try { selectu(); } catch(e) { };">
+                                                    [% cfg.userdomains.sort('domain').options_as_html( {
+                                                        'value' => 'user',
+                                                        'text'  => 'domain',
+                                                        'selected' => cfg.selected_user,
+                                                    } ) -%]
+                                                </select>
+                                            </td>
+                                            <td class="lightbg">
+                                                <select size="[%select_rows%]"  id="userselectEl" name="user" onChange="try { selectd(); } catch (e) {};">
+                                                    [% cfg.userdomains.sort('user').options_as_html( {
+                                                        'value' => 'user',
+                                                        'text'  => 'user',
+                                                        'selected' => cfg.selected_user,
+                                                    } ) -%]
+                                                </select>
+                                           </td>
+                                        </tr>
+                                    </table>
+                                </td>
+                                <td class="scol2">
+                                    <div id='acctinfo'><span>[% cfg.username_handling_default_text %]</span></div>
+                                </td>
+                            </tr>
+                        </table>
+                    </td>
+                </tr>
+            </table>
+            [% IF ! cfg.skip_legacy_search %]
+            <table id="brick2" class="datatable brick">
+                <tr>
+                    <th>[% locale.maketext("Account Search By") %]</th>
+                </tr>
+                <tr>
+                    <td class="cell">
+                        <!-- AutoComplete begins -->
+                        <table>
+                            <tr>
+                                <td class="ls-col1">
+                                    [% locale.maketext("Domain:") %]
+                                </td>
+                                <td class="ls-col2">
+                                    <div id="searchautocomplete2">
+                                        <input id="searchinput2">
+                                        <div id="searchcontainer2"></div>
+                                    </div>
+                                </td>
+                                <td  class="ls-col3">
+                                    [% locale.maketext("User:") %]
+                                </td>
+                                <td class="ls-col4">
+                                    <div id="searchautocomplete">
+                                        <input id="searchinput">
+                                        <div id="searchcontainer"></div>
+                                   </div>
+                                </td>
+                            </tr>
+                        </table>
+                        <!-- AutoComplete ends -->
+                        <br />
+                    </td>
+                </tr>
+            </table>
+            [% END %]
+
+        [% IF html.additional_tr_for_form %]
+            <table id="brick3" class="datatable brick">
+                <tr>
+                    <th align="left">[% locale.maketext("Additional Options") %]</th>
+                </tr>
+                <tr>
+                    <td align="left" class="cell">
+                        <table>
+                                [% html.additional_tr_for_form %]
+                        </table>
+                      </td>
+                 </tr>
+            </table>
+        [% END %]
+[% IF ! cfg.skip_outer_table %]
+        </td>
+    </tr>
+</table>
+[% END %]
+[%# FYI: This option is used in only one place, the passwdlist.tmpl and whostmgr/passwdlist endpoint %]
+[% IF !data.hide_submit %]
+<br /><br />
+<div>
+    <input
+     type="submit"
+     class="btn-primary"
+     id="submit_userlist_form"
+     value="[% data.button_text FILTER html %]"
+[% IF data.confirmation_text.length > 0 %]
+     onclick="return confirmChoice();"
+[% END %]
+    />
+</div>
+[% END %]
+
+[% IF ! cfg.skip_closing_form_tag %]
+    </form>
+[% END %]
+
+[%
+SET YUI_MODULES = [
+    '/yui/datasource/datasource.js',
+    '/yui/autocomplete/autocomplete.js',
+    '/yui/yahoo-dom-event/yahoo-dom-event.js',
+    '/yui/animation/animation-min.js',
+    '/yui/container/container-min.js'
+];
+
+FOREACH src IN YUI_MODULES;
+    PROCESS '_loadjs.tmpl' src;
+END;
+%]
+[% IF cfg.use_new_pkg_hover || cfg.pkg_hover_template %]
+[% PROCESS '_pkg_hover.tmpl' -%]
+[% ELSE %]
+[% PROCESS '_pkg_hover.tmpl' -%]
+[% END%]
+
+<script id="userdetails" type="text/html">
+    <table class='htable'>
+        <tbody>
+            <tr>
+                <th>[% locale.maketext('IP') %]</th>
+                <td>{ip}</td>
+            </tr>
+            <tr>
+                <th>[% locale.maketext('Owner') %]</th>
+                <td>{owner}</td>
+            </tr>
+            <tr>
+                <th>[% locale.maketext('Email') %]</th>
+                <td><a href='mailto:{email}'>{email}</a></td>
+            </tr>
+            <tr>
+                <th>[% locale.maketext('Start Date') %]</th>
+                <td>{startdate}</td>
+            </tr>
+            <tr>
+                <th>[% locale.maketext('Theme') %]</th><td>{cpmod}</td>
+            </tr>
+            <tr>
+                <th>[% locale.maketext('Package') %]</th>
+                <td>
+                    <span id="ppkg_label">{ppkg}</span>
+                </td>
+            </tr>
+            <tr>
+                <th>[% locale.maketext('Disk Used') %]</th>
+                <td>{diskused}</td>
+            </tr>
+            <tr>
+                <th>[% locale.maketext('Disk Limit') %]</th>
+                <td>{disklimit}</td>
+            </tr>
+        </tbody>
+    </table>
+</script>
+
+<script id="updateing-template" type="text/html">
+<span>[% locale.maketext('Updating Account Information …')%]</span>
+</script>
+<script id="userdetails-pkg" type="text/html">
+    <table class='htable'>
+        <tbody>
+            <tr>
+                <th>[% locale.maketext('IP') %]</th>
+                <td>{ip}</td>
+            </tr>
+            <tr>
+                <th>[% locale.maketext('Owner') %]</th>
+                <td>{owner}</td>
+            </tr>
+            <tr>
+                <th>[% locale.maketext('Email') %]</th>
+                <td><a href='mailto:{email}'>{email}</a></td>
+            </tr>
+            <tr>
+                <th>[% locale.maketext('Start Date') %]</th>
+                <td>{startdate}</td>
+            </tr>
+            <tr>
+                <th>[% locale.maketext('Theme') %]</th><td>{cpmod}</td>
+            </tr>
+            <tr>
+                <th>[% locale.maketext('Package') %]</th>
+                <td>
+                    <a id="ppkg_link" href="javascript:void(0)" style="cursor:crosshair; cursor:help;" onmouseover="hover_pkg(this,'{ppkg_corrected}');" onmouseout="dehover_pkg(this,'{ppkg_corrected}');">{ppkg}</a>
+                </td>
+            </tr>
+            <tr>
+                <th>[% locale.maketext('Disk Used') %]</th>
+                <td>{diskused}</td>
+            </tr>
+            <tr>
+                <th>[% locale.maketext('Disk Limit') %]</th>
+                <td>{disklimit}</td>
+            </tr>
+        </tbody>
+    </table>
+</script>
+
+<script type="text/javascript">
+//<![CDATA[
+
+CPANEL.util.prevent_submit('searchinput');
+CPANEL.util.prevent_submit('searchinput2');
+
+var prefetchacctinfo = 0;
+var userNameChanged = [% js.username_handling_js_function_name || 'null'%];
+
+function selectd() {
+    var users = document.fmain.user;
+    var domains = document.fmain.domain;
+    var thisUser = (users.options[users.selectedIndex].value ||
+                    users.options[users.selectedIndex].text);
+    for(var i = 0, l = users.options.length; i < l; i++) {
+        if (domains.options[i].value == thisUser) {
+            domains.selectedIndex = i;
+            if(userNameChanged) {
+                userNameChanged(thisUser);
+            }
+            break;
+        }
+    }
+}
+
+function selectu() {
+    var users = document.fmain.user;
+    var domains = document.fmain.domain;
+    var thisDomain = domains.options[domains.selectedIndex].value
+    for(var i = 0, l = domains.options.length; i < l; i++) {
+        if (users.options[i].value == domains.options[domains.selectedIndex].value ||
+            users.options[i].text == domains.options[domains.selectedIndex].value) {
+            users.selectedIndex = i;
+            if(userNameChanged) {
+                userNameChanged(thisDomain);
+            }
+            break;
+        }
+    }
+}
+
+var FRAGMENT_TEMPLATE_CACHE = {};
+
+function updateUserInfo(o) {
+    var jsonResponse = YAHOO.lang.JSON.parse(o.responseText);
+    var accts = jsonResponse.acct;
+    var acct;
+    if (accts) {
+         acct = accts[0];
+    }
+
+    var acctinfo = DOM.get('acctinfo');
+    if (acct) {
+        var owner = acct.owner;
+        var email = acct.email;
+        var startdate = acct.startdate;
+        var cpmod = acct.theme || acct.cpmod;
+        cpmod = cpmod.html_encode()
+        var ip = acct.ip;
+        var ppkg = acct.plan;
+        var ppkg_encoded = ppkg.html_encode();
+        var ppkg_corrected = ppkg_encoded.replace(/'/,"\\'");
+        var diskused = acct.diskused;
+        var disklimit = acct.disklimit;
+
+        var newhtml =  "";
+
+        if(typeof ppkg === "undefined") {
+            if(!FRAGMENT_TEMPLATE_CACHE["userdetails"]) {
+                FRAGMENT_TEMPLATE_CACHE["userdetails"] = DOM.get("userdetails").text;
+            }
+            newhtml = FRAGMENT_TEMPLATE_CACHE["userdetails"];
+        }
+        else {
+            if(!FRAGMENT_TEMPLATE_CACHE["userdetails-pkg"]) {
+                FRAGMENT_TEMPLATE_CACHE["userdetails-pkg"] = DOM.get("userdetails-pkg").text;
+            }
+            newhtml = FRAGMENT_TEMPLATE_CACHE["userdetails-pkg"];
+        }
+
+        newhtml = YAHOO.lang.substitute(newhtml, {
+                "owner" : owner,
+                "email" : email,
+                "startdate" : startdate,
+                "cpmod" : cpmod,
+                "ip" : ip,
+                "ppkg" : ppkg_encoded,
+                "ppkg_corrected" : ppkg_corrected,
+                "diskused" : diskused,
+                "disklimit" : disklimit
+            });
+        DOM.setStyle(acctinfo, "vertical-align", "top");
+        DOM.setStyle(acctinfo.parentNode, "vertical-align", "top");
+        acctinfo.innerHTML = newhtml;
+    }
+    else {
+        acctinfo.innerHTML = jsonResponse.statusmsg.html_encode();
+    }
+}
+
+var acctinforequest;
+
+function showacctinfo(usernameXX) {
+    if ( acctinforequest ) {
+        YAHOO.util.Connect.abort(acctinforequest);
+    }
+
+    var url = '[% cp_security_token %]/json-api/accountsummary?user=' + usernameXX;
+    var callback = {
+        success:updateUserInfo
+    };
+    var acctinfo = DOM.get('acctinfo');
+    if(!FRAGMENT_TEMPLATE_CACHE["updateing-template"]) {
+        FRAGMENT_TEMPLATE_CACHE["updateing-template"] = DOM.get("updateing-template").text;
+    }
+    newhtml = FRAGMENT_TEMPLATE_CACHE["updateing-template"];
+    DOM.setStyle(acctinfo, "vertical-align", "middle");
+    DOM.setStyle(acctinfo.parentNode, "vertical-align", "middle");
+    acctinfo.innerHTML = newhtml;
+    acctinforequest = YAHOO.util.Connect.asyncRequest('GET', url, callback );
+}
+
+[% js.username_handling_js %]
+
+var UserListAutoComp, DomainListAutoComp, prompt;
+var promptText = [% data.confirmation_text.json() || "null" %];
+
+function confirmChoice() {
+    var result = select_user();
+    if (result === false) {
+        // do not submit the form
+        return false;
+    }
+
+    if (typeof promptText === "undefined" || promptText === null || promptText === "") {
+        // submit the form since there is no prompt set up
+        return true;
+    }
+
+    prompt.show();
+    return false; // let the prompt handle submitting the form
+}
+
+function initOC () {
+    // Instantiate first JS Array DataSource
+    usersArray = [% cfg.users_array.json() %];
+    [%# this way the list is only sent over the wire once -%]
+    // slice copies the array
+    domainsArray = usersArray.map( function(ud) { return ud.slice(0).reverse() } ).sort_by(0);
+
+    // Process the uses
+    var userDS = new YAHOO.widget.DS_JSArray(usersArray);
+    userDS.responseSchema = {fields:['user','domain']};
+
+    UserListAutoComp = new YAHOO.widget.AutoComplete('searchinput','searchcontainer', userDS);
+    UserListAutoComp.queryDelay = 0;
+    UserListAutoComp.typeAhead = false;
+    UserListAutoComp.useShadow = true;
+    UserListAutoComp.minQueryLength = 2;
+    UserListAutoComp.forceSelection = true;
+    UserListAutoComp.itemSelectEvent.subscribe(
+       function(oSelf,elItem,oData){
+            var users = document.fmain.user;
+            var newuser = elItem[2].user;
+            for(var i = 0; i < users.options.length; i++) {
+                if (users.options[i].value == newuser || users.options[i].text == newuser ) {
+                    users.selectedIndex = i;
+                    DOM.get('searchinput2').value = elItem[2].domain;
+                    selectd();
+                    break;
+                }
+            }
+        }
+    );
+
+    UserListAutoComp.resultTypeList = false;
+    UserListAutoComp.formatResult = function(oResultData, sQuery, sResultMatch) {
+        return oResultData.user + " (" + oResultData.domain + ")";
+    };
+
+    // Process the domains
+    var domainDS = new YAHOO.widget.DS_JSArray(domainsArray);
+    domainDS.responseSchema = {fields:['domain','user']};
+
+    DomainListAutoComp = new YAHOO.widget.AutoComplete('searchinput2','searchcontainer2', domainDS);
+    DomainListAutoComp.queryDelay = 0;
+    DomainListAutoComp.typeAhead = false;
+    DomainListAutoComp.useShadow = true;
+    DomainListAutoComp.minQueryLength = 2;
+    DomainListAutoComp.forceSelection = true;
+    DomainListAutoComp.itemSelectEvent.subscribe(
+       function(oSelf,elItem,oData){
+            var users = document.fmain.user;
+            var newuser = elItem[2].user;
+            for(var i = 0; i < users.options.length;i++) {
+                if (users.options[i].value == newuser || users.options[i].text == newuser ) {
+                    users.selectedIndex = i;
+                    DOM.get('searchinput').value = elItem[2].user;
+                    selectd();
+                    break;
+                }
+            }
+        }
+    );
+
+    DomainListAutoComp.resultTypeList = false;
+    DomainListAutoComp.formatResult = function(oResultData, sQuery, sResultMatch) {
+        return oResultData.domain + " (" + oResultData.user + ")";
+    };
+
+    // Handle preloading
+    if (prefetchacctinfo) {
+        selectu();
+    }
+    else {
+        // Handle refreshes or back navigation
+        if(document.fmain.domain.selectedIndex != -1) {
+            selectd();
+        }
+        else if(document.fmain.user.selectedIndex != -1) {
+            selectu();
+        }
+    }
+
+    if (!(typeof promptText === "undefined" || promptText === null || promptText === "")) {
+        var prompt_opts = YAHOO.lang.merge(dialog_opts, {
+            "buttons": [{
+                "text": "[% locale.maketext("Proceed") %]",
+                "handler": function() {
+                    prompt.hide();
+                    document.forms["fmain"].submit();
+                    return true;
+                },
+            },{
+                "text": "[% locale.maketext("Cancel") %]",
+                "isDefault": true,
+                "handler": function() {
+                    prompt.hide();
+                    return false;
+                }
+            }]
+        });
+
+
+        prompt = new YAHOO.widget.SimpleDialog("sdlg", prompt_opts);
+        prompt.setHeader("<div class=\"lt\"></div><span>" + "[% locale.maketext("Confirm Deletion") %]" +
+            "</span><div class=\"rt\"></div>");
+        prompt.cfg.queueProperty("text", promptText);
+        prompt.render(document.body);
+    }
+}
+
+YAHOO.util.Event.addListener(this, 'load', initOC);
+[% IF cfg.selected_user %]
+prefetchacctinfo = 1;
+[% END %]
+//]]>
+</script>

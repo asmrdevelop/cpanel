@@ -1,0 +1,156 @@
+[%
+    USE Whostmgr;
+    SET hasroot = Whostmgr.hasroot();
+%]
+[% WRAPPER 'master_templates/master.tmpl' theme="yui"
+    breadcrumburl = '/scripts/editmx'
+    scripts = ['/js/hidecells_optimized.js', '/js/sorttable_optimized.js']
+    extrastyle = '
+#mxedit { margin-left:25px; }
+input.mx { width: 40em; }
+
+ul.mxcheck_autolist {
+    list-style-type:disc;
+    margin-top: 0;
+}
+.mxcheck_autolist li {
+    padding: 3px 0;
+}
+ul.mx_list{
+    margin: 0 5px 15px;
+    padding: 0;
+}
+ul.mx_list li{
+    list-style:disc;
+    padding: 0;
+    margin:3px 0 0 10px;
+}
+#mx_input_table_and_table lable{
+    font-size:11px;
+}
+.label_wraps{
+    margin: 0 0 10px 0;
+    border-bottom: 1px solid #ccc;
+    padding-bottom: 10px;
+}
+.label_txt{
+    font-size: 12px;
+}
+.highlight-accordian-desc{
+    padding-top: 5px;
+}
+label { cursor: pointer }
+
+#mxlisttb tr:last-child td {
+    border-bottom: 1px solid #ccc;
+}
+'
+-%]
+[% IF data.accessdenied %]
+    Access denied. You don't seem to own [% data.domain %].
+[% ELSE %]
+
+</style>
+
+[%
+    IF data.uses_mail_worker;
+        PROCESS '_edit_dns_zone_linked_node_warning.tmpl'
+            username=data.username
+            domain=data.domain
+            hasroot=hasroot;
+    ELSE;
+-%]
+
+<div id="mxedit">
+<p>The lowest numbered MX entry currently points to: <strong>[% data.mxentries.0.mxentry.replace('\.$','') %]</strong></p>
+<form action="[% cp_security_token %]/scripts2/savemx" method="post">
+    <input type="hidden" name="zone" value="[% data.domain _ '.db' %]" />
+
+    [% IF data.downer && data.downer != 'root' %]
+        [% INCLUDE mxcheck_include.tmpl %]
+    [% END %]
+
+
+    <h3>MX Entries</h3>
+    <table class="sortable" id="mxlist">
+        <thead>
+            <tr>
+                <th>TTL</th>
+                <th>Priority</th>
+                <th>MX Destination</th>
+                <th class="sorttable_no">Actions</th>
+                <th class="sorttable_no">&nbsp;</th>
+            </tr>
+        </thead>
+        <tfoot></tfoot>
+        <tbody id="mxlisttb">
+            [% FOREACH entry IN data.mxentries -%]
+            [% SET ttlmatch = entry.premx.match('^\s*\S+\s+(\d+)\s') -%]
+            [% SET ttl = ttlmatch ? (ttlmatch.0 || data.zonettl) : data.zonettl -%]
+            <tr id="mxid-[% loop.index %]">
+                <td><input type="text" size="6" name="mxttl-[% loop.index %]" value="[% ttl.html %]"></td>
+                <td><input type="text" size="3" name="mxpriority-[% loop.index %]" value="[% entry.priority.html %]"></td>
+                <td><input type="text" class="mx" name="mx-[% loop.index %]" value="[% entry.mxentry.html %]" /></td>
+                <td><a href="#" onclick="return delmx([% loop.index %]);">Delete</a></td>
+                <td>
+                    <input type="hidden" id="delmx-[% loop.index %]" name="delmx-[% loop.index %]" value="0">
+                    <input type="hidden" name="mxline-[% loop.index %]" value="[% entry.linenum + 1 %]" />
+                    <input type="hidden" name="zonefile-[% loop.index %]" value="[% entry.zonefile.html %]" />
+                </td>
+            </tr>
+            [% END %]
+            <tr id="mxid-[% data.mxentries.size %]">
+                <td><input type="text" size="6" name="mxttl-[% data.mxentries.size %]" value="[% ttl %]" /></td>
+                <td><input type="text" size="3" name="mxpriority-[% data.mxentries.size %]" value="[% data.mxentries.last.priority + 10 %]" /></td>
+                <td><input class="mx" type="text" name="mx-[% data.mxentries.size %]" value="" /></td>
+                <td><a href="#" onclick="return delmx([% data.mxentries.size %]);">Delete</a></td>
+                <td>
+                    (new)
+                    <input type="hidden" id="delmx-[% data.mxentries.size %]" name="delmx-[% data.mxentries.size %]" value="0" />
+                </td>
+            </tr>
+        </tbody>
+    </table>
+    <br />
+    <script type="text/javascript">
+    //<![CDATA[
+    var mxid = [% data.mxentries.size %];
+    var priority = [% data.mxentries.last.priority + 10 %];
+
+    var delmx = function(tmxid) {
+        document.getElementById('delmx-' + tmxid).value = 1;
+        hiderow('mxid-' + tmxid, 1);
+    };
+
+    var addanothermx = function() {
+        mxid++;
+        priority += 10;
+        var newtr = document.createElement('tr');
+        newtr.id = 'mxid-' + mxid;
+        var tdContents = [
+            '<input type="text" size="6" name="mxttl-' + mxid + '" value="[% ttl %]" />',
+            '<input type="text" size="3" name="mxpriority-' + mxid + '" value="' + priority + '" />',
+            '<input type="text" class="mx" name="mx-' + mxid + '" value="" />',
+            '<a href="#" onclick="return delmx(' + mxid + ')">Delete</a>',
+            '<input type="hidden" id="delmx-' + mxid + '" name="delmx-' + mxid + '" value="0" />(new)'
+        ];
+        for (var i=0; i < tdContents.length; i++) {
+            var newtd = document.createElement("td");
+            newtd.innerHTML = tdContents[i];
+            newtr.appendChild(newtd);
+        }
+        document.getElementById('mxlisttb').appendChild(newtr);
+    };
+    //]]>
+    </script>
+    <p><a class="btn-secondary" href="#" onclick="addanothermx(); return false;">Add Another MX Entry Field</a></p>
+
+    <br />
+    <input type="submit" class="btn-primary" value="Save" />
+</form>
+
+</div><!-- end mxedit -->
+
+[% END #data.uses_mail_worker -%]
+[% END #data.accessdenied -%]
+[% END #wrapper -%]

@@ -1,0 +1,83 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - bin/update_phpmyadmin_config            Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package bin::update_phpmyadmin_config;
+
+use strict;
+use warnings;
+
+use Cpanel::Config::LoadCpConf       ();
+use Cpanel::Debug                    ();
+use Cpanel::Rand::Get                ();
+use Cpanel::MysqlUtils::MyCnf::Basic ();
+use Cpanel::Usage                    ();
+
+our $TEMPLATE_FILE = '/usr/local/cpanel/base/3rdparty/phpMyAdmin/config.inc.php.in';
+our $OUTPUT_FILE   = '/usr/local/cpanel/base/3rdparty/phpMyAdmin/config.inc.php';
+exit run(@ARGV) unless caller();
+
+sub new {
+    my $self = bless {}, __PACKAGE__;
+
+    return $self;
+}
+
+sub run {
+    my $opts = {};
+    Cpanel::Usage::wrap_options( \@ARGV, \&usage, $opts );
+
+    my $cpconf = Cpanel::Config::LoadCpConf::loadcpconf_not_copy();
+
+    !-z $TEMPLATE_FILE || Cpanel::Debug::log_die("Can not read $TEMPLATE_FILE to generate phpmyadmin config");
+
+    my $source;
+    {
+        local $/;
+        open( my $in_fh, '<', $TEMPLATE_FILE ) or Cpanel::Debug::log_die("Can't read $TEMPLATE_FILE: $!");
+        $source = <$in_fh>;
+        close $in_fh;
+    }
+
+    my $mysql_host        = Cpanel::MysqlUtils::MyCnf::Basic::getmydbhost('root') || 'localhost';
+    my $mysql_port        = Cpanel::MysqlUtils::MyCnf::Basic::getmydbport('root') || '3306';
+    my $blowfish_secret   = Cpanel::Rand::Get::getranddata(32);
+    my $disableis_setting = $cpconf->{'pma_disableis'};
+
+    $source =~ s/__MYSQLHOST__/$mysql_host/;
+    $source =~ s/__MYSQLPORT__/$mysql_port/;
+    $source =~ s/__BLOWFISHSECRET__/$blowfish_secret/;
+
+    if ( defined $disableis_setting ) {
+        my $disableis_truth  = $disableis_setting ? 'true' : 'false';
+        my $disableis_string = '$cfg[\'Servers\'][$i][\'DisableIS\'] = ' . $disableis_truth . ';';
+        $source =~ s~/\* __DISABLEIS__ \*/~$disableis_string~;
+    }
+
+    open( my $out_fh, '>', $OUTPUT_FILE ) or Cpanel::Debug::log_die("Can't write to $OUTPUT_FILE: $!");
+    print {$out_fh} $source;
+    close $out_fh;
+
+    # Fix permissions, mainly for sandboxes
+    chmod 0644, $OUTPUT_FILE;
+
+    return 0;
+}
+
+sub usage {
+    my $prog = $0;
+    print <<USAGE;
+$0 [OPTIONS]
+
+This script rebuilds the phpMyAdmin configuration file from the template
+included in the cPanel RPM. It will overwrite any manual changes you have
+made to the config file.
+
+Available options are
+    -help: this help
+USAGE
+    exit 1;
+}

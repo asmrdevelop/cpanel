@@ -1,0 +1,134 @@
+<!-- CloudLinux promotion block -->
+<div ng-show="lsApiInstalled">
+    <cloud-linux-banner id-prefix="phpHandler"
+        cl-data = clData
+        banner-text="clBannerText">
+    </cloud-linux-banner>
+</div>
+
+<div id="handlerContainer" class="list-container">
+    <div class="row">
+        <div class="col-xs-12" ng-cloak>
+            <cp-alert-list></cp-alert-list>
+        </div>
+    </div>
+
+    <div class="row">
+        <div class="col-xs-12">
+            <h3 class="section-header">[% locale.maketext("Manage [asis,PHP] Handlers[comment,action header]") %]</h3>
+            <span class="info-block" id="infoBlk">
+                [% locale.maketext("Edit the [asis,PHP] handler for any [asis,PHP] version listed below.") %]
+            </span>
+            <div class="callout callout-info">[% locale.maketext("[asis,PHP] Handlers do [output,strong,not] apply to [asis,PHP-FPM].") %]</div>
+        </div>
+    </div>
+
+    <div class="row">
+        <div class="col-xs-12">
+            <table id="versionList" class="table table-striped responsive-table">
+                <thead>
+                    <tr>
+                        <th>
+                            <toggle-sort id="sortVersion"
+                                sort-meta="meta"
+                                sort-field="version"
+                                onSort="sortList">
+                                [% locale.maketext('[asis,PHP] Version') %]
+                            </toggle-sort>
+                        </th>
+                        <th>
+                            <toggle-sort id="sortHandler"
+                                sort-meta="meta"
+                                sort-field="current_handler"
+                                onSort="sortList">
+                                [% locale.maketext('[asis,PHP] Handler') %]
+                            </toggle-sort>
+                        </th>
+                        <th>
+                            [% locale.maketext('Actions') %]
+                        </th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr id="loadingHandlerList" class="info" ng-hide="!loadingVersionsList">
+                        <td colspan="4"><span id="spinner_getting_handler_list" class="fas fa-spinner fa-spin" title="[% locale.maketext('Gathering installed [asis,PHP] versions …') %]"></span>[% locale.maketext("Gathering installed [asis,PHP] versions …") %]</td>
+                    </tr>
+                    <tr id="versionRow_{{$index}}" ng-repeat-start="versionHandler in phpVersionHandlerList">
+                        <td id="version_{{$index}}"
+                            data-title="[% locale.maketext('[asis,PHP] Version') %]">
+                            <span dir="ltr">{{ versionHandler.display_php_version }}</span>
+                        </td>
+                        <td id="handler_{{$index}}"
+                            data-title="[% locale.maketext('[asis,PHP] Handler') %]">
+                            <span id="displayHandler_{{$index}}" ng-hide="versionHandler.editView">
+                                {{ versionHandler.current_handler }}
+                            </span>
+                            <span id="editHandler_{{$index}}" ng-show="versionHandler.editView">
+                                <select id="selectHandler_{{$index}}" class="form-control"
+                                    ng-options="handler for handler in versionHandler.available_handlers"
+                                    ng-model="versionHandler.current_handler"
+                                    ng-change="warnUser(versionHandler, versionHandler.originalHandler)">
+                                </select>
+                            </span>
+                        </td>
+                        <td id="action_{{$index}}"
+                            data-title="[% locale.maketext('Actions') %]">
+                            <span id="displayAction_{{$index}}" ng-hide="versionHandler.editView">
+                                <div ng-if="!versionHandler.available_handlers.length">
+                                    [% locale.maketext('No handlers available.') %]
+                                </div>
+                                <div ng-show="versionHandler.available_handlers.length">
+                                    <a id="lnkEdit_{{$index}}"
+                                        class="btn btn-link"
+                                        ng-click="editPhpHandler(versionHandler)"
+                                        href="javascript:void(0);"
+                                        title='[% locale.maketext("Edit the handler for this [asis,PHP] version.") %]'>
+                                        <span class="glyphicon glyphicon-pencil"></span>
+                                        [% locale.maketext("Edit") %]
+                                    </a>
+                                </div>
+                            </span>
+                            <span id="editAction_{{$index}}" ng-show="versionHandler.editView">
+                                <button id="btnApplyEdit_{{$index}}"
+                                        type="button"
+                                        class="btn btn-primary"
+                                        title="[% locale.maketext('Apply new [asis,PHP] handler.') %]"
+                                        cp-action="applyVersionHandler(versionHandler)">
+                                    [% locale.maketext('Apply') %]
+                                </button>
+                                <a id="lnkCancelEdit_{{$index}}"
+                                        href="javascript:void(0);"
+                                        class="btn btn-link"
+                                        type="button"
+                                        title="[% locale.maketext('Cancel editing the [asis,PHP] handler[comment,action text]') %]"
+                                        ng-click="cancelHandlerEdit(versionHandler)">
+                                        [% locale.maketext("Cancel") %]
+                                </a>
+                            </span>
+                        </td>
+                    </tr>
+                    <tr id="alertRow_{{$index}}"
+                        ng-repeat-end
+                        ng-show="versionHandler.showAlert"
+                        ng-class="versionHandler.conflicts.length > 0 ? 'danger' : 'warning'">
+                        <td id="error_{{$index}}" colspan="3" ng-show="versionHandler.conflicts.length">
+                            <label>Conflicts</label>
+                            <span class="info-block" id="infoBlk">
+                                [% locale.maketext("You must select a different [asis,PHP] handler or resolve the following conflicts:") %]
+                            </span>
+                            <ul>
+                                <li ng-repeat="conflict in versionHandler.conflicts">{{conflict}}</li>
+                            </ul>
+                        </td>
+                        <td id="warning_{{$index}}" colspan="3" ng-hide="versionHandler.conflicts.length">
+                            [% locale.maketext("Changes to this “[_1]” version’s handler may cause errors for the domains that use it.", "PHP") %]
+                        </td>
+                    </tr>
+                    <tr id="listEmpty" ng-hide="phpVersionHandlerList.length || loadingVersionsList" class="info empty-row">
+                        <td colspan="4">[% locale.maketext("[asis,PHP] versions are not available.") %]</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>

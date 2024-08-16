@@ -1,0 +1,111 @@
+[%
+# cpanel - ng/whm/apps/connected-applications/src/index.html.tt
+#                                                  Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+%]
+
+[%
+USE Whostmgr;
+USE JSON;
+
+SET TEMPLATE_PATH = '/templates/connected-applications/';
+SET breadcrumb_url = '/scripts7/connected-applications';
+SET ROUTER_PATH   = cp_security_token _ breadcrumb_url;
+SET RESOURCE_PATH = cp_security_token _ TEMPLATE_PATH;
+SET style_sheets  = [];
+SET scripts       = []; # Do not change this name unless it is also changed in the partials below.
+
+# The following content is inserted by underscore-template-loader's require macro.
+#
+#----------------------------------------------------
+# ∨∨∨ THIS IS GENERATED CODE, DO NOT MODIFY IT ∨∨∨
+#----------------------------------------------------
+#
+# Build webpack css bundle list
+style_sheets.push(Whostmgr.find_file_url(TEMPLATE_PATH _ "styles.css"));
+
+# Build webpack javascript bundle list
+scripts.push(Whostmgr.find_file_url(TEMPLATE_PATH _ "runtime.js"));
+scripts.push(Whostmgr.find_file_url(TEMPLATE_PATH _ "vendor.js"));
+scripts.push(Whostmgr.find_file_url(TEMPLATE_PATH _ "polyfills.js"));
+scripts.push(Whostmgr.find_file_url(TEMPLATE_PATH _ "main.js"));
+
+#
+# ^^^ THIS IS GENERATED CODE, DO NOT MODIFY IT ^^^
+#----------------------------------------------------
+
+SET locale_is_rtl = 0;
+SET in_popup = CPANEL.FORM.in_popup.defined ? 1 : 0;
+
+#----------------------------------------------------------------
+# Any of the following users may connect the external application
+# with the cPanel & WHM server:
+#
+#  1) The root account.
+#  2) A reseller with all privileges (root reseller).
+#  3) A reseller with the specific required privileges.
+#----------------------------------------------------------------
+IF data.jwt && data.jwt.scope;
+    SET missing_required_acls = [];
+    SET missing_optional_acls = [];
+    SET pseudo_acls = [ 'list-resellers' ];
+    SET has_access = 1;
+    IF !Whostmgr.hasroot() && !Whostmgr.checkacl('all');
+        FOREACH acl IN data.jwt.scope;
+            # list-resellers is not a real ACL, only root or root reseller can
+            # access the reseller lists.
+            IF acl == 'list-resellers' && !(Whostmgr.hasroot() || Whostmgr.checkacl('all'));
+                # We want to support resellers creating cpcloud account
+                # so this is optional.
+                missing_optional_acls.push(acl);
+            ELSIF !Whostmgr.checkacl(acl);
+                missing_required_acls.push(acl);
+                has_access = 0;
+            END;
+        END;
+    END;
+END;
+
+WRAPPER 'master_templates/master.tmpl'
+    breadcrumburl = breadcrumb_url,
+    base = RESOURCE_PATH,
+    stylesheets = style_sheets,
+    scripts = scripts,
+    theme = 'bootstrap',
+    CJT2_EXCLUSIVE=1,
+    is_ng = 1,
+    inside_frame_or_tab_or_popup = in_popup,
+    skipbreadcrumb = in_popup,
+    skipheader = in_popup,
+%]
+<whm-conn-apps-root></whm-conn-apps-root>
+<script>
+    window.PAGE = {
+        base: [% ROUTER_PATH.json() %],
+        inPopup: [% in_popup ? 'true' : 'false' %],
+        username: [% Whostmgr.ENV.REMOTE_USER.json() %],
+        hasAccess: [% has_access ? 'true': 'false' %],
+        missingRequiredAcls: [% missing_required_acls ? missing_required_acls.json() : '[]' %],
+        missingOptionalAcls: [% missing_optional_acls ? missing_optional_acls.json() : '[]' %],
+        pseudoAcls: [% pseudo_acls ? pseudo_acls.json() : '[]' %],
+        jwt: [% data.jwt ? data.jwt.json() : '{}' %],
+        encodedJwt: [% data.jwt_encoded ? data.jwt_encoded.json() : '""' %],
+        error: [% data.error ? data.error.json() : '""' %],
+    };
+</script>
+[% IF in_popup %]
+<style>
+    #contentContainer {
+        padding: 0;
+        overflow: hidden;
+        height: 100%;
+    }
+
+    body, html {
+        height: 100%;
+    }
+</style>
+[% END %]
+[% END %]

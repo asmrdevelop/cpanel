@@ -1,0 +1,48 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/distro_changed_hook             Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::distro_changed_hook;
+
+use cPstrict;
+
+=encoding utf-8
+
+=head1 NAME
+
+F<distro_changed_hook>
+
+=head1 USAGE
+
+    distro_changed_hook [--help]
+
+=head1 DESCRIPTION
+
+This is executed by RPM triggers in the cpanel-trigger-os-release
+package when one of the supported OS release packages is changed.
+
+=cut
+
+#----------------------------------------------------------------------
+
+use parent qw( Cpanel::HelpfulScript );
+use constant _OPTIONS => ();
+
+use Cpanel::OS          ();
+use Cpanel::ServerTasks ();
+
+exit( __PACKAGE__->new(@ARGV)->run() ) if !caller;
+
+#----------------------------------------------------------------------
+
+sub run ($self) {
+    Cpanel::OS::flush_disk_caches();
+    Cpanel::ServerTasks::schedule_task( ['CpServicesTasks'], 1, 'restartsrv cpsrvd' );
+
+    return 0;    # exit() value
+}
+
+1;

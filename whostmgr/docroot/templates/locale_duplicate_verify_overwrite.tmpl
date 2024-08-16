@@ -1,0 +1,18 @@
+[% PROCESS 'master_templates/_defheader.tmpl'
+    theme="yui"
+    app_key='copy_a_locale' -%]
+[%#- all params are validated and cleaned unless otherwise specified -%]
+
+[%- SET back = '?' _ data.back_query_string -%]
+
+<h3>The locale “[% data.existing_target %]” already exists. Are you sure you want to overwrite it with “[% data.encoded_formref.locale %]”?</h3>
+<form action="[% cp_security_token %]/cgi/locale_duplicate.cgi">
+   <input type="hidden" name="verify_overwrite" value="1"/>
+   [% FOREACH pair IN data.encoded_formref %]
+   <input type="hidden" name="[% pair.key %]" value="[% pair.value %]" />
+   [% END %]
+   <input type="submit" value="[% locale.maketext('Yes') %]" class="btn-primary" />
+</form>
+<p><a href="[% cp_security_token %]/scripts9/locale_duplicate_form[% back %]">Back</a></p>
+
+[% PROCESS 'master_templates/_deffooter.tmpl' theme="yui" -%]

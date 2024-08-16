@@ -1,0 +1,78 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/verify_pidfile                  Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+use Cpanel::SafeFile ();
+use Cpanel::Services ();
+use IO::Handle       ();
+
+my ( $user, $service, $pidfile, $regex ) = @ARGV;
+
+if ( !length $user || !length $service || !length $pidfile ) {
+    usage();
+    exit 1;
+}
+
+my %args = (
+    'user'    => $user,
+    'service' => $service,
+);
+if ( length $regex ) {
+    $args{'regex'} = $regex;
+}
+
+my $time_boundary = time;
+my $ps_info_for   = Cpanel::Services::get_running_process_info(%args);
+
+if ( !exists $ps_info_for->{$service} ) {
+    print STDERR "$service does not appear to be running as user $user\n";
+    if ( $time_boundary > ( stat $pidfile )[9] ) {
+        remove_pidfile($pidfile) if -e $pidfile;
+    }
+    exit 2;
+}
+
+if ( -e $pidfile ) {
+    my $pid = read_pidfile($pidfile);
+
+    if ( $ps_info_for->{$service}{'pid'} ne $pid ) {
+        print STDERR "Pidfile for $service does not appear to match running pid $pid\n";
+        exit 3;
+    }
+}
+else {
+    print STDERR "$service is running but pidfile is missing\n";
+    exit 4;
+}
+
+exit 0;
+
+sub usage {
+    print "Usage: $0 USER SERVICE PIDFILE [REGEX]\n";
+}
+
+sub remove_pidfile {
+    my ($pidfile) = @_;
+    system 'rm', '-f', $pidfile;
+}
+
+sub read_pidfile {
+    my ($pidfile) = @_;
+    my $fh        = IO::Handle->new();
+    my $lock      = Cpanel::SafeFile::safeopen( $fh, '<', $pidfile );
+    if ( !$lock ) {
+        print STDERR 'Unable to open pid file for reading: ' . $pidfile;
+        exit 1;
+    }
+    my $pid = do { local $/; <$fh> };
+    if ( !Cpanel::SafeFile::safeclose( $fh, $lock ) ) {
+        print STDERR 'Safeclose of pid file failed: ' . $pidfile;
+        exit 1;
+    }
+    chomp $pid;
+    return $pid;
+}

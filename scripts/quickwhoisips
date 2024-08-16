@@ -1,0 +1,93 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/quickwhoisips                   Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+use Cpanel::Ips::Fetch ();
+use Socket;
+use Cpanel::Logger ();
+
+Cpanel::Logger->new()->deprecated("'$0' is deprecated, and will be removed in a later version of cPanel.");
+
+my %IPS;
+if ( !@ARGV ) {
+    %IPS = Cpanel::Ips::Fetch::fetchipslist();
+}
+else {
+    %IPS = map { $_ => 1 } @ARGV;
+}
+
+my $proto = getprotobyname('tcp');
+my $iaddr = gethostbyname('rs.internic.net');
+my $port  = getservbyname( 'whois', 'tcp' );
+if ( !$port ) { $port = 43; }
+
+my $whoistimeout = 15;
+my $child        = 0;
+foreach my $ip ( keys %IPS ) {
+    if ( my $child <= 5 ) {
+        if ( fork() ) {
+            $child++;
+
+            #master
+        }
+        else {
+            my $name = whoisns($ip);
+            print "$ip=$name\n";
+            exit;
+        }
+    }
+    else {
+        sleep 1;
+    }
+
+    while ( waitpid( -1, 1 ) > 0 ) {
+        $child--;
+    }
+}
+
+while ( waitpid( -1, 0 ) > 0 ) {
+    $child--;
+}
+
+sub whoisns {
+    my ( $ip, $req ) = @_;
+    my ($gotanswer) = 0;
+    my ($attempts)  = 0;
+    my ($ns)        = '';
+    while ( !$gotanswer ) {
+        $attempts++;
+        eval {
+            local $SIG{'__DIE__'} = 'DEFAULT';
+            local $SIG{'ALRM'}    = sub { die; };
+            alarm($whoistimeout);
+            my $internics;
+            socket( $internics, &AF_INET, &SOCK_STREAM, $proto );
+            my $sin = sockaddr_in( $port, $iaddr );
+            connect( $internics, $sin );
+            send $internics, "$ip\r\n", 0;
+
+            while (<$internics>) {
+
+                if ( /ip address: (\S+)/i && $req == 1 ) {
+                    $attempts = 999;
+                    $ns       = $1;
+                    last;
+                }
+                if ( /server name: (\S+)/i && $req != 1 ) {
+                    $attempts = 999;
+                    $ns       = $1;
+                    last;
+                }
+            }
+            alarm(0);
+        };
+        alarm(0);
+        if ( $attempts >= 3 ) { last; }
+    }
+    alarm(0);
+    return ($ns);
+}

@@ -1,0 +1,503 @@
+[% WRAPPER 'master_templates/master.tmpl' theme="yui"
+    app_key = 'manage_shell_access'
+    scripts = ['/js/sorttable.js']
+%]
+[% USE CPList -%]
+[% USE JSON -%]
+
+<script type="text/javascript">
+// <![CDATA[
+
+var USER_DATA = [% data.userlist.sort('name').json() -%];
+var USERS_COUNT = USER_DATA.length;
+
+var Search_Is_Active = false;
+
+var manageshells_users = [];
+var User_Shells = {};
+for (var d=0; d<USERS_COUNT; d++) {
+    var user_info = USER_DATA[d];
+    manageshells_users.push(user_info.name);
+    User_Shells[user_info.name] = user_info.shell;
+}
+
+var ANIM = [];
+function show_selection_status( user ) {
+    var status_box_id = user + "_status";
+    var status_box = document.getElementById( status_box_id );
+    status_box.innerHTML = CPANEL.icons.success + ' Saved';
+
+    var hide_save = function () {
+        ANIM[user] = new YAHOO.util.Anim( status_box_id, { opacity: { to: 0 } }, 5 );
+        ANIM[user].onComplete.subscribe( function () {
+            document.getElementById( status_box_id ).innerHTML = "";
+            YAHOO.util.Dom.setStyle( status_box_id, "display", "");
+            YAHOO.util.Dom.setStyle( status_box_id, "opacity", "");
+        } );
+        ANIM[user].animate();
+    };
+
+    hide_save();
+}
+
+function _convert_shell_to_cache(shell) {
+    if      (shell === "jail")                         return "jailshell";
+    else if (shell === "disable")                      return "disabled";
+    else if (shell === [% data.normal_shell.json() %]) return "normal";
+    else                                               return undefined;
+}
+
+
+function _convert_shell_to_radioid(shell) {
+    if      (shell === "jail")    return "jail";
+    else if (shell === "disable") return "disable";
+    else                          return "normal";
+}
+
+function _radio_id_for_user_and_shell(user, shell) {
+	return 'radio_' + user + '_shell_' + _convert_shell_to_radioid(shell);
+}
+
+var waiting_for_save_timeout = null;
+/* wrapper around set_user_shell */
+var SELECTED_SHELL = {};
+function click_for_set_user_shell ( elt, user, shell ) {
+	if ( SELECTED_SHELL['ready'] !== true ) {
+		return false;
+	}
+
+	/* block click if radio is already selected */
+	if (elt.id === SELECTED_SHELL[elt.name] ) {
+		return false;
+	}
+
+	SELECTED_SHELL[elt.name] = elt.id;
+	return set_user_shell( user, shell );
+}
+
+function set_user_shell( user, shell, conflict_res ) {
+    // stop animation if it's happening
+    if (ANIM[user]) {
+        if (ANIM[user].isAnimated() == true) {
+            ANIM[user].stop();
+        }
+    }
+
+    disable_row( user );
+    var status_id = user + "_status";
+
+    var success = function ( o ) {
+        clearTimeout(waiting_for_save_timeout);
+        try {
+            modifyacct = YAHOO.lang.JSON.parse( o.responseText );
+        }
+        catch ( e ) {
+            failure( o );
+            return;
+        }
+        if ( modifyacct.result[0].status == 1 ) {
+            // The API call can return true even if the shell was not modified.
+            // Detect this.
+            if (modifyacct.result[0].newcfg.setshell === "unmodified") {
+                document.getElementById( status_id ).innerHTML = CPANEL.icons.error + " Shell could not be modified.";
+            }
+            else {
+                enable_row( user );
+                show_selection_status( user );
+                User_Shells[user] = _convert_shell_to_cache(shell);
+            }
+        }
+        else {
+            failure( o );
+        }
+    };
+
+    var failure = function ( o ) {
+        clearTimeout(waiting_for_save_timeout);
+        document.getElementById( status_id ).innerHTML = CPANEL.icons.error + " AJAX Failure: please refresh the page.";
+    };
+
+    var shell_param = shell;
+    if ( shell === "disable" ) {
+        shell_param = 0;
+    }
+    else if ( shell === "jail" ) {
+        shell_param = "jailshell";
+    }
+
+    var do_save = function(modifyacct_data){
+        var url = CPANEL.urls.whm_api( "modifyacct", modifyacct_data );
+        YAHOO.util.Connect.asyncRequest( "GET", url, { success: success, failure: failure }, "" );
+        document.getElementById( status_id ).innerHTML = CPANEL.icons.ajax + " Saving...";
+
+        waiting_for_save_timeout = setTimeout(function() {
+            document.getElementById( status_id ).innerHTML = CPANEL.icons.ajax + " Still saving.  This may take a while.";
+        }, 5000);
+    };
+
+    var conflict_check_failed = function ( o ) {
+        clearTimeout(wait_for_conflict_check);
+        document.getElementById( status_id ).innerHTML = CPANEL.icons.error + " AJAX Failure: please refresh the page.";
+    };
+
+    var conflict_check_result = function ( o ) {
+        clearTimeout(wait_for_conflict_check);
+        var acctinfo;
+        try { acctinfo = YAHOO.lang.JSON.parse( o.responseText ); }
+        catch ( e ) {
+            failure( o );
+            return;
+        }
+
+        if ( acctinfo.acct[0].plan && acctinfo.acct[0].plan != "undefined" && acctinfo.acct[0].plan != "default"
+             && hasshell_changing(acctinfo.acct[0].shell, shell_param)
+        ){ /* conflict */
+            if (conflict_res === 'force'){
+                do_save( { "user": user, "shell": shell_param } );
+                return;
+            }
+            else if (conflict_res === 'noplan'){
+                do_save( { "user": user, "shell": shell_param, "PLAN": "undefined" } );
+                return;
+            }
+
+            document.getElementById( status_id ).innerHTML = CPANEL.icons.error +
+                " Package conflict: Account is on package " + acctinfo.acct[0].plan + "<br />" +
+                js_link("Set&nbsp;this&nbsp;account&nbsp;to&nbsp;have&nbsp;no&nbsp;package", "set_user_shell('"+user+"', '"+shell+"', 'noplan')") + " " +
+                js_link("Keep&nbsp;this&nbsp;account&nbsp;on&nbsp;its&nbsp;package&nbsp;(Not&nbsp;recommended)", "set_user_shell('"+user+"', '"+shell+"', 'force')");
+
+            return;
+        }
+
+        do_save( { "user": user, "shell": shell_param } );
+    };
+
+    var laurl = CPANEL.urls.whm_api( "listaccts", { searchmethod: "exact", searchtype: "user", search: user } );
+    YAHOO.util.Connect.asyncRequest( "GET", laurl, { success: conflict_check_result, failure: conflict_check_failed }, "" );
+    document.getElementById( status_id ).innerHTML = CPANEL.icons.ajax + " Checking for conflicts...";
+
+    wait_for_conflict_check = setTimeout(function() {
+        document.getElementById( status_id ).innerHTML = CPANEL.icons.ajax + " Still checking.";
+    }, 5000);
+}
+
+function js_link( name, js ){
+    return '[<a href="javascript:' + js + '">' + name + '</a>]';
+}
+
+function hasshell_changing( current_shell, shell_param ){
+    return    current_shell === '/usr/local/cpanel/bin/noshell' && shell_param !== 0
+           || current_shell !== '/usr/local/cpanel/bin/noshell' && shell_param === 0;
+}
+
+function enable_row( user ) {
+    document.getElementById( "radio_" + user + "_shell_normal" ).disabled = false;
+    document.getElementById( "radio_" + user + "_shell_jail" ).disabled = false;
+    document.getElementById( "radio_" + user + "_shell_disable" ).disabled = false;
+}
+
+function disable_row( user ) {
+    document.getElementById( "radio_" + user + "_shell_normal" ).disabled = true;
+    document.getElementById( "radio_" + user + "_shell_jail" ).disabled = true;
+    document.getElementById( "radio_" + user + "_shell_disable" ).disabled = true;
+}
+
+function set_button_labels ( first, second ) {
+    var label = "Apply to " + first;
+    if ( null != second ) {
+        label += " of " + second;
+    }
+
+    document.getElementById( "normal_all" ).value = label;
+    document.getElementById( "jail_all" ).value = label;
+    document.getElementById( "disable_all" ).value = label;
+}
+
+var _Hidden_Users = {};
+function execute_search() {
+    var search = document.getElementById( "search_field" );
+
+    var shells_to_hide = [];
+    if ( !DOM.get('show_normal').checked ) shells_to_hide.push('normal');
+    if ( !DOM.get('show_jailed').checked ) shells_to_hide.push('jailshell');
+    if ( !DOM.get('show_disabled').checked ) shells_to_hide.push('disabled');
+
+    var text_search = Search_Has_Gotten_Focus && ( search.value !== "" );
+
+    var new_display;
+    if ( !text_search && shells_to_hide.length === 0 ) {
+        Search_Is_Active = false;
+
+        for (var user in _Hidden_Users) {
+            document.getElementById( user + "_row" ).style.display = "";
+        }
+        _Hidden_Users = {};
+        set_button_labels( "all" );
+    }
+    else {
+        Search_Is_Active = true;
+        var count = 0;
+        for (var i=0; i<USERS_COUNT; i++) {
+            var user = manageshells_users[i];
+            var text_match = !text_search || ( user.indexOf(search.value) !== -1 );
+            var shell_match = ( shells_to_hide.indexOf( User_Shells[user] ) === -1 );
+            var to_show = text_match && shell_match;
+            var change_dom = ( to_show === (user in _Hidden_Users) );
+            if ( to_show ) {
+                count++;
+                delete _Hidden_Users[user];
+            }
+            else {
+                _Hidden_Users[user] = true;
+            }
+            if ( change_dom ) {
+                document.getElementById( user + "_row" ).style.display = (to_show ? "" : "none");
+            }
+        }
+        set_button_labels( count, manageshells_users.length );
+    }
+
+    restripe_rows();
+}
+
+function restripe_rows() {
+    var rows = document.getElementById('account_table_body').rows;
+
+    var even_row = true;
+    for (var u=0; u<USERS_COUNT; u++) {
+        var row = rows[u];
+        var cur_user = row.id.match(/(.*)_row/)[1];
+
+        if (cur_user in _Hidden_Users) continue;
+
+        if (even_row) {
+            row.className = row.className.replace(/\btdshade2\b/,"tdshade1");
+        }
+        else {
+            row.className = row.className.replace(/\btdshade1\b/,"tdshade2");
+        }
+
+        even_row = !even_row;
+    }
+}
+
+function apply_to_multiple( shell ) {
+    var form_users = document.getElementById( "form_users" );
+    var form_shell = document.getElementById( "form_shell" );
+    var count = 0;
+
+    form_shell.value = shell;
+
+    if ( !Search_Is_Active ) {
+        form_users.value = "";
+    }
+    else {
+        var users_to_submit = [];
+        for (var i=0; i<USERS_COUNT; i++) {
+            if ( !(manageshells_users[i] in _Hidden_Users) ) {
+                users_to_submit.push(manageshells_users[i]);
+            }
+        }
+        if ( count == manageshells_users.length ) {
+            form_users.value = "";
+        }
+        else {
+            form_users.value = users_to_submit.join(',');
+        }
+    }
+
+    if (confirm("Are you sure?")) document.multiple_user_form.submit();
+}
+
+function clear_default_search() {
+    var search = document.getElementById( "search_field" );
+    if ( !Search_Has_Gotten_Focus ) {
+        YAHOO.util.Dom.setStyle(search, "color", "black");
+        search.value = "";
+    }
+}
+
+var Search_Has_Gotten_Focus = false;
+function reset_default_search_if_necessary() {
+    var search = document.getElementById( "search_field" );
+    if ( "" == search.value ) {
+        Search_Is_Active = false;
+        YAHOO.util.Dom.setStyle(search, "color", "#888888");
+        search.value = search.defaultValue;
+        Search_Has_Gotten_Focus = false;
+    }
+}
+
+// ]]>
+</script>
+
+<style type="text/css">
+
+th {
+    padding:8px;
+}
+td.invisible_column, th.invisible_column {
+    border: 0px;
+    background: white;
+}
+.fake_tr_border {
+    border-bottom: 1px solid #ccc;
+}
+#shell_table td{
+	padding:8px;
+}
+</style>
+
+<div style="margin:15px">
+<table style="border-collapse:collapse;margin-bottom:5px;">
+		<thead>
+	    <tr>
+		    <th>&nbsp;</th>
+			<th>Normal Shell</th>
+	      <th>Jailed Shell</th>
+		   <th>Disabled Shell</th>
+		 </tr>
+		</thead>
+		<tbody>
+		<tr>
+	      <td align="left" style="border: 0px; width: 235px">
+	        <input
+	         id="search_field"
+	         value="Search Users"
+	         onfocus="clear_default_search(); Search_Has_Gotten_Focus=true;"
+	         onblur="reset_default_search_if_necessary()"
+	         onkeyup="execute_search()"
+	         style="color: #888888"
+	        />
+            <br />
+            <label><input id="show_normal" style="margin-left:0" type="checkbox" checked="checked" onclick="execute_search()" /> Normal</label>
+            <label><input id="show_jailed" type="checkbox" checked="checked" onclick="execute_search()" /> Jailed</label>
+            <label><input id="show_disabled" type="checkbox" checked="checked" onclick="execute_search()" /> Disabled</label>
+	      </td>
+		<td>
+	        <input
+	         id="normal_all"
+	         type="button"
+	         value="Apply to all"
+	         onclick="apply_to_multiple( 'normal' )"
+             class="btn-primary"
+	        />
+	      </td>
+	      <td>
+	        <input
+	         id="jail_all"
+	         type="button"
+	         value="Apply to all"
+	         onclick="apply_to_multiple( 'jail' )"
+             class="btn-primary"
+	        />
+	      </td>
+		   <td>
+	        <input
+	         id="disable_all"
+	         type="button"
+	         value="Apply to all"
+	         onclick="apply_to_multiple( 'disable' )"
+             class="btn-primary"
+	        />
+	      </td>
+		 </tr>
+		</tbody>
+</table>
+<br/>
+<p><em>* Normal shell is currently [% data.normal_shell %].</em></p>
+<table class="sortable" style="border-bottom: 0px" id="shell_table">
+  <thead>
+       <tr>
+       <th>User</th>
+       <th>Domain</th>
+       <th class="sorttable_nosort">
+         Normal Shell*
+       </th>
+       <th class="sorttable_nosort">
+         Jailed Shell
+       </th>
+       <th class="sorttable_nosort">
+         Disabled Shell
+       </th>
+       <th class="invisible_column"></th>
+     </tr>
+
+
+ </thead>
+ <tbody id="account_table_body">
+
+[% user_id = 0 %]
+[% FOREACH user IN data.userlist.sort('name') -%]
+    <tr class="[% loop.index % 2 ? 'tdshade2' : 'tdshade1' %]" id="[% user.name %]_row" style="border: 0px;">
+      <td class="fake_tr_border">[% user.name %]</td>
+      <td class="fake_tr_border">[% user.domain %]</td>
+      <td class="fake_tr_border">
+        <input
+         type="radio"
+         name="radio_[% user.name %]_shell"
+         id="radio_[% user.name %]_shell_normal"
+         onclick="click_for_set_user_shell( this, '[% user.name %]', '[% data.normal_shell %]' )"
+    [% IF user.shell == "normal" %]
+         checked="checked"
+    [% END %]
+        />
+      </td>
+      <td class="fake_tr_border">
+        <input
+         type="radio"
+         name="radio_[% user.name %]_shell"
+         id="radio_[% user.name %]_shell_jail"
+         onclick="click_for_set_user_shell( this, '[% user.name %]', 'jail' )"
+    [% IF user.shell == "jailshell" %]
+         checked="checked"
+    [% END %]
+        />
+      </td>
+      <td class="fake_tr_border">
+        <input
+         type="radio"
+         name="radio_[% user.name %]_shell"
+         id="radio_[% user.name %]_shell_disable"
+         onclick="click_for_set_user_shell( this, '[% user.name %]', 'disable' )"
+    [% IF user.shell == "disabled" %]
+         checked="checked"
+    [% END %]
+        />
+      </td>
+      <td class="invisible_column">
+        <div id="[% user.name %]_status" style="padding-left: 5px"></div>
+      </td>
+    </tr>
+    [% user_id = user_id + 1 %]
+[%- END %]
+  </tbody>
+</table>
+<br/>
+
+<script type="text/javascript">
+// <![CDATA[
+
+[% FOREACH user IN data.userlist.sort('name') -%]
+[% shell = user.shell -%]
+[% IF shell == 'jailshell' -%]
+[%  shell = 'jail' -%]
+[% ELSIF shell == 'disabled' -%]
+[%		shell = 'disable' -%]
+[%-	END %]
+SELECTED_SHELL['radio_[% user.name %]_shell'] = 'radio_[% user.name %]_shell_[% shell %]';
+[%- END %]
+
+SELECTED_SHELL['ready'] = true;
+
+// ]]>
+</script>
+
+<div style="display:none">
+  <form name="multiple_user_form" method="POST" action="[% cp_security_token %]/scripts2/domanageshells">
+    <input id="form_shell" name="shell" />
+    <input id="form_users" name="users" />
+  </form>
+</div></div>
+
+[% END -%]

@@ -1,0 +1,642 @@
+[%#
+    Parameters we are expecting:
+    ============================
+    is_ng:
+    boolean, used to change the url calculation rules for angular 7
+    apps built using the ng cli tool via webpack. You need this since
+    the build products from ng cli do not use the .min suffix for minified
+    files.
+
+    hide_header:
+    boolean, used to hide the page header
+    1 to hide, 0 to show; 0 by default
+
+    include_legacy_stylesheets:
+    boolean, used to include legacy stylesheets on the page; 1 by default
+
+    include_legacy_scripts:
+    boolean, used to include legacy javascript sections; 1 by default
+
+    include_cjt:
+    boolean, used to include cjt; 1 by default
+
+    app_key:
+    The key used to lookup application information in dynamicui.conf.
+    Hides page heading if the app_key is not defined.
+
+    page_title:
+    string, displayed as part of the browser title, preceded by cPanel.
+    Defaults to application description from dynamicui.conf
+    e.g. cPanel - <your page title here>
+
+    page_sub_heading:
+    sub heading for page header.
+    SSL <sub heading>
+
+    meta:
+    a string containing meta tags to be injected after the master
+    template meta tags. Highly recommend using a Template Toolkit block
+    and processing the block to get the output into a string.
+
+    embed_stylesheets:
+    array containing the server path of stylesheets specific to
+    your page that will be included with the INSERT directive.
+    Must be relative to the root of the theme.
+
+    embed_scripts:
+    array containing the server path of scripts specific to your page
+    that will be included with the INSERT directive.
+    Must be relative to the root of the theme.
+
+    page_stylesheets:
+    array containing the path of stylesheets specific to
+    your page that must be relative to the root of the theme.
+
+    page_scripts:
+    array containing the path of scripts specific to your page
+    that must be relative to the root of the theme.
+
+    page_styles:
+    a string containing a <style> block that defines page specific
+    styles. Highly recommend using a Template Toolkit block and processing the
+    block to get the output into a string.
+
+    page_init_js:
+    a string containing a <script> block that defines page specific
+    javascript. Highly recommend using a Template Toolkit block and processing
+    the block to get the output into a string. Run before the page_scripts,
+    embed_scripts and page_js.
+
+    page_js:
+    a string containing a <script> block that defines page specific
+    javascript. Highly recommend using a Template Toolkit block and processing
+    the block to get the output into a string.
+
+    page_js_top:
+    a string containing a <script> block that defines page specific
+    javascript to be injected into the html HEAD area. Highly recommend using a
+    Template Toolkit block and processing the block to get the output into a
+    string.
+
+    hide_banner_ad:
+    Boolean - supress the banner ad for the page if one would otherwise render.
+%]
+[%-
+    USE Apache;
+    USE Api2;
+    USE Uapi;
+    USE CacheBuster;
+    USE Resource;
+    USE UI_Includes;
+    USE VarCache;
+    USE UIAnalytics;
+
+    SET has_component_system = file_test('f', "/usr/local/cpanel/base/webmail/jupiter/_assets/component.html.tt");
+    IF has_component_system;
+        USE Components;
+    END;
+
+    # Currently the only two modes are debug and release, but this
+    # might be expanded in the future.
+    IF CPANEL.is_debug_mode_enabled();
+        SET mode = 'debug';
+        SET optimized = 0;
+    ELSE;
+        SET mode = 'release';
+        SET optimized = 1;
+    END;
+
+    # used to set default values
+    SET include_legacy_stylesheets = 1 IF !include_legacy_stylesheets.defined;
+    SET hide_header = 0 IF !hide_header.defined;
+    SET include_legacy_scripts = 1 IF !include_legacy_scripts.defined;
+    SET include_cjt = 1 IF !include_cjt.defined;
+
+    # hide page heading if app_key is not provided, AND hide_page_heading isn't explicity defined
+    IF !hide_page_heading.defined;
+    SET hide_page_heading = !app_key.defined && !page_title.defined;
+    END;
+
+    SET is_webmail = ExpVar.expand('$appname') == "webmail";
+
+    SET cpanel_version = ExpVar.expand('$version');
+
+    SET locale_attributes = execute( "Locale", "get_attributes", {'attributes'=>'locale,encoding,direction'} ).data;
+
+    SET user_theme = CPANEL.CPDATA.RS;
+
+    SET directory_prefix = CPANEL.CPVAR.dprefix;
+
+    IF !hide_page_heading;
+    SET app_info = execute( 'Branding', 'get_information_for_applications', {'docroot' => '/usr/local/cpanel/base/webmail/jupiter', 'app_keys' => app_key}).data;
+    END;
+
+    SET title = "Webmail";
+    IF page_title;
+        title = title _ " - " _ page_title;
+    ELSIF app_key.defined;
+        title = title _ " - " _ app_info.$app_key.description;
+    END;
+
+    SET analytics_page_identifier = "Webmail-" _ app_key;
+
+    # Page meta data for analytics purpose.
+    SET analytics_page_meta = {
+        product_feature => app_key,
+        product_feature_group => "",
+        framework_js => "",
+        framework_css => "",
+        # Add additional page meta to be sent to analytics.
+    };
+
+    SET documentation_url = "https://go.cpanel.net/webmail";
+
+    SET NVData = execute( 'NVData', 'get', {"names" =>"default_webmail_app" , "html_encoded" =>"1" } ).data;
+    IF !global.mail_client_list;
+        SET global.mail_client_list = execute("WebmailApps", "list_webmail_apps", {theme=CPANEL.CPDATA.RS}).data;
+    END;
+    SET default_webmail_app = NVData.0.value;
+
+    SET path_parts = component.caller.split('/');
+    SET file = path_parts.pop(); # remove the file itself to get the path.
+    SET caller_path = path_parts.join('/') _ '/';
+    SET theme_path = caller_path.replace('/usr/local/cpanel/base/([^/]+)/([^/]+).*','/usr/local/cpanel/base/$1/$2') _ "/";
+    SET caller_app_rel_path = caller_path.replace('/usr/local/cpanel/base/[^/]+/[^/]+/','');
+
+    SET locale_revision = calculate_magic_lex_mtime(locale.get_language_tag());
+    SET locale_query_string = "?locale=" _ locale.get_language_tag _ "&locale_optional=1&locale_revision=" _ locale_revision;
+
+    SET banner_module_exists = file_test('f', '/usr/local/cpanel/Cpanel/Template/Plugin/Banner.pm');
+
+    # Fetch shared items between mailconfiglist & user_preferences subtemplates
+    SET user = ExpVar.expand('$user'),
+    auth_user = CPANEL.authuser,
+    is_archive_user = ExpVar.expand('$isarchiveuser'),
+    is_default_cpanel_account = user == auth_user,
+    is_tfa_enabled = ExpVar.expand('$is_twofactorauth_sec_policy_enabled'),
+    is_email_account = !is_default_cpanel_account && !is_archive_user;
+    is_sandbox = ExpVar.expand('$is_sandbox') ? 1 : 0,
+    has_webmail_access = CPANEL.feature("webmail") ? 1: 0,
+    can_show_canary = is_sandbox && ExpVar.expand('$exists_in_webmail{"canary"}') ? 1: 0;
+
+    # Use ExpVar here instead of UAPI as its at least 1000% faster
+    SET cpdavd_enabled = ExpVar.expand('$hascpdavd') ? 1 : 0;
+    SET solr_enabled = ExpVar.expand('$hasdovecotsolr') ? 1 : 0;
+
+    # XXX Should maybe jam these into ExpVar or a Template plugin for speed?
+    IF !global.sitemap;
+        SET global.sitemap = execute( 'Branding', 'get_information_for_applications', {}).data;
+    END;
+
+    IF !is_archive_user && CPANEL.feature('lists');
+        SET delegated_mailman = execute( 'Email', 'has_delegated_mailman_lists', {delegate=auth_user}).data;
+    END;
+
+    # NOTE: Check if analytics are disabled server side in WHM.
+    SET is_analytics_enabled_server_side = 0;
+    IF CPANEL.analytics_ui_includes_are_enabled() &&
+       CPANEL.ENV.DNT.substr(0, 1) != '1';
+        is_analytics_enabled_server_side = 1;
+    END;
+    # User analytics consent setting
+    SET consentData = execute( 'NVData', 'get', {"names" =>"analytics" , "html_encoded" =>"1" } ).data;
+    SET user_analytics_consent_setting = consentData.0.value;
+    IF user_analytics_consent_setting != 'on' and user_analytics_consent_setting != 'off';
+        SET user_analytics_consent_setting = "";
+    END;
+    # User Analytics Opt In is true ONLY IF analytics is enabled server wide AND user has given ('Allowed') consent.
+    SET analytics_opt_in = 0;
+    IF is_analytics_enabled_server_side && user_analytics_consent_setting == 'on';
+        analytics_opt_in = 1;
+    END;
+
+-%]
+<!DOCTYPE html>
+
+<html lang="[% locale_attributes.locale || 'en-us' %]" dir="[% locale_attributes.direction || 'ltr' %]">
+    <head>
+        <!-- Avoid indexing from search engines -->
+        <meta name="robots" content="noindex, nofollow" />
+
+        <title>[% title %]</title>
+        <meta charset="[% locale_attributes.encoding %]" />
+        <meta http-equiv="X-UA-Compatible" content="IE=edge">
+        <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1.0, user-scalable=1">
+
+        <!-- Chrome, Firefox OS and Opera -->
+        <meta name="theme-color" content="#293a4a">
+
+            <!-- Mobile Chrome-->
+        <meta name="mobile-web-app-capable" content="yes">
+        <meta name="mobile-web-app-status-bar-style" content="default">
+
+        <!-- iOS Safari -->
+        <meta name="apple-mobile-web-app-capable" content="yes">
+        <meta name="apple-mobile-web-app-status-bar-style" content="default">
+        [% IF app_info && (app_info.base64_png_image || app_info.$app_key.icon.url) %]
+            <link rel="apple-touch-icon" sizes="48x48"
+            href="[% IF app_info.base64_png_image %]data:image/png;base64,[% app_info.base64_png_image %][% ELSE %][% theme_magic_url('assets/ios_icons/' _ app_info.$app_key.icon.url _ '.png') %][% END %]">
+            <meta name="apple-mobile-web-app-title" content="[% app_info.$app_key.itemdesc %]">
+        [% END %]
+
+        <meta name="referrer" content="origin">
+
+        [%- IF meta -%]
+        [% meta %]
+        [% END -%]
+
+        <link rel="shortcut icon" href="[% theme_magic_url('assets/brand/favicon.ico') %]" type="image/x-icon" />
+
+        [% IF is_jupiter_style %]
+            <link rel="stylesheet" type="text/css" href="[% theme_magic_url('styles/preload_styles.min.css') %]" />
+            <link rel="stylesheet" type="text/css" href="[% theme_magic_url('styles/fonts.min.css') %]" />
+            <link rel="stylesheet" type="text/css" href="[% theme_magic_url(get_stylesheet_based_on_direction('styles/jupiter-styles/dist/css/main.css', locale_attributes.direction == 'rtl')) %]" />
+        [% END %]
+
+        [%-
+        IF optimized;
+            SET css_include_name = '_assets/css/master';
+            IF include_legacy_stylesheets;
+                css_include_name = css_include_name _ '-legacy';
+            END;
+            css_include_name = css_include_name _ '-' _ locale_attributes.direction;
+            css_include_name = css_include_name _ '.cmb.min.css';
+        %]
+        <link rel="stylesheet" type="text/css" href="[% theme_magic_url(css_include_name) %]" />
+            [% IF is_ng %]
+                <link rel="stylesheet" type="text/css" href="[% theme_magic_url('css/ux-styles.min.css') %]" />
+            [% END %]
+        [%- ELSE  %]
+
+            [%- # Legacy stylesheets -%]
+            [%- IF include_legacy_stylesheets %]
+            <link rel="stylesheet" type="text/css" href="[% theme_magic_url('css/yui-core.css') %]" />
+            <link rel="stylesheet" type="text/css" href="[% theme_magic_url('css/yui-custom.css') %]" />
+            [%- END -%]
+
+            [%- # Base stylesheets %]
+            <link rel="stylesheet" type="text/css" href="[% theme_magic_url('libraries/bootstrap/optimized/css/bootstrap.min.css') %]" />
+            [% IF locale_attributes.direction == 'rtl' %]
+            <link rel="stylesheet" type="text/css" href="[% theme_magic_url('libraries/bootstrap-rtl/optimized/dist/css/bootstrap-rtl.min.css') %]" />
+            [%- END -%]
+            <link rel="stylesheet" type="text/css" href="[% theme_magic_url('libraries/ui-fonts/open_sans/optimized/open_sans.min.css') %]" />
+            <link rel="stylesheet" type="text/css" href="[% theme_magic_url('libraries/fontawesome/css/all.min.css') %]" />
+            <link rel="stylesheet" type="text/css" href="[% theme_magic_url('css/cpanel_base.min.css') %]" />
+            [% IF is_ng %]
+            <link rel="stylesheet" type="text/css" href="[% theme_magic_url('css/ux-styles.min.css') %]" />
+            [% END %]
+            <link rel="stylesheet" type="text/css" href="[% theme_magic_url('_assets/user_preferences.css') %]" />
+        [% END %]
+
+        [%- # Page specific stylesheets remotly included -%]
+        [%- FOR source IN page_stylesheets;
+                IF is_ng;
+                    SET url = theme_magic_url(source);
+                ELSE;
+                    SET url = theme_magic_url(calculate_mode_css_url(source, optimized));
+                END;
+        -%]
+        <link rel="stylesheet" type="text/css" href="[% url %]" />
+        [%- END -%]
+
+        [%- # Page specific stylesheets embedded in initial request -%]
+        [%- IF embed_stylesheets %]
+        <style type="text/css">
+            [%- FOR source IN embed_stylesheets;
+                  SET path = theme_magic_path(calculate_mode_css_url(source, optimized));
+                -%]
+                /* Embedding: [% path %] */
+                [% INSERT $path %]
+            [%- END -%]
+        </style>
+        [%- END %]
+
+        [%- # Page specified <style> block for css -%]
+        [%- IF page_styles %]
+            [%- page_styles -%]
+        [% END -%]
+
+        [%- # TODO: We want to move these script blocks to the bottom of the page in the future. -%]
+
+        [%-
+        IF optimized;
+            SET js_include_name = '_assets/js/master';
+            IF include_legacy_scripts;
+                js_include_name = js_include_name _ '-legacy';
+            END;
+            js_include_name = js_include_name _ '.cmb.min.js';
+        %]
+            <script type="text/javascript" src="[% theme_magic_url(js_include_name) %]"></script>
+        [% ELSE %]
+
+            [%- # Base javascript %]
+            <script type="text/javascript" src="[% theme_magic_url('libraries/jquery/current/jquery.min.js') %]"></script>
+            <script type="text/javascript" src="[% theme_magic_url('libraries/bootstrap/optimized/js/bootstrap.min.js') %]"></script>
+
+            [%- # Legacy javascript -%]
+            [%- IF include_legacy_scripts -%]
+            <script type="text/javascript" src="[% theme_magic_url('/yui-gen/utilities_container/utilities_container.js') %]"></script>
+            <script type="text/javascript" src="[% theme_magic_url('js/x3_optimized.js') %]"></script>
+            [%- END -%]
+        [% END %]
+
+        [%- IF include_cjt;
+            SET cjt_lex_url = CPANEL.get_cjt_lex_url();
+          %]
+        <script type="text/javascript" src="[% cjt_lex_url %]"></script>
+        <script type="text/javascript">
+            CPANEL.validate.hide_validation_summary = true;
+        </script>
+        [% END -%]
+
+        [%- # JavaScript Globals %]
+        <script>
+            (function(){
+                window.PAGE = window.PAGE || {};
+                window.NVData = {};
+                [% IF default_webmail_app %]
+                window.NVData["default_webmail_app"] = [% default_webmail_app.json() %];
+                [% END %]
+                [% IF global.mail_client_list %]
+                window.NVData["mail_clients"] = [% global.mail_client_list.json() %];
+                [% END %]
+                window.thisTheme = [% user_theme.json() %];
+            })();
+            [% IF CPANEL.is_qa_mode_enabled() %]
+                [% INSERT 'libraries/axe-core/axe.min.js' %]
+                window.AXE_CONFIG = [% INSERT 'axe_config.json' %];
+                [% INSERT 'libraries/cjt2/webAccessibilityChecker.js' %]
+
+                [% INSERT 'libraries/cjt2/e2e.js' %]
+            [% END %]
+        </script>
+
+        [%- # Page specified <script> block for javascript needed at the top of the document -%]
+        [%- IF page_js_top -%]
+            [%- page_js_top -%]
+        [%- END -%]
+    </head>
+    <body id="[% app_key %]" class="webmail yui-skin-sam">
+        [%
+            # Data for analytics purpose.
+            SET cp_analytics_data = UIAnalytics.get_webmail_analytics_data();
+            FOREACH key IN analytics_page_meta.keys.sort;
+                cp_analytics_data.$key = analytics_page_meta.$key;
+            END;
+
+            SET analyticsConfig = {
+                cpAnalyticsData => cp_analytics_data,
+                optInAnalytics => analytics_opt_in,
+                debugMode => CPANEL.is_debug_mode_enabled(),
+                loginUser => CPANEL.authuser,
+                isSandbox => CPANEL.is_sandbox(),
+            };
+        %]
+
+        <cp-ui-load-analytics
+            analytics-config="[% analyticsConfig.json() | html %]"
+        >
+        </cp-ui-load-analytics>
+
+        <div id="wrap">
+            [%- IF !hide_header %]
+            <header id="masterAppContainer">
+                <div class="navbar navbar-inverse navbar-cpanel navbar-fixed-top" role="navigation">
+                    <div class="navbar-header">
+                            <a id="lnkHeaderHome" class="navbar-brand navbar-item navbar-brand-img" target="_top" href="[% directory_prefix %]index.html?mailclient=none">
+                                <img id="imgLogo" class="navbar-brand-logo" src="[% theme_magic_url('assets/brand/webmail.svg') %]" alt="[% locale.maketext("Home") %]" title="[% locale.maketext("Home") %]" aria-disabled="false" />
+                            </a>
+                        <div class="navbar-preferences">
+                            [%- # May need to bring this inline to modify styles %]
+                            <span id="userPreferencesContainer">
+                                [%- INCLUDE _assets/user_preferences.html.tt -%]
+                                <span id="logoutContainer">
+                                   <div class="btn-group">
+                                    <a target="_top" href="/logout/?locale=[% locale.get_language_tag %]">
+                                      <button id="lnkHeaderLogout" class="btn btn-primary logout-btn btn-sm navbar-item">
+                                        <span id="logoutImg" class="glyphicon glyphicon-log-out"></span>
+                                        <span id="lblLogout" class="hidden-inline-xs">[% locale.maketext("Logout") %]</span>
+                                      </button>
+                                    </a>
+                                   </div>
+                                </span>
+                            </span>
+                        </div>
+                    </div>
+                </div>
+            </header>
+            [% END -%]
+
+            <!-- PAGE TEMPLATE'S CONTENT START -->
+            <div id="content" class="container-fluid">
+            [% IF CPANEL.CPCONF.item('disable-security-tokens') %]
+                <div class="alert alert-danger">
+                    <span class="glyphicon glyphicon-exclamation-sign"></span>
+                    <div class="alert-message">
+                        [%- locale.maketext('[output,strong, Security Warning:] security tokens are disabled. This server is currently vulnerable to cross-site request forgery and cross-site scripting attacks.') -%]<br />
+                        [%- locale.maketext('To enable security tokens, contact your system administrator.') -%]
+                    </div>
+                </div>
+            [% END %]
+
+            <!-- Banner Section - now controlled via a plugin -->
+            [% IF banner_module_exists && template_exists('/usr/local/cpanel/base/webmail/jupiter/_assets/banner.html.tt'); %]
+            [% INCLUDE '/usr/local/cpanel/base/webmail/jupiter/_assets/banner.html.tt' -%]
+            [% END%]
+
+            [%
+            IF has_component_system && Components.has_components_for('webmail', app_key, 'page-top');
+                PROCESS "_assets/component.html.tt",
+                    APP_KEY => app_key,
+                    TAG     => 'div',
+                    SLOT    => 'page-top';
+            END;
+            %]
+
+            [% IF !hide_page_heading -%]
+                <h1 class="page-header">
+                    <span id="pageHeading">[% page_title || app_info.$app_key.name -%]</span>
+                    [% IF page_sub_heading.defined %]
+                        <small id="pageSubHeading">[% page_sub_heading %]</small>
+                    [% END %]
+                </h1>
+            [% END %]
+            <!-- Breadcrumb element in case the js for it is loaded. -->
+            <nav id="cpanel-breadcrumbs" class="breadcrumb" role="navigation" aria-label="breadcrumb" data-jupiter-style="1" style="display: none"></nav>
+
+            [%
+            IF has_component_system && Components.has_components_for('webmail', app_key, 'content-top');
+                PROCESS "_assets/component.html.tt",
+                    APP_KEY => app_key,
+                    TAG     => 'div',
+                    SLOT    => 'content-top';
+            END;
+            %]
+
+            [%- content -%]
+
+            [%
+            IF has_component_system && Components.has_components_for('webmail', app_key, 'content-bottom');
+                PROCESS "_assets/component.html.tt",
+                    APP_KEY => app_key,
+                    TAG     => 'div',
+                    SLOT    => 'content-bottom';
+            END;
+            %]
+
+            </div>
+            <!-- PAGE TEMPLATE'S CONTENT END -->
+            <footer>
+
+                [%- # NOTE: Analytics UI includes are disabled by default and are strictly opt-in only.
+
+                    IF UI_Includes.can_load_template( 'cp_analytics_webmail.html.tt' );
+                        # The package updates setting check is required to avoid regressions during cPanel&WHM upgrade to v112.
+                        # This regression may occur only for users who have package updates disabled. (Details available in PH-19613)
+                        IF varcache.is_package_update_enabled;
+                        '<div id="cp-analytics-webmail">';
+                            UI_Includes.load_template( 'cp_analytics_webmail.html.tt', {"page_identifier" => analytics_page_identifier, "default_webmail_app" => default_webmail_app, "analytics_config" => analyticsConfig, "analytics_page_meta" => analytics_page_meta} );
+                        '</div>';
+                        ELSIF CPANEL.analytics_ui_includes_are_enabled() &&
+                            CPANEL.ENV.DNT.substr(0, 1) != '1';
+                        '<div id="cp-analytics-webmail">';
+                            UI_Includes.load_template( 'cp_analytics_webmail.html.tt', {"page_identifier" => analytics_page_identifier, "default_webmail_app" => default_webmail_app, "analytics_page_meta" => analytics_page_meta} );
+                        '</div>';
+                        END;
+                    END;
+                -%]
+
+                [%
+                IF has_component_system && Components.has_components_for('webmail', app_key, 'page-bottom');
+                    PROCESS "_assets/component.html.tt",
+                        APP_KEY => app_key,
+                        TAG     => 'div',
+                        SLOT    => 'page-bottom';
+                END;
+                %]
+                <div class="container-fluid">
+                    <div class="navbar">
+                        <ul class="nav navbar-nav">
+                            <li>
+                                <a id="lnkFooterHome" href="[% directory_prefix %]index.html">
+                                    [%- locale.maketext("Home") -%]
+                                </a>
+                            </li>
+                            <li>
+                                <a id="lnkFooterTrademark" href="[% directory_prefix %]trademarks.html" target="_blank">
+                                    [%- locale.maketext("Trademarks") -%]
+                                </a>
+                            </li>
+                            <li>
+                                <a id="lnkFooterPrivacy" href="https://go.cpanel.net/privacy" target="_blank">
+                                    [%- locale.maketext("Privacy Policy") -%]
+                                </a>
+                            </li>
+                            <li>
+                                <a id="lnkFooterDocs" href="[% documentation_url FILTER html %]" target="_blank">
+                                    [%- locale.maketext("Documentation") -%]
+                                </a>
+                            </li>
+                        </ul>
+
+                        <div class="navbar-brand" style="display:inline-block; z-index:2147483647; visibility:visible;">
+                            <a id="lnkPoweredByCpanel" href="http://www.cpanel.net" target="cpanel" title="cPanel, L.L.C." style="display:inline-block; z-index:2147483647; visibility:visible;">
+                                <img id="imgPoweredByCpanel" src="[% MagicRevision('/img-sys/powered_by_cpanel.svg') %]" alt="cPanel, L.L.C." style="display:inline-block; z-index:2147483647; visibility:visible; height:20px; min-width:94px;">
+                            </a>
+                            <sub id="txtCpanelVersion" style="display:inline-block; visibility:visible;">[% cpanel_version %]</sub>
+                        </div>
+                    </div>
+                </div>
+            </footer>
+        </div>
+
+        [%- # Angular 7+ apps include the standalone CLDR file for the current locale. -%]
+        [%- IF is_ng -%]
+            <script type="text/javascript">
+            window.cp_security_token = "[% cp_security_token %]";
+            window.LEXICON = window.LEXICON || {};
+            [%
+                cldr_path = 'libraries/cldr/' _ locale.get_language_tag() _ '.js';
+                INSERT $cldr_path
+            %]
+            </script>
+            <script type="text/javascript" src="[% theme_magic_url("js/webmail-angular-polyfills.js") _ locale_query_string %]"></script>
+
+        [%- END -%]
+
+        [%
+            page_scripts = page_scripts || [];
+            page_scripts.unshift("core/web-components/dist/jupiter-web-components.cmb.js");
+        %]
+
+        [%- # Page specified <script> block for JavaScript that run at the top of the end of page script -%]
+        [%- IF page_init_js -%]
+            [%- page_init_js -%]
+        [%- END -%]
+
+        [% IF is_ng %]
+        <script type="text/javascript" src="[% theme_magic_url('_assets/breadcrumb.js') %]"></script>
+        [% END %]
+
+        [%- # Page specific JavaScript files -%]
+        [%- FOR source IN page_scripts %]
+        <script type="text/javascript" src="[% theme_magic_url(source) _ locale_query_string %]"></script>
+        [% END -%]
+
+        [%-
+           IF !embed_scripts; embed_scripts = []; END;
+           embed_scripts.push('_assets/base.js', '_assets/disk_usage_meter.js');
+        -%]
+
+        [%- # Page specific JavaScript embedded in initial request -%]
+        [%- IF embed_scripts %]
+        <script type="text/javascript">
+            [%- FOR source IN embed_scripts;
+                  SET path = theme_magic_path(calculate_mode_js_url(source, optimized));
+                %]
+                /* Embedding: [% path %] */
+                [% INSERT $path %]
+                [%
+                SET lex_path = CPANEL.get_js_lex_app_full_path(path);
+                IF lex_path;
+                %]
+                /* Embedding: [% lex_path %] */
+                [% INSERT $lex_path %]
+                [%- END %]
+            [%- END -%]
+        </script>
+        [%- END %]
+
+        [%- # Page specified <script> block for JavaScript -%]
+        [%- IF page_js -%]
+            [%- page_js -%]
+        [%- END -%]
+
+        [%- # Code to make links open inside the mobile window on iOS -%]
+        <script type="text/javascript">
+        if (("standalone" in window.navigator) && window.navigator.standalone) {
+            jQuery(document).ready(function($) {
+                $("a").click(function(event) {
+                    var alink = document.createElement('a');
+                    alink.href = $(this).attr("href");
+                    if (alink && alink.protocol.indexOf('http') !== -1 && alink.host.indexOf(document.location.host) !== -1) {
+                        event.preventDefault();
+                        window.location = alink.href;
+                    }
+                });
+            });
+        }
+        </script>
+        <script>
+        $(
+            function() {
+                var img = $("#imgPoweredByCpanel");
+                if(img === null || img.length <= 0 ||
+                    img.attr('src') !== "[% MagicRevision('/img-sys/powered_by_cpanel.svg') %]") {
+                    window.location="/";
+                }
+            }
+        );
+        </script>
+    </body>
+</html>

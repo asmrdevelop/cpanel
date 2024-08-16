@@ -1,0 +1,96 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/add_dns                         Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+use warnings;
+use Cpanel::DIp::MainIP                 ();
+use Cpanel::DnsUtils::Add               ();
+use Cpanel::Validate::Domain::Tiny      ();
+use Cpanel::Validate::Domain::Normalize ();
+use Cpanel::Validate::IP::v4            ();
+use Getopt::Long                        ();
+
+my ( $domain, $ip, $reseller, $allowoverwrite, $trueowner );
+
+my $opts = Getopt::Long::GetOptions(
+    'domain=s'   => \$domain,
+    'ip=s'       => \$ip,
+    'reseller=s' => \$reseller,
+    'overwrite'  => \$allowoverwrite,
+    'owner=s'    => \$trueowner
+);
+
+# Domain
+if ( !$domain ) {
+    show_usage();
+    exit 1;
+}
+else {
+    $domain = Cpanel::Validate::Domain::Normalize::normalize($domain);
+    if ( !Cpanel::Validate::Domain::Tiny::validdomainname($domain) ) {
+        print "No valid domain specified.\n";
+        show_usage();
+        exit 1;
+    }
+}
+
+# IP
+if ( !$ip || !Cpanel::Validate::IP::v4::is_valid_ipv4($ip) ) {
+    $ip = Cpanel::DIp::MainIP::getmainip();
+    print "No valid IP specified. Using $ip\n";
+}
+
+# Reseller
+if ( !$reseller ) {
+    $reseller = 'root';
+}
+
+# Allow Over Write
+if ($allowoverwrite) {
+    if ( $allowoverwrite =~ m/^n/i ) {
+        $allowoverwrite = 0;
+    }
+    else {
+        $allowoverwrite = 1;
+    }
+}
+else {
+    $allowoverwrite = 0;
+}
+
+$trueowner ||= 'root';
+
+my ( $status, $error ) = Cpanel::DnsUtils::Add::doadddns( 'domain' => $domain, 'ip' => $ip, 'reseller' => $reseller, 'trueowner' => $trueowner, 'allowoverwrite' => $allowoverwrite );
+if ( !$status ) {
+    print $error . "\n";
+}
+
+sub show_usage {
+    print <<"EOM";
+$0
+
+Control Flags:
+--domain    (required)
+    Domain for zone creation
+
+--ip        (optional)
+    IP for zone creation. Defaults to server's main shared IP
+
+--reseller  (optional)
+    Set reseller (zone administrator) to utilize name server IPs assigned via WHM to the reseller.
+    Defaults to using main server name server IPs
+
+--owner     (optional)
+    Account who will own the domain
+    Defaults to root
+
+--overwrite (optional)
+    Allow overwrite of existing zones
+
+EOM
+    return;
+}

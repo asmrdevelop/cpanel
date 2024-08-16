@@ -1,0 +1,211 @@
+<h4 class="section-heading">[% locale.maketext("[asis,S3] Compatible Destination") %]</a></h4>
+<div class="section-body">
+    <form name="S3CompatibleDestination" ng-if="!destinationState.fetching_data" ng-disabled="destinationState.savingDestination || destinationState.validatingDestination" novalidate>
+        <div class="form-group">
+            <div class="row">
+                <div class="col-xs-12 col-md-6 col-lg-6">
+                    <label for="name">[% locale.maketext("Destination Name") %]</label>
+                    <span class="info-block">[% locale.maketext("Enter a name for this destination.") %]</span>
+                </div>
+            </div>
+            <div class="row">
+                <div class="col-xs-12 col-md-6 col-lg-6">
+                    <input type="text" name="name" id="s3compat_name" required class="form-control" minlength="1" ng-maxlength="256" ng-model="destinationState.destination.s3compatible.name" />
+                </div>
+                <div class="col-xs-12 col-md-6 col-lg-6">
+                    <ul class="validation-container" ng-show="S3CompatibleDestination.name.$dirty && (S3CompatibleDestination.name.$error.required || S3CompatibleDestination.name.$error.minlength || S3CompatibleDestination.name.$error.maxlength)">
+                        <li class="validation validation-error" ng-show="S3CompatibleDestination.name.$error.required">
+                            <span class="glyphicon glyphicon-exclamation-sign"></span>
+                            <span class="validation-message">
+                                [% locale.maketext("You must enter a name for this destination.") %]
+                            </span>
+                        </li>
+                        <li class="validation validation-error" ng-show="S3CompatibleDestination.name.$error.minlength || S3CompatibleDestination.name.$error.maxlength">
+                            <span class="glyphicon glyphicon-exclamation-sign"></span>
+                            <span class="validation-message">
+                                [% locale.maketext("The destination name must contain between [numf,1] and [numf,256] characters.") %]
+                            </span>
+                        </li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+        <div class="form-group">
+            <div class="row">
+                <div class="col-xs-12 col-md-6 col-lg-6">
+                    <input type="checkbox" name="upload_system_backup" id="s3compat_system" ng-model="destinationState.destination.s3compatible.upload_system_backup"/>
+                    <label>[% locale.maketext("Transfer System Backups to this Destination") %]</label>
+                    <div class="callout callout-warning">[% locale.maketext('[output,strong,Warning:] System Backups contain sensitive security details.') %] [% locale.maketext('You should transfer System Backups over encrypted methods.') %]</div>
+                </div>
+            </div>
+        </div>
+        <div class="form-group">
+            <div class="row">
+                <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                    <input
+                        ng-model="destinationState.destination.s3compat.only_used_for_logs"
+                        type="checkbox"
+                        name="only_used_for_logs"
+                        id="s3compat_logsonly"/>
+                    <label for="s3compat_logsonly">[% locale.maketext('Only use this destination for log file transfers[comment,title of option like one above, but looks wrong title cased]') %]</label>
+                    <div class="callout callout-warning">
+                        <span>[% locale.maketext('[output,strong,Warning:] Enabling this option will prevent it from being used for account and/or system backups.') %] [% locale.maketext('Only enable this option if this destination will only be used for log backups. If it will be used for all backups, leave this unchecked.') %]</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="form-group">
+            <div class="row">
+                <div class="col-xs-12 col-md-6 col-lg-6">
+                    <label for="folder">[% locale.maketext("Folder") %]</label>
+                    <span class="info-block">[% locale.maketext("Optional. Specify the path, relative to the account’s home directory, where the system stores backups.") %]</span>
+                </div>
+            </div>
+            <div class="row">
+                <div class="col-xs-12 col-md-6 col-lg-6">
+                    <input type="text" name="folder" id="s3compat_path" class="form-control" backup-location ng-model="destinationState.destination.s3compatible.folder" ng-change="checkForDisallowedChars(S3CompatibleDestination.path.$viewValue, disallowedPathChars)" />
+                </div>
+                <div class="col-xs-12 col-md-6 col-lg-6">
+                    <ul validation-container field-name="folder">
+                    </ul>
+                </div>
+            </div>
+        </div>
+        <div class="form-group">
+            <div class="row">
+                <div class="col-xs-12 col-sm-6">
+                    <label for="host">[% locale.maketext('S3 Endpoint') %]</label>
+                    <span class="info-block">[% locale.maketext('Enter the fully qualified domain name ([asis,FQDN]) of the [asis,S3] endpoint for your bucket.') %] [% locale.maketext('The [asis,FQDN] should not include [asis,http]://, [asis,https]://, a trailing port, or path information.') %]</span>
+                </div>
+            </div>
+            <div class="row">
+                <div class="col-xs-12 col-sm-6">
+                    <input type="text" name="host" id="rsync_host" remote-host required class="form-control" ng-model="destinationState.destination.s3compatible.host" />
+                </div>
+                <div class="col-xs-12 col-md-6">
+                    <ul validation-container field-name="host">
+                        <li class="validation validation-error" ng-show="S3CompatibleDestination.host.$dirty && S3CompatibleDestination.host.$error.required">
+                            <span class="glyphicon glyphicon-exclamation-sign"></span>
+                            <span class="validation-message">[% locale.maketext('You must enter a remote host.') %]</span>
+                        </li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+        <div class="form-group">
+            <div class="row">
+                <div class="col-xs-12 col-md-6 col-lg-6">
+                    <label for="bucket">[% locale.maketext("Bucket") %]</label>
+                    <span class="info-block">[% locale.maketext("Enter the remote destination’s bucket name.") %]</span>
+                </div>
+            </div>
+            <div class="row">
+                <div class="col-xs-12 col-md-6 col-lg-6">
+                    <input type="text" name="bucket" bucket id="s3compat_bucket" class="form-control" required ng-model="destinationState.destination.s3compatible.bucket" />
+                </div>
+                <div class="col-xs-12 col-md-6 col-lg-6">
+                    <ul validation-container field-name="bucket">
+                        <li class="validation validation-error" ng-show="S3CompatibleDestination.bucket.$error.required">
+                            <span class="glyphicon glyphicon-exclamation-sign"></span>
+                            <span class="validation-message">
+                                [% locale.maketext("You must enter a bucket name for the remote destination.") %]
+                            </span>
+                        </li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+        <div class="form-group">
+            <div class="row">
+                <div class="col-xs-12 col-md-6 col-lg-6">
+                    <label for="awsAccessKeyId">[% locale.maketext("Access Key [asis,ID]") %]</label>
+                </div>
+            </div>
+            <div class="row">
+                <div class="col-xs-12 col-md-6 col-lg-6">
+                    <input type="text" name="awsAccessKeyId" id="s3compat_username" class="form-control" required ng-model="destinationState.destination.s3compatible.aws_access_key_id" />
+                </div>
+                <div class="col-xs-12 col-md-6 col-lg-6">
+                    <ul class="validation-container" ng-show="S3CompatibleDestination.awsAccessKeyId.$dirty && S3CompatibleDestination.awsAccessKeyId.$error.required">
+                        <li class="validation validation-error">
+                            <span class="glyphicon glyphicon-exclamation-sign"></span>
+                            <span class="validation-message">
+                                [% locale.maketext("You must enter an Access Key [asis,ID] for the remote destination.") %]
+                            </span>
+                        </li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+        <div class="form-group">
+            <div class="row">
+                <div class="col-xs-12 col-md-6 col-lg-6">
+                    <label for="password">[% locale.maketext("Secret Access Key") %]</label>
+                    <span class="info-block">[% locale.maketext("For security reasons, you will not see the Secret Access Key.") %] [% locale.maketext("Only enter the Secret Access Key when you create this destination, or when you change the Secret Access Key.") %]</span>
+                </div>
+            </div>
+            <div class="row">
+                <div class="col-xs-12 col-md-6 col-lg-6">
+                    <input type="password" name="password" id="s3compat_password" class="form-control" ng-required="destinationState.newMode" ng-model="destinationState.destination.s3compatible.password" />
+                </div>
+                <div class="col-xs-12 col-md-6 col-lg-6">
+                    <ul class="validation-container" ng-show="S3CompatibleDestination.password.$dirty && S3CompatibleDestination.password.$error.required">
+                        <li class="validation validation-error">
+                            <span class="glyphicon glyphicon-exclamation-sign"></span>
+                            <span class="validation-message">
+                                [% locale.maketext("You must enter the Secret Access Key for the remote destination.") %]
+                            </span>
+                        </li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+        <div class="form-group">
+            <div class="row">
+                <div class="col-xs-12 col-md-6 col-lg-6">
+                    <label for="timeout">[% locale.maketext("Timeout") %]</label>
+                    <span class="info-block">[% locale.maketext("The number of seconds that the system will wait for a response from the remote server.") %]</span>
+                </div>
+            </div>
+            <div class="row">
+                <div class="col-xs-12 col-md-6 col-lg-6">
+                    <input type="number"
+                        name="timeout"
+                        id="s3compat_timeout"
+                        class="form-control"
+                        min="30"
+                        max="300"
+                        positive-integer
+                        ng-keydown="noDecimalPoints($event)"
+                        ng-paste="onlyNumbers($event)"
+                        ng-model="destinationState.destination.s3compatible.timeout" />
+                </div>
+                <div class="col-xs-12 col-md-6 col-lg-6">
+                    <ul validation-container field-name="timeout">
+                        <li class="validation validation-error" ng-show="S3CompatibleDestination.timeout.$error.number">
+                            <span class="glyphicon glyphicon-exclamation-sign"></span>
+                            <span class="validation-message">[% locale.maketext('You must enter a positive integer for the timeout value.') %]</span>
+                        </li>
+                        <li class="validation validation-error" ng-show="S3CompatibleDestination.timeout.$error.min || S3CompatibleDestination.timeout.$error.max">
+                            <span class="glyphicon glyphicon-exclamation-sign"></span>
+                            <span class="validation-message">
+                                [% locale.maketext("You must enter a timeout value between [numf,30] and [numf,300] seconds.") %]
+                            </span>
+                        </li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+        <div class="form-group">
+            <div class="row">
+                <div class="col-xs-12">
+                    <div id="save_config">
+                        <button type="submit" id="save_destination_button" cp-action="saveDestination(destinationState.destination)" ng-disabled="S3CompatibleDestination.$pristine || S3CompatibleDestination.$invalid || destinationState.savingDestination || destinationState.validatingDestination">[% locale.maketext('Save Destination') %]</button>
+                        <button type="button" id="save_and_validate_destination_button" button-class="btn-default" cp-action="saveAndValidateDestination(destinationState.destination)" ng-disabled="S3CompatibleDestination.$pristine || S3CompatibleDestination.$invalid || destinationState.savingDestination || destinationState.validatingDestination">[% locale.maketext('Save and Validate Destination') %]</button>
+                        <button type="button" class="btn btn-link" id="cancel_destination_button" ng-click="cancelDestination()" ng-disabled="destinationState.savingDestination || destinationState.validatingDestination">[% locale.maketext('Cancel') %]</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </form>
+</div>

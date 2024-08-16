@@ -1,0 +1,89 @@
+<h3>[% locale.maketext("Email Routing for “[_1]” (The domain is owned by “[_2]”).", data.domain, data.downer) %]</h3>
+<div class="label_wraps">
+<input type="radio" name="mxcheck" id="mxcheck_auto" value="auto"
+
+    [% IF data.mxcheck == "auto" %]
+        checked="checked"
+    [% END %]
+
+/> <label
+
+
+    [% IF data.mxcheck == "auto" %]
+        style="font-weight:700;"
+    [% END %]
+
+
+for="mxcheck_auto" class="label_txt" id="mxcheck_auto_label">[% locale.maketext("Automatically Detect Configuration") %]: </label><span class="status" id="mxcheck_auto_current_setting" style="font-weight: bold">[% data.detectedtxt %]</span> [% locale.maketext("(recommended)") %] <span class="action_link" id="mxcheck_auto_toggle" onclick="CPANEL.util.toggle_more_less(this, 'mxcheck_auto_desc');">[% LOCALE.maketext("more »") %]</span><br />
+<div id="mxcheck_auto_desc" style="display: none">
+    <ul class="mxcheck_autolist">
+        <li>
+			[% locale.maketext("Local Mail Exchanger") %] <span id="mxcheck_detected_state_local"></span><br />
+			<em>[% locale.maketext('If the lowest numbered mail exchanger points to an IP address on this server, the server will be configured to accept mail locally and from outside the server.') %]</em>
+        </li>
+        <li>
+			[% locale.maketext("Backup Mail Exchanger") %] <span id="mxcheck_detected_state_secondary"></span><br />
+            <em>[% locale.maketext('If a mail exchanger that is not the lowest numbered mail exchanger points to an IP address on this server, the server will be configured to act as a backup mail exchanger.') %]</em>
+        </li>
+        <li>
+            [% locale.maketext("Remote Mail Exchanger") %] <span id="mxcheck_detected_state_remote"></span><br />
+			<em>[% locale.maketext('If there are no mail exchangers that point to an IP address on this server, the server will not accept mail locally and will send mail to the lowest MX record.') %]</em>
+        </li>
+    </ul>
+	<p>[% locale.maketext('Note: It is not possible to automatically detect an MX configuration if the MX entries do not resolve (for example, if you mistype a domain name or enter one that does not exist). If your MX configuration is set to auto and you add or edit an MX record that does not resolve, you will see a warning and the MX configuration will default to the last known setting.') %]</p>
+
+[% IF acl.all %]
+<p>[% locale.maketext("If you have IP addresses that are not bound to any network device on this server and you would like automatic selection to consider them as local, you can edit the list of additional local IP addresses [output,url,_1,here,target,_blank].", cp_security_token _ '/scripts6/editremoteipslist') %]</p>
+[% END %]
+
+</div>
+</div>
+<div class="label_wraps">
+	<input
+    [% IF data.mxcheck == "local" %]
+        checked="checked"
+    [% END %]
+
+    type="radio" name="mxcheck" id="mxcheck_local" value="local" /> <label
+
+    [% IF data.mxcheck == "local" %]
+        style="font-weight:700;"
+    [% END %]
+
+
+    for="mxcheck_local" class="label_txt" id="mxcheck_local_label">[% locale.maketext("Local Mail Exchanger") %]</label> <span class="action_link" onclick="CPANEL.util.toggle_more_less(this, 'mxcheck_local_desc');">[% LOCALE.maketext("more »") %]</span><br />
+	<div id="mxcheck_local_desc" style="display: none"><p class="highlight-accordian-desc"><em>[% locale.maketext('Configure server to always accept mail. Mail will be delivered locally on the server when sent from the server or outside the server.') %]</em></p></div>
+</div>
+<div class="label_wraps">
+	<input
+    [% IF data.mxcheck == "secondary" %]
+        checked="checked"
+    [% END %]
+
+
+        type="radio" name="mxcheck" id="mxcheck_secondary" value="secondary" /> <label
+
+    [% IF data.mxcheck == "secondary" %]
+        style="font-weight:700;"
+    [% END %]
+
+        for="mxcheck_secondary" class="label_txt" id="mxcheck_secondary_label">[% locale.maketext("Backup Mail Exchanger") %]</label> <span class="action_link" onclick="CPANEL.util.toggle_more_less(this, 'mxcheck_secondary_desc');">[% LOCALE.maketext("more »") %]</span><br />
+	<div id="mxcheck_secondary_desc" style="display: none"><p class="highlight-accordian-desc"><em>[% locale.maketext('Configure server as a backup mail exchanger. Mail will be held until a lower number mail exchanger is available.') %]</em></p></div>
+</div>
+<div class="label_wraps">
+	<input
+    [% IF data.mxcheck == "remote" %]
+        checked="checked"
+    [% END %]
+
+    type="radio" name="mxcheck" id="mxcheck_remote" value="remote" /> <label
+
+    [% IF data.mxcheck == "remote" %]
+        style="font-weight:700;"
+    [% END %]
+        class="label_txt" for="mxcheck_remote" id="mxcheck_remote_label">[% locale.maketext("Remote Mail Exchanger") %]</label> <span class="action_link" onclick="CPANEL.util.toggle_more_less(this, 'mxcheck_remote_desc');">[% LOCALE.maketext("more »") %]</span><br />
+	<div id="mxcheck_remote_desc" style="display: none"><p class="highlight-accordian-desc"><em>[% locale.maketext('Configure server to not accept mail locally and send mail to the lowest MX record.') %]</em></p></div>
+</div>
+
+    <em>[% locale.maketext("The current setting is shown in [output,strong,bold].") %]</em><br /><br />
+

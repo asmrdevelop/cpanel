@@ -1,0 +1,17 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/vzzo-fixer                      Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+# This script auto repairs /dev/urandom on virtuozzo machines
+
+if ( !-l '/dev/urandom' && ( !-e '/dev/urandom' || ( !-c '/dev/urandom' && -f '/dev/urandom' ) ) ) {
+    print "*** /dev/urandom is not a special device ***\n";
+
+    unlink '/dev/urandom';
+    system 'mknod', '/dev/urandom', 'c', '1', '9';
+
+    print "*** /dev/urandom has been repaired! ***\n";
+}

@@ -1,0 +1,40 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - bin/resetcaches                         Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package bin::resetcaches;
+
+use strict;
+use warnings;
+
+use File::Glob ();
+
+__PACKAGE__->script() unless caller();
+
+sub script {
+    my ($self) = @_;
+
+    # TODO: This modulino needs to have its core functionality moved to
+    # a module and have its test coverage improved.  Once done the
+    # install/* scripts should call the module directly instead of
+    # loading this modulino.
+    my $pwc  = ( stat('/usr/local/cpanel/Cpanel/PwCache.pm') )[9];
+    my $pwdc = ( stat('/usr/local/cpanel/Cpanel/PwDiskCache.pm') )[9];
+
+    my @FILES = File::Glob::bsd_glob('/var/cpanel/pw.cache/*');
+    foreach my $file (@FILES) {
+        my $file_mtime = ( stat($file) )[9];
+
+        next unless defined $file_mtime;
+
+        if ( $file_mtime <= $pwc || $file_mtime <= $pwdc ) {
+            print "Removing old style pw.cache file: $file\n";
+            unlink($file);
+        }
+    }
+    return;
+
+}

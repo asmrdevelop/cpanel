@@ -1,0 +1,177 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - bin/install_php_inis                    Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package bin::install_php_inis;
+
+use cPstrict;
+
+use parent qw( Cpanel::HelpfulScript );
+
+use Cpanel::Config::LoadCpConf           ();
+use Cpanel::Logger                       ();
+use Cpanel::PwCache                      ();
+use Cpanel::SafeDir::MK                  ();
+use Cpanel::AccessIds::ReducedPrivileges ();
+use Cpanel::SafeFile                     ();
+use Cpanel::Binaries                     ();
+use Cpanel::PHP::Target                  ();
+
+=encoding utf-8
+
+=head1 NAME
+
+bin::install_php_inis
+
+=head1 SYNOPSIS
+
+    install_php_inis [ --help ]
+
+=head1 DESCRIPTION
+
+This script performs the following tasks:
+
+=over
+
+=item 1.  It attempts to construct a valid CpPHP ini file if it is missing
+
+=item 2.  It propogates any changes to this file out to the php.ini files that the
+          C<phpmyadmin>, C<phppgadmin>, and C<roundcube>
+          applications use with the exception of C<session.save_path>
+
+=item 3.  It ensures that the system user for each of the aforementioned applications exists and has
+          the required directories in place
+
+=back
+
+=cut
+
+use constant _OPTIONS => ();
+
+__PACKAGE__->new(@ARGV)->script() unless caller();
+
+sub script {    ## no critic qw(Subroutines::ProhibitExcessComplexity)
+    my ($self) = @_;
+
+    $self->ensure_root();
+
+    # TODO: This modulino needs to have its core functionality moved to
+    # a module and have its test coverage improved.  Once done the
+    # install/* scripts should call the module directly instead of
+    # loading this modulino.
+    my $logger = Cpanel::Logger->new();
+
+    # abort if the php target is disabled
+    if ( !Cpanel::PHP::Target::is_target_enabled() ) {
+        $logger->warn("skipping bin/install_php_inis: RPM target for php is set to 'uninstalled'.");
+        return;
+    }
+
+    my $php = Cpanel::Binaries::path('php-cgi');
+
+    if ( !-x $php ) {
+        $logger->die('Unable to locate valid PHP for cPanel/WHM');
+    }
+
+    my $base_php_dir = Cpanel::Binaries::get_prefix("php-cgi");
+    my $cp_php_ini   = $base_php_dir . '/etc/php.ini';
+
+    # Reconstruct a valid CpPHP ini file if it is missing.
+    # Uses the template ini file: /usr/local/cpanel/3rdparty/php/<current.php.version>/etc/php.ini.dist
+    if ( !-e $cp_php_ini ) {
+        system '/usr/local/cpanel/bin/checkphpini';
+        $logger->die("No valid php.ini located at: $cp_php_ini") unless ( -e $cp_php_ini );
+    }
+
+    my $baselock = Cpanel::SafeFile::safeopen( \*BASEPHPINI, '<', $cp_php_ini );
+    if ( !$baselock ) {
+        $logger->die("Unable to read $cp_php_ini: $!");
+    }
+    my @cp_php_ini_lines = <BASEPHPINI>;
+    Cpanel::SafeFile::safeclose( \*BASEPHPINI, $baselock );
+
+    my @APPS = qw(phpmyadmin phppgadmin roundcube);
+
+    foreach my $app (@APPS) {
+        my %modified = (
+            'session.save_path' => 0,
+        );
+        my $sessiondir;
+
+        my @PW = Cpanel::PwCache::getpwnam( 'cpanel' . $app );
+        next if ( !@PW || !$PW[0] );
+
+        # Setup the sessions dir for this user.
+        my $homedir = $PW[7];
+        $sessiondir = "$homedir/sessions";
+        my $tmpdir   = "$homedir/tmp";
+        my $cachedir = "$homedir/cache";
+        foreach my $dir ( $tmpdir, $sessiondir, $cachedir ) {
+            if ( !-e $dir ) {
+                my $privs = Cpanel::AccessIds::ReducedPrivileges->new( $PW[2], $PW[3] );
+
+                my $created = [];
+                Cpanel::SafeDir::MK::safemkdir( $dir, '0700', undef, $created );
+
+                my $success = @$created && $created->[-1] eq $dir;
+                if ( !$success ) {
+                    my $type = $dir;
+                    $type =~ s{\A.*/}{}g;
+                    $logger->warn("Cannot create $type directory: $dir");
+                }
+            }
+        }
+
+        # Directory check where each app's specific ini file is located
+        if ( !-e $base_php_dir . '/etc/' . $app ) {
+
+            # The below comes out to: /usr/local/cpanel/3rdparty/php/<current.php.version>/etc/$app
+            Cpanel::SafeDir::MK::safemkdir( $base_php_dir . '/etc/' . $app, '0755' );
+        }
+
+        my $applock = Cpanel::SafeFile::safeopen( \*APPPHPINI, '>', $base_php_dir . '/etc/' . $app . '/php.ini' );
+        if ( !$applock ) {
+            $logger->warn("Unable to write $base_php_dir/etc/$app: $!");
+            next;
+        }
+
+        # Hard code these values to the given user's temp dir.
+        foreach my $line (@cp_php_ini_lines) {
+            if ( $line =~ m/^\s*session\.save_path\s*=/ ) {
+                $modified{'session.save_path'} = 1;
+                print APPPHPINI "session.save_path = $sessiondir \t; cPanel special\n";
+            }
+            elsif ( index( $line, "memory_limit" ) == 0 && $app eq 'roundcube' ) {
+
+                # respect the value set via php_memory_limit if it is > 512
+                # otherwise, set the value to 512
+                my $cpconf_ref = Cpanel::Config::LoadCpConf::loadcpconf_not_copy();
+
+                my $memory_limit = 0;
+                if ( defined $cpconf_ref->{php_memory_limit} ) {
+                    $memory_limit                                         = $cpconf_ref->{'php_memory_limit'};
+                    $memory_limit =~ s/\s*(\d+).*?$/$1/a or $memory_limit = 0;
+                    $memory_limit                                         = 512 if $memory_limit < 512;
+                    $memory_limit .= 'M';
+                }
+
+                print APPPHPINI "memory_limit = $memory_limit \t; Only required for the calendaring application -- caldav driver in particular.\n";
+            }
+            else {
+                print APPPHPINI $line;
+            }
+        }
+
+        # If it wasn't seen in the file, write it at the end.
+        foreach my $item ( keys %modified ) {
+            next if $modified{$item};
+            print APPPHPINI "session.save_path = $sessiondir \t; cPanel special\n" if $item eq 'session.save_path';
+        }
+        Cpanel::SafeFile::safeclose( \*APPPHPINI, $applock );
+    }
+
+    return;
+}

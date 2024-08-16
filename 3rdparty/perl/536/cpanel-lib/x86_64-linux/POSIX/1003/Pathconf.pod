@@ -1,0 +1,103 @@
+=encoding utf8
+
+=head1 NAME
+
+POSIX::1003::Pathconf - POSIX access to pathconf()
+
+=head1 SYNOPSIS
+
+  use POSIX::1003::Pathconf;   # import all
+
+  use POSIX::1003::Pathconf 'pathconf';
+  my $max    = pathconf($filename, '_PC_PATH_MAX');
+
+  use POSIX::1003::Pathconf '_PC_PATH_MAX';
+  my $max    = _PC_PATH_MAX($filename);
+
+  use POSIX::1003::Pathconf qw(pathconf %pathconf);
+  my $key    = $pathconf{_PC_PATH_MAX};
+  $pathconf{_PC_NEW_KEY} = $value
+  foreach my $name (keys %pathconf) ...
+
+  use POSIX::1003::Pathconf qw(fpathconf);
+  use POSIX::1003::FdIO     qw(openfd);
+  use Fcntl                 qw(O_RDONLY);
+  my $fd     = openfd $fn, O_RDONLY;
+  my $max    = fpathconf $fd, '_PC_PATH_MAX';
+  my $max    = _PC_PATH_MAX($fd);
+
+  foreach my $pc (pathconf_names) ...
+
+=head1 DESCRIPTION
+
+With C<pathconf()> you query filesystem limits for a certain existing
+location.
+
+=head1 METHODS
+
+=head1 FUNCTIONS
+
+=head2 Standard POSIX
+
+=over 4
+
+=item B<fpathconf>($fd, $name)
+
+Returns the numeric value related to the $name or C<undef>.
+
+=item B<pathconf>($filename, $name)
+
+Returns the numeric value related to the $name or C<undef>.
+
+=back
+
+=head2 Additional
+
+=over 4
+
+=item B<pathconf_names>()
+
+Returns a list with all known names, unsorted.
+
+=back
+
+=head1 CONSTANTS
+
+=over 4
+
+=item B<%pathconf>
+
+This exported variable is a tied HASH which maps C<_PC_*> names
+on unique numbers, to be used with the system's C<pathconf()>
+and C<fpathconf()> functions.
+
+The following constants where detected on your system when the
+module got installed.  The second column shows the value which
+where returned for a random file at the time.
+
+=back
+
+=for comment
+#TABLE_PATHCONF_START
+
+  During installation, a symbol table will get inserted here.
+
+=for comment
+#TABLE_PATHCONF_END
+
+=head1 SEE ALSO
+
+This module is part of POSIX-1003 distribution version 1.02,
+built on November 10, 2020. Website: F<http://perl.overmeer.net/CPAN>.  The code is based on L<POSIX>, which
+is released with Perl itself.  See also L<POSIX::Util> for
+additional functionality.
+
+=head1 COPYRIGHTS
+
+Copyrights 2011-2020 on the perl code and the related documentation
+ by [Mark Overmeer]. For other contributors see ChangeLog.
+
+This program is free software; you can redistribute it and/or modify it
+under the same terms as Perl itself.
+See F<http://dev.perl.org/licenses/>
+

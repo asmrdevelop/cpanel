@@ -1,0 +1,24 @@
+[%#
+start_time              - The epoch time when the process started
+
+end_time                - The epoch time when the process ended
+
+run_time_localized      - The duration of the process execution
+
+%][%-
+
+  PROCESS 'include/zebra_table.tmpl';
+
+  MACRO run_time_info BLOCK;
+    NOTICE.table_titles =[];
+    NOTICE.table_items = [
+      [ CPANEL.locale.maketext('Start Time:'), CPANEL.locale.datetime(NOTICE.start_time,'datetime_format_full') ],
+      [ CPANEL.locale.maketext('End Time:'), CPANEL.locale.datetime(NOTICE.end_time,'datetime_format_full') ],
+      [ CPANEL.locale.maketext('Run Time:'), NOTICE.run_time_localized ]
+    ];
+    '<p style="text-align:center">';
+      zebra_table(titles=NOTICE.table_titles, items=NOTICE.table_items, boldfirst=1);
+    '</p>';
+  END;
+
+-%]

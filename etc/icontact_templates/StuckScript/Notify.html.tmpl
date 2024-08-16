@@ -1,0 +1,55 @@
+[%# Variables passed in:
+
+  origin            - The system component from which the action originated
+  host_server       - This server's hostname
+  pid               - The PID of the script
+  file_name         - The name of the script
+  command_line_path - The path to the script
+  duration          - The specified amount of time to be used as a cutoff for this email
+  lsof              - The output of lsof
+
+  For more information about how to customize notification templates, read our documentation at https://go.cpanel.net/notificationtemplates
+
+-%]
+
+[%
+
+    PROCESS "include/colors.tmpl";
+    PROCESS "include/styles.tmpl";
+    PROCESS "include/code_inline.tmpl";
+
+    WRAPPER 'wrapper/main.html.tmpl';
+
+    NOTICE.email_reason = CPANEL.locale.maketext('A script is stuck.');
+
+  %]
+
+<p>[% CPANEL.locale.maketext( 'A script failed to complete within the allowed amount of time. If you encounter any errors during this process, submit a ticket with the following information to [output,url,_1,_2,target,_3]', 'https://go.cpanel.net/support', CPANEL.locale.maketext('[asis,cPanel] Support'), '_blank' ) %]
+</p>
+<table>
+    <tbody>
+        <tr>
+            <th align="right">[% CPANEL.locale.maketext('[output,abbr,PID,process ID]') %]:</th>
+            <td align="left" > [% NOTICE.pid %] </td>
+        </tr>
+        <tr>
+            <th align="right">[% CPANEL.locale.maketext('File Name') %]:</th>
+            <td align="left"> [% NOTICE.file_name %] </td>
+        </tr>
+        <tr>
+            <th align="right"> [% CPANEL.locale.maketext('Command Line Path') %]:</th>
+            <td align="left"> [% NOTICE.command_line_path %] </td>
+        </tr>
+        <tr>
+            <th align="right"> [% CPANEL.locale.maketext('Cutoff Time') %]:</th>
+            <td align="left"> [% NOTICE.duration %] </td>
+        </tr>
+        [% IF NOTICE.lsof %]
+        <tr>
+            <td colspan="2">[% code_inline(term=NOTICE.lsof) %]</td>
+        </tr>
+        [% END %]
+    </tbody>
+</table>
+
+[% END %]

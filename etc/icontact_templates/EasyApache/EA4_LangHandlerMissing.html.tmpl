@@ -1,0 +1,45 @@
+[%#
+Purpose
+=======
+
+This notification should be used when the EA4 subsystem finds a configuration
+where the administrator setup a web server handler for a package.  However,
+the handler is no longer installed.
+
+Notifications like this are useful when running in the background or via YUM
+hooks where the user is probably not paying attention to the screen output.
+
+For example, the administrator used YUM to remove the suphp Apache handler
+while it's currently configured for one the PHP packages.
+
+Required Variables
+==================
+
+package                 - the name of the package that contains a problem (e.g. ea-php54)
+language                - the language type of the package (e.g. php)
+webserver               - the name of the web server that is misconfigured (e.g. apache)
+missing_handler         - the web server handler that connects to the package and is no longer available (e.g. suphp)
+replacement_handler     - the web server handler that will be used in its place (e.g. cgi)
+
+For more information about how to customize notification templates, read our documentation at https://go.cpanel.net/notificationtemplates
+
+-%]
+
+[%
+    PROCESS "include/colors.tmpl";
+    PROCESS "include/styles.tmpl";
+    PROCESS "include/code_block.tmpl";
+
+    WRAPPER 'wrapper/main.html.tmpl';
+          NOTICE.email_reason = CPANEL.locale.maketext('The system detected a missing “[_1]” handler in your “[_2]” web server configuration on: [_3]', NOTICE.language, NOTICE.webserver, NOTICE.host_server);
+%]
+
+<p>
+    [% CPANEL.locale.maketext('The “[_1]”[comment,the name of the package that contains a problem (e.g. ea-php54)] “[_2]”[comment,the language type of the package (e.g. php)] package’s “[_3]”[comment,the name of the web server that is misconfigured (e.g. apache)] handler, “[_4]”[comment,the web server handler that connects to the package and is no longer available (e.g. suphp)], is missing. The “[_1]” package will revert to the “[_5]”[comment,the web server handler that will be used in its place (e.g. cgi)] “[_3]” handler.', NOTICE.package, NOTICE.language, NOTICE.webserver, NOTICE.missing_handler, NOTICE.replacement_handler ); %]
+    [% CPANEL.locale.maketext('To correct this issue, perform only one of the following steps:'); %]
+    <ul>
+        <li>[% CPANEL.locale.maketext('Reinstall the “[_1]”[comment,missing component] “[_2]”[comment,webserver missing the component] handler for the “[_3]”[comment,another related system component (not web server) impacted by the misconfiguration] package with [asis,YUM].', NOTICE.missing_handler, NOTICE.webserver, NOTICE.package ); %]
+        <li>[% CPANEL.locale.maketext('Update your “[_1]”[comment,application name] handler with the “[_2]” script.', NOTICE.webserver, '/usr/local/cpanel/bin/rebuild_phpconf' ); %]
+    </ul>
+</p>
+[% END %]

@@ -1,0 +1,108 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - bin/build_apache_conf                   Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package BuildHttpdConf;
+
+use strict;
+use warnings;
+
+=encoding utf-8
+
+=head1 NAME
+
+bin/build_apache_conf
+
+=head1 USAGE
+
+build_apache_conf [--preview] [--nolock]
+
+=head1 DESCRIPTION
+
+This script rebuilds Apache httpd’s main configuration file. Ordinarily
+you shouldn’t need to run this manually because cPanel & WHM automatically
+updates httpd’s configuration as needed.
+
+Note that this does B<NOT> restart Apache httpd, but you’ll need to do that
+in order for the new configuration file to take effect. To restart httpd,
+run C</scripts/restartsrv_httpd>.
+
+Options are:
+
+=over
+
+=item * C<--preview> - Creates a file named F<httpd-preview.conf> rather
+than the standard F<httpd.conf>, which allows you to inspect the file
+rather than having it be active right away.
+
+=item * C<--nolock> - Ordinarily httpd.conf is locked while it is being
+rebuilt to ensure that two processes don’t attempt the rebuild
+concurrently. This flag suppresses that lock. You ordinarily should not
+do this.
+
+=back
+
+=cut
+
+use parent qw( Cpanel::HelpfulScript );
+
+use Cpanel::ConfigFiles::Apache ();
+use Cpanel::Server::Type        ();
+use Cpanel::ApacheConf::Rebuild ();
+use Cpanel::Hooks               ();
+
+use constant _OPTIONS => (
+    'preview',
+    'nolock',
+);
+
+our $apache_conf;
+
+if ( !caller ) {
+
+    if ( Cpanel::Server::Type::is_dnsonly() ) {
+        print "$0 does nothing under DNSONLY.\n";
+    }
+    else {
+        __PACKAGE__->new(@ARGV)->run();
+        print "Built $apache_conf OK\n";
+    }
+}
+
+sub run {
+    my ($self) = @_;
+
+    my $apacheconf = Cpanel::ConfigFiles::Apache->new();
+
+    $apache_conf = $apacheconf->file_conf();
+    if ( $self->getopt('preview') ) {
+        $apache_conf =~ s/httpd\.conf/httpd-preview.conf/;
+    }
+
+    my $no_lock = $self->getopt('nolock');
+
+    Cpanel::Hooks::hook(
+        {
+            'category' => 'scripts',
+            'event'    => "build_apache_conf",
+            'stage'    => "pre",
+        },
+    );
+
+    Cpanel::ApacheConf::Rebuild::rebuild_full_http_conf( $apache_conf, 0, $no_lock ? $Cpanel::ApacheConf::Rebuild::NO_LOCK : $Cpanel::ApacheConf::Rebuild::LOCK );
+
+    Cpanel::Hooks::hook(
+        {
+            'category' => 'scripts',
+            'event'    => "build_apache_conf",
+            'stage'    => "post",
+        },
+    );
+
+    return;
+}
+
+1;

@@ -1,0 +1,142 @@
+<div class="row">
+    <div class="col-xs-12">
+        <h2 class="view-heading">[% locale.maketext("Review") %]</h2>
+        <div class="row">
+            <div class="col-xs-12">
+                <p id="gettingResultsText"
+                    ng-show="gettingResults"
+                    class="alert alert-info"
+                    role="alert"
+                    ng-cloak>
+                    <span id="spinner_review" class="fas fa-spinner fa-spin"
+                        title="[% locale.maketext('Preparing for review …') %]">
+                    </span>
+                    [% locale.maketext('Preparing selected packages for review …') %]
+                </p>
+            </div>
+        </div>
+        <div class="row" ng-hide="gettingResults">
+            <div class="col-xs-12">
+                <div id="apiErrorMessage"
+                    class="alert alert-danger"
+                    role="alert"
+                    ng-show="apiError">
+                    <strong>
+                        [% locale.maketext("Update Error:") %]
+                    </strong>
+                    {{ yumErrorMessage }}
+                </div>
+                <!-- INSTALL PKGS CONTAINER -->
+                <div class="panel panel-success">
+                    <div class="panel-heading">
+                        <h3>[% locale.maketext("Please review the following list of packages you are about to install by provisioning this profile.") %]</h3>
+                    </div>
+                    <div class="panel-body">
+                        <ul id="installList" class="list-unstyled list-inline">
+                            <li ng-repeat="package in installList track by $index" class="col-xs-4">
+                                {{ package }}
+                            </li>
+                        </ul>
+                        <p class="help-block"
+                            ng-show="!installList.length">
+                            [% locale.maketext("There are no packages to be installed.") %]
+                        </p>
+                    </div>
+                </div>
+                <!-- UPGRADE PKGS CONTAINER -->
+                <div class="panel panel-info">
+                    <div class="panel-heading">
+                        <h3>[% locale.maketext("Please review the following list of packages you are about to upgrade by provisioning this profile.") %]</h3>
+                    </div>
+                    <div class="panel-body">
+                        <ul id="upgradeList"
+                            class="list-unstyled list-inline">
+                            <li ng-repeat="package in upgradeList track by $index" class="col-xs-4">
+                                {{ package }}
+                            </li>
+                        </ul>
+                        <p class="help-block" ng-show="!upgradeList.length">
+                            [% locale.maketext("There are no packages to be upgraded.") %]
+                        </p>
+                    </div>
+                </div>
+                <!-- UNINSTALL PKGS CONTAINER -->
+                <div class="panel panel-warning">
+                    <div class="panel-heading">
+                        <h3>[% locale.maketext("Please review the following list of packages you are about to uninstall by provisioning this profile.") %]</h3>
+                    </div>
+                    <div class="panel-body">
+                        <ul id="uninstallList" class="list-unstyled list-inline">
+                            <li ng-repeat="package in uninstallList track by $index" class="col-xs-4">
+                                {{ package }}
+                            </li>
+                        </ul>
+                        <p class="help-block" ng-show="!uninstallList.length">
+                            [% locale.maketext("There are no packages to be uninstalled.") %]
+                        </p>
+                    </div>
+                </div>
+                <!-- UNAFFECTED PKGS CONTAINER -->
+                <div class="panel panel-default">
+                    <div class="panel-heading">
+                        <h3>[% locale.maketext("These packages will not be affected by provisioning this profile.") %]</h3>
+                    </div>
+                    <div class="panel-body">
+                        <ul id="unaffectedList" class="list-unstyled list-inline">
+                            <li ng-repeat="package in existingList track by $index" class="col-xs-4">
+                                {{ package }}
+                            </li>
+                        </ul>
+                        <p class="help-block" ng-show="!existingList.length">
+                            [% locale.maketext("There are no packages remaining unchanged.") %]
+                        </p>
+                    </div>
+                </div>
+                <p id="noChangeText"
+                    class="alert alert-info"
+                    ng-show="noActionRequired">
+                    [% locale.maketext("There are no changes needed to provision based on the profile of your selection.") %]
+                </p>
+                <!-- Save as profile directive -->
+                <div class="row">
+                    <div class="col-xs-12" ng-show="customize.saveProfilePopup.showBottom">
+                        <div class="pop-over bottom">
+                            <save-as-profile id-prefix="saveProfile"
+                                position="{{ customize.saveProfilePopup.position }}"
+                                packages="customize.selectedPkgs"
+                                show="{{ customize.saveProfilePopup.showTop || customize.saveProfilePopup.showBottom }}"
+                                on-cancel="customize.clearSaveProfilePopup(customize.saveProfilePopup.position)">
+                            </save-as-profile>
+                        </div>
+                    </div>
+                </div>
+                <!-- ACTIONS CONTAINER -->
+                <a id="provisionButton"
+                    href="provision"
+                    class="btn btn-primary"
+                    ng-disabled="!readyToProvision">
+                    [% locale.maketext("Provision") %]
+                </a>
+                <button id="btnSaveAsProfileBottom"
+                    class="btn btn-default"
+                    ng-show="customize.wizard.showWizard"
+                    ng-disabled="customize.saveProfilePopup.showTop || customize.saveProfilePopup.showBottom"
+                    ng-click="customize.showsaveProfilePopup('bottom')"
+                    type="button"
+                    data-toggle="collapse"
+                    data-target="#saveProfilePopup"
+                    aria-expanded="false"
+                    aria-controls="saveProfilePopup">
+                    <span class="far fa-save"></span>
+                    [% locale.maketext("Save as profile[comment,button title]") %]
+                </button>
+                <a id="cancelLink"
+                    href="javascript:void(0)"
+                    ng-click="cancel()"
+                    class="btn btn-link">
+                    [% locale.maketext("Cancel") %]
+                </a>
+            </div>
+        </div>
+    </div>
+</div>

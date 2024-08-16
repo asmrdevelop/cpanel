@@ -1,0 +1,207 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/builddovecotconf                Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::builddovecotconf;
+
+use strict;
+
+use Cpanel::Config::LoadCpConf        ();
+use Cpanel::AdvConfig                 ();
+use Cpanel::AdvConfig::dovecot        ();
+use Cpanel::AdvConfig::dovecot::utils ();
+use Cpanel::Usage                     ();
+use Cpanel::FileUtils::TouchFile      ();
+use Cpanel::Autodie                   ();
+use Cpanel::FileUtils::Access         ();
+use Cpanel::Mkdir                     ();
+use Cpanel::Rand                      ();
+use Cpanel::Rand::Get                 ();
+use Cpanel::Dovecot                   ();
+use DBI                               ();
+use DBD::SQLite                       ();
+use Cpanel::DBI::SQLite               ();
+use Cpanel::LoadModule                ();
+
+use Try::Tiny;
+
+our $CONF_PERMS = 0644;
+
+__PACKAGE__->script(@ARGV) unless caller();
+
+sub script {
+    my ( $class, @args ) = @_;
+    my $force        = 0;
+    my $leave_broken = 0;
+    my $now          = time();
+
+    Cpanel::Usage::wrap_options( \@args, \&usage, { 'force' => \$force, 'leave-broken' => \$leave_broken } );
+
+    my $cpconf_ref = Cpanel::Config::LoadCpConf::loadcpconf();
+
+    if ( $> != 0 ) {
+        die "Insufficient permissions to rebuild dovecot.conf";
+    }
+
+    my $dovecot_conf = Cpanel::AdvConfig::dovecot::utils::find_dovecot_conf();
+
+    my $test_dovecot_conf = Cpanel::Rand::get_tmp_file_by_name($dovecot_conf);
+    die 'Failed to get a temporary working file!' if ( $test_dovecot_conf eq '/dev/null' );
+    chmod( $CONF_PERMS, $test_dovecot_conf ) or die "Could not set permissions on $test_dovecot_conf: $!";
+
+    # make sure the local template is valid
+    _check_local_template() if !$leave_broken;
+
+    my $values_to_change = _generate_config_and_check_syntax( $force, $test_dovecot_conf, $dovecot_conf, $leave_broken );
+
+    # If dovecot complained certain values are too low, we need to adjust them
+    if ( scalar keys %$values_to_change ) {
+
+        _generate_config_and_check_syntax( $force, $test_dovecot_conf, $dovecot_conf, $leave_broken, $values_to_change );
+    }
+
+    # This will be cached, so there's no big hit
+    my $conf_hr = Cpanel::AdvConfig::dovecot::get_config();
+    if ( $conf_hr->{'protocols'} =~ /imap(\s|$)/ ) {
+        unlink '/var/cpanel/imap_tcp_check_disabled' if ( -e '/var/cpanel/imap_tcp_check_disabled' );
+    }
+    else {
+        Cpanel::FileUtils::TouchFile::touchfile('/var/cpanel/imap_tcp_check_disabled') unless ( -e '/var/cpanel/imap_tcp_check_disabled' );
+    }
+
+    _setup_dovecot_dirs();
+    _setup_sqlite_dbs();
+
+    Cpanel::AdvConfig::dovecot::process_config_changes($conf_hr);
+
+    rename $test_dovecot_conf, $dovecot_conf or do {
+        warn "Failed to install $dovecot_conf: $!";
+    };
+    unlink $dovecot_conf . '.datastore';    # Just in case
+
+    _build_includes();
+
+    return 1;
+}
+
+sub _build_includes {
+
+    for my $include ( 'dovecotSSL', 'dovecotSNI' ) {
+
+        try {
+            my $module = "Cpanel::AdvConfig::$include";
+            Cpanel::LoadModule::load_perl_module($module);
+            $module->new()->rebuild_conf();
+        }
+        catch {
+            warn "The system failed to rebuild Dovecot’s $include configuration file:\n$_";
+        };
+    }
+
+    return 1;
+}
+
+sub _generate_config_and_check_syntax {
+    my ( $force, $test_dovecot_conf, $dovecot_conf, $leave_broken, $values_to_change ) = @_;
+
+    my $config_opts_hr = { 'service' => 'dovecot', 'force' => $force, '_target_conf_file' => $test_dovecot_conf };
+    if ( $values_to_change and ref $values_to_change eq 'HASH' ) {
+        $config_opts_hr->{'values_to_change'} = $values_to_change;
+    }
+
+    my ( $returnval, $message ) = Cpanel::AdvConfig::generate_config_file($config_opts_hr);
+    if ( !$returnval ) {
+        print "Failed to build $dovecot_conf\n$message\n";
+        unlink $test_dovecot_conf;
+        exit 1;
+    }
+
+    ( $returnval, $message, my $new_values_to_change ) = Cpanel::AdvConfig::dovecot::check_syntax($test_dovecot_conf);
+
+    if ( !$returnval ) {
+        print <<"EOM";
+Configuration generation failed with the following message:
+
+$message
+
+EOM
+        unless ($force) {
+            unlink $test_dovecot_conf unless ($leave_broken);
+            exit 1;
+        }
+    }
+
+    return $new_values_to_change;
+}
+
+sub usage {
+    print <<EO_USAGE;
+Usage: builddovecotconf [options]
+
+    Options:
+      --help          Brief help message
+      --force         Force installation of new conf file even if syntax check fails
+      --leave-broken  Leave broken dovecot.conf on the disk so that it can be manually examined
+EO_USAGE
+    exit 0;
+}
+
+# Check the local template to make sure it is valid
+sub _check_local_template {
+
+    my ( $valid_or_not_found, @errs ) = Cpanel::AdvConfig::dovecot::check_if_local_template_is_valid();
+
+    return 1 if $valid_or_not_found;
+
+    my ( $local_template, $error ) = Cpanel::AdvConfig::dovecot::get_template_file();
+    if ( !$local_template ) {
+        print $error . "\n";
+        return;
+    }
+
+    my $attempts        = 1;
+    my $broken_template = _generate_broken_local_template_name($local_template);
+    while ( -e $broken_template && $attempts < 11 ) {
+        sleep(1);
+        $broken_template = _generate_broken_local_template_name($local_template);
+    }
+
+    if ( -e $broken_template ) {
+        print "The local template file '$local_template' is invalid, but the system was unable to determine an unused filename to rename it to.\n";
+        return;
+    }
+
+    print "The local template file '$local_template' is invalid. The system will rename it to $broken_template.\n";
+
+    # yes, there is a small race condition here, but I'm betting we never hit it unless we start calling this script a lot more
+    rename $local_template, $broken_template;
+
+    Cpanel::AdvConfig::dovecot::send_icontact( $broken_template, @errs );
+
+    return;
+}
+
+sub _generate_broken_local_template_name {
+    my ($local_template) = @_;
+
+    return $local_template . '.broken.' . time . '.' . Cpanel::Rand::Get::getranddata(16);
+}
+
+sub _setup_dovecot_dirs {
+    Cpanel::Mkdir::ensure_directory_existence_and_mode( $Cpanel::Dovecot::CP_DOVECOT_STORAGE, 0770 );
+    Cpanel::FileUtils::Access::ensure_mode_and_owner( $Cpanel::Dovecot::CP_DOVECOT_STORAGE, 0770, 'dovecot' );
+    Cpanel::Mkdir::ensure_directory_existence_and_mode( $Cpanel::Dovecot::LASTLOGIN_DIR, 0700 );
+    Cpanel::FileUtils::Access::ensure_mode_and_owner( $Cpanel::Dovecot::LASTLOGIN_DIR, 0700, 'dovecot' );
+    return 1;
+}
+
+sub _setup_sqlite_dbs {
+    Cpanel::Autodie::unlink_if_exists($Cpanel::Dovecot::SQLITE_LASTLOGIN_DB_FILE);
+
+    return 1;
+}
+
+1;

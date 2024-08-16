@@ -1,0 +1,74 @@
+<div class="loading" ng-show="loadingUser">
+        <p class="alert alert-info col-xs-12">
+            <span><i class="fas fa-spinner fa-spin"></i> [% locale.maketext('Loading …') %]</span>
+        </p>
+    </div>
+<div ng-if="user">
+    <div id="editor" class="panel panel-primary" ng-hide="loadingUser">
+        <div class="panel-heading">
+            <h3 class="panel-title">[% locale.maketext('Manage the authentication for “[_1]”', '{{ user.username }}') %]</h3>
+        </div>
+        <div class="panel-body">
+            <div class="section-body">
+                <table class="table table-striped responsive-table">
+                    <thead>
+                        <tr>
+                            <th colspan="2">[% locale.maketext("Authentication Method"); %]</th>
+                            <th class="unlink-th">[% locale.maketext("Unlink"); %]</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr ng-repeat="link in user_links">
+                            <td data-title="" class="auth-icon-td">
+                                <span
+                                    ng-if="!link.subject_unique_identifier"
+                                    ng-style="{
+                                        'background-image': 'url(data:{{link.icon_type}};base64,{{ link.icon }})',
+                                        'background-color':'#{{link.color}}',
+                                        'color':'#{{link.textcolor}}'
+                                    }"
+                                    class='provider-link-icon provider-link-icon-large'
+                                    title="{{provider.display_name}}"
+                                >
+                                </span>
+                            </td>
+                            <td data-title="Authentication Method" ng-bind="link.display_name"></td>
+                            <td data-title="">
+                                <button ng-if="link.subject_unique_identifier" class="btn btn-link" ng-click="unlink_provider(link.subject_unique_identifier, link.provider_key)">
+                                    <span class="glyphicon glyphicon-remove"></span>
+                                    [% locale.maketext("Unlink"); %]
+                                </button>
+                            </td>
+                        </tr>
+                        <tr ng-hide="user_links.length" class="info empty-row">
+                            <td colspan="3">[% locale.maketext("There are no alternative authentication methods for this user.") %]</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+    <button class="btn btn-primary" ng-hide="loadingUser" ng-click="return_to_list()">
+        [% locale.maketext("Go Back"); %]
+    </button>
+    <script type="text/ng-template" id="confirmproviderunlink.html">
+        <div class="modal-header">
+            <h4>
+            <span class="glyphicon glyphicon-check"></span>
+            <span class="confirmMessage">[% locale.maketext('Confirm Unlink') %]</span></h4>
+        </div>
+        <div class="modal-body">
+            [% locale.maketext("Are you sure that you want to remove the “[_1]” authentication linkage for “[_2]”?","{{provider}}","{{username}}") %]
+        </div>
+        <div class="modal-footer">
+            <button type="button"
+                id="modalContinueBtn"
+                class="btn btn-primary btn-sm"
+                ng-click="$close(currentProfileName);">[% locale.maketext('Unlink') %]</button>
+            <button type="button"
+                id="modalCancelBtn"
+                class="btn btn-link btn-sm"
+                ng-click="$dismiss();">[% locale.maketext('Cancel') %]</button>
+        </div>
+    </script>
+</div>

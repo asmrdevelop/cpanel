@@ -1,0 +1,143 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/build_cpnat                     Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::build_cpnat;
+
+use strict;
+use warnings;
+
+use Cpanel::Config::SaveWwwAcctConf ();
+use Cpanel::Config::LoadWwwAcctConf ();
+use Cpanel::NAT                     ();
+use Cpanel::NAT::Discovery          ();
+use Cpanel::NAT::Build              ();
+use Cpanel::Usage                   ();
+use Cpanel::Debug                   ();
+
+exit( run(@ARGV) ) unless caller();
+
+sub run {
+
+    my $man_page = 0;
+    my %opts     = (
+        'man' => \$man_page,
+    );
+
+    Cpanel::Usage::wrap_options( \@ARGV, \&usage, \%opts );
+
+    return man() if $man_page;
+
+    my $failures;
+
+    my $cp_nat = Cpanel::NAT::Discovery->new();
+
+    eval {
+        $failures = $cp_nat->discover();
+
+        validate_wwwacct_conf();
+    };
+
+    if ($@) {
+        die $@;
+    }
+
+    Cpanel::NAT::Build::update();
+
+    if ( keys %$failures ) {
+        return 1;
+    }
+    return 0;
+}
+
+sub usage {
+    my $prog = $0;
+    $prog =~ s{^.+/(.+)$}{$1};
+    print <<EOH;
+
+$prog
+
+    enables 1-to-1 NAT in cPanel/WHM.
+
+$prog [options]
+
+  Options:
+    --help        print help message
+    --man         print man page
+EOH
+    exit 0;
+}
+
+sub validate_wwwacct_conf {
+    my $wwwacct    = Cpanel::Config::LoadWwwAcctConf::loadwwwacctconf();
+    my $primary_ip = $wwwacct->{'ADDR'};
+
+    return unless $primary_ip;
+
+    my $local_ip = Cpanel::NAT::get_local_ip($primary_ip);
+    return if ( $primary_ip eq $local_ip );
+
+    # wwwacct.conf had to be fixed.
+    Cpanel::Debug::log_info("Updating /etc/wwwacct.conf primary IP (ADDR) from $primary_ip to $local_ip. Local IPs, not public should be stored in most configuration files.");
+    $wwwacct->{'ADDR'} = $local_ip;
+    Cpanel::Config::SaveWwwAcctConf::savewwwacctconf($wwwacct);
+
+    return;
+}
+
+sub man {
+    {
+        exec( "perldoc", $0 );
+    }
+    exit 0;
+}
+
+1;
+
+__END__
+
+=head1 NAME
+
+build_cpnat - enables 1-to-1 NAT in cPanel/WHM.
+
+=head1 SYNOPSIS
+
+build_cpnat [options]
+
+  Options:
+    --help        print help message
+
+=head1 DESCRIPTION
+
+1:1 NAT mapping
+
+When /usr/local/cpanel/scripts/build_cpnat is executed, all non-loopback IPs
+bound to any network interface on the system will be used to make a connection
+to a remote cPanel webserver. The remote cPanel webserver will return one public
+IP for each non-loopback IP that is sent. The list of the public IPs that are
+associated with the internal IPs will be written to the I</var/cpanel/cpnat>
+file one mapping per line: local_ip remote_ip
+
+=over
+
+=item * Lines in I</var/cpanel/cpnat> with only one IP will be ignored by cPanel/WHM
+because they are determined to not be publically accessible.
+
+=item * If multipe internal IPs match the same public IP, the first internal
+IP listed in the I</var/cpanel/cpnat> file will be used.
+
+=back
+
+By default, this script will use the L<http://myip.cpanel.net/v1.0/> URL
+to detect the public IP addresses that correspond to your local IP addresses. If
+you wish to override this URL, you can add an entry to the I</etc/cpsources.conf> file
+corresponding to the 'MYIP' key (example below):
+
+    MYIP=http://myip.cpanel.net/v1.0/
+
+NOTE: This URL must return B<only> the IP address of the client connection.
+
+=cut

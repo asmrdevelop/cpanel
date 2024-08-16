@@ -1,0 +1,74 @@
+#!/bin/bash
+#
+# chkconfig: 35 95 10
+# description: This is the cpanel webserver and chat.
+# processname: cpaneld
+# pidfile: /var/run/cpanel.pid
+
+# Source function library.
+if [ -f /etc/init.d/functions ]; then
+  . /etc/init.d/functions
+else
+  echo "Could not find functions file, your system may be broken"
+  exit 1
+fi
+
+NAME="cpanel"
+PROG="/usr/local/cpanel/etc/init/startup"
+PIDFILE="/var/run/$NAME.pid"
+
+LANG=C
+RETVAL=0
+
+if [ ! -x "$PROG" ]; then
+    echo "Could not find or execute startup script: $PROG"
+    exit 1
+fi
+
+# See how we were called.
+case "$1" in
+  start)
+    echo "Starting $NAME: "
+    daemon $PROG
+    ;;
+  stop)
+    action "Stopping tailwatchd: " /usr/local/cpanel/etc/init/stoptailwatchd --no-verbose
+    action "Stopping cPanel services: " /usr/local/cpanel/etc/init/stopcpsrvd --no-verbose
+    action "Stopping cPanel dav services: " /usr/local/cpanel/etc/init/stopcpdavd --no-verbose
+    action "Stopping cPanel queue services: " /usr/local/cpanel/etc/init/stopqueueprocd --no-verbose
+    action "Stopping cPanel brute force detector services: " /usr/local/cpanel/etc/init/stopcphulkd --no-verbose
+    /usr/local/cpanel/scripts/restartsrv_dnsadmin --status >/dev/null 2>&1
+    if [ "x$?" == "x0" ]; then
+        action "Stopping dnsadmin services: " /usr/local/cpanel/scripts/restartsrv_dnsadmin --no-verbose --stop
+    fi
+    echo -n "Stopping cPanel log services: "
+    [ -x /usr/bin/pkill ] && /usr/bin/pkill cpanellogd || killproc cpanellogd
+    echo
+    echo
+    if [ -e "/usr/local/cpanel/3rdparty/mailman/data/master-qrunner.pid" ]; then
+        action "Stopping mailman services: " /usr/local/cpanel/etc/init/stopmailman --no-verbose
+    fi
+    ;;
+  status)
+    OK=1
+    if ! status cpsrvd; then
+        OK=0
+    fi
+    if [ -e "/usr/local/cpanel/3rdparty/mailman/bin/mailmanctl" ]; then
+        /usr/local/cpanel/scripts/restartsrv_mailman --status >/dev/null 2>&1
+        if [ "x$?" != "x0" ]; then
+            OK=0
+        fi
+    fi
+    [ "x$OK" = 'x1' ] || /bin/false
+    ;;
+  restart)
+    $0 stop
+    $0 start
+    ;;
+  *)
+    echo "Usage: $0 {start|stop|status|restart}"
+    exit 1
+esac
+
+exit

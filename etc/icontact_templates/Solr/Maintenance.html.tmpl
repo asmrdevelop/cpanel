@@ -1,0 +1,30 @@
+[%#
+Variables passed in:
+
+origin      - The origin of this warning.
+actions     - The actions in the maintenance script that failed.
+
+For more information about how to customize notification templates, read our documentation at https://go.cpanel.net/notificationtemplates
+
+-%]
+
+[%
+    PROCESS "include/colors.tmpl";
+    PROCESS "include/styles.tmpl";
+    PROCESS "include/zebra_table.tmpl";
+    WRAPPER 'wrapper/main.html.tmpl';
+%]
+
+<p>[% CPANEL.locale.maketext('[numerate,_1,A task,Tasks] failed during [asis,Apache] [asis,Solr] maintenance.', NOTICE.actions.list('values').size) %]</p>
+<p>[% CPANEL.locale.maketext('The [asis,Apache] [asis,Solr] maintenance script runs nightly to help optimize its performance. Problems with the [asis,Solr] index file may cause failures in this script.') %]</p>
+<p>[% CPANEL.locale.maketext('For more information about this error, read our [output,url,_1,_2].', "https://go.cpanel.net/solr-maintenance-errors", "documentation") %]</p>
+<p>[% CPANEL.locale.maketext('To rebuild the [asis,Solr] index file, log in to the server as the root user and run the script:') %]</p>
+<p><span style="border: 1px solid [% dark_gray %]; background-color: [% medium_gray %]; padding: 5px;font-weight:bold;font-family: [% mono_font_family %]">/usr/local/cpanel/3rdparty/scripts/cpanel_dovecot_solr_rebuild_index</span></p>
+[% FOREACH task IN NOTICE.actions.list('keys') %]
+    [%
+        SET title_text = CPANEL.get_icon('warn') _ " The " _ task _ " task failed with the following error:";
+        zebra_table(items=NOTICE.actions.$task.list('values'), titles=title_text);
+    %]
+[% END %]
+
+[% END #wrapper %]

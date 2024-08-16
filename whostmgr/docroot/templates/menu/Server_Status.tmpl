@@ -1,0 +1,64 @@
+[%# This file is generated automatically.
+Do not edit it manually; instead, edit the /usr/local/cpanel/whostmgr/docroot/themes/x/dynamicui.conf file. -%]
+[% WRAPPER 'master_templates/master.tmpl'
+    theme="bootstrap"
+    app_key="server_status"
+ -%]
+[% USE Whostmgr -%]
+[% USE JSON -%]
+[% USE EasyApache -%]
+[% USE VarCache -%]
+[% USE ServerRoles -%]
+[% USE Services -%]
+[% USE CPOS -%]
+
+[% varcache.set('checkacl_all',Whostmgr.checkacl('all')); %]
+[% varcache.set('dnsonly',Whostmgr.dnsonly()); %]
+
+                <div id="iconSea" class="panel-body icon-container-body">
+[% IF (varcache.checkacl_all) && !varcache.dnsonly && ServerRoles.is_role_enabled('WebServer') -%]
+    [% varcache.set('locale_str',locale.makevar("Apache Status")) %]<div class="item" data-page-type="feature">
+        <a class="item-link" href="[% cp_security_token %]/scripts2/apachestatus" target="" title='[% varcache.locale_str -%]'>
+            <img class="itemImageWrapper" src="[% Whostmgr.get_icon_url('icons/apache_status.svg') %]" alt="[% varcache.locale_str -%]" />
+            <span class="itemTextWrapper">[% varcache.locale_str -%]</span>
+        </a>
+    </div>
+[% END %]
+
+[% IF (varcache.checkacl_all) && !varcache.dnsonly -%]
+    [% varcache.set('locale_str',locale.makevar("Daily Process Log")) %]<div class="item" data-page-type="feature">
+        <a class="item-link" href="[% cp_security_token %]/scripts2/showcpuusage" target="" title='[% varcache.locale_str -%]'>
+            <img class="itemImageWrapper" src="[% Whostmgr.get_icon_url('icons/daily_process_log.svg') %]" alt="[% varcache.locale_str -%]" />
+            <span class="itemTextWrapper">[% varcache.locale_str -%]</span>
+        </a>
+    </div>
+[% END %]
+
+[% IF (varcache.checkacl_all || Whostmgr.checkacl('stats')) && !varcache.dnsonly -%]
+    [% varcache.set('locale_str',locale.makevar("Server Information")) %]<div class="item" data-page-type="feature">
+        <a class="item-link" href="[% cp_security_token %]/scripts/serverstats" target="" title='[% varcache.locale_str -%]'>
+            <img class="itemImageWrapper" src="[% Whostmgr.get_icon_url('icons/server_information.svg') %]" alt="[% varcache.locale_str -%]" />
+            <span class="itemTextWrapper">[% varcache.locale_str -%]</span>
+        </a>
+    </div>
+[% END %]
+
+[% IF (varcache.checkacl_all || Whostmgr.checkacl('status')) && !varcache.dnsonly -%]
+    [% varcache.set('locale_str',locale.makevar("Service Status")) %]<div class="item" data-page-type="feature">
+        <a class="item-link" href="[% cp_security_token %]/scripts/servup" target="" title='[% varcache.locale_str -%]'>
+            <img class="itemImageWrapper" src="[% Whostmgr.get_icon_url('icons/service_status.svg') %]" alt="[% varcache.locale_str -%]" />
+            <span class="itemTextWrapper">[% varcache.locale_str -%]</span>
+        </a>
+    </div>
+[% END %]
+
+[% IF (varcache.checkacl_all) && !varcache.dnsonly -%]
+    [% varcache.set('locale_str',locale.makevar("Task Queue Monitor")) %]<div class="item" data-page-type="feature">
+        <a class="item-link" href="[% cp_security_token %]/scripts12/task_queue_monitor" target="" title='[% varcache.locale_str -%]'>
+            <img class="itemImageWrapper" src="[% Whostmgr.get_icon_url('icons/task_queue_monitor.svg') %]" alt="[% varcache.locale_str -%]" />
+            <span class="itemTextWrapper">[% varcache.locale_str -%]</span>
+        </a>
+    </div>
+[% END %]
+</div>
+[% END -%]

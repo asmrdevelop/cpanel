@@ -1,0 +1,13 @@
+  warn
+    log_message = "Number of RCPT commands exceeds hard limit"
+    condition = ${if > {${eval:$rcpt_count}}{[% VALUE %]}{1}{0}}
+    set acl_m7 = 1
+
+  warn
+    condition = ${if eq {${acl_m7}}{1}{1}{0}}
+    ratelimit = 0 / 1h / strict / per_conn
+    log_message = "Increment Connection Ratelimit - $sender_fullhost because of RCPT command abuse"
+
+  drop
+    condition = ${if eq {${acl_m7}}{1}{1}{0}}
+    message = Too many recipients specified.  Come back in a few hours.

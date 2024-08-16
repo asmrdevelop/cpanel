@@ -1,0 +1,276 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/notify_expiring_certificates    Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::notify_expiring_certificates;
+
+use strict;
+use warnings;
+
+=encoding utf-8
+
+=head1 USAGE
+
+    notify_expiring_certificates [ --help ]
+
+=head1 DESCRIPTION
+
+This script checks for expiring SSL certificates and sends notifications
+to user and admin for certificates that are about to expire or have already
+expired.
+
+This script does nothing if C<notify_expiring_certificates> is disabled
+in Tweak Settings.
+
+=cut
+
+use parent qw( Cpanel::HelpfulScript );
+
+use Cpanel::Time::ISO                       ();
+use Cpanel::Update::Recent                  ();
+use Cpanel::Apache::TLS::Index              ();
+use Cpanel::Apache::TLS                     ();
+use Cpanel::SSL::Objects::Certificate::File ();
+use Cpanel::SSL::Auto::Config::Read         ();
+use Cpanel::SSL::Notify                     ();
+use Cpanel::Transaction::File::JSON         ();
+use Cpanel::Config::LoadCpConf              ();
+use Cpanel::AcctUtils::DomainOwner::Tiny    ();
+use Cpanel::AcctUtils::Suspended            ();
+use Cpanel::Features::Check                 ();
+use Cpanel::Domain::Owner                   ();
+use Cpanel::LinkedNode::AccountCache        ();
+use Cpanel::PromiseUtils                    ();
+
+use Try::Tiny;
+
+our $LAST_NOTIFY_RUN_FILE = '/var/cpanel/ssl/notify_expiring_certificates.json';
+
+use constant DAY_IN_SECONDS => 86400;
+
+use constant _OPTIONS => ();
+
+run(@ARGV) if !caller;
+
+sub run {
+    my (@args) = @_;
+
+    return 1 if $ENV{'CPANEL_BASE_INSTALL'};
+
+    #Instantiate this to process --help and other args.
+    my $self = __PACKAGE__->new(@args);
+
+    return 0 unless Cpanel::Config::LoadCpConf::loadcpconf_not_copy()->{'notify_expiring_certificates'};
+
+    return $self->script();
+}
+
+sub _time { return time(); }    # for tests
+
+sub script {
+    my ($self) = @_;
+
+    # This is a no-op if there are no certificates installed.
+    return if !@{ [ Cpanel::Apache::TLS->get_tls_vhosts() ] };
+
+    Cpanel::AcctUtils::DomainOwner::Tiny::build_domain_cache() if !$Cpanel::AcctUtils::DomainOwner::Tiny::CACHE_IS_SET;
+
+    my $atls_idx       = Cpanel::Apache::TLS::Index->new();
+    my $all_records_ar = $atls_idx->get_all_ar();
+    my $now            = _time();                             # make sure all the notification checks are for the same time
+
+    my $trans         = Cpanel::Transaction::File::JSON->new( path => $LAST_NOTIFY_RUN_FILE );
+    my $last_run_data = $trans->get_data();
+    if ( ref $last_run_data ne 'HASH' ) {
+        $trans->set_data( {} );
+        $last_run_data = $trans->get_data();
+    }
+
+    $last_run_data->{'notify_history_by_uniq_key'} ||= {};
+    $last_run_data->{'last_notified_time'} = $now;
+
+    my $notify_history_by_uniq_id_hr = $last_run_data->{'notify_history_by_uniq_key'};
+
+    _delete_notify_history_for_uniq_keys_that_no_longer_exist( $notify_history_by_uniq_id_hr, $all_records_ar );
+
+    _notify_and_remember_for_each_vhost_if_needed( $now, $notify_history_by_uniq_id_hr, $all_records_ar );
+
+    $trans->save_and_close_or_die();
+
+    return 1;
+}
+
+# We need a uniq key for each entry to track if
+# we have sent a notification for each interval
+# that we can delete when the cert or vhost
+# is changed/removed.
+sub _get_uniq_key_for_atls_entry {
+    my ($entry) = @_;
+
+    return join( '|', $entry->{'vhost_name'}, $entry->{'certificate_id'} );
+}
+
+sub _delete_notify_history_for_uniq_keys_that_no_longer_exist {
+    my ( $notify_history_by_uniq_id_hr, $all_records_ar ) = @_;
+
+    my %current_uniq_keys = map { _get_uniq_key_for_atls_entry($_) => 1 } @$all_records_ar;
+
+    my @uniq_keys_that_no_longer_exist = grep { !$current_uniq_keys{$_} } keys %{$notify_history_by_uniq_id_hr};
+
+    delete @{$notify_history_by_uniq_id_hr}{@uniq_keys_that_no_longer_exist};
+
+    return 1;
+}
+
+sub _get_child_accounts_cache_sync {
+    my $p = Cpanel::LinkedNode::AccountCache->new_p();
+
+    return Cpanel::PromiseUtils::wait_anyevent($p)->get();
+}
+
+sub _notify_and_remember_for_each_vhost_if_needed {
+    my ( $now, $notify_history_by_uniq_id_hr, $all_records_ar ) = @_;
+
+    my $autossl_is_on = !!Cpanel::SSL::Auto::Config::Read->new()->get_provider();
+
+    my $child_acct_lookup_hr = _get_child_accounts_cache_sync();
+    my $user_type_alias_hr   = $child_acct_lookup_hr->get_all_child_workloads();
+
+    my $installed_autossl_providers = $autossl_is_on && do {
+        require Cpanel::SSL::Auto::Providers;
+        Cpanel::SSL::Auto::Providers->new();
+    };
+
+    my %_memorized_user_is_suspended;
+    my %_memorized_user_has_autossl_feature;
+
+    foreach my $crt (@$all_records_ar) {
+        my ( $user, $err );
+        try {
+            $user = Cpanel::Domain::Owner::get_owner_or_die( $crt->{'vhost_name'} )
+        }
+        catch {
+            $err = $_;
+        };
+
+        if ($err) {
+            warn "Failed to process “$crt->{'vhost_name'}”: $err";
+            next;
+        }
+        elsif ( $user_type_alias_hr->{$user} ) {
+            next;
+        }
+        elsif ( $_memorized_user_is_suspended{$user} //= Cpanel::AcctUtils::Suspended::is_suspended($user) ) {
+            next;
+        }
+
+        my $user_has_autossl_feature = $_memorized_user_has_autossl_feature{$user} //= Cpanel::Features::Check::check_feature_for_user( $user, 'autossl' );
+
+        try {
+            my $cert_obj = Cpanel::SSL::Objects::Certificate::File->new( path => Cpanel::Apache::TLS->get_certificates_path( $crt->{'vhost_name'} ) );
+
+            #If AutoSSL provides the certificate, then:
+            #   - If AutoSSL is off: process the cert as a normal cert
+            #   - Otherwise, let AutoSSL do notifications.
+            my $auto_ssl_provider_obj = $autossl_is_on && $user_has_autossl_feature && $installed_autossl_providers->get_provider_object_for_certificate_object($cert_obj);
+
+            if ( !$auto_ssl_provider_obj ) {
+
+                if ( !$cert_obj->is_self_signed() ) {    # no notification for self signed
+
+                    my $not_after_time_unix   = Cpanel::Time::ISO::iso2unix( $crt->{'not_after'} );
+                    my $seconds_until_expired = $not_after_time_unix - $now;
+                    my $uniq_key              = _get_uniq_key_for_atls_entry($crt);
+
+                    my $notify_history_hr = $notify_history_by_uniq_id_hr->{$uniq_key} ||= {};
+
+                    my $notification_interval_to_send = Cpanel::SSL::Notify::get_next_notification_level_to_send_for_local(
+                        $seconds_until_expired,
+                        keys %$notify_history_hr,
+                    );
+
+                    if ( defined $notification_interval_to_send ) {
+
+                        # We do not send notifications for the first 10 days
+                        # since they won't have notification history
+                        if ( !Cpanel::Update::Recent::installed_with_last_days() ) {
+                            try {
+                                _notify_certificate_expiring(
+                                    'vhost_name' => $crt->{'vhost_name'},
+                                    'user'       => $user,
+                                    'type'       => 'SSL::CertificateExpiring',
+                                );
+                            }
+                            catch {
+                                warn "Failed to send notification for $crt->{'vhost_name'}: $_";
+                            };
+                        }
+
+                        # Mark the notification interval as sent so we
+                        # do not send again for that interval
+                        $notify_history_hr->{$notification_interval_to_send} = $now;
+                    }
+                }
+            }
+        }
+        catch {
+            warn "Failed to process “$crt->{'vhost_name'}”: $_";
+        };
+    }
+    return;
+}
+
+sub _notify_certificate_expiring {
+    my (%opts) = @_;
+
+    my ( $type, $vhost_name, $user ) =    #
+      @opts{ 'type', 'vhost_name', 'user' };
+
+    require Cpanel::Notify::Deferred;
+    require Cpanel::IP::Remote;
+
+    foreach my $target (qw(admin user)) {
+        if ( $target eq 'user' ) {
+            require Cpanel::ContactInfo;
+            my $cinfo = Cpanel::ContactInfo::get_contactinfo_for_user($user);
+            next if !$cinfo->{'notify_ssl_expiry'};
+        }
+
+        #Have queueprocd do it so that we don’t create kazoodles of
+        #notification processes which cripple lower-powered servers.
+        Cpanel::Notify::Deferred::notify(
+            'class'            => $type,
+            'application'      => $type,
+            'constructor_args' => [
+                _get_icontact_args_for_target( $target, $user ),
+                vhost_name        => $vhost_name,
+                origin            => 'notify_expiring_certificates',
+                source_ip_address => Cpanel::IP::Remote::get_current_remote_ip(),
+            ]
+        );
+    }
+    return;
+}
+
+sub _get_icontact_args_for_target {
+    my ( $target, $user ) = @_;
+
+    if ( $target eq 'user' ) {
+        return (
+            user                              => $user,
+            username                          => $user,
+            to                                => $user,
+            notification_targets_user_account => 1,
+        );
+    }
+
+    return (
+        username => $user,
+
+    );
+}
+
+1;

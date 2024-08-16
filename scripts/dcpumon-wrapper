@@ -1,0 +1,33 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/dcpumon-wrapper                 Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::dcpumon_wrapper;
+
+use strict;
+
+our $suspend_file = '/var/run/chkservd.suspend';
+
+exit script(@ARGV) unless caller;
+
+sub should_skip {
+
+    # If chkservd is suspended, we're probably in an update.  Avoid a segfault
+    # in dcpumon by doing nothing.
+    return -e $suspend_file;
+}
+
+sub run {
+    my (@args) = @_;
+    exec '/usr/local/cpanel/bin/dcpumon', @args or return 255;
+}
+
+sub script {
+    my (@args) = @_;
+
+    return 0 if should_skip();
+    return run(@args);
+}

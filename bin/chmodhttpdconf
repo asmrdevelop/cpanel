@@ -1,0 +1,43 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+package bin::chmodhttpdconf;
+
+# cpanel - bin/chmodhttpdconf                          Copyright 2022 cPanel L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+use warnings;
+
+use Cpanel::ConfigFiles::Apache ();
+use Cwd                         ();
+
+exit( __PACKAGE__->script() // 0 ) unless caller();
+
+sub script {
+
+    # TODO: This modulino needs to have its core functionality moved to
+    # a module and have its test coverage improved.  Once done the
+    # install/* scripts should call the module directly instead of
+    # loading this modulino.
+    my $apacheconf = Cpanel::ConfigFiles::Apache->new();
+
+    my $httpconf = Cwd::abs_path( $apacheconf->file_conf() ) or return 1;
+
+    my (@HTDIR) = split( m{/}, $httpconf );
+    pop(@HTDIR);
+
+    return 1 unless scalar @HTDIR;
+
+    my $htdir = join( "/", @HTDIR );
+
+    opendir( my $httpd_dh, $htdir ) or return 1;
+    while ( my $conf = readdir($httpd_dh) ) {
+        if ( index( $conf, 'httpd.conf' ) > -1 ) {
+            chmod( 0600, $htdir . '/' . $conf );
+        }
+    }
+    closedir($httpd_dh);
+    return;
+}

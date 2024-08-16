@@ -1,0 +1,404 @@
+<ol class="breadcrumb">
+    <li><a href id="gotoAppList" ng-click="details.goToView('manage')">[% locale.maketext('Applications') %]</a></li>
+    <li class="active">{{ details.get_page_title() }}</li>
+</ol>
+<h3 class="section-heading">{{ details.get_application_title() }}</h3>
+<div class="section-body">
+<p id="application-details-description" class="description">
+    {{ details.formDescription }}
+    [% locale.maketext(
+        'For more information, read our [output,url,_1,documentation,target,_2,id,_3].',
+        'https://go.cpanel.net/ApplicationManager',
+        '_blank',
+        'application-details-docs-link'
+    ) %]
+</p>
+<form id="add_app" name="details.add_app" novalidate>
+    <div class="panel panel-default">
+        <div class="panel-heading">
+            <h3 class="panel-title">[% locale.maketext('Application Configuration') %]</h3>
+            <a id="toggle-all-help-link" ng-click="details.toggleShowAllHelp()">
+                [% locale.maketext("Show/Hide Help") %]
+                <i class="far fa-question-circle form-info-sign"></i>
+            </a>
+        </div>
+        <div class="panel-body">
+            <div class="form-group">
+                <div class="row">
+                    <div class="col-xs-12">
+                        <toggle-label-info
+                            for="applName"
+                            label-text="[% locale.maketext('Application Name') %]"
+                            label-id="applNameLabel"
+                            info-icon-id="applNameIcon"
+                            info-block-id="applNameInfo"
+                            show-info-block="{{details.savedSettings.showAllHelp}}">
+                            [% locale.maketext('Enter a display name for the deployed application.') %]
+                        </toggle-label-info>
+                    </div>
+                </div>
+                <div class="row">
+                    <div class="col-xs-12">
+                        <input type="text"
+                            id="applName"
+                            name="applName"
+                            class="form-control"
+                            ng-trim="false"
+                            required
+                            max-length="50"
+                            ng-pattern="/^[0-9a-zA-Z][0-9a-zA-Z_\- ]*$/"
+                            ng-model="details.application.name">
+                    </div>
+                    <div class="col-xs-12">
+                        <ul validation-container field-name="applName">
+                            <li validation-item
+                                field-name="applName"
+                                validation-name="required">[% locale.maketext("You [output,strong,must] enter an application name.") %]
+                            </li>
+                            <li validation-item
+                                field-name="applName"
+                                validation-name="pattern">
+                                [% locale.maketext("The name can contain up to 50 characters; it may [output,strong,only] contain spaces, numbers, letters, hyphens, and underscores; and it [output,strong,must] begin with a letter or number.") %]
+                            </li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+            <div class="form-group">
+                <div class="row">
+                    <div class="col-xs-12">
+                        <toggle-label-info
+                            for="applDomain"
+                            label-text="[% locale.maketext('Deployment Domain') %]"
+                            label-id="applDomainLabel"
+                            info-icon-id="applDomainIcon"
+                            info-block-id="applDomainInfo"
+                            show-info-block="{{details.savedSettings.showAllHelp}}">
+                            [% locale.maketext('Select the domain or subdomain to deploy the application to.') %]
+                        </toggle-label-info>
+                    </div>
+                </div>
+                <div class="row">
+                    <div class="col-xs-12">
+                        [% IF !CPANEL.ua_is_mobile %]
+                        <select id="applDomain"
+                            name="applDomain"
+                            class="form-control ng-cloak"
+                            ng-class="{ 'chosen-rtl': details.isRTL }"
+                            required
+                            ng-model="details.application.domain"
+                            chosen
+                            search_contains="true"
+                            ng-options="d.domain as d.domain group by d.type for d in details.domains">
+                            <option value=""></option>
+                            </select>
+                        [% ELSE %]
+                        <select id="applDomain"
+                            name="applDomain"
+                            class="form-control ng-cloak"
+                            required
+                            ng-model="details.application.domain"
+                            ng-options="d.domain as d.domain group by d.type for d in details.domains">
+                            <option value=""></option>
+                            </select>
+                        [% END %]
+                    </div>
+                    <div class="col-xs-12">
+                        <ul validation-container field-name="applDomain">
+                            <li validation-item
+                                field-name="applDomain"
+                                validation-name="required">[% locale.maketext("You [output,strong,must] select a domain to deploy the application to.") %]
+                            </li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+            <div class="form-group" ng-if="details.application.domain">
+                <div class="row">
+                    <div class="col-xs-12">
+                        <toggle-label-info
+                            for="applURL"
+                            label-text="[% locale.maketext('Base Application [asis,URL]') %]"
+                            label-id="applURLLabel"
+                            info-icon-id="applURLIcon"
+                            info-block-id="applURLInfo"
+                            show-info-block="{{details.savedSettings.showAllHelp}}">
+                            [% locale.maketext('Enter the application’s base [output,acronym,URL,Universal Resource Locator]. After you register the application, you can use this [output,acronym,URL,Uniform Resource Locator] to access it.') %]
+                        </toggle-label-info>
+                    </div>
+                </div>
+                <div class="row">
+                    <div class="col-xs-12">
+                        <div class="input-group">
+                            <span class="input-group-addon">{{details.application.domain}}</span>
+                            <input type="text"
+                                id="applURL"
+                                name="applURL"
+                                class="form-control"
+                                ng-trim="false"
+                                baseuri
+                                required
+                                ng-model="details.application.base_uri">
+                        </div>
+                    </div>
+                    <div class="col-xs-12">
+                        <ul validation-container field-name="applURL">
+                            <li validation-item
+                                field-name="applURL"
+                                validation-name="required">[% locale.maketext("You [output,strong,must] enter a base URL.") %]
+                            </li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+            <div class="form-group">
+                <div class="row">
+                    <div class="col-xs-12">
+                        <toggle-label-info
+                            for="applPath"
+                            label-text="[% locale.maketext('Application Path') %]"
+                            label-id="applPathLabel"
+                            info-icon-id="applPathIcon"
+                            info-block-id="applPathInfo"
+                            show-info-block="{{details.savedSettings.showAllHelp}}">
+                            [% locale.maketext('Enter the path to your application’s source code directory, relative to the home directory.') %]
+                        </toggle-label-info>
+                    </div>
+                </div>
+                <div class="row">
+                    <div class="col-xs-12">
+                        <div class="input-group">
+                            <span class="input-group-addon">
+                                <i class="fas fa-home" title="{{ details.user_home_dir }}"></i>
+                                <span>/</span>
+                            </span>
+                            <input type="text"
+                                id="applPath"
+                                name="applPath"
+                                class="form-control"
+                                ng-trim="false"
+                                required
+                                valid-path
+                                no-apache-literals
+                                ng-pattern="/^(?![\/]+$)/"
+                                ng-model="details.application.path">
+                        </div>
+                    </div>
+                    <div class="col-xs-12">
+                        <ul validation-container field-name="applPath">
+                            <li validation-item
+                                field-name="applPath"
+                                validation-name="required">[% locale.maketext("You [output,strong,must] enter the path to your source code.") %]
+                            </li>
+                            <li validation-item
+                                field-name="applPath"
+                                validation-name="pattern">[% locale.maketext("Your source code [output,strong,must] exist in a subdirectory within your home directory.") %]
+                            </li>
+                            <li validation-item
+                                field-name="applPath"
+                                validation-name="noApacheLiterals">[% locale.maketext("The path [output,strong,cannot] contain [asis,Apache] literal and substitution variables: [_1]", "\${") %]
+                            </li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+            <div class="form-group">
+                <div class="row">
+                    <div class="col-xs-12">
+                        <toggle-label-info
+                            for="deploymentMode"
+                            label-text="[% locale.maketext('Deployment Environment') %]"
+                            label-id="deploymentModeLabel"
+                            info-icon-id="deploymentModeIcon"
+                            info-block-id="deploymentModeInfo"
+                            show-info-block="{{details.savedSettings.showAllHelp}}">
+                            [% locale.maketext('Select the server environment in which your application will run.') %]
+                        </toggle-label-info>
+                    </div>
+                </div>
+                <div class="row">
+                    <div class="col-xs-12">
+                        <div class="radio">
+                            <label>
+                                <input type="radio"
+                                    name="deploymentMode"
+                                    id="deployment_dev"
+                                    value="development"
+                                    ng-model="details.application.deployment_mode">
+                                <span>[% locale.maketext('Development') %]</span>
+                            </label>
+                        </div>
+                        <div class="radio">
+                            <label>
+                                <input type="radio"
+                                    name="deploymentMode"
+                                    id="deployment_prod"
+                                    value="production"
+                                    ng-model="details.application.deployment_mode">
+                                <span>[% locale.maketext('Production') %]</span>
+                            </label>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="panel panel-default" ng-if="details.supports_env_vars">
+        <div class="panel-heading">
+            <h3 class="panel-title">[% locale.maketext('Environment Variables') %]</h3>
+        </div>
+        <div class="panel-body">
+            <div class="row">
+                <div class="col-xs-12 col-md-6">
+                    <div class="pull-left flip">
+                        <div class="form-group">
+                            <button id="addEnvarButton"
+                                type="button"
+                                class="btn btn-default"
+                                ng-disabled="details.editing_envar"
+                                ng-click="details.add_envar()">
+                                <span class="glyphicon glyphicon-plus"></span> [% locale.maketext('Add Variable') %]</button>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-xs-12 col-md-6">
+                    <div id="envarPaginator" class="pagination-container pull-right hidden-xs hidden-sm">
+                        <page-size id="envarPageSize"
+                            allowed-sizes="details.meta.pageSizes"
+                            total-items="details.meta.totalItems"
+                            ng-model="details.meta.pageSize"
+                            show-all="false"
+                            ng-change="details.selectPageSize()">
+                        </page-size>
+                        <uib-pagination id="topPager"
+                            ng-change="details.selectPage()"
+                            ng-model="details.meta.pageNumber"
+                            max-size="details.meta.maxPages"
+                            items-per-page="details.meta.pageSize"
+                            total-items="details.meta.totalItems"
+                            direction-links="true"
+                            boundary-links="true"
+                            rotate="false"
+                            first-text="<<"
+                            last-text=">>"
+                            previous-text="<"
+                            next-text=">">
+                        </uib-pagination>
+                    </div>
+                </div>
+            </div>
+            <div id="envarTableStats" class="row">
+                <div class="col-xs-12 col-sm-12">
+                    <div class="page-stats pull-right hidden-xs hidden-sm">
+                    {{details.paginationMessage()}}
+                    </div>
+                </div>
+            </div>
+            <table class="table table-striped responsive-table">
+                <thead>
+                    <tr>
+                        <th><span toggle-sort id="sortByName" onsort="details.sortList" sort-meta="details.meta" sort-field="name">
+                            [% locale.maketext('Variable Name') %]
+                            </span>
+                        </th>
+                        <th><span toggle-sort id="sortByValue" onsort="details.sortList" sort-meta="details.meta" sort-field="value">
+                            [% locale.maketext('Value') %]
+                            </span>
+                        </th>
+                        <th class="actions-column">[% locale.maketext('Actions') %]</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr id="loadingNotice" class="info empty-row ng-hide" ng-show="details.is_loading">
+                        <td colspan="3" id="loadingMessage">
+                            <i id="loadingSpinner" class="fas fa-spinner fa-spin"></i>
+                            [% locale.maketext('Loading …') %]
+                        </td>
+                    </tr>
+                    <tr id="emptyListNotice" class="info empty-row ng-hide" ng-show="details.filteredEnvars.length == 0 && !details.editing_envar && !details.is_loading">
+                        <td colspan="3" id="emptyMessage">[% locale.maketext('The system could not find any environment variables.') %]</td>
+                    </tr>
+                    <tr ng-repeat-start="envar in details.filteredEnvars" id="envar_{{ envar._id }}" ng-if="!envar.is_editing">
+                        <td data-title="[% locale.maketext('Variable Name') %]"> {{envar.name}} </td>
+                        <td data-title="[% locale.maketext('Value') %]"> {{envar.value}} </td>
+                        <td class="action-buttons" data-title="[% locale.maketext('Actions') %]">
+                            <button type="button" id="edit_btn_{{ envar._id }}" class="btn btn-link"
+                                ng-click="details.edit_envar(envar)"
+                                ng-disabled="details.editing_envar">
+                                <span class="glyphicon glyphicon-pencil"></span>
+                                [% locale.maketext('Edit') %]
+                            </button>
+                            <button type="button" id="delete_btn_{{ envar._id }}" class="btn btn-link"
+                                ng-click="details.delete_envar(envar)"
+                                ng-disabled="details.editing_envar">
+                                <span class="glyphicon glyphicon-trash"></span>
+                                [% locale.maketext('Delete') %]
+                            </button>
+                        </td>
+                    </tr>
+                    <tr ng-repeat-end
+                        ng-if="envar.is_editing"
+                        table-row-form
+                        form-model="envar"
+                        on-save="details.save_envar(envar, name, value)"
+                        on-cancel="details.close_envar_editor(envar)"></tr>
+                    </tr>
+                </tbody>
+            </table>
+            <div id="envarTableStats" class="row hidden-md hidden-lg">
+                <div class="col-xs-12 col-sm-12">
+                    <div class="page-stats pull-right">
+                    {{details.paginationMessage()}}
+                    </div>
+                </div>
+            </div>
+            <div class="row visible-sm-block visible-xs-block hidden-lg hidden-md">
+                <div class="col-xs-12 col-md-6">
+                    <div id="envarPaginatorBottom" class="pagination-container pull-right flip">
+                        <page-size id="envarPageSizeBottom"
+                            allowed-sizes="details.meta.pageSizes"
+                            total-items="details.meta.totalItems"
+                            ng-model="details.meta.pageSize"
+                            show-all="false"
+                            ng-change="details.selectPageSize()">
+                        </page-size>
+                        <uib-pagination id="envarPagerBottom"
+                            ng-change="details.selectPage()"
+                            ng-model="details.meta.pageNumber"
+                            max-size="details.meta.maxPages"
+                            items-per-page="details.meta.pageSize"
+                            total-items="details.meta.totalItems"
+                            direction-links="true"
+                            boundary-links="true"
+                            rotate="false"
+                            first-text="<<"
+                            last-text=">>"
+                            previous-text="<"
+                            next-text=">">
+                        </uib-pagination>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="form-group">
+        <button type="submit"
+            id="deploy_application"
+            name="save_application"
+            cp-action="details.save_application()"
+            button-class="btn btn-primary"
+            ng-disabled="details.add_app.$pristine">
+            [% locale.maketext('Deploy') %]
+        </button>
+        <button type="button"
+            id="cancel_deploy_application"
+            name="cancel_save_application"
+            class="btn btn-link"
+            ng-click="details.goToView('manage')"
+            ng-disabled="details.is_loading">
+            [% locale.maketext('Cancel') %]
+        </button>
+    </div>
+</form>
+</div>

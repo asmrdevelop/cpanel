@@ -1,0 +1,51 @@
+[%
+    USE Whostmgr;
+    USE JSON;
+
+    SET PAGE_BASE = '/scripts4/multikillacct/';
+    SET PAGE_NAME = Whostmgr.get_page_name_by_url(PAGE_BASE);
+
+    WRAPPER 'master_templates/master.tmpl'
+        app_key = 'terminate_accounts'
+        header = locale.makevar(PAGE_NAME),
+        breadcrumburl = PAGE_BASE,
+        base =  PAGE_BASE,
+        stylesheets = [
+            Whostmgr.find_file_url('/templates/killacct/index.min.css')
+        ],
+        theme='bootstrap',
+        CJT2_EXCLUSIVE = 1;
+%]
+
+<div id="content"
+        ng-controller="BaseController"
+        class="ng-cloak"
+        ng-cloak>
+    <p>
+        [% locale.maketext("This feature allows you to terminate one or more accounts on the server."); %]
+    </p>
+    <div class="callout callout-warning">
+        <p>
+            [% locale.maketext("Proceed with caution.") %]
+            [% locale.maketext("If you terminate an account, you cannot undo this action.") %]
+        </p>
+        <p>[% locale.maketext("Before you remove an account, we strongly recommend that you create a full backup of that account.") %]</p>
+    </div>
+
+    <div class="loading" ng-show="loading">
+        <p class="alert alert-info col-xs-12">
+            <span><i class="fas fa-spinner fa-spin"></i> [% locale.maketext('Loading …') %]</span>
+        </p>
+    </div>
+    <div ng-class="{'view-disabled':loading}" ng-view></div>
+    <div growl limit-messages="5"></div>
+</div>
+
+[% PROCESS 'master_templates/cjt2_header_include.tt' %]
+
+<script type="text/javascript">
+    var PAGE = PAGE || {};
+    PAGE.data = [% data.json() %];
+</script>
+
+[% END %]

@@ -1,0 +1,36 @@
+#!/usr/local/cpanel/3rdparty/bin/python2
+# -*- coding: utf-8 -*-
+
+# cpanel - bin/reset_mailman_passwd2               Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+import sys
+
+sys.path.insert(0, '/usr/local/cpanel/lib/python2')
+
+import cPanel
+
+
+def main(argv):
+    if len(argv) < 2:
+        print 'usage: echo -n password | reset_mailman_passwd <list>'
+        return 1
+
+    list = argv[1]
+    passwd = sys.stdin.read()
+
+    def update(dict):
+        try:
+            import hashlib
+            dict['password'] = hashlib.sha1(passwd).hexdigest()
+        except ImportError:
+            import sha
+            dict['password'] = sha.new(passwd).hexdigest()
+
+    cPanel.update_mailman(list, update)
+
+
+if __name__ == '__main__':
+    raise SystemExit(main(sys.argv))

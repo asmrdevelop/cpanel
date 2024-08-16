@@ -1,0 +1,31 @@
+[%#
+Variables passed in:
+
+user                    - The user being distributed
+worker_type             - The worker function being distributed
+origin                  - The system component from which the request originated
+
+For more information about how to customize notification templates, read our documentation at https://go.cpanel.net/notificationtemplates
+
+-%]
+
+[%
+    PROCESS "include/colors.tmpl";
+    PROCESS "include/styles.tmpl";
+
+    WRAPPER 'wrapper/main.html.tmpl';
+
+    NOTICE.email_reason = CPANEL.locale.maketext('Success: The Server Successfully Transferred Offloaded “[_1]” Functionality for the User “[_2]”.', NOTICE.worker_type, NOTICE.user);
+
+%]
+
+<p style="margin-bottom:25px;">
+[% SWITCH NOTICE.worker_type %]
+[% CASE 'Mail' %]
+    [% CPANEL.locale.maketext('The server successfully transferred all offloaded “[_1]” storage and functionality for the user “[_2]” to the local server.', NOTICE.worker_type, NOTICE.user) %]
+[% CASE DEFAULT %]
+    [% CPANEL.locale.maketext("“[_1]” functions for user “[_2]” will now be handled by the local server.", NOTICE.worker_type, NOTICE.user) %]
+[% END %]
+</p>
+
+[% END %]

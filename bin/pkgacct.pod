@@ -1,0 +1,243 @@
+=encoding UTF-8
+
+=head1 NAME
+
+pkgacct - Package an account
+
+=head1 SYNOPSIS
+
+/usr/local/cpanel/bin/pkgacct [options] user [workdir]
+
+  user = the user to package
+  workdir = the directory to put the package
+
+ Options:
+     --help                        brief help message
+     --man                         full documentation
+     --allow-override              use alternate script
+     --mysql=X.X                   set target MySQL version
+     --roundcube=X.X               set target Roundcube version
+     --dbbackup=(all|schema|name)  specify database backup type
+     --dbbackup_mysql=...          specify MySQL backup type (overrides dbbackup)
+     --get-version                 display version of script
+     --use_backups                 use last file as template
+     --incremental                 refresh existing file
+     --split                       create file in chunks
+     --nocompress                  do not compress file
+     --compress                    compress file with Gzip
+     --userbackup                  run in userbackup mode
+     --backup                      save as account backup
+     --skipacctdb                  exclude all databases
+     --skipapitokens               exclude API tokens
+     --skipauthnlinks              exclude external auth credentials
+     --skiplinkednodes             exclude remote node linkages
+     --skipbwdata                  exclude bandwidth data
+     --skipdnszones                exclude DNS information
+     --skipdomains                 exclude sub, parked, and addon domains
+     --skipftpusers                exclude FTP accounts
+     --skiphomedir                 exclude home directory
+     --skipintegrationlinks        exclude integration links
+     --skiplocale                  exclude locale information
+     --skiplogs                    exclude log files
+     --skipmailconfig              exclude mail configuration
+     --skipmailman                 exclude mailing lists
+     --skipmysql                   exclude MySQL content
+     --skippasswd                  exclude user's password
+     --skippgsql                   exclude PostgreSQL content
+     --skippublichtml              exclude the public_html directory
+     --skipquota                   exclude disk quota limits
+     --skipresellerconfig          exclude reseller privileges
+     --skipshell                   exclude shell privileges
+     --skipssl                     exclude server-level SSL certificates
+     --skipuserdata                exclude domain-level configuration
+     --serialized_output           encode output as JSON
+
+=head1 OPTIONS
+
+=over 4
+
+=item B<--allow-override>
+
+Use the F</var/cpanel/lib/Whostmgr/Pkgacct/pkgacct> file to package the account, if it exists.
+B<IMPORTANT!!!:> Pass this argument before any other arguments (in the 0th position).
+
+=item B<--mysql> VERSION
+
+Specify the “target” MySQL® version—i.e., the minimum MySQL® version that should be able to restore this backup.
+
+=item B<--roundcube> VERSION
+
+Specify the “target” Roundcube version—i.e., the minimum Roundcube version that should be able to restore this backup.
+
+=item B<--dbbackup> (all | schema | name)
+
+Specify the type of database backup to perform:
+* C<all> — The script backs up all of the database information. (This is the default option.)
+* C<schema> — The script only backs up the database schemas. (You should only use this option if you back up your databases through a different method, but you wish to track the users that are associated with a database.)
+* C<name> — The script only backs up the database names. (The script will transfer MySQL databases as placeholders which contain a C<CREATE TABLE> command, while PostgreSQL databases will be empty F<.tar> placeholder files.)
+
+=item B<--dbbackup_mysql> (all | schema | name)
+
+Like B<--dbbackup>, but specifically for MySQL. If both are given, this
+takes precedence for MySQL.
+
+This is useful if, e.g., you want a full PostgreSQL backup but only want
+names or schemas for MySQL.
+
+=item B<--get-version>
+
+Display the version of the F<pkgacct> script.
+
+=item B<--use_backups>
+
+Use the account's last known successful backup as a template when the script creates the F<cpmove> archive. This option may speed up the backup process.
+
+=item B<--incremental>
+
+Update the destination file with any new content since the previous backup, and remove any content that no longer exists on the account. If the destination file does not exist, the script creates a new file in that location.
+Note: This argument automatically passes the C<--nocompress> argument in order to create an uncompressed archive.
+
+=item B<--split>
+
+Create the C<cpmove> archive in chunks.
+
+=item B<--nocompress>
+
+Do not compress the F<cpmove> archive.
+
+=item B<--compress>
+
+Use Gzip to compress the archive. This overrides the C<--nocompress> argument if both are given.
+NOTE: This script compresses archives by default.
+
+=item B<--userbackup>
+
+Run in userbackup mode. The system will give the output file a name that is compatible with cPanel's backup system as a "Full Backup."
+
+=item B<--backup> DESTINATION
+
+Save the F<cpmove> archive as a backup for the account, at the given destination.
+If DESTINATION is a directory, then the file name will be C<$username.tar.gz>, where C<$username>
+represents the account's username.
+
+=item B<--skipacctdb>
+
+Exclude the account's databases from the F<cpmove> archive.
+Note: This argument is an alias for C<--skipmysqldb> and C<--skippgsqldb>.
+
+=item B<--skipapitokens>
+
+Exclude the user's API tokens from the archive.
+
+=item B<--skipauthnlinks>
+
+Exclude the user's external authentication credentials from the archive.
+
+=item B<--skiplinkednodes>
+
+Exclude the user's node linkages from the archive.
+
+=item B<--skipbwdata>
+
+Exclude the account's bandwidth data from the archive.
+
+=item B<--skipdnszones>
+
+Exclude the account's DNS zone file information from the archive.
+
+=item B<--skipdomains>
+
+Exclude the account's subdomains, parked domains, and addon domains from the archive.
+
+=item B<--skipftpusers>
+
+Exclude the account's FTP user accounts from the archive.
+
+=item B<--skiphomedir>
+
+Exclude the user's home directory from the archive.
+Note: Use this argument if you will save or transfer the home directory with another method, such as C<rsync>.
+
+=item B<--skipintegrationlinks>
+
+Exclude the account's integration links from the archive.
+
+=item B<--skiplocale>
+
+Exclude the account's locale information or customized locale from the archive.
+
+=item B<--skiplogs>
+
+Exclude the account's log files from the archive.
+
+=item B<--skipmail>
+
+Exclude the account's mail directory from the archive.
+
+=item B<--skipmailconfig>
+
+Exclude the account's mail configuration information from the archive.
+
+=item B<--skipmailman>
+
+Exclude the account's Mailman mailing lists from the archive.
+
+=item B<--skipmysql>
+
+Exclude the account's MySQL databases, database users, and database grants from the archive.
+Note: If you pass this and C<--skipacctdb>, the C<--skipmysql> argument is redundant.
+
+=item B<--skippasswd>
+
+Exclude the user's password from the archive.
+
+=item B<--skippgsql>
+
+Exclude the account's PostgreSQL databases, database users, and database grants from the archive.
+Note: If you pass this and C<--skipacctdb>, the C<--skippgsql> argument is redundant.
+
+=item B<--skippublichtml>
+
+Exclude the account's public_html directory from the archive.
+
+=item B<--skipquota>
+
+Exclude the account's disk quota limits from the archive.
+
+=item B<--skipresellerconfig>
+
+Exclude the account's reseller privileges from the archive.
+
+=item B<--skipshell>
+
+Exclude the account's shell information and privileges from the archive.
+
+=item B<--skipssl>
+
+Excludes SSL certificates and files that the server's Apache configuration contains. It does not exclude SSL files that the user's home directory contains.
+
+=item B<--skipuserdata>
+
+Exclude the account's domain-level configuration information.
+
+=item B<--serialized_output>
+
+Encodes each line of the script's output in JSON format in order to allow the F<live_tail_log.cgi> script to stream it.
+
+=item B<--help>
+
+Display a brief help message.
+
+=item B<--man>
+
+Display the script's full documentation.
+
+=back
+
+=head1 DESCRIPTION
+
+B<This program> creates a F<cpmove> archive for an account.
+After you create the F<cpmove> archive, you can transfer the account between servers.
+
+
+=cut

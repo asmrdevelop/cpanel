@@ -1,0 +1,37 @@
+[%#
+Variables passed in:
+
+origin                  - the system component from which the notification was requested.
+resolvers_state         - a hashref containing each resolver and the state of the performance check (see Cpanel::Resolvers::Check)
+overall_state           - the overall state of the system (see Cpanel::Resolvers::Check)
+
+For more information about how to customize notification templates, read our documentation at https://go.cpanel.net/notificationtemplates
+
+-%]
+
+[%
+    PROCESS "include/colors.tmpl";
+    PROCESS "include/styles.tmpl";
+    PROCESS "include/zebra_table.tmpl";
+%]
+
+
+[%
+
+WRAPPER 'wrapper/main.html.tmpl';
+
+    IF NOTICE.overall_state.error_is('missing');
+        NOTICE.email_reason = CPANEL.locale.maketext('The server has no configured [asis,DNS] resolvers.');
+    ELSIF NOTICE.overall_state.error_is('failed');
+        NOTICE.email_reason = CPANEL.locale.maketext('All of the server’s [asis,DNS] resolvers fail to respond.');
+    ELSIF NOTICE.overall_state.error_is('unreliable');
+        NOTICE.email_reason = CPANEL.locale.maketext('Some of the server’s [asis,DNS] resolvers fail to respond.');
+    ELSIF NOTICE.overall_state.error_is('slow');
+        NOTICE.email_reason = CPANEL.locale.maketext('Some of the server’s [asis,DNS] resolvers respond slowly.');
+    END;
+
+   PROCESS "Check/includes/Resolvers.body.html.tmpl";
+
+END;
+
+ %]

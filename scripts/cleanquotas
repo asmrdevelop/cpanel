@@ -1,0 +1,45 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/cleanquotas                     Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+use warnings;
+
+use Cpanel::Logger          ();
+use Cpanel::SafeRun::Errors ();
+use Cpanel::Quota::Clean    ();
+use Cpanel::Quota::Parse    ();
+use Cpanel::Binaries        ();
+
+my $logger = Cpanel::Logger->new();
+
+$logger->info("Checking for orphaned quotas...");
+
+my $REPQUOTA = Cpanel::Binaries::path('repquota');
+-x $REPQUOTA or die "Cannot locate repquota";
+
+my %seen;
+for ( split /\n/, Cpanel::SafeRun::Errors::saferunallerrors( $REPQUOTA, '-av' ) ) {
+    if (
+        my ( $uid, $quota_line ) = m{
+            ^ [#](\d+) \s+    # uid
+              \S+      \s+
+            ( \d+      \s+    # used
+              \d+      \s+    # soft
+              \d+      .+ ) $ # everything else
+        }x
+    ) {
+        my ( $device, $disk_used, $disk_limit, $files_used, $files_limit ) = Cpanel::Quota::Parse::parse_quota_line( '/dev/null ' . $quota_line );
+        next if !$disk_limit && !$files_limit;    # no limits set
+        next if getpwuid($uid);                   # real user
+        next if $seen{$uid}++;                    # each affected uid will be fixed one time for all filesystems
+
+        Cpanel::Quota::Clean::zero_quota($uid);
+        $logger->info("Filesystem quota was defined for nonexistent user with uid $uid (fixed)");
+    }
+}
+
+$logger->info("Done.");

@@ -1,0 +1,20 @@
+#
+#  Enabling this will make the server non-rfc compliant
+#  require verify = header_sender
+#
+
+    accept  hosts = : +loopback : +recent_authed_mail_ips : +backupmx_hosts
+
+    accept
+            authenticated = *
+            hosts = *
+
+    accept
+            condition = %CPANEL-trustedmailhosts-size%
+            hosts = +trustedmailhosts
+
+    accept
+            condition = %CPANEL-trustedmailhosts-size%
+            condition = ${if match_ip{$sender_host_address}{net-iplsearch;/etc/trustedmailhosts}{1}{0}}
+
+

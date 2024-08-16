@@ -1,0 +1,56 @@
+[%
+    USE Whostmgr;
+    USE JSON;
+
+    WRAPPER 'master_templates/master.tmpl'
+        header = locale.maketext('[asis,cPanel] Web Disk Configuration'),
+        app_key='cpanel_web_disk_configuration',
+        breadcrumburl = '/scripts2/cpdavdconfiguration',
+        base = '/scripts2/cpdavdconfiguration/',
+        include_legacy_stylesheets = 1,
+        scripts = [
+            '/js/validate_optimized.js'
+        ]
+        theme='bootstrap';
+%]
+
+<div id="content">
+    <p class="description">
+        [%- IF CPANEL.CPCONF.requiressl %]
+            [%- locale.maketext('The [asis,cPanel] [asis,Web] [asis,Service] provides [asis,DAVFS], [asis,WebDisk], [asis,CalDAV], and [asis,CardDAV] services over the [asis,HTTPS] protocol.') %]
+        [%- ELSE %]
+            [%- locale.maketext('The [asis,cPanel] [asis,Web] [asis,Service] provides [asis,DAVFS], [asis,WebDisk], [asis,CalDAV], and [asis,CardDAV] services over the [asis,HTTP] and [asis,HTTPS] protocols.') %]
+        [%- END %]
+    </p>
+
+    <form class="layout-medium" onsubmit="return do_validate(this.id);" action="[% data.action %]" name="mainform" id="mainform" method="POST">
+        <div class="form-group">
+            <div class="row">
+                <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                    <label for="SSLCipherList">[% locale.maketext('[asis,TLS/SSL] Cipher Suite') %]</label>
+                    <input type="text" name="SSLCipherList" id="SSLCipherList" value="[% data.SSLCipherList %]" class="form-control" />
+                    <div class="description">[% locale.maketext('This complex directive uses a colon-separated “cipher-spec” string consisting of [asis,OpenSSL] cipher specifications to configure the cipher suite that the client negotiates in the [asis,SSL] handshake phase.') %]</div>
+                </div>
+            </div>
+            <div class="row">
+                <div class="col-xs-12 col-sm-6 col-md-6 col-lg-6">
+                    <label for="SSLVersion" class="label_title">[% locale.maketext('[asis,TLS/SSL] Protocols') %]</label>
+                    <input type="text" name="SSLVersion" id="SSLVersion" value="[% data.SSLVersion %]" class="form-control" />
+                    <div class="description">[% locale.maketext('This complex directive uses a space-separated string consisting of protocol specifications to configure the [asis,SSL] and [asis,TLS] protocols that the client and server negotiate in the [asis,SSL/TLS] handshake phase.') %]</div>
+                </div>
+            </div>
+            <div class="form-group">
+                <input type="submit" value="Save" class="btn btn-primary" />
+            </div>
+        </div>
+    </form>
+</div>
+<script type="text/javascript">
+function register_validators() {
+    register_validator('match','ssl_chars',[document.mainform.SSLCipherList],'The TLS/SSL Cipher List must be defined using alphanumeric characters with regular expressions ! + _ @ ~ and use a colon (:) for a separator');
+    realtime_validate_init('mainform');
+
+}
+YAHOO.util.Event.onDOMReady(register_validators);
+</script>
+[% END %]

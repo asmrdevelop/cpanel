@@ -1,0 +1,47 @@
+
+
+
+=head2 maskdir($dir)
+
+This function converts a path on the system to a path relative to the users home directory that it contains.   The relative path is prefixed with the user's primary domain in the below format:
+
+   domain.tld:/public_html/cgi-bin/xyz.cgi
+
+If the path is not contained within a user's home directory, the path is returned without modification.
+
+=cut
+
+sub maskdir {
+    my ($dir) = @_;
+
+    # Try the user first
+    my $maskeddir = $dir;
+    my ($likely_user) = ( split( m{/}, $dir ) )[2];
+    if ( my $likely_homedir = gethomedir($likely_user) ) {
+        chop $likely_homedir if substr( $likely_homedir, -1 ) eq '/';
+        if ( rindex( $dir, "$likely_homedir/", 0 ) == 0 ) {
+            substr( $maskeddir, 0, length($likely_homedir), getusersdomain($likely_user) . ":" );
+            return $maskeddir;
+        }
+    }
+
+    # Next try all users in /etc/passwd
+    if ( open my $passwd_fh, '<', "/etc/passwd" ) {
+        while ( readline($passwd_fh) ) {
+            my ( $homedir, $uid, $user ) = ( split( /:/, $_ ) )[ 0, 2, 5 ];
+            next if $uid < 100 || length $homedir < 3;
+            chop $homedir if substr( $homedir, -1 ) eq '/';
+            if ( rindex( $dir, "$homedir/", 0 ) == 0 ) {
+                substr( $maskeddir, 0, length($homedir), getusersdomain($user) . ":" );
+                return $maskeddir;
+            }
+        }
+    }
+    else {
+        warn "open(/etc/passwd): $!";
+    }
+
+    return $dir;
+
+}
+

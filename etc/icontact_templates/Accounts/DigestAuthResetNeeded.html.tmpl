@@ -1,0 +1,32 @@
+[%#
+Variables passed in:
+
+new_domain              - The new domain name
+old_domain              - The previous domain name
+origin                  - the system component from which the request originated
+digest_disabled_users   - the users whose Digest Authentication is now disabled.
+
+For more information about how to customize notification templates, read our documentation at https://go.cpanel.net/notificationtemplates
+
+-%]
+
+[%
+    PROCESS "include/colors.tmpl";
+    PROCESS "include/styles.tmpl";
+
+    WRAPPER 'wrapper/main.html.tmpl';
+
+    NOTICE.email_reason = CPANEL.locale.maketext('The domain name change was successful (“[_1]” is now “[_2]”).', NOTICE.old_domain, NOTICE.new_domain);
+
+%]
+
+<p>
+    [% CPANEL.locale.maketext("Because the domain name has changed, the system disabled [_1] for the [numerate,_2,user,users] [list_and_quoted,_3].", CPANEL.locale.maketext('Digest Authentication'), NOTICE.digest_disabled_users.size, NOTICE.digest_disabled_users) %]
+</p>
+
+<p>
+[% CPANEL.locale.maketext('You may re-enable [_1] for them through [asis,WHM]’s [_2] interface at: [output,url,_3,_3,target,_4]', CPANEL.locale.maketext('Digest Authentication'), CPANEL.locale.maketext('Password Modification'), CPANEL.assemble_whm_url("scripts/passwdlist"),'_blank') %]
+    [% CPANEL.locale.maketext("Use the “[_1]” page in [asis,cPanel] to re-enable [_2].", CPANEL.locale.maketext('Web Disk Accounts'), CPANEL.locale.maketext('Digest Authentication')) %]
+</p>
+
+[% END %]

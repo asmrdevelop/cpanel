@@ -1,0 +1,76 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/mkwwwacctconf                   Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::mkwwwacctconf;
+use cPstrict;
+use Cpanel::Config::SaveWwwAcctConf ();
+use Cpanel::Config::LoadWwwAcctConf ();
+use Cpanel::DIp::MainIP             ();
+use Cpanel::Hostname                ();
+use Cpanel::NameserverCfg           ();
+use Whostmgr::TweakSettings::Basic  ();
+
+exit run(@ARGV) unless caller;
+
+sub run {
+    my @args = @_;
+
+    my $reset   = @args && grep( /^--(?:reset|force)$/, @args ) ? 1 : 0;
+    my $inherit = ( grep { $_ eq '--inherit' } @args )          ? 1 : 0;
+
+    my $wwwacctconf = '/etc/wwwacct.conf';
+    my %cur_conf    = Cpanel::Config::LoadWwwAcctConf::loadwwwacctconf();
+
+    # Don't clobber a valid config
+    if ( !$reset && -e $wwwacctconf ) {
+        return 0 if ( $cur_conf{'DEFMOD'} || $cur_conf{'NS'} || $cur_conf{'HOST'} );    # Check to see if some common settings are configured
+    }
+
+    my $hostname = Cpanel::Hostname::gethostname();
+    my $sharedip = Cpanel::DIp::MainIP::getmainserverip();
+
+    # Sanity check
+    if ( !$sharedip ) {
+        die 'Unable to determine main shared IP.';
+    }
+
+    my ( $ns, $ns2 ) = Cpanel::NameserverCfg::generate_default_nameservers();
+
+    my $conf_hostname = ( $hostname && $hostname =~ m{\.} ) ? $hostname : q{};
+    my $conf_ns       = $ns;
+    my $conf_ns2      = $ns2;
+
+    my %system_specific_values = (
+        'ADDR' => $sharedip,
+        'HOST' => $conf_hostname,
+        'NS'   => $conf_ns,
+        'NS2'  => $conf_ns2,
+    );
+
+    my %conf;
+    for my $key ( keys %Whostmgr::TweakSettings::Basic::Conf ) {
+        my $default = $Whostmgr::TweakSettings::Basic::Conf{$key}->{'default'};
+
+        if ( !defined($default) ) {
+            $conf{$key} = $inherit ? $cur_conf{$key} : q{};
+        }
+        elsif ( ref $default eq 'CODE' ) {
+            $conf{$key} = $default->();
+        }
+        else {
+            $conf{$key} = $default;
+        }
+    }
+
+    @conf{ keys %system_specific_values } = values %system_specific_values;
+
+    Cpanel::Config::SaveWwwAcctConf::savewwwacctconf( \%conf );
+
+    return 0;
+}
+
+1;

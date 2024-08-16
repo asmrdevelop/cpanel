@@ -1,0 +1,22 @@
+warn
+        condition   = ${if forany{<, $recipients}{!match_domain{${domain:$item}}{:+relay_domains}}}
+        set acl_m_outbound_recipient = 1
+
+warn
+        condition   = $acl_m_outbound_recipient
+        condition   = ${if <={$message_size}{[% ACL_MAX_SPAM_SCAN_SIZE %]K}}
+        condition   = ${if !eq{$originator_uid}{0}}
+        condition   = ${perl{spamd_is_available}}
+        set acl_m_spam_scan_enabled  = 1
+
+deny
+        condition   = $acl_m_outbound_recipient
+        condition   = $acl_m_spam_scan_enabled
+        spam        = [% ACL_EXIMSCANUSER %]/defer_ok
+        message     = This message was classified as SPAM and may not be delivered
+        log_message = "SpamAssassin as [% ACL_EXIMSCANUSER %] detected OUTGOING not smtp message as spam ($spam_score)"
+
+warn
+        condition   = $acl_m_outbound_recipient
+        condition   = $acl_m_spam_scan_enabled
+        log_message = "SpamAssassin as [% ACL_EXIMSCANUSER %] detected OUTGOING not smtp message as NOT spam ($spam_score)"

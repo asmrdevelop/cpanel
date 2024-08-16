@@ -1,0 +1,102 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - bin/cpconftool                          Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+use warnings;
+
+use Cpanel::YAML::Syck ();
+use Cpanel::Usage      ();
+
+my $backup;
+my $restore_file;
+my $list_modules;
+my $modules;
+my $prerestore_backup = 0;
+my $query_module_info = 0;
+my $verbose           = 0;
+
+my %opts = (
+    'restore'           => \$restore_file,
+    'backup'            => \$backup,
+    'list-modules'      => \$list_modules,
+    'modules'           => \$modules,
+    'prerestore_backup' => \$prerestore_backup,
+    'query-module-info' => \$query_module_info,
+    'verbose'           => \$verbose,
+);
+
+Cpanel::Usage::wrap_options( \@ARGV, \&usage, \%opts );
+
+if ( !$list_modules && !$restore_file && !$backup && !$query_module_info || ( $restore_file && $restore_file eq '1' ) ) {
+    usage("Exactly one of the following is required: --backup, --restore, --list-modules, --query-module-info.");
+}
+
+if ( !$list_modules && !$modules ) {
+    usage("--modules is required.");
+}
+
+my $modules_ref = $modules ? { map { $_ => 1 } split( m/[;\s,\n]+/, $modules ) } : {};
+
+if ($list_modules) {
+    require Whostmgr::Config::Backup;
+    my $backup          = Whostmgr::Config::Backup->new();
+    my $all_modules_ref = $backup->_list_modules();
+
+    print join( "\n", map { $_->{'api_name'} } @{$all_modules_ref} ) . "\n";
+}
+elsif ($backup) {
+    require Whostmgr::Config::Backup;
+    my $backup = Whostmgr::Config::Backup->new();
+
+    my %opts = (
+        keys %{$modules_ref} ? ( 'modules' => $modules_ref ) : (),
+        $verbose             ? ( 'verbose' => 1 )            : (),
+    );
+
+    my ( $status, $statusmsg, $file ) = $backup->backup(%opts);
+    print "$statusmsg\n";
+    print "$file\n" if $status;
+}
+elsif ($restore_file) {
+    require Whostmgr::Config::Restore;
+    my $restore = Whostmgr::Config::Restore->new();
+    if ( $modules =~ m/cpanel::easy::apache/ ) {
+        $prerestore_backup = 1;    # always on for apache
+    }
+
+    my %opts = (
+        'prerestore_backup' => $prerestore_backup,
+        'skip_post'         => 0,
+        'backup_path'       => $restore_file,
+        keys %{$modules_ref} ? ( 'modules' => $modules_ref ) : (),
+        $verbose             ? ( 'verbose' => 1 )            : (),
+    );
+
+    my ( $status, $statusmsg, $statusref ) = $restore->restore(%opts);
+    print "$statusmsg\n";
+    print YAML::Syck::Dump($statusref);
+}
+elsif ($query_module_info) {
+    require Whostmgr::Config::Backup;
+    my $backup    = Whostmgr::Config::Backup->new();
+    my $query_ref = $backup->query_module_info( 'modules' => $modules_ref );
+    print "Query Successful\n" if $verbose;
+    print YAML::Syck::Dump($query_ref);
+}
+
+sub usage {
+    my ($msg) = @_;
+
+    my $prog = $0;
+
+    print "$msg\n" if defined $msg;
+
+    print <<USAGE;
+$0 [--restore=file|--backup|--list-modules|--query-module-info] --modules=MODULE,MODULE,MODULE [--prerestore_backup] [--verbose]
+USAGE
+    exit 1;
+}

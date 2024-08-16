@@ -1,0 +1,105 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/initsuexec                      Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+use Cpanel::PwCache::Build               ();
+use Cpanel::PwCache                      ();
+use Cpanel::SafeFile                     ();
+use Cpanel::HttpUtils::ApRestart::BgSafe ();
+use Cpanel::HttpUtils::Version           ();
+use Cpanel::AcctUtils::DomainOwner::Tiny ();
+use Cpanel::Config::Httpd::Perms         ();
+use Cpanel::Logger                       ();
+use Cpanel::ConfigFiles::Apache          ();
+
+my $apacheconf = Cpanel::ConfigFiles::Apache->new();
+
+Cpanel::PwCache::Build::init_passwdless_pwcache();
+Cpanel::AcctUtils::DomainOwner::Tiny::build_domain_cache();
+
+exit if !-e $apacheconf->file_conf();
+
+my $logger = Cpanel::Logger->new();
+
+my $restart_apache = ( grep( /^--no-restart/, @ARGV ) ) ? 0 : 1;
+
+system '/usr/local/cpanel/scripts/updateuserdomains';
+
+my $has_suexec                   = -x $apacheconf->bin_suexec()                               ? 1 : 0;
+my $has_apache2_auth_passthrough = -e $apacheconf->dir_modules() . "/mod_auth_passthrough.so" ? 1 : 0;
+my $has_scgiwrap                 = ( !$has_suexec && !Cpanel::Config::Httpd::Perms::webserver_runs_as_user() );
+
+if ($has_scgiwrap) {
+    warn "scgiwrap has been removed in cPanel & WHM 62. Please use Apache suEXEC instead.\n";
+}
+
+my @CFILE;
+my $in_virtual_host = 0;
+my $has_user_group  = 0;
+my $owner           = '';
+my $scgiwrap_alias  = 'ScriptAlias /scgi-bin /usr/local/cpanel/cgi-sys/scgiwrap';
+
+my $httplock = Cpanel::SafeFile::safeopen( \*HC, '+<', $apacheconf->file_conf() );
+if ( !$httplock ) { $logger->die( 'Could not edit ' . $apacheconf->file_conf() ); }
+my $http_ver = Cpanel::HttpUtils::Version::get_current_apache_version_key();
+
+while (<HC>) {
+    push @CFILE, $_;
+}
+seek( HC, 0, 0 );
+foreach my $line (@CFILE) {
+    if ( $line !~ /^#/ ) {
+        if ( $line =~ /<virtualhost/i ) {
+            $in_virtual_host = 1;
+            $owner           = '';
+            $has_user_group  = 0;
+
+        }
+        if ( $line =~ /<\/virtualhost/i ) {
+            if ( $owner && $owner ne 'root' && $owner ne 'nobody' && $owner ne '*' && Cpanel::PwCache::getpwnam($owner) && !$has_user_group && $has_suexec ) {
+                my $new = "    <IfModule !mod_disable_suexec.c>\n";
+                $new .=
+                  $http_ver eq '1'
+                  ? "        User $owner\n        Group $owner\n"
+                  : "        SuexecUserGroup $owner $owner\n";
+                $new .= "    </IfModule>\n";
+                print HC $new;
+            }
+            $in_virtual_host = 0;
+        }
+        if ($in_virtual_host) {
+            if ( $line =~ /^(\s*)user /i || $line =~ m{^\s*SuexecUserGroup} ) {
+                $has_user_group = 1;
+            }
+            if ( $line =~ /ServerName (\S+)/i ) {
+                my $server_name = $1;
+                $server_name =~ s/^www\.//g;
+                $owner = Cpanel::AcctUtils::DomainOwner::Tiny::getdomainowner($server_name);
+
+                if ( $has_suexec || $has_apache2_auth_passthrough ) {
+                    my ( $uid, $gid ) = ( Cpanel::PwCache::getpwnam($owner) )[ 2, 3 ];    # really don't use $uid ...
+
+                    if ($gid) {
+                        foreach my $file ( $apacheconf->dir_conf() . "/sites/${server_name}.conf", $apacheconf->dir_conf() . "/sites/www.${server_name}.conf" ) {
+                            if ( -e $file ) {
+                                chmod 0640, $file;
+                                chown 0, $gid, $file;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        next if $line =~ /\Q$scgiwrap_alias\E/;
+    }
+    print HC $line;
+}
+
+truncate( HC, tell(HC) );
+Cpanel::SafeFile::safeclose( \*HC, $httplock );
+
+Cpanel::HttpUtils::ApRestart::BgSafe::restart() if ($restart_apache);

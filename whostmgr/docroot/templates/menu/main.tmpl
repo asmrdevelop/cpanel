@@ -1,0 +1,568 @@
+[% USE Whostmgr;
+   USE JSON;
+   USE EasyApache;
+   USE VarCache;
+   USE NVData;
+   USE ServerRoles;
+   USE Mysql;
+   USE WhostmgrMain;
+   USE CpanelOS ('can_be_elevated');
+%]
+[%
+    DEFAULT app_key = 'home';
+    SET has_component_system = template_exists("/usr/local/cpanel/whostmgr/docroot/templates/master_templates/component.html.tt");
+    IF has_component_system;
+        USE Components;
+    END;
+    SET has_analytics = template_exists("/var/cpanel/customizations/whm/includes/cp_analytics_whm.html.tt");
+    IF has_analytics;
+        USE UIAnalytics;
+    END;
+
+    varcache.set('checkacl_all',Whostmgr.checkacl('all'));
+    varcache.set('dnsonly',Whostmgr.dnsonly());
+
+    varcache.set('server_analytics_setting',CPANEL.analytics_ui_includes_are_enabled());
+    varcache.set('user_consent_analytics_setting',(NVData.get('analytics', undef, 0, 'whm') == "on"));
+
+    SET checkacl_all = varcache.checkacl_all,
+        dnsonly      = varcache.dnsonly,
+        nvdata = NVData.get("home:hide_important_next_steps"),
+        isa_email_error = data.item('isa:contact_email_save_error'),
+        isa_nameserver_error = data.item('isa:nameservers_save_error'),
+        nvDataNavigationState = NVData.get("whmcommand:navigation"), # Collapsed = 1, Expanded = 0
+        expanded_groups = NVData.get("toggle-status", "home-tools-toggle-status"),
+        hideAdditionalApps = nvDataNavigationState == "1" ? 0 : 1;
+
+        # Notes:
+        # 1) NVData.get() returns a string of length 0 when it cant find the property, not undef.
+        # 2) NVData.get() returns /1 or /0 if the cache is missing, and a JSON::PP::Boolean otherwise.
+        showFavoritesDescriptions = to_boolean(NVData.get('showFavoritesDescriptions'));
+
+    IF !showFavoritesDescriptions.length();
+        showFavoritesDescriptions = 1;
+    ELSE;
+        showFavoritesDescriptions = showFavoritesDescriptions ? 1 : 0;
+    END;
+
+    SET top_tools = data.top_tools;
+    SET hide_important_next_steps = nvdata == '0' ? 0 : 1;
+
+    SET nameserver = Whostmgr.check_flag('CPCONF=local_nameserver_type').lower,
+        nameserverConfigLink = cp_security_token _ '/scripts/nameserverconfig';
+
+    SET whm_variables = Whostmgr.template_vars;
+
+    SET license_type = CPANEL.get_producttype();
+    IF Whostmgr.has_license_flag('dev');
+        license_type = license_type _ ' DEVELOPER';
+    ELSIF Whostmgr.has_license_flag('trial');
+        license_type = license_type _ ' TRIAL';
+    ELSIF Whostmgr.is_test_build();
+        license_type = license_type _ ' TEST';
+    END;
+%]
+
+[% WRAPPER 'master_templates/master.tmpl'
+    theme="bootstrap"
+    app_key="home"
+    stylesheets = [
+        Whostmgr.find_file_url('/templates/menu/main.min.css')
+    ],
+    scripts = [
+        '/libraries/sortablejs/1.15.0/Sortable.js',
+    ]
+ -%]
+
+<!-- Embed retently survey if user consent is given. -->
+[% IF has_analytics && varcache.server_analytics_setting && varcache.user_consent_analytics_setting %]
+[%
+    SET analyticsData = UIAnalytics.get_whm_analytics_data();
+    SET retently_email_id = UIAnalytics.get_email_id_for_retently_embed(analyticsData.UUID);
+%]
+<div
+    id="retently-survey-embed"
+    data-href="https://app.retently.com/api/remote/tracking/606c61a4c8c2d36d01246bc4"
+    data-rel="dialog"
+    data-campaignId="6602b1e4dfb203deb51b48f3"
+    data-prop-analytics-id="[% analyticsData.UUID %]"
+    data-email="[% retently_email_id %]"
+    data-prop-account-age="[% analyticsData.ACCOUNT_AGE %]"
+    data-prop-company-id="[% analyticsData.company_id %]"
+    data-prop-product-version="[% analyticsData.product_version %]"
+    data-prop-product-interface="[% analyticsData.product_interface %]"
+    data-prop-product-feature="[% app_key %]"
+    data-prop-product-locale="[% analyticsData.product_locale %]"
+    data-prop-product-trial-status="[% analyticsData.product_trial_status %]"
+    data-prop-server-main-ip="[% analyticsData.server_main_ip %]"
+    data-prop-server-os="[% analyticsData.server_operating_system %]"
+    data-prop-is-root="[% analyticsData.is_root %]"
+    data-tags="whmadmin"
+></div>
+
+<script type="text/javascript">
+(function (d, s, id) {
+    var js, rjs = d.getElementsByTagName(s)[0];
+    if (d.getElementById(id)) return;
+    js = d.createElement(s);
+    js.id = id;
+    js.src = "https://cdn.retently.com/public/components/embed/sdk.min.js";
+    rjs.parentNode.insertBefore(js, rjs);
+}(document, "script", "retently-jssdk"));
+</script>
+[% END %]
+
+<div class="wrapper" role="main">
+    <div class="container-lg">
+        [% IF Whostmgr.hasroot() && Mysql.mysqlversion() == 5.5 %]
+            [% PROCESS 'warnings/_end_of_life_callout/callout.tmpl'
+                eol_callout_name = "mysql55"
+                eol_software_name = "MySQL 5.5"
+                eol_date = 1543795200 # December 3, 2018
+                eol_read_more_link = "https://go.cpanel.net/mysql55replacement"
+                eol_read_more_target = "cpblog-mysql55replacement"
+                eol_upgrade_link = cp_security_token _ "/scripts/mysqlupgrade"
+                eol_survey_link = "https://go.cpanel.net/mysql55survey"
+            %]
+        [% END %]
+
+        [%# If the only message we could potentially display
+            via an ajax callback which displays the versionExpiryMessage
+            and topSection then we want to set the top section to be hidden
+            so it does not push the page down and hide the "Explore WHM"
+            section from the view port on small screens
+        %]
+        [%
+            SET vars = Whostmgr.template_vars;
+            SET display_mysql_warning = Whostmgr.hasroot() && ( Mysql.is_version_going_eol_soon || Mysql.is_version_eol_now );
+            SET display_license_excess_warning = !varcache.dnsonly && Whostmgr.server_exceeds_max_users();
+        %]
+        [%
+            # NOTE:  There is a touch file to disable all banners that can be accessed via data.disable_os_eol_banners
+            # When adding a new EOL banner, hide_top_section will need something similar to the following for it
+            # ( data.disable_os_eol_banners || ( !display_eol_banner_1 && !display_eol_banner_2 ) )
+            SET hide_top_section = !display_mysql_warning && !display_license_excess_warning;
+            SET cloudlinux_url = cp_security_token _ "/scripts13/purchase_cloudlinux_init_WHM";
+            SET os_names = {
+                "CENTOS" => "CentOS",
+                "REDHAT" => "Red Hat®",
+                "CLOUDLINUX" => "CloudLinux™"
+            };
+        %]
+
+        <section id="topSection" [% hide_top_section ? 'class="hide"' : '' %]>
+            # Note that future EOL banners need to respect the touchfile checked via data.disable_os_eol_banners
+            # For example, adding them should look similar to the following
+            # [% IF !data.disable_os_eol_banners %]
+            #     [% IF display_eol_banner %]
+            #         html goes here
+            #     [% END %]
+            # [% END %]
+            [% IF Whostmgr.hasroot() -%]
+                <div id="calloutVersionExpiry" class="callout callout-cpanel hide" id="versionExpiryMessage">
+                    <h2><i class="glyphicon glyphicon-warning-sign text-danger"></i> [% locale.maketext("Your Version Is Expiring") -%]</h2>
+                    <span id="expiryMessageContent">[% locale.maketext("Your server currently runs on [asis,cPanel amp() WHM] version [output,strong,_1,id,PLACEHOLDER_CURRENT_VERSION]. Your system’s version will reach [output,url,_2,End of Life,target,_blank] on [output,strong,_3,id,PLACEHOLDER_EXPIRY]. We [output,strong,strongly] recommend that you upgrade to the latest version to avoid any disruption in your service. For more information on how to update your version, read our [output,url,_4,Update Preferences] documentation.", "[PLACEHOLDER_CURRENT_VERSION]", "https://go.cpanel.net/longtermsupport", "[PLACEHOLDER_EXPIRY]", cp_security_token _ "/scripts2/updateconf") -%]</span>
+                </div>
+                [% PROCESS 'warnings/_mysql_version.tmpl' %]
+            [% END -%]
+
+            [% IF display_license_excess_warning -%]
+                [% PROCESS 'menu/_license_excess.tmpl' -%]
+            [% END -%]
+        </section>
+
+        [% IF Whostmgr.hasroot() && !hide_important_next_steps && data.important_next_steps.size > 0 -%]
+        [% IF isa_email_error == 1 || isa_nameserver_error == 1 %]
+        <section id="isaAlertSection" class="isa-alert-section">
+            <div class="alert-list">
+                <div class="alert alert-danger" role="alert">
+                    <button id="btnCloseAlert" type="button" class="close" aria-label="Close">
+                        <span aria-hidden="true">×</span>
+                    </button>
+                    <span class="glyphicon glyphicon-remove-sign" aria-hidden="true"></span>
+                    <div class="alert-message">
+                        <strong class="alert-title">[% locale.maketext("Error:") %]</strong>
+                        <span class="alert-body">
+                            <span id="alertMessage">
+                                [% IF isa_email_error && isa_nameserver_error %]
+                                    [% locale.maketext("The system could not save your contact email address and nameservers. [output,url,_1,Try Again,id,_2]", cp_security_token _ data.basic_setup.url _ '?find=EMAIL', 'lnkBasicSetup') %]
+                                [% ELSIF isa_email_error %]
+                                    [% locale.maketext("The system could not save your contact email address. [output,url,_1,Try Again,id,_2]", cp_security_token _ data.basic_setup.url _ '?find=EMAIL', 'lnkBasicSetup' ) %]
+                                [% ELSIF isa_nameserver_error %]
+                                    [% locale.maketext("The system could not save your nameservers. [output,url,_1,Try Again,id,_2]", cp_security_token _ data.basic_setup.url _ '?find=nameservers', 'lnkBasicSetup') %]
+                                [% END %]
+                            </span>
+                        </span>
+                    </div>
+                </div>
+            </div>
+        </section>
+        [% END %]
+        <section role="region" aria-label=[% locale.maketext("Important next steps") %] id="nextStepsSection" class="cp-page-section">
+            <div class="section-header section-flex">
+                <h1 class="section-title">[% locale.maketext("Important next steps") %]</h1>
+                <button id="lnkDismissNextSteps" class="btn btn-link flip pull-right dismiss" title="[% locale.maketext('Do not show this section in the future.') %]">
+                    <i class="fas fa-times" aria-hidden="true"></i>
+                    [% locale.maketext("Dismiss") %]
+                </button>
+            </div>
+
+            <div class="tools-grid-container">
+                [% FOREACH application IN data.important_next_steps %]
+                    [%# Saving another iteration and making code ugly %]
+                    [% IF application.file.split('\.').shift == "basic_webhost_manager_setup" %]
+                    <div>
+                        <a href="[% cp_security_token _ application.url _ '?find=EMAIL' %]">
+                        <div class="cp-card cp-app">
+                            <img class="cp-card__image-next-steps" src="[% Whostmgr.get_icon_url('icons/' _ application.file) %]" aria-hidden="true"/>
+                            <div class="cp-app__details">
+                                <span class="cp-app__details-title">[% locale.maketext('Provide Contact Information') %]</span>
+                                <span class="cp-app__details-description">[% locale.maketext('Add your contact information. This lets [asis,cPanel amp() WHM] notify you about problems and status updates.') %]</span>
+                            </div>
+                        </div>
+                        </a>
+                    </div>
+                    [% IF !varcache.dnsonly %]
+                    <div>
+                        <a href="[% cp_security_token _ application.url _ '?find=nameservers' %]">
+                            <div class="cp-card cp-app">
+                                <img class="cp-card__image-next-steps"  src="[% Whostmgr.get_icon_url('icons/' _ application.file) %]" aria-hidden="true">
+                                <div class="cp-app__details">
+                                    <span class="cp-app__details-title">[% locale.maketext('Customize Nameservers') %]</span>
+                                    <span class="cp-app__details-description">
+                                        [% locale.maketext("Optionally, update your nameserver configuration. The system selects default nameservers during installation, but you can customize them before you create domains.") %]
+                                    </span>
+                                </div>
+                            </div>
+                        </a>
+                    </div>
+                    [% END %]
+                    <div>
+                        <a href="[% cp_security_token _ application.url _ '?find=ethernet' %]">
+                            <div class="cp-card cp-app">
+                                <img class="cp-card__image-next-steps"  src="[% Whostmgr.get_icon_url('icons/' _ application.file) %]" aria-hidden="true">
+                                <div class="cp-app__details">
+                                    <span class="cp-app__details-title">[% locale.maketext('Customize Ethernet Device') %]</span>
+                                    <span class="cp-app__details-description">
+                                        [% locale.maketext("Select or enter the Ethernet device that the system will add new IP addresses to.") %]
+                                    </span>
+                                </div>
+                            </div>
+                        </a>
+                    </div>
+                    [% ELSE; %]
+                    <div>
+                        <a href="[% cp_security_token _ application.url %]">
+                            <div class="cp-card cp-app">
+                                <img class="cp-card__image-next-steps" src="[% Whostmgr.get_icon_url('icons/' _ application.file) %]" aria-hidden="true">
+                                <div class="cp-app__details">
+                                    <span class="cp-app__details-title">[% application.itemdesc %]</span>
+                                    <span class="cp-app__details-description">[% application.description %]</span>
+                                </div>
+                            </div>
+                        </a>
+                    </div>
+                    [% END %]
+                [% END %]
+                </div>
+        </section>
+        [% END %]
+
+        <section class="tools-stats-grid-container cp-page-section">
+            <section role="region" aria-label=[% locale.maketext("Favorites") %] id="top_tools">
+                <div class="section-header section-flex">
+                    <h1 class="section-title">[% locale.maketext("Favorites") %]</h1>
+                    <button class="toggle-edit-favorites-button btn btn-default btn-sm">
+                        [%
+                            SET edit_label = locale.maketext("Edit Favorites");
+                            SET done_edit_label = locale.maketext("Done Editing");
+                        %]
+                        <span class="toggle-edit-favorites-button__select">[% edit_label %]</span>
+                        <span class="toggle-edit-favorites-button__done hidden">[% done_edit_label %]</span>
+                    </button>
+                </div>
+
+                [% SET favorites = [];
+                FOREACH application IN top_tools;
+                    SET favorite = {
+                        group  => application.group,
+                        key    => application.key,
+                        target => application.target || '_self',
+                    };
+
+                    IF application.type == 'plugin';
+                        favorite.name = application.showname;
+                        favorite.description = "";
+                        favorite.url = cp_security_token _ '/cgi/' _ application.cgi;
+                        IF application.icon;
+                            favorite.iconUrl = Whostmgr.get_icon_url('addon_plugins/' _ application.icon);
+                        ELSE;
+                            favorite.iconUrl = Whostmgr.find_file_url("icons/${application.tagname}.png") || Whostmgr.find_file_url('icons/plugin_placeholder.png');
+                        END;
+                    ELSE;
+                        favorite.name = application.itemdesc;
+                        favorite.description = application.description;
+                        favorite.url = cp_security_token _ application.url;
+                        favorite.iconUrl = Whostmgr.get_icon_url('icons/' _ application.file);
+                    END;
+
+                    favorites.push(favorite);
+                END;
+                %]
+                <div class="cp-favorite-instructions cp-card hidden">
+                    <p>[% locale.maketext("Select your favorite tools from the [output,url,_1,Tools] sections below by clicking the star icons next to each tool.", "#tools-section") %]</p>
+                    <ul>
+                        <li>
+                            <i class="cp-favorite-selector--selected">
+                                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
+                                    <path fill="none" d="M0 0h24v24H0z" />
+                                    <path d="M12 18.26l-7.053 3.948 1.575-7.928L.587 8.792l8.027-.952L12 .5l3.386 7.34 8.027.952-5.935 5.488 1.575 7.928z" />
+                                </svg>
+                            </i>
+                            [% locale.maketext("Selected") %]
+                        </li>
+                        <li>
+                            <i class="cp-favorite-selector--unselected">
+                                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
+                                    <path fill="none" d="M0 0h24v24H0z" />
+                                    <path d="M12 18.26l-7.053 3.948 1.575-7.928L.587 8.792l8.027-.952L12 .5l3.386 7.34 8.027.952-5.935 5.488 1.575 7.928L12 18.26zm0-2.292l4.247 2.377-.949-4.773 3.573-3.305-4.833-.573L12 5.275l-2.038 4.42-4.833.572 3.573 3.305-.949 4.773L12 15.968z" />
+                                </svg>
+                            </i>
+                            [% locale.maketext("Unselected") %]
+                        </li>
+                    </ul>
+                    <p>[% locale.maketext("To reorder the favorites, click and drag the tool to the desired position.") %]</p>
+                    <p>
+                        [% locale.maketext("To stop editing your favorites, click the [_1] button above.", done_edit_label) %]
+                    </p>
+                    <hr>
+                    <p>
+                        [% locale.maketext("Use the following toggle to enable or disable descriptions:") %]
+                        <cpw-toggle-switch
+                            id="chkToggleCompact"
+                            class="edit-favorites-options-compact"
+                            label-position="left"
+                            init-state="[% showFavoritesDescriptions ? "on" : "off" %]"
+                            toggle-on-text="[% locale.maketext('Enabled') %]"
+                            toggle-off-text="[% locale.maketext('Disabled') %]">
+                        </cpw-toggle-switch>
+                    </p>
+                </div>
+                <cp-favorite-list class="tools-grid-container favorites-container"
+                    show-descriptions="[% showFavoritesDescriptions ? 'true' : 'false' %]">
+                </cp-favorite-list>
+                <div class="tools-grid-placeholder [% IF top_tools.size() != 0 %]hidden[% END %]">
+                    <p>
+                        [% locale.maketext("You can customize this section with the WHM features you use the most. Click [output,strong,_1] to change your favorites.", edit_label) %]
+                    </p>
+                </div>
+            </section>
+            <section role="region" aria-label=[% locale.maketext("Statistics") %] id="tools__stats">
+                [%# Needed additional wrapper div so card does not overflow parent. %]
+                <div class="stats-wrapper">
+                    <div class="section-header">
+                        <h1 class="section-title">[% locale.maketext("Statistics") %]</h1>
+                    </div>
+                    <div class="cp-card cp-stats">
+                        <div class="cp-stat__details">
+                            <span class="cp-stat__details-title">
+                            [% locale.maketext("Hostname") %]
+                            </span>
+                            <span class="server-hostname-value cp-stat__details-value">
+                            <cp-wrap-filter text="[% Whostmgr.hostname().html() %]"></cp-wrap-filter>
+                            </span>
+                        </div>
+                        <div class="cp-stat__details">
+                            <span class="cp-stat__details-title">
+                                [% locale.maketext("Load Averages") %]
+                                [%
+                                    SET has_all = Whostmgr.checkacl('all');
+                                    IF has_all;
+                                %]
+                                <a class="cp-stat__details-link"
+                                    href="[% cp_security_token _ "/scripts2/top" %]"
+                                    title="[% locale.maketext('Process Manager') %]"
+                                    target="_self">
+                                    <i class="ri-run-line"></i>
+                                </a>
+                                [% END %]
+                            </span>
+                            [% IF has_all %]
+                            <a class="cp-stat__details-link__wrapper"
+                                href="[% cp_security_token _ "/scripts2/top" %]"
+                                target="_self">
+                            [% END %]
+                                <cp-load-averages id="stats" verbose="true" show-header="true" />
+                            [% IF has_all %]
+                            </a>
+                            [% END %]
+                        </div>
+                        <div class="cp-stat__details hidden-xs">
+                            <span class="cp-stat__details-title">
+                            [% locale.maketext("Operating System") %]
+                            </span>
+                            <span class="server-operating-system-value cp-stat__details-value">
+                            [% whm_variables.BASEOS.html() %]
+                            </span>
+                        </div>
+                        <div class="cp-stat__details hidden-xs">
+                            <span class="cp-stat__details-title">
+                            [% locale.maketext("Product") %]
+                            </span>
+                            <span class="server-whm-version-value cp-stat__details-value">
+                            cPanel &amp; WHM v[% Whostmgr.WHM_VERSION %] ([%license_type.html()%])
+                            </span>
+                        </div>
+                        <div class="cp-stat__details">
+                            <div class="cp-stat__title_row">
+                                <label id="lblAcctUuid" class="cp-stat__details-title">[% locale.maketext("User Analytics ID") %]</label>
+                                <span id="copyMsgContainer" class="copy-msg-container label label-success">
+                                    [% locale.maketext('Copied') %]
+                                </span>
+                            </div>
+                            <div id="acctUuidContainer" class="general-info-value uuid-copy-container">
+                                <i id="iconCopyUuid" class="ri-1x ri-file-copy-fill" title="[% locale.maketext('Click to copy the user analytics ID.') %]" aria-hidden="true"></i>
+                                <a id="linkCopyUuid" href="javascript:void(0);" title="[% locale.maketext('Click to copy the user analytics ID.') %]">
+                                    <span id="txtAcctUuid" class="general-info-value long-text-fade-overflow">[% whm_variables.UUID %]</span>
+                                </a>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+        </section>
+
+        [%
+        IF has_component_system && Components.has_components_for('whostmgr', app_key, 'menu-top');
+            PROCESS "master_templates/component.html.tt",
+                APP_KEY => app_key,
+                TAG     => 'section',
+                SLOT    => 'menu-top',
+                CLASSES => 'cp-page-section';
+        END;
+        %]
+        <section role="region" aria-label=[% locale.maketext("Tools") %] id="tools" class="cp-page-section">
+            <div class="section-header">
+                <h1 class="section-title"><a name="tools-section">[% locale.maketext("Tools") %]</a></h1>
+            </div>
+            [% FOREACH group IN data.tools.groups %]
+                [% IF group.items.size > 0 %]
+                <div data-group-key="[% group.key %]" class="cp-card cp-group mb-1 [% expanded_groups.item(group.key) == 1 ? 'expanded' : '' %]">
+                    <div class="cp-group__header">
+                        <img class="cp-group__header-icon" src="[% Whostmgr.get_icon_url('icons/' _ group.file) %]" alt="" />
+                        <h2 class="cp-group__header-title">[% group.groupdesc %]</h2>
+                        <a href="javascript:void(0)" class="cp-group__header-expand fas" aria-label="[% locale.maketext("Expand or collapse “[_1]” tools group.", group.groupdesc) %]">
+                        </a>
+                    </div>
+                    <div class="cp-group__content">
+                        <div class="row">
+                            [% FOREACH application IN group.items;
+                                application.iconUrl = Whostmgr.get_icon_url('icons/' _ application.file);
+                                application.fullUrl = WhostmgrMain.final_menu_url(application.url);
+                                application.type    = "builtin";
+                            %]
+                            <div class="col-md-4 cp-group__content-item">
+                                <div>
+                                    <cp-app
+                                        class="cp-app-link"
+                                        url="[% application.fullUrl %]"
+                                        target=[% application.target || '_self' %]
+                                        iconUrl="[% application.iconUrl %]"
+                                        description="[% application.itemdesc %]"
+                                        uniqueKey="[% application.group _ '_' _ application.key %]"
+                                        name="[% application.key %]"
+                                    >
+                                    </cp-app>
+                                    <cp-favorite-selector
+                                        class="cp-select-for-my-tools"
+                                        group="[% application.group %]"
+                                        name="[% application.key %]"
+                                    >
+                                    </cp-favorite-selector>
+                                </div>
+                            </div>
+                            [% END %]
+                        </div>
+                    </div>
+                </div>
+                [% END %]
+                [% IF group.key == 'plugins' && Whostmgr.plugins_data.size > 0 %]
+                <div data-group-key="[% group.key %]" class="cp-card cp-group mb-1 [% expanded_groups.item(group.key) == 1 ? 'expanded' : '' %]">
+                    <div class="cp-group__header">
+                        <img class="cp-group__header-icon" src="[% Whostmgr.get_icon_url('icons/' _ group.file) %]" alt="" />
+                        <h2 class="cp-group__header-title">[% group.groupdesc %]</h2>
+                        <a href="javascript:void(0)" class="cp-group__header-expand fas" aria-label="[% locale.maketext("Expand or collapse “[_1]” tools group.", group.groupdesc) %]">
+                        </a>
+                    </div>
+                    <div class="cp-group__content">
+                        <div class="row">
+                            [%
+                                SET plugins = Whostmgr.plugins_data;
+                                FOREACH plugin IN plugins;
+                                # Normalize the data model for plugins to match the data model for tools
+                                plugin.key = plugin.uniquekey;
+                                plugin.itemdesc = plugin.showname;
+                                plugin.description = '';  # plugins don't have a description rigth now.
+                                plugin.url = '/cgi/' _ plugin.cgi;
+                                plugin.fullUrl = cp_security_token _ plugin.url;
+                                IF plugin.icon;
+                                    plugin.iconUrl = Whostmgr.get_icon_url('addon_plugins/' _ plugin.icon);
+                                ELSE;
+                                    plugin.iconUrl = Whostmgr.find_file_url("icons/${plugin.tagname}.png") || Whostmgr.find_file_url('icons/plugin_placeholder.png');
+                                END;
+                                plugin.type = "plugin";
+                            %]
+                            <div class="col-md-4 cp-group__content-item">
+                                <div>
+                                    <cp-app
+                                        class="cp-app-link"
+                                        url="[% plugin.fullUrl %]"
+                                        target=[% plugin.target || '_self' %]
+                                        iconUrl="[% plugin.iconUrl %]"
+                                        description="[% plugin.showname.html() %]"
+                                        uniqueKey="[% plugin.key %]"
+                                        name="[% plugin.key %]"
+                                    >
+                                    </cp-app>
+                                    <cp-favorite-selector
+                                        class="cp-select-for-my-tools"
+                                        group="[% group.key %]"
+                                        name="[% plugin.key %]"
+                                    >
+                                    </cp-favorite-selector>
+                                </div>
+                            </div>
+                            [% END %]
+                        </div>
+                    </div>
+                </div>
+                [% END %]
+            [% END %]
+        </section>
+        [%
+        IF has_component_system && Components.has_components_for('whostmgr', app_key, 'menu-bottom');
+            PROCESS "master_templates/component.html.tt",
+                APP_KEY => app_key,
+                TAG     => 'section',
+                SLOT    => 'menu-bottom',
+                CLASSES => 'cp-page-section';
+        END;
+        %]
+    </div>
+</div>
+
+<script type="text/javascript">
+    var PAGE = PAGE || {};
+
+    PAGE.token = "[% cp_security_token %]";
+    PAGE.isRoot = [% Whostmgr.ENV.REMOTE_USER == "root" ? "true" : "false" %];
+
+    PAGE.expanded_groups = [% expanded_groups.json() %];
+    PAGE.hasBasicWHMFunctions = [% Whostmgr.checkacl('basic-whm-functions') %];
+    PAGE.favorites = [% favorites.json() %];
+    PAGE.tools = [% data.tools.json() %];
+    PAGE.plugins = [% plugins.json() || '[]' %];
+
+    [% INSERT "menu/main.js" %]
+</script>
+[% END -%]

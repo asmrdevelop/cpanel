@@ -1,0 +1,175 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+# cpanel - scripts/check_users_my_cnf               Copyright 2022 cPanel L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cpanel license. Unauthorized copying is prohibited
+
+use strict;
+use warnings;
+
+use Cpanel::PwCache::PwEnt ();
+use Cpanel::PwCache        ();
+use Cpanel::AccessIds      ();
+use Getopt::Param          ();
+
+use Cpanel::DBI::Mysql          ();
+use Cpanel::MysqlUtils::Running ();
+
+my $prm = Getopt::Param->new(
+    {
+        'help_coderef' => sub {
+            print <<"END_USAGE";
+Check users for ~/.my.cnf files that do not work and disable them. By default it only has output when a bad ~/.my.cnf is detected.
+  $0 --help       - this screen
+  $0 --verbose    - Display verbose information about the user's being checked and ~/.my.cnf status.
+  $0 --dryrun     - do not disable an invalid ~/.my.cnf just report the problem
+  $0 --user=USERA [--user=USERB} - specify a user (or users by using more than one --user flag) to check instead of checking all users
+  $0 --perm-only - Do not test the connectivity, only do the mode and ownership check.
+
+END_USAGE
+            exit;
+        },
+    }
+);
+
+my %users;
+@users{ $prm->param('user') } = ();
+
+my $hasuser = $prm->param('user')      ? 1 : 0;
+my $verbose = $prm->param('verbose')   ? 1 : 0;
+my $dryrun  = $prm->param('dryrun')    ? 1 : 0;
+my $justprm = $prm->param('perm-only') ? 1 : 0;
+
+_mysql_is_up_or_stop() if !$justprm;
+
+my $root_home = ( Cpanel::PwCache::getpwnam('root') )[7];
+my @PW;
+
+Cpanel::PwCache::PwEnt::setpwent();
+
+sub _iterate_pw {    ## no critic qw(ProhibitExcessComplexity)
+    while ( @PW = Cpanel::PwCache::PwEnt::getpwent() ) {
+        next if $hasuser && !exists $users{ $PW[0] };
+
+        print "Starting '$PW[0]' ...\n" if $verbose;
+        my $file = "$PW[7]/.my.cnf";
+        if ( -e $file ) {
+
+            # if ( chdir $PW[7] ) {
+            my $check = sub {
+
+                # untaint
+                my ($_file) = $file =~ m{(.*)};
+
+                # check perms before connectivity test since bad perms can prevent connection
+                # Warning: World-writable config file '/root/.my.cnf' is ignored
+                my ( $mode, $uid, $gid ) = ( stat($_file) )[ 2, 4, 5 ];
+                my $perm = sprintf( '%04o', $mode & 07777 );
+
+                # ? only check-for and remove world-writableness ?
+                # if worldly
+                if ( $mode & 0007 ) {
+                    my $newmode = $mode & ~007;                          # remove wordlyness
+                    my $newperm = sprintf( '%04o', $newmode & 07777 );
+                    if ($dryrun) {
+                        print "\tLeaving mode at '$perm' as per --dryrun flag.\n";
+                    }
+                    else {
+                        print "\tChanging $_file\'s mode from '$perm' to '$newperm'.\n" if $verbose;
+                        chmod( $newmode, $_file ) or print "\tCould not chmod() '$_file' to '$newperm': $!\n";
+                    }
+                }
+
+                if ( $uid != $PW[2] || $gid != $PW[3] ) {
+                    warn("Ownership of '$_file' is '$uid:$gid' and it should probably be '$PW[2]:$PW[3]'.");
+                }
+
+                my $dbh = eval {
+                    Cpanel::DBI::Mysql->connect(
+                        { mysql_read_default_file => $_file },
+                    );
+                };
+
+                if ($dbh) {
+                    print "\tThe file '$_file' is valid.\n" if $verbose;
+                    return 1;
+                }
+
+                print "\tThe file '$_file' is invalid:\n\t\t$@\n";
+
+                return;
+            };
+
+            my $disable = sub {
+
+                # untaint
+                my ($_file) = $file =~ m{(.*)};
+
+                if ($dryrun) {
+                    print "\tLeaving file in place as per --dryrun flag.\n";
+                }
+                else {
+                    require Cpanel::Time::ISO;
+
+                    # TODO: rewrite with auth data commented out
+                    my $rename_to = "$_file.$$." . Cpanel::Time::ISO::unix2iso();
+
+                    if ( rename $_file => $rename_to ) {
+                        print "Successfully renamed “$_file” to “$rename_to”.\n";
+                    }
+                    else {
+                        print "\tFailed to rename “$_file” to “$rename_to”: $!\n";
+                    }
+                }
+            };
+
+            # for entries like this: operator:x:11:0:operator:/root:/sbin/nologin
+            if ( $PW[2] != 0 && $PW[7] eq $root_home ) {
+                print "\tnon-root user with root's homedir detected, skipping\n" if $verbose;
+            }
+            else {
+                if ($justprm) {
+                    print "\tSkipping connectivity test as per --perm-only flag.\n" if $verbose;
+                }
+                else {
+                    if ( $PW[2] == 0 ) {
+                        my $rc = $check->();
+                        if ( !$rc ) {
+                            _mysql_is_up_or_stop();
+                            $disable->();
+                        }
+                    }
+                    else {
+                        my $rc = Cpanel::AccessIds::do_as_user( $PW[0], $check );
+                        if ( !$rc ) {
+                            _mysql_is_up_or_stop();    # detect false positive from when mysql is down, needs run as root
+                            Cpanel::AccessIds::do_as_user( $PW[0], $disable );
+                        }
+                    }
+                }
+            }
+
+            # }
+            # else {
+            #     print "\tCould not change into directory '$PW[7]': $!\n";
+            # }
+        }
+        else {
+            print "\tThe file '$file' does not exist.\n" if $verbose;
+        }
+        print " ... Done.\n" if $verbose;
+    }
+
+    return;
+}
+
+_iterate_pw();
+
+Cpanel::PwCache::PwEnt::endpwent();
+
+sub _mysql_is_up_or_stop {
+
+    die "MySQL is not available.\n" if !Cpanel::MysqlUtils::Running::is_mysql_running();
+
+    return;
+}

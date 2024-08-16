@@ -1,0 +1,237 @@
+[% USE CPHash -%]
+[% WRAPPER 'master_templates/master.tmpl' theme="yui" -%]
+<style type="text/css">
+table#lexicon_table td {
+    border: 0px solid black;
+}
+span.custom_value {
+    background-color: #FFFFCC;
+}
+
+.human_translation {
+    background-color: #F78E1E;
+}
+
+.machine_translation {
+    background-color: #FFFFCC;
+}
+
+.pending_translation {
+    background-color: #FFFFCC;
+}
+
+</style>
+
+<script type="text/javascript">
+//<![CDATA[
+var CHARSET = '[% data.tag_encoding %]';
+var THEME = '[% data.theme %]';
+var LOCALE_TAG = '[% data.tag %]';
+
+var edit = function(id) {
+    var div_region = YAHOO.util.Region.getRegion(YAHOO.util.Dom.get("lexicon_value" + id));
+    if (div_region.height <= 1) div_region.height = 20;
+    div_region.height += 2; // add some padding for comfort
+
+    YAHOO.util.Dom.setStyle("lexicon_value" + id, "display", "none");
+    YAHOO.util.Dom.setStyle("edit_textarea" + id, "height", div_region.height + "px");
+    YAHOO.util.Dom.setStyle("edit_lexicon_value" + id, "display", "");
+
+    YAHOO.util.Dom.setStyle("edit_revert_buttons" + id, "display", "none");
+    YAHOO.util.Dom.setStyle("edit_input" + id, "display", "");
+
+    YAHOO.util.Dom.get("edit_textarea" + id).value = CPANEL.util.get_text_content("lexicon_value" + id);
+};
+
+var cancel = function(id) {
+    YAHOO.util.Dom.setStyle("edit_revert_buttons" + id, "display", "block");
+    YAHOO.util.Dom.setStyle("edit_input" + id, "display", "none");
+
+    YAHOO.util.Dom.setStyle("lexicon_value" + id, "display", "block");
+    YAHOO.util.Dom.setStyle("edit_lexicon_value" + id, "display", "none");
+    YAHOO.util.Dom.get("edit_status" + id).innerHTML = "";
+};
+
+var save = function(id) {
+    var new_value = YAHOO.util.Dom.get("edit_textarea" + id).value;
+
+    var callback = {
+        success : function(o) {
+            try {
+                var data = YAHOO.lang.JSON.parse(o.responseText);
+                if (data.status == 1) {
+                    CPANEL.util.set_text_content("lexicon_value" + id, new_value);
+                    YAHOO.util.Dom.setStyle("lexicon_value" + id, "display", "block");
+                    YAHOO.util.Dom.setStyle("edit_lexicon_value" + id, "display", "none");
+
+                    YAHOO.util.Dom.setStyle("edit_revert_buttons" + id, "display", "block");
+                    YAHOO.util.Dom.setStyle("edit_input" + id, "display", "none");
+                    YAHOO.util.Dom.get("edit_success" + id).innerHTML = CPANEL.icons.success + " Saved";
+                    YAHOO.util.Dom.get("edit_status" + id).innerHTML = "";
+                    YAHOO.util.Dom.get("value_type" + id).innerHTML = '<span class="custom_value">Custom Value</span>';
+                    YAHOO.util.Dom.setStyle("revert_to_default_button" + id, "display", "");
+
+                    setTimeout(function() {
+                        CPANEL.animate.fade_out("edit_success"+id).onComplete.subscribe( function() {
+                            YAHOO.util.Dom.setStyle( this.getEl(), "display", "");
+                            this.getEl().innerHTML = "";
+                        } );
+                    }, 5000);
+                }
+                else {
+                    YAHOO.util.Dom.setStyle("edit_input" + id, "display", "");
+                    YAHOO.util.Dom.get("edit_status" + id).innerHTML = CPANEL.icons.error + " " + data.text;
+                }
+            }
+            catch(e) {
+                YAHOO.util.Dom.setStyle("edit_input" + id, "display", "");
+                YAHOO.util.Dom.get("edit_status" + id).innerHTML = CPANEL.icons.error + " JSON Error! Refresh the page and try again.";
+            }
+        },
+
+        error : function(o) {
+            YAHOO.util.Dom.setStyle("edit_input" + id, "display", "");
+            YAHOO.util.Dom.get("edit_status" + id).innerHTML = CPANEL.icons.error + " AJAX Error!  Refresh the page and try again.";
+        }
+    };
+
+    var orig_key = CPANEL.util.get_text_content("key_value"+id);
+    var url = CPANEL.security_token + "/cgi/ajax_maketext_syntax_util.pl?key=" + encodeURIComponent(new_value); // ## no extract maketext
+    url += '&charset=' + encodeURIComponent(CHARSET);
+    url += '&save=1';
+    url += '&orig_key=' + encodeURIComponent(orig_key);
+    url += '&theme=' + encodeURIComponent(THEME);
+    url += '&locale_tag=' + encodeURIComponent(LOCALE_TAG);
+    YAHOO.util.Connect.asyncRequest('GET', url, callback, '');
+
+    YAHOO.util.Dom.setStyle("edit_input" + id, "display", "none");
+    YAHOO.util.Dom.get("edit_status" + id).innerHTML = CPANEL.icons.ajax + " saving...";
+};
+
+var revert_to_default = function(id) {
+    var callback = {
+        success : function(o) {
+            try {
+                var data = YAHOO.lang.JSON.parse(o.responseText);
+                if (data.status == 1) {
+                    YAHOO.util.Dom.get("edit_textarea" + id).innerHTML = "";
+                    YAHOO.util.Dom.get("edit_textarea" + id).value = "";
+                    CPANEL.util.set_text_content("lexicon_value" + id, data.text);
+                    YAHOO.util.Dom.setStyle("revert_to_default_button" + id, "display", "none");
+                    YAHOO.util.Dom.setStyle("edit_revert_buttons" + id, "display", "block");
+                    YAHOO.util.Dom.get("edit_success" + id).innerHTML = CPANEL.icons.success + " Saved";
+                    YAHOO.util.Dom.get("edit_status" + id).innerHTML = "";
+                    YAHOO.util.Dom.get("value_type" + id).innerHTML = "Value";
+
+                    setTimeout(function() {
+                        $("#" + "edit_success" + id).fadeOut("normal", function() {
+                            YAHOO.util.Dom.setStyle("edit_success" + id, "display", "");
+                            YAHOO.util.Dom.get("edit_success" + id).innerHTML = "";
+                        });
+                    }, 5000);
+                }
+                else {
+                    YAHOO.util.Dom.setStyle("edit_input" + id, "display", "");
+                    YAHOO.util.Dom.get("edit_status" + id).innerHTML = CPANEL.icons.error + " " + data.text;
+                }
+            }
+            catch(e) {
+                YAHOO.util.Dom.setStyle("edit_input" + id, "display", "");
+                YAHOO.util.Dom.get("edit_status" + id).innerHTML = CPANEL.icons.error + " JSON Error! Refresh the page and try again.";
+            }
+        },
+
+        error : function(o) {
+            YAHOO.util.Dom.setStyle("edit_input" + id, "display", "");
+            YAHOO.util.Dom.get("edit_status" + id).innerHTML = CPANEL.icons.error + " AJAX Error!  Refresh the page and try again.";
+        }
+    };
+
+    var url = CPANEL.security_token + "/cgi/ajax_locale_delete_local_key.pl?key=" + encodeURIComponent(CPANEL.util.get_text_content("key_value"+id));
+    url += '&theme=' + encodeURIComponent(THEME);
+    url += '&locale=' + encodeURIComponent(LOCALE_TAG);
+    YAHOO.util.Connect.asyncRequest('GET', url, callback, '');
+
+    YAHOO.util.Dom.setStyle("edit_revert_buttons" + id, "display", "none");
+    YAHOO.util.Dom.get("edit_status" + id).innerHTML = CPANEL.icons.ajax + " reverting...";
+};
+//]]>
+</script>
+
+[% IF data.tag && data.theme %]
+   <h3>Editing the “[% data.tag %]” locale in “[% data.theme %]”.</h3>
+   <p>Local edits will be saved to <code>[% data.local_file %]</code></p>
+   <p>The compiled database file is at <code>[% data.cdb_file %]</code></p>
+
+    [% IF data.theme != '/' %]
+        <p>Note: If you have <a href="[% cp_security_token %]/scripts9/locale_editor=?locale=[% data.tag %]&theme=%2F">edited a key for '[% data.tag %]' in the root data</a> but not for the '[% data.theme %]' theme it will not show up as a "Custom Value" here unless you have also edited it for this theme.</p>
+    [% END %]
+
+    <table cellpadding="3" cellspacing="0" style="width: 800px">
+        <tr>
+            <td><hr /></td>
+        </tr>
+    </table>
+    [% FOR pair IN data.en_hash %]
+[% SET key = pair.key -%]
+        [%- IF key != '__FORENSIC' && key != 'charset' -%]
+        <table cellpadding="3" cellspacing="0" style="width: 800px">
+            <tr>
+                <td align="right" valign="top" style="width: 150px">Key:</td>
+                <td style="width: 650px"><span id="key_value[% loop.index %]">[% key %]</span></td>
+            </tr>
+            <tr>
+                <td align="right" valign="top">English Value:</td>
+                <td>[% CPHash.vmethod('item',data.en_hash,key) FILTER html %]</td>
+            </tr>
+            <tr>
+                <td align="right" valign="top"><span id="value_type[% loop.index %]">[% CPHash.vmethod('exists',data.local_hash,key) ? '<span class="custom_value">Custom Value</span>' : 'Value' %]</span>:</td>
+                <td>
+                    <div id="lexicon_value[% loop.index %]">[% CPHash.vmethod('item',data.cdb_hash,key) FILTER html %]</div>
+                    <div id="edit_lexicon_value[% loop.index %]" style="display: none"><textarea id="edit_textarea[% loop.index %]" rows="" cols="" style="width: 100%"></textarea></div>
+                </td>
+            </tr>
+            <tr>
+                <td>&nbsp;</td>
+                <td>
+                    <div id="edit_revert_buttons[% loop.index %]"><input type="button" value="Edit" onclick="edit([% loop.index %])" /> <input type="button" id="revert_to_default_button[% loop.index %]" onclick="revert_to_default([% loop.index %])" value="Revert to Default Value" [% IF CPHash.vmethod('exists',data.local_hash,key) == FALSE %]style="display: none"[% END %] /> <span id="edit_success[% loop.index %]"></span></div>
+                    <div id="edit_input[% loop.index %]" style="display: none"><span class="action_link" onclick="cancel([% loop.index %])">cancel</span> or <input type="button" value="Save Changes" onclick="save([% loop.index %])" /></div>
+                    <div id="edit_status[% loop.index %]"></div>
+                </td>
+            </tr>
+[% IF data.in_translation_vetting_mode && data.tag != 'en' %]
+<tr>
+   <td align="right" valign="top">Translation Vetting:</td>
+   <td valign="top">
+     <ul>
+       [%- SET location  = data.get_location_of_key(data.tag, key) -%]
+       [%- SET is_legacy = data.phrase_is_legacy_key(key) -%]
+       [%- SET queue_hr = data.get_queue_values(data.tag, key) -%]
+       [%- IF queue_hr -%]
+           [% IF !queue_hr.size %]<li class="pending_translation">This phrase is pending new human translation.</li>[% END %]
+           [% IF queue_hr.human %]<li class="human_translation">Pending Human [% IF location == 'lexicon' %]Re-[% END %]translation: <b>[% queue_hr.human FILTER html %]</b></li>[% END %]
+           [% IF queue_hr.machine %]<li class="machine_translation">Pending Machine [% IF location == 'lexicon' %]Re-[% END %]translation: <b>[% queue_hr.machine FILTER html %]</b></li>[% END %]
+       [%- END -%]
+       <li>Location: <b>[% location == 'custom' && is_legacy ? 'lexicon' : location %]</b></li>
+       <li>Is Legacy? <b>[% is_legacy ? "Yes" : "No" %]</b></li>
+     </ul>
+     <span style="font-size: x-small;font-style: italic">When editing the value you can include a brief note about the new translation by using a bracket notation comment tag with a special “tag” identifying it as a translation fix note:
+     <br/>
+     &nbsp; &nbsp; &nbsp; <code>&#091;comment,translation fix: YOUR NOTE GOES HERE&#093;</code>
+     </span>
+   </td>
+</tr>
+[% END %]
+            <tr>
+                <td colspan="2"><hr /></td>
+            </tr>
+        </table>
+        [% END %]
+    [% END %]
+[% ELSE %]
+   [% IF !data.tag %]<p class="error">Invalid locale.</p>[% END %]
+   [% IF !data.theme %]<p class="error">Invalid theme.</p>[% END %]
+[% END %]
+
+<p><a href="[% cp_security_token %]/scripts9/locale_edit_options">Back</a></p>
+[% END %]

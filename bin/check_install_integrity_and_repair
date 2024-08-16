@@ -1,0 +1,66 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - bin/check_install_integrity_and_repair  Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+## audit case 45000: probably no longer used; only updates since 2007 were policy
+##   changes (cPScript, migration from /scripts, copyright year, @INC manip);
+
+use strict;
+use warnings;
+use POSIX                ();
+use Cpanel::ProcessCheck ();
+
+$| = 1;
+
+if ( !-e '/usr/local/cpanel/etc/exim/cf/virtual_aliases' ) {
+    print "Integrity check failed.  Running auto update & repair.. please wait...";
+    if ( my $pid = fork() ) {
+
+        # Parent
+    }
+    else {
+        if ( -e '/usr/local/cpanel/etc/exim/cf/virtual_aliases' ) {
+            print "previous update already repaired install!\n";
+            exit 0;
+        }
+        else {
+            print "starting a forced update!\n";
+            chdir '/';
+
+            POSIX::setsid();
+            for ( 3 .. 1024 ) {
+                POSIX::close($_);
+            }
+            open( STDIN,  '<', '/dev/null' );
+            open( STDOUT, '>', '/dev/null' );
+            open( STDERR, '>', '/dev/null' );
+
+            my $upcppidcount = -1;
+            while ( $upcppidcount != 0 ) {
+                print "Checking for a running upcp ... ";
+                my %PPIDS = Cpanel::ProcessCheck::previouspids( 'process' => 'upcp' );
+                delete $PPIDS{$$};
+                $upcppidcount = scalar keys %PPIDS;
+                if ($upcppidcount) {
+                    print "still running ... waiting 60 seconds ... ";
+                    sleep 60;
+                }
+                else {
+                    print "no running upcp ...";
+                }
+            }
+
+            system '/usr/local/cpanel/scripts/upcp', '--force';
+            system '/usr/local/cpanel/scripts/buildeximconf';
+            system '/usr/local/cpanel/scripts/restartsrv', 'exim';
+
+            exit 0;
+        }
+    }
+}
+else {
+    print "Integrity check passed. No update needed.\n";
+}

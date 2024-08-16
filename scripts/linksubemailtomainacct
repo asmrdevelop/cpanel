@@ -1,0 +1,91 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/linksubemailtomainacct          Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::linksubemailtomainacct;
+
+use strict;
+use Getopt::Long                 ();
+use Cpanel::PwCache              ();
+use Cpanel::PwCache::Helpers     ();
+use Cpanel::PwCache::Build       ();
+use Cpanel::LoginDefs            ();
+use Cpanel::Config::LoadConfig   ();
+use Cpanel::Email::Maildir::Link ();
+
+if ( !caller() ) {
+    $| = 1;
+
+    # The -force option is not used, but we'll retain it due to
+    # historical precedent, and in case it might be implemented
+    # some day.
+    my $force        = 0;
+    my $quiet        = 0;
+    my $exitondelete = 1;
+    my $delete       = "";    # delete old symlinks
+
+    my $opt_parse_result = Getopt::Long::GetOptions(
+        "force"          => \$force,
+        "quiet"          => \$quiet,
+        "exitondelete=n" => \$exitondelete,
+        "delete=s"       => \$delete,         # don't create new symlinks, just delete old ones for given domain
+    );
+
+    usage() unless $opt_parse_result && @ARGV <= 1;    # note ok if $ARGV == 0
+
+    my $convertuser = $ARGV[0];
+
+    __PACKAGE__->script( $convertuser, 'force' => $force, 'quiet' => $quiet, 'delete' => $delete );
+}
+
+sub script {
+    my ( $class, $convertuser, %OPTS ) = @_;
+
+    my $force  = $OPTS{'force'};
+    my $quiet  = $OPTS{'quiet'};
+    my $delete = $OPTS{'delete'};
+    print "cPanel Email Linker v3.0\n" if !$quiet;
+
+    my $pwcache_ref;
+    if ($convertuser) {
+        $pwcache_ref = [ [ Cpanel::PwCache::getpwnam($convertuser) ] ];
+    }
+    else {
+        Cpanel::PwCache::Helpers::no_uid_cache();    #uid cache only needed if we are going to make lots of getpwuid calls
+        Cpanel::PwCache::Build::init_passwdless_pwcache();
+        $pwcache_ref = Cpanel::PwCache::Build::fetch_pwcache();
+    }
+
+    my $current_format = scalar Cpanel::Config::LoadConfig::loadConfig( "/etc/mailbox_formats", undef, ": " );
+    foreach my $pw ( @{$pwcache_ref} ) {
+        my ( $user, $uid, $gid, $homedir ) = ( @{$pw} )[ 0, 2, 3, 7 ];
+        ($homedir) = $homedir =~ /(.*)/;             # Untaint
+        next
+          if ( $uid < Cpanel::LoginDefs::get_uid_min()
+            || length($homedir) < 5
+            || !-e $homedir . '/etc/'
+            || -l $homedir . '/etc/passwd' );
+
+        print "Processing $user..." if !$quiet;
+        if ($delete) {
+            Cpanel::Email::Maildir::Link::remove_maildir_symlinks_for_users_domain( $pw, $delete );
+        }
+        elsif ( !$current_format->{$user} || $current_format->{$user} eq 'maildir' ) {
+            Cpanel::Email::Maildir::Link::setup_all_maildir_symlinks_for_user($pw);
+        }
+        else {
+            Cpanel::Email::Maildir::Link::remove_all_maildir_symlinks_for_user($pw);
+        }
+        print "Done\n" if !$quiet;
+    }
+    return;
+}
+
+sub usage {
+    die "Usage: $0 [ -force ] [ -quiet ] <username>\n(Note: The -force option is not yet implemented, and currently has no effect.)\n";
+}
+
+1;

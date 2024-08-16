@@ -1,0 +1,95 @@
+
+=pod
+
+=head1 NAME
+
+The Cpanel::WebServer class hierarchy
+
+=head1 DESIGN GOALS
+
+There is a significant need for the ability of cPanel to support
+alternate (non-Apache) or multiple programs in the web stack, which do
+act in the serving of pages, but may not be specifically "webservers".
+Apache is (currently) I<the> webserver in the cPanel stack, and serves
+both static and dynamic content.  Other programs may be faster at
+handling different parts of the "serving a page" process.  varnish is
+a proxy cache, and typically sits in front of whatever webserver is
+serving dynamic content.  Nginx is a full-fledged webserver, and can
+also function as a proxy cache or high-speed static proxy.  Apache
+Traffic Server is another example of a frontend proxy.  On the other
+end, PHP-FPM speaks FastCGI to the outside world, and could not be
+considered a full webserver of its own, but it can be integral to the
+serving of dynamic content.
+
+We needed a consistent way that each of these could be used, to
+minimize or eliminate special-case code in the calling code; each
+"webserver" would have a set of operations it was required to perform,
+and would interpret those operations in a way that it understood.  A
+large fraction understand the contept of a "virtual host" in some
+manner, though may refer to them by different names, so some of the
+operations can be virtual host related.  Each knows how it needs to be
+configured when given a use-case, and can generate the required
+configuration files itself.
+
+=head1 CLASS HIERARCHY
+
+                     +----------------+
+                     |    WebServer   |
+                     +--------+-------+
+                              |
+             +----------------+-------------------+
+             |                                    |
+       +-----+-----+                       +------+-----+
+       | Userdata  |                       | Supported  |
+       +-----------+                       +------+-----+
+                                                  |
+                   +-----------------+------------+---+---------...
+                   |                 |                |
+             +-----+----+      +-----+----+     +-----+----+
+             |  apache  |      | php-fpm  |     | varnish  |
+             +-----+----+      +----------+     +----------+
+                   |
+         +---------+------+
+         |                |
+    +----+-----+    +-----+----+
+    | Htaccess |    | Handler  |
+    +----------+    +-----+----+
+                          |
+        +----------+------+---+----------+--------...
+        |          |          |          |
+    +---+---+  +---+---+  +---+---+  +---+---+
+    |  base |  |  cgi  |  |  dso  |  |  fpm  |
+    +-------+  +-------+  +-------+  +-------+
+
+=head1 DESCRIPTION
+
+=head2 Cpanel::WebServer
+
+This is the root-level object, which knows what webservers are
+installed and available, and can make calls to each for a given
+operation.  Typically all of the general calls will be found in this
+class, and these methods will call out to each of the available
+webserver modules.
+
+=head2 Cpanel::WebServer::Supported
+
+The modules which support the individual specific webserver types, be
+they frontend caches or backend content servers, are under this
+hierarchy.  The Cpanel::WebServer checks that they supply the correct
+interface, and has no requirements or limitations on any submodules.
+For example, the Apache webserver has submodules for .htaccess
+handling, and an entire hierarchy for language handlers.
+
+=head2 Cpanel::WebServer::Userdata
+
+This abstracts the contents of /var/cpanel/userdata for a given user.
+We can retrieve domain lists, or information about a specific domain,
+from a consistent object interface.  These objects should be
+considered opaque, and may collate information from multiple sources.
+This opacity allows moving of that information as necessary.
+
+=head1 SEE ALSO
+
+L<Cpanel::ProgLang::Overview>, L<Cpanel::WebServer>
+
+=cut

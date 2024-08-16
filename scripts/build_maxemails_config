@@ -1,0 +1,51 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/build_maxemails_config          Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::buildMaxEmailsConfig;
+use strict;
+use warnings;
+
+use Cpanel::EmailTracker ();
+use File::Basename       ();
+use Getopt::Long         ();
+
+main() if not caller();
+
+sub main {
+
+    my %opts;
+    Getopt::Long::GetOptions( \%opts, qw(help) ) or die usage();
+    if ( $opts{'help'} ) {
+        usage();
+        return 0;
+    }
+    Cpanel::EmailTracker::build_maxemails_config();
+    return;
+}
+
+sub usage {
+    my $b = File::Basename::basename($0);
+
+    print <<"END";
+
+Usage: `$b [options]`
+
+This script is used to set the max hourly rate limits on
+emails per domain to the value `maxemailsperhour` set in
+/var/cpanel/cpanel.config. `$b` is automatically called as part of upcp
+maintenance.
+
+Options:
+
+   --help          Print this help information to standard output
+
+END
+
+    return 0;
+}
+
+1;

@@ -1,0 +1,146 @@
+[% USE CPScalar -%]
+[% WRAPPER 'master_templates/master.tmpl'
+    theme = "bootstrap"
+    app_key = 'service_status'
+-%]
+<div id="content">
+<div class="row">
+<div class="col-xs-12 col-sm-12 col-md-10 col-lg-9">
+
+<section>
+<h3>[% locale.maketext("Service Information") %]</h3>
+<div class="callout callout-info">
+  [% locale.maketext("The Service Information table only reports monitored services. You can enable service monitoring in [output,url,_1,Service Manager].", "../scripts/srvmng") %]
+</div>
+<table class="table table-striped table-condensed">
+<thead>
+<tr>
+    <th>[% locale.maketext("Service") %]</th>
+    <th>[% locale.maketext("Version") %]</th>
+    <th>[% locale.maketext("Status") %]</th>
+    <th></th>
+</tr>
+</thead>
+<tbody>
+[%- FOREACH data.service_data.sort('service') -%]
+
+    <tr[% IF ! is_pending && ! is_up %] class="danger"[% END %]>
+        <td>[% service %]</td>
+        <td>[% version %]</td>
+        <td>
+            [%- IF is_pending -%]
+            [%- locale.maketext("[comment,lowercase]pending[comment,indicates that status of a service has not been determined]") -%]
+            [%- ELSIF is_up -%]
+            [%- locale.maketext("up[comment,indicates that a service is running or operational]") -%]
+            [%- ELSE -%]
+            [%- locale.maketext("down[comment,indicates that a service is not running or is non-operational]") -%]
+            [%- END -%]
+        </td>
+        <td>
+            [%- IF ! is_pending -%]
+                [%- IF is_up -%]
+                <i class="fas fa-check" aria-hidden="true"></i>
+                [%- ELSE -%]
+                <i class="fas fa-exclamation-triangle" aria-hidden="true"></i>
+                [%- END -%]
+            [%- END -%]
+        </td>
+    </tr>
+
+[%- END -%]
+</tbody>
+</table>
+</section>
+
+<section>
+<h3>[% locale.maketext("System Information") %]</h3>
+<table class="table table-striped table-condensed">
+<thead>
+    <tr>
+        <th>[% locale.maketext("System Item") %]</th>
+        <th>[% locale.maketext("Details") %]</th>
+        <th>[% locale.maketext("Status") %]</th>
+    </tr>
+</thead>
+<tbody>
+<tr[% IF data.load > data.cpumax %] class="danger"[% ELSIF data.load >= ( data.cpumax * 0.8 ) %] class="warning"[% END %]>
+    <td>[% locale.maketext("Server Load") %]</td>
+    <td>[% locale.maketext('[numf,_1] ([quant,_2,CPU,CPUs])',data.load,data.cpunum) %]</td>
+    <td>
+        [% IF data.load > data.cpumax -%]
+        <i class="fas fa-times" aria-hidden="true"></i>
+        [% ELSIF data.load >= ( data.cpumax * 0.8 ) %]
+        <i class="fas fa-exclamation" aria-hidden="true"></i>
+        [%- ELSE -%]
+        <i class="fas fa-check" aria-hidden="true"></i>
+        [%- END -%]
+    </td>
+</tr>
+
+<tr[% IF data.mempct > 90 %] class="danger"[% ELSIF data.mempct > 80 %] class="warning"[% END %]>
+    <td>[% locale.maketext("Memory Used") %]</td>
+    <td>[% locale.maketext('[numf,_1]% ([numf,_2] of [numf,_3])',data.mempct,data.memused,data.memtotal) %]</td>
+    <td>
+        [%- IF data.mempct > 90  %]
+        <i class="fas fa-times" aria-hidden="true"></i>
+        [% ELSIF data.mempct > 80 %]
+        <i class="fas fa-exclamation" aria-hidden="true"></i>
+        [%- ELSE -%]
+        <i class="fas fa-check" aria-hidden="true"></i>
+        [%- END -%]
+    </td>
+</tr>
+
+<tr[% IF data.swappct > 90 %] class="danger"[% ELSIF data.swappct > 80 %] class="warning"[% END %]>
+    <td>[% locale.maketext("Swap Used") %]</td>
+    <td>[% locale.maketext('[numf,_1]% ([numf,_2] of [numf,_3])',data.swappct, data.swapused, data.swaptotal) %]</td>
+    <td>
+        [%- IF data.swappct > 90  %]
+        <i class="fas fa-times" aria-hidden="true"></i>
+        [% ELSIF data.swappct > 80 %]
+        <i class="fas fa-exclamation" aria-hidden="true"></i>
+        [%- ELSE -%]
+        <i class="fas fa-check" aria-hidden="true"></i>
+        [%- END -%]
+    </td>
+</tr>
+</tbody>
+</table>
+</section>
+
+<section>
+<h3>[% locale.maketext("Disk Information") %]</h3>
+<table class="table table-striped table-condensed">
+<thead>
+<tr>
+    <th>[% locale.maketext("Device") %]</th>
+    <th>[% locale.maketext("Mount Point") %]</th>
+    <th>[% locale.maketext("Usage") %]</th>
+    <th>[% locale.maketext("Status") %]</th>
+</tr>
+</thead>
+<tbody>
+[% FOREACH disk = data.disk_data -%]
+<tr[% IF disk.percentage > 90 %] class="danger"[% ELSIF disk.percentage > 80 %] class="warning"[% END %]>
+    <td>[% disk.filesystem FILTER html %]</td>
+    <td>[% disk.mount FILTER html %]</td>
+    <td>[% locale.maketext('[numf,_1]% ([numf,_2] of [numf,_3])',disk.percentage,disk.used,disk.total) %]</td>
+    <td>
+        [%- IF disk.percentage > 90  %]
+        <i class="fas fa-times" aria-hidden="true"></i>
+        [% ELSIF disk.percentage > 80 %]
+        <i class="fas fa-exclamation" aria-hidden="true"></i>
+        [%- ELSE -%]
+        <i class="fas fa-check" aria-hidden="true"></i>
+        [%- END -%]
+    </td>
+</tr>
+[% END -%]
+</tbody>
+</table>
+</section>
+
+</div>
+</div>
+</div>
+[% END #wrapper -%]

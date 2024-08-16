@@ -1,0 +1,76 @@
+[% css_block_code = PROCESS css_block %]
+[% WRAPPER 'master_templates/master.tmpl' theme="yui"
+    scripts = '/js/lang.js'
+    app_key='edit_a_locale'
+    extrastyle = css_block_code
+-%]
+
+<h3 class="simpleheading">[% locale.maketext("Locale Editor - Bulk Mode") %]</h3>
+<p class="description">[% locale.maketext("You can edit any locale’s phrases. You can use this to make small changes to a locale or completely update a cloned locale into a new language.") %]</p>
+
+<div>
+<form action="[% cp_security_token %]/scripts9/locale_editor">
+<table>
+  <tr>
+    <td><label for="locale">[% locale.maketext("Locale:") %]</label></td>
+    <td>
+      <select name="locale" id="locale">
+        [% PROCESS '_locale_option_tags.tmpl' %]
+      </select>
+    </td>
+    <td>
+      <label for="theme">[% locale.maketext("Theme:") %]</label>
+    </td>
+    <td>
+      <select id="theme" name="theme">
+      [% FOR theme = data.themes.sort() -%]
+      <option value="[% theme %]" [% data.selected_theme == theme ? ' selected="selected"' : '' %]>[% theme %]</option>
+      [% END -%]
+      </select>
+    </td>
+    <td>
+      <input type="submit" class="btn-primary" value="[% locale.maketext("Go") %]" />
+    </td>
+  </tr>
+</table>
+</form>
+    <div class="help-block">
+        [% user_feedback_text_for_more_locales() %]
+    </div>
+</div>
+
+<h3 class="simpleheading">[% locale.maketext("Non Standard Locale Configuration") %]</h3>
+<p class="description">[% locale.maketext("Locales are identified by ISO standard language (and sometimes territory) codes.") %]</p>
+<p class="description">[% locale.maketext("Each locale has standard data defined in the [output,url,_1,CLDR,target,_2].","http://cldr.unicode.org","_blank") %]</p>
+<p class="description">[% locale.maketext("An ‘i_’ tag is a standard way to create, identify, and work with a non-standard locale by prefixing the code with the letter ‘i’ followed by an underscore.") %]</p>
+<p class="description">[% locale.maketext("You can use this tool to configure data as defined by the CLDR for standard tags.") %]</p>
+<p class="description">&nbsp;</p>
+<div>
+[% IF data.i_locales.size %]
+  [% data.only_include_locale_menu = data.i_locales %]
+  <form action="[% cp_security_token %]/scripts9/i_tag_configure_form">
+  <label>[% locale.maketext("Locale:") %]
+  <select name="locale" id="locale">
+    [% PROCESS '_locale_option_tags.tmpl' %]
+  </select></label>
+   [% data.delete('only_include_locale_menu') %]
+&nbsp;
+<input type="submit" class="btn-primary" value="[% locale.maketext("Go") %]" />
+</form>
+</div>
+
+[% ELSE %]
+   <p>[% locale.maketext("There are currently no “i_ tag” locales on the server.") %]</p>
+[% END %]
+
+[% END -%]
+
+[% BLOCK css_block %]
+  .externalLink:after {
+      font-family: "Font Awesome 5 Free";
+      font-weight: 600;
+      content: "\f35d";
+      display: inline-block;
+      padding: 0 3px 0 3px;
+  }
+[% END %]

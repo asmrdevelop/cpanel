@@ -1,0 +1,26 @@
+
+.ifdef SRSENABLED
+remote_forwarded_smtp:
+    driver      = smtp
+    interface = <; %CPANEL-smtp-interface%
+    helo_data = %CPANEL-helo-data%
+    max_rcpt    = 1
+    return_path = ${srs_encode {SRS_SECRET} {$return_path} {$original_domain}}
+    # Disable chunking with empty list:
+    hosts_try_chunking = :
+    message_linelength_limit = [% exim_config.message_linelength_limit %]
+
+dkim_remote_forwarded_smtp:
+    driver = smtp
+    interface = <; %CPANEL-smtp-interface%
+    helo_data = %CPANEL-helo-data%
+    dkim_domain = ${perl{get_dkim_domain}}
+    dkim_selector = default
+    dkim_private_key = "/var/cpanel/domain_keys/private/${dkim_domain}"
+    dkim_canon = relaxed
+    max_rcpt    = 1
+    return_path = ${srs_encode {SRS_SECRET} {$return_path} {$original_domain}}
+    # Disable chunking with empty list:
+    hosts_try_chunking = :
+    message_linelength_limit = [% exim_config.message_linelength_limit %]
+.endif

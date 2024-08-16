@@ -1,0 +1,120 @@
+<div class="row">
+    <div class="col-md-6" id="usersTableContainer">
+        <table id="usersTable" class="table table-striped">
+            <thead>
+                <tr>
+                    <th class="mass_edit_checkbox">
+                        <input type="checkbox"
+                            id="selectAllCheckbox"
+                            name="selectAllCheckbox"
+                            title="[% locale.maketext('Click to select all items on this page.') %]"
+                            ng-disabled="!uc.users.length"
+                            ng-click="uc.toggleSelectAll()">
+                    </th>
+                    <th class="user_column">
+                        <span toggle-sort id="sortUsers" onsort="uc.sortList" sort-meta="uc.meta" sort-field="user_name">
+                            [% locale.maketext('User') %]
+                        </span>
+                    </th>
+                    <th class="domain_column">
+                        <span toggle-sort id="sortDomains" onsort="uc.sortList" sort-meta="uc.meta" sort-field="primary_domain">
+                            [% locale.maketext('Primary Domain') %]
+                        </span>
+                    </th>
+                    <th class="actions_header">[% locale.maketext('Actions') %]</th>
+                    <th class="gear_column">
+                        <span class="dropdown" uib-dropdown>
+                        <a href class="dropdown-toggle" uib-dropdown-toggle>
+                          <span class="fas fa-cog fa-lg"></span>
+                        </a>
+                        <ul class="dropdown-menu[%- IF locale.get_html_dir_attr() != 'rtl' -%] dropdown-menu-right[% END %] gear_menu" uib-dropdown-menu>
+                            <li ng-class="{disabled: uc.allUsersSelected()}">
+                                <a href ng-click="uc.selectAllUsers()">[% locale.maketext('Select All') %]</a>
+                            </li>
+                            <li ng-class="{disabled: !uc.atLeastOneUserIsSelected()}">
+                                <a href ng-click="uc.clearSelection()">[% locale.maketext('Clear Selection') %]</a>
+                            </li>
+                            <li class="divider"></li>
+                            <li ng-class="{disabled: !uc.atLeastOneUserIsSelected()}">
+                                <a href ng-click="uc.confirmDisableTFAFor()">[% locale.maketext('Remove Selected') %]</a>
+                            </li>
+                            <li ng-class="{disabled: !uc.users.length}">
+                                <a href ng-click="uc.confirmDisableAll()">[% locale.maketext('Disable All') %]</a>
+                            </li>
+                            <li class="divider"></li>
+                            <li>
+                                <a href ng-click="uc.forceReload()">[% locale.maketext('Refresh List') %]</a>
+                            </li>
+                        </ul>
+                      </span>
+                    </th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr ng-repeat="user in uc.meta.filteredList track by $index">
+                    <td class="mass_edit_checkbox">
+                        <input type="checkbox"
+                            id="user_{{ $index }}_checked"
+                            class="userSelect"
+                            title="[% locale.maketext('Click to select “[_1]”.', '{{ user.user_name }}') %]"
+                            data-user="{{ user }}">
+                    </td>
+                    <td class="user_column">
+                        {{ user.user_name }}
+                    </td>
+                    <td class="domain_column">
+                        {{ user.primary_domain }}
+                    </td>
+                    <td class="actions_cell">
+                        <button class="btn btn-link"
+                            ng-click="uc.confirmDisableTFAFor(user)"
+                            id="user_{{ $index }}_disable">
+                        <span class="fas fa-ban"></span>
+                        [% locale.maketext('Disable') %]
+                        </button>
+                    </td>
+                    <td class="gear_column"></td>
+                </tr>
+                <tr id="emptyListNotice" class="info empty-row ng-hide" ng-show="!uc.users.length" ng-switch="uc.loadingUsers">
+                    <td colspan="5" id="loadingMessage" ng-switch-when="true">
+                        <i id="loadingSpinner" class="fas fa-spinner fa-spin"></i>
+                        [% locale.maketext('Loading …') %]
+                    </td>
+                    <td colspan="5" id="emptyMessage" ng-switch-default>[% locale.maketext('There are no users with two-factor authentication configured.') %]</td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+    <div class="col-xs-6">
+        <div id="paginator" class="pagination-container">
+            <page-size id="topPageSize"
+                allowed-sizes="uc.meta.pageSizes"
+                total-items="uc.meta.totalRows"
+                ng-model="uc.meta.pageSize"
+                show-all="true"
+                ng-change="uc.fetchPage()">
+            </page-size>
+            <uib-pagination id="topPager"
+                ng-change="uc.fetchPage()"
+                ng-model="uc.meta.pageNumber"
+                max-size="uc.meta.maxPages"
+                items-per-page="uc.meta.pageSize"
+                total-items="uc.meta.totalRows"
+                direction-links="true"
+                boundary-links="true"
+                rotate="false"
+                first-text="<<"
+                last-text=">>"
+                previous-text="<"
+                next-text=">"
+                class="pagination-sm">
+            </uib-pagination>
+        </div>
+        <div id="paginationMessage">
+            {{uc.paginationMessage()}}
+        </div>
+    </div>
+    </div>
+</div>
+    </div>
+</div>

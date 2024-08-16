@@ -1,0 +1,46 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+package bin::chowncpusers;
+
+# cpanel - bin/chowncpusers                          Copyright 2022 cPanel L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+use warnings;
+
+use Cpanel::PwCache::Build   ();
+use Cpanel::PwCache::Helpers ();
+use Cpanel::Config::Users    ();
+
+__PACKAGE__->script(@ARGV) unless caller();
+
+sub script {
+    my ( $self, @args ) = @_;
+    my $quiet = grep m/^--quiet$/, @args;
+
+    # TODO: This modulino needs to have its core functionality moved to
+    # a module and have its test coverage improved.  Once done the
+    # install/* scripts should call the module directly instead of
+    # loading this modulino.
+
+    print "Updating permissions..." unless $quiet;
+    Cpanel::PwCache::Helpers::no_uid_cache();    #uid cache only needed if we are going to make lots of getpwuid calls
+    Cpanel::PwCache::Build::init_passwdless_pwcache();
+
+    my $pwcache_ref = Cpanel::PwCache::Build::fetch_pwcache();
+    my %cpusers     = map { $_ => 1 } Cpanel::Config::Users::getcpusers();
+    foreach my $pw (@$pwcache_ref) {
+        next if !$cpusers{ $pw->[0] };
+        $quiet || print ".." . $pw->[0] . "..";
+
+        # This are all safe since /var/cpanel/users is root owned
+
+        chown 0, $pw->[3], '/var/cpanel/users/' . $pw->[0], '/var/cpanel/users.cache/' . $pw->[0];
+        chmod 0640, '/var/cpanel/users/' . $pw->[0], '/var/cpanel/users.cache/' . $pw->[0];
+    }
+    print "Done\n" unless $quiet;
+
+    return;
+}

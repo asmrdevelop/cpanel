@@ -1,0 +1,172 @@
+[%
+SET breadcrumburl ='/scripts2/module_installers_chooser';
+IF data.lang == 'perl';
+    SET breadcrumburl ='/scripts2/module_installers_main?lang=perl';
+END;
+
+PROCESS 'master_templates/_defheader.tmpl'
+    app_key = 'install_a_perl_module_process'
+    breadcrumburl = breadcrumburl
+    theme="yui"
+    stylesheets = [
+        '/themes/x/module_installers.css'
+    ]
+    scripts = [ '/js/sorttable.js' ]
+-%]
+[% IF data.error_state %]
+    <p>An error occurred: <pre>[% data.error_state %]</pre></p>
+[% ELSE %]
+<div class="body-content">
+    [% IF data.magicstatus == 1 %]
+    <h1>[% data.name.html() %] Magic User Loader</h1>
+    <form action="../scripts2/module_installers_changestatus" method="GET">
+    The Magic User Loader modifies the system copy of <b>[% data.lang.html() %]</b> so that users will be able to include modules that they install without having to modify their scripts.  <br />
+    <input type="hidden" name="lang" value="[% data.lang.html() %]">
+    Status: <b>[% locale.maketext('Enabled') %]</b>
+    <input type="submit" class="btn-primary" name="status" value="[% locale.maketext('Disable') %]">
+    </form>
+        [% IF data.lang != 'php-pecl' %]
+        <p class="red">
+            The [% data.lang.html() %] magic loader is deprecated.
+            [% IF data.lang == 'perl' %]
+            For more information, see <a href="https://go.cpanel.net/1136perlmagicloader" target="_blank">https://go.cpanel.net/1136perlmagicloader</a>
+            [% END %]
+        </p>
+        [% END %]
+    [% END %]
+
+    <h1>[% locale.maketext("“[_1]” Installer[comment,## no extract maketext (will be done via case 119361)]", data.name.html()) %]</h1>
+
+    [% SWITCH data.lang %]
+    [% CASE 'perl' %]
+        <p>
+            [% locale.maketext("Perl modules are collections of functions that allow you to perform tasks in Perl. You will need to install a Perl module before you can use it inside a Perl program.") %]
+            [% locale.maketext("[output,strong,Note:] Modules are installed directly from the CPAN repository.") %]
+        </p>
+    [% CASE 'php-pear' %]
+        <p>
+            [% locale.maketext("PEAR packages are collections of functions that allow you to perform tasks in PHP. You will need to install a PEAR package before you can use it inside a PHP program.") %]
+            [% locale.maketext("[output,strong,Note:] Packages are installed directly from the PHP Extensions and Applications repository (PEAR).") %]
+        </p>
+    [% CASE 'php-pecl' %]
+        <p>
+            [% locale.maketext("PECL extensions are collections of functions that allow you to perform tasks in PHP. You will need to install a PECL extension before you can use it inside a PHP program.") %]
+            [% locale.maketext("[output,strong,Note:] Extensions are installed directly from the PECL repository.") %]
+        </p>
+    [% CASE 'ruby' %]
+        <p>
+            [% locale.maketext("Ruby Gems are collections of functions that allow you to perform tasks in Ruby. You will need to install a Gem before you can use it inside a Ruby program.") %]
+            [% locale.maketext("[output,strong,Note:] Gems are installed directly from the RubyForge repository.") %]
+        </p>
+        <p>[% locale.maketext("[output,strong,Important]: At this time [asis,Rails 3.0] is not supported and can cause a broken [asis,ruby/rails] environment.") %]</p>
+        <div id="app-mgr-alert">
+            <div class="app-mgr-alert-row">
+                <div class="app-mgr-alert-icon">
+                    <img src="/images/notice-warning.png" alt="Warning Icon">
+                </div>
+                <div class="app-mgr-alert-msg">
+                    [% locale.maketext('[output,strong,Warning:] This installer only works for the legacy Ruby installation and does not affect applications that you install with the “[_1]” interface.', locale.maketext('Application Manager')) %]
+                </div>
+            </div>
+        </div>
+    [% END %]
+
+    [% IF data.is_ea4 && (data.lang == 'php-pear' || data.lang == 'php-pecl') %]
+    <h2>[% locale.maketext("Select a [asis,PHP] version") %]</h2>
+    <form action="../scripts2/module_installers_main" method="GET">
+        <label class="sr-only" for="php_version">[% locale.maketext("Select a [asis,PHP] version") %]</label>
+        <input type="hidden" name="lang" id="lang" value="[% data.lang.html() %]">
+        <select name="version" id="php_version" class="select">
+        [% FOR v = data.installed_php_versions %]
+            <option name="[% v.html() %]" value="[% v.html() %]" [% IF v == data.selected_php_version %] selected [% END %]>[% v.html() %]</option>
+        [% END %]
+        </select>
+        <input class="btn-primary" type="submit" id="selectVersion" value="[% locale.maketext("Apply") %]" />
+    </form>
+    [% END %]
+
+    <h2>[% locale.maketext("Module Include Path") %]</h2>
+    <p><span>[% locale.maketext("Path") %]</span>
+    <code class="module-path">[% data.prefix.html() %]</code>
+    </p>
+
+    <div class="highlight">
+    <h2>[% locale.maketext("Find a “[_1]”[comment,## no extract maketext (will be done via case 119361)]", data.name.html()) %]</h2>
+    <table border="0" cellspacing="5" cellpadding="0">
+        <tr>
+            <td>
+                <form action="../scripts2/module_installers_search" method="GET">
+                    <label for="searchterm">[% locale.maketext('Search') %]</label>
+                    <input type="text" id="searchterm" name="searchterm" />
+                    <input type="hidden" name="lang" value="[% data.lang.html() %]" />
+                    <input type="hidden" name="searchtype" value="1" />
+                    [% IF data.is_ea4 && (data.lang == 'php-pear' || data.lang == 'php-pecl') %]
+                    <input type="hidden" name="version" value="[% data.selected_php_version.html() %]" />
+                    [% END %]
+                    <input class="btn-secondary" type="submit" value="[% locale.maketext('Go') %]" />
+                </form>
+            </td>
+            <td>
+                <span>[% locale.maketext("or[comment,this is meant to be a horizontal separator of 2 things stacked vertically]") %]</span>
+            </td>
+            <td>
+                <form action="../scripts2/module_installers_search" method="GET">
+                    <input type="hidden" name="lang" value="[% data.lang.html() %]" />
+                    <input type="hidden" name="searchtype" value="0" />
+                    [% IF data.is_ea4 && (data.lang == 'php-pear' || data.lang == 'php-pecl') %]
+                    <input type="hidden" name="version" value="[% data.selected_php_version.html() %]" />
+                    [% END %]
+                    <input class="btn-secondary" type="submit" value="[% locale.maketext('Show Available Modules') %]" />
+                </form>
+            </td>
+        </tr>
+    </table>
+    <h2>[% locale.maketext("Install a [_1][comment,## no extract maketext (will be done via case 119361)]", data.name.html()) %] </h2>
+    <form action="../scripts2/module_installers_live_install" method="GET">
+        <p>
+        <input type="text" id="installname" name="mod" />
+        <input type="hidden" name="lang" value="[% data.lang.html() %]" />
+        [% IF data.is_ea4 && (data.lang == 'php-pear' || data.lang == 'php-pecl') %]
+        <input type="hidden" name="version" value="[% data.selected_php_version.html() %]" />
+        [% END %]
+        <input class="btn-primary" type="submit" value="[% locale.maketext("Install Now") %]" />
+        </p>
+    </form>
+    </div>
+    <h2>[% locale.maketext("Installed [_1][comment,## no extract maketext (will be done via case 119361)]", data.names.html()) %]</h2>
+    [% IF data.installed.size() || data.installed_raw.size() %]
+        <table id="modlist" class="sortable" border="0" cellspacing="0" cellpadding="0">
+            <tr>
+                <th>[% locale.maketext("Module Name") %]</th>
+                <th nonsortable="true">[% locale.maketext("Actions") %]</th>
+            </tr>
+        [% IF data.is_ea4 && (data.lang == 'php-pear' || data.lang == 'php-pecl') %]
+            [% FOR install = data.installed_raw %]
+            <tr>
+            <td>[% install.module.html() %] [% IF install.latest; '(' _ install.latest.html() _ ')'; END; %]</td>
+            <td>
+                <a href="[% cp_security_token _ '/scripts2/module_installers_live_update?lang=' _ data.lang.uri() _ '&version=' _ data.selected_php_version.uri() _ '&mod=' _ install.module.uri() %]" class="action-link">[% locale.maketext('Update') %]</a>
+                <a href="[% cp_security_token _ '/scripts2/module_installers_live_reinstall?lang=' _ data.lang.uri() _ '&version=' _ data.selected_php_version.uri() _ '&mod=' _ install.module.uri() %]" class="action-link">[% locale.maketext('Reinstall') %]</a>
+                <a href="[% cp_security_token _ '/scripts2/module_installers_live_uninstall?lang=' _ data.lang.uri() _ '&version=' _ data.selected_php_version.uri() _ '&mod=' _ install.module.uri() %]" class="action-link">[% locale.maketext('Uninstall') %]</a>
+                <a href="[% install.docurl %]" target="_blank" class="action-link">[% locale.maketext('Show Docs') %]</a>
+            </td>
+            </tr>
+            [% END %]
+        [% ELSE %]
+                [% FOR install = data.installed %]
+                    [% install %]
+                [% END %]
+        [% END %]
+        </table>
+    [% ELSE %]
+        No [% data.names.html() %] installed.
+    [% END %]
+    <br />
+
+    <div class="return-link">
+    <b>[</b> <a href="../scripts2/module_installers_chooser?lang=[% data.lang.uri() %]">[% locale.maketext('Go Back') %]</a><b> ]</b>
+    </div>
+
+</div>
+[% END %]
+[% PROCESS 'master_templates/_deffooter.tmpl' theme="yui" %]

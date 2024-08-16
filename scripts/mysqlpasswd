@@ -1,0 +1,144 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/mysqlpasswd                     Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::mysqlpasswd;
+
+use strict;
+use warnings;
+use Cpanel::MysqlUtils::Connect          ();
+use Cpanel::MysqlUtils::Quote            ();
+use Cpanel::MysqlUtils::MyCnf::Basic     ();
+use Cpanel::MysqlUtils::Compat::Password ();
+use Cpanel::ServerTasks                  ();
+
+if ( $> != 0 ) {
+    die "Setting MySQL passwords is only possible using the root account\n";
+}
+
+if ( !caller() ) {
+    alarm(15);
+    my ( $_user, $_pass, $_userhost );
+    if ( grep( /--multistdin/, @ARGV ) ) {
+        $_user = <STDIN>;
+        chomp($_user);
+        $_pass = <STDIN>;
+        chomp($_pass);
+        $_userhost = <STDIN>;
+        chomp($_userhost);
+    }
+    elsif ( !@ARGV ) {
+        chomp( my $up = <STDIN> );
+        my @UP = split( / /, $up );
+        $_user     = $UP[0];
+        $_pass     = $UP[1];
+        $_userhost = $UP[2];
+    }
+    else {
+        $_user     = $ARGV[0];
+        $_pass     = $ARGV[1];
+        $_userhost = $ARGV[2];
+    }
+    alarm(0);
+
+    if ( !$_user ) { print STDERR "$0: user is blank\n"; exit 1; }
+    if ( !$_pass ) { print STDERR "$0: pass is blank\n"; exit 1; }
+
+    exit __PACKAGE__->script( $_user, $_pass, $_userhost );
+}
+
+sub script {
+    my ( $class, $user, $pass, $userhost ) = @_;
+
+    die "Need user!\n" if !length $user;
+    die "Need pass!\n" if !length $pass;
+
+    my $quoted_user;
+    if ( $user eq 'root' ) {
+        my $dbuser = Cpanel::MysqlUtils::MyCnf::Basic::getmydbuser('root') || 'root';
+        $quoted_user = Cpanel::MysqlUtils::Quote::quote($dbuser);
+    }
+    else {
+        $quoted_user = Cpanel::MysqlUtils::Quote::quote($user);
+    }
+    my $quoted_pass     = Cpanel::MysqlUtils::Quote::quote($pass);
+    my $quoted_userhost = Cpanel::MysqlUtils::Quote::quote($userhost);
+
+    my $cpuser = $user;
+    if ( $user ne 'root' ) {
+
+        require Cpanel::DB::Map::Utils;
+        $cpuser = Cpanel::DB::Map::Utils::get_cpuser_for_engine_dbuser( 'MYSQL', $user );
+    }
+
+    if ( !set_mysql_password_via_dbi( $quoted_user, $quoted_pass, ( length $userhost ? $quoted_userhost : () ) ) ) {
+        return 1;
+    }
+
+    if ( $user eq 'root' ) {
+        require Cpanel::MysqlUtils::RootPassword;
+        Cpanel::MysqlUtils::RootPassword::update_mysql_root_password_in_configuration($pass);
+    }
+    elsif ($cpuser) {
+
+        # We do not store grants for root, and this will
+        # throw in queueprocd if we try.
+        queue_dbstoregrants($cpuser);
+    }
+
+    return 0;
+}
+
+sub set_mysql_password_via_dbi {
+    my ( $quoted_user, $quoted_pass, $quoted_userhost ) = @_;
+
+    my $dbi = Cpanel::MysqlUtils::Connect::get_dbi_handle();
+
+    my $reset_password_sql = Cpanel::MysqlUtils::Compat::Password::get_set_user_password_sql(
+        dbh             => $dbi,
+        quoted_user     => $quoted_user,
+        quoted_password => $quoted_pass,
+        ( length $quoted_userhost ? ( quoted_host => $quoted_userhost ) : () )
+    );
+
+    return _do_client( $reset_password_sql, $dbi );
+}
+
+# For tests
+sub _do_client {
+    my ( $reset_password_sql, $dbi ) = @_;
+
+    # We used to do this via the “mysql” binary, but now that
+    # we can use DBI directly we should do that. Moreover, it’s
+    # necessary insofar as @$reset_password_sql might have stuff
+    # like procedure definitions, which break if given directly to
+    # the “mysql” binary. (See Cpanel::MysqlUtils::Compat::Password
+    # and COBRA-7290.)
+
+    my $ok = eval {
+        foreach my $query (@$reset_password_sql) {
+            $dbi->do($query) if ( length $query );
+        }
+        $dbi->do('FLUSH PRIVILEGES');
+
+        1;
+    };
+
+    if ( !$ok ) {
+        warn "Failed to set password via client: $@";
+        return 0;
+    }
+
+    return 1;
+}
+
+sub queue_dbstoregrants {
+    my $cpuser = shift;
+
+    return Cpanel::ServerTasks::queue_task( ['MysqlTasks'], "dbstoregrants $cpuser" );
+}
+
+1;

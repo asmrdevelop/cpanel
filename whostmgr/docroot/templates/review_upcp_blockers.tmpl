@@ -1,0 +1,54 @@
+[%
+    USE Whostmgr;
+
+    WRAPPER master_templates/master.tmpl
+        theme = "bootstrap"
+        include_legacy_stylesheets = 0
+        breadcrumburl = '/scripts7/review_upcp_blockers'
+        header = locale.maketext('[asis,cPanel] [output,amp] [asis,WHM] Upgrade Blockers')
+    ;
+%]
+
+<p class="description">
+    [%
+        locale.maketext(
+            'Blockers are conditions that do not allow [asis,cPanel] [output,amp] [asis,WHM] to upgrade to a particular version. For more information, read our [output,url,_1,documentation,_2].',
+            'https://go.cpanel.net/whmdocsUpgradeBlockers',
+            { 'id' => 'upgrade_blockers', 'target' => '_blank' }
+        );
+    %]
+</p>
+
+<div class="table-responsive">
+    <table role="table" class="table table-condensed table-striped" id="upgrade_blockers">
+        <thead>
+        <tr>
+            <th>[% locale.maketext('Severity') %]</th>
+            <th>[% locale.maketext('Blocker Message') %]</th>
+        </tr>
+        </thead>
+
+        <tbody>
+        [% IF data.blockers.size(); %]
+            [% FOREACH blocker IN data.blockers; %]
+                [% SET blocker_id = 'blocker-' _ loop.index %]
+                <tr id="[% blocker_id %]">
+                    <td id="[% blocker_id %]-severity">[% blocker.severity.upper().html() %]</td>
+                    [%-
+                    # Not escaping the message as we put links in the blocker messages
+                    -%]
+                    <td id="[% blocker_id %]-message">[% blocker.message %]</td>
+                </tr>
+            [% END %]
+        [% ELSE %]
+            <tr class="empty-row info" id="no-blockers-message">
+                <td colspan="2">
+                    [% locale.maketext('No upgrade blockers present.') %]
+                </td>
+            </tr>
+        [% END %]
+        </tbody>
+    </table>
+</div>
+
+[% END %]

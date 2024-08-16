@@ -1,0 +1,42 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/ckillall                        Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::ckillall;
+
+use strict;
+use warnings;
+
+use Config ();
+
+use Cpanel::Kill ();
+
+exit run(@ARGV) unless caller;
+
+sub run {
+    my ( $signal, @args ) = @_;
+
+    if ( !@args ) {
+        die "Give a signal and PIDs.\n";
+    }
+
+    if ( 0 == index( $signal, '-' ) ) {
+        warn "Ignoring leading “-” on signal name “$signal” …\n";
+        substr( $signal, 0, 1, q<> );
+    }
+
+    my @valid = map { split m< > } @Config::Config{ 'sig_name', 'sig_num' };
+    if ( !grep { $_ eq $signal } @valid ) {
+        die "Invalid signal: $signal\n";
+    }
+
+    my $ppid = getppid;
+    my ( $status, $numkilled, $statusmsg ) = Cpanel::Kill::killall( $signal, [@args], $Cpanel::Kill::VERBOSE, [$ppid] );
+    print "$statusmsg\n";
+    return ( $status ? 0 : 1 );
+}
+
+1;

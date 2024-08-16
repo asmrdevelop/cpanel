@@ -1,0 +1,434 @@
+[% USE DataURI -%]
+[% USE HTMLOptions -%]
+[% USE JSON -%]
+[% USE NVData -%]
+[% USE Whostmgr -%]
+[% WRAPPER 'master_templates/master.tmpl' theme="yui"
+    app_key = 'mail_delivery_reports'
+    stylesheets = [
+        Whostmgr.find_file_url('yui/assets/skins/sam/calendar.css')
+        Whostmgr.find_file_url('/mail.css')
+        Whostmgr.find_file_url('/cjt/css/wrapped-select.css')
+    ]
+;
+
+SET spinner_url = '/images/whm-spinner.gif';
+IF CPANEL.ua_is_ie && CPANEL.ua_is_ie < 8;
+    SET spinner_url = MagicRevision(spinner_url);
+    "<img src='$spinner_url' style='display:none'>";
+ELSE;
+    SET spinner_url = DataURI.datauri(spinner_url, 'image/gif');
+END;
+
+SET lexicon = {
+    'Page [numf,_1]' => locale.text('Page [numf,_1]')
+    'Page [numf,_1] of [numf,_2]' => locale.text('Page [numf,_1] of [numf,_2]')
+    'Show [quant,_1,Record,Records]' => locale.text('Show [quant,_1,Record,Records]')
+};
+
+SET nvdata = NVData.get_page_nvdata();
+-%]
+[% PROCESS '_ajaxapp_styles.tmpl' -%]
+[% PROCESS '_ajaxapp_header.tmpl' -%]
+
+<script type="text/javascript">
+CPANEL.nvdata.initial = [% nvdata.json() || 'undefined' %];
+
+YAHOO.lang.augmentObject( CPANEL.Locale.prototype.LEXICON, {page1:'page1'} || [% lexicon.json() %] );
+
+LOCALETEXT = {
+    event : [% locale.maketext('Event').json %],
+    email : [% locale.maketext('From Address').json %],
+    sender : [% locale.maketext('Sender').json %],
+    user : [% locale.maketext('Sender User').json %],
+    domain : [% locale.maketext('Sender Domain').json %],
+    sent : [% locale.maketext('Sent Time').json %],
+    sender_host : [% locale.maketext('Sender Host').json %],
+    recipient : [% locale.maketext('Recipient').json %],
+    delivered_to : [% locale.maketext('Delivered To').json %],
+    delivery_user : [% locale.maketext('Delivery User').json %],
+    delivery_domain : [% locale.maketext('Delivery Domain').json %],
+    transport : [% locale.maketext('Transport').json %],
+    router : [% locale.maketext('Router').json %],
+    out : [% locale.maketext('Out Time').json %],
+    ID : [% locale.maketext('ID').json %],
+    delivery_host : [% locale.maketext('Delivery Host').json %],
+    delivery_ip : [% locale.maketext('Delivery IP').json %],
+    size : [% locale.maketext('Size').json %],
+    sender_ip : [% locale.maketext('Sender IP').json %],
+    sender_auth : [% locale.maketext('Authentication').json %],
+    spam_score : [% locale.maketext('Spam Score').json %],
+    result : [% locale.maketext('Result').json %],
+    actions : [% locale.maketext('Actions').json %]
+};
+</script>
+
+<script type="text/plain" id="actions_template">
+<div class="icon_holder">
+    <a href="javascript:void(0)" onclick="show_details(this)" title="[% locale.maketext('View Details') %]">
+        <img src="[% Whostmgr.find_file_url('/images/view-icon-24.png') %]" alt="[% locale.maketext('View Details') %]">
+    </a>
+</div>
+</script>
+
+<script type="text/plain" id="local_actions_template">
+<div class="icon_holder">
+    <a href="javascript:void(0)" onclick="show_details(this)" title="[% locale.maketext('View Details') %]">
+        <img src="[% Whostmgr.find_file_url('/images/view-icon-24.png') %]" alt="[% locale.maketext('View Details') %]">
+    </a>
+    <a target="_blank" href="[% cp_security_token %]/scripts2/vieweximmsg?msgid={msgid}&transport={transport}&address={address}&path={path}" title="[% locale.maketext('Read the mail message.') %]">
+        <img id="archive_icon" src="[% Whostmgr.find_file_url('/images/open-mail.png') %]" alt="[% locale.maketext('Read Mail Message') %]">
+    </a>
+</div>
+</script>
+
+<style type="text/css">
+#archive_icon {
+    width: 26px;
+}
+.float_left {
+    float: left;
+}
+.radio_width {
+    width: 175px;
+    margin-top:3px;
+}
+.full_clear {
+    clear: both;
+    margin-top: 15px;
+}
+.br {
+    clear: both;
+    font-size: 0px;
+    line-height: 0px;
+    height: 0px;
+    overflow:hidden;
+}
+
+#cjt_static_notice_container {
+    margin-top: 20px;
+    margin-left: 30px;
+    max-width: 902px;
+}
+#contentContainer {
+    position: relative;
+}
+</style>
+
+[% IF !cfg.db_err %]
+<p class="description">[% locale.maketext('This screen allows you to find and review messages sent from and received by your server. You can see whether each message was delivered successfully. You can also view details about each delivery attempt.') %]<br/>
+    [% PROCESS _date_format_copy.tmpl -%]
+</p>
+<div id="cjt_static_notice_container"></div>
+
+<script>
+    new CPANEL.widgets.Page_Notice( {
+        container: "cjt_static_notice_container",
+        level: "info",
+        content: "[% locale.maketext('[output,strong,Note]: Queries can only return a maximum of [quant,_1,entry,entries] per type.',1000) %]"
+    } );
+</script>
+
+[% PROCESS '_emailstats_status_include.tmpl' -%]
+
+<div id="main_content">
+    <div class="option_box">
+        <div>
+            <div class="top-heading group">
+                <div class="left_float"><h4>[% locale.maketext('Report Inquiry') %]</h4></div>
+                <div class="right_float" id="hide_inquiry"><a href="javascript:void(0)" onclick='toggle_inquiry()' id="toggle_inquiry_text">[% locale.maketext('Hide') %]</a></div>
+            </div>
+        </div>
+        <div id='container_box'>
+            <form action="javascript:void(0)" name='search-fields' id="search-fields" onsubmit="setSpinner(); doupdate();">
+                <input type="hidden" name="max_results_by_type" id="max_results_by_type" value="1000">
+                <div class="option_contents" id='option_contents'>
+                    <div class="form-contain group">
+                        <div class="search-content">
+                            <div class="search-me">
+                                <input type="text" placeholder="[% locale.maketext("Search …") %]" id="freeform" name="freeform" /> &nbsp;
+                                <select id="type-select" name='mainkey' onchange="sync_type_select(this)">
+                                    <option value="sender">[% locale.maketext("Sender") %]</option>
+                                    <option value="email">[% locale.maketext("From Address") %]</option>
+                                    <option value="recipient" selected>[% locale.maketext("Recipient") %]</option>
+                                    <option value="msgid">[% locale.maketext("Message ID") %]</option>
+                                    <option value="domain">[% locale.maketext("Sender Domain") %]</option>
+                                    <option value="user">[% locale.maketext("Sender User") %]</option>
+                                    <!-- Advanced Options -->
+                                    <option value="senderip">[% locale.maketext("Sender IP") %]</option>
+                                    <option value="senderhost">[% locale.maketext("Sender Host") %]</option>
+                                    <option value="senderauth">[% locale.maketext("Sender Auth") %]</option>
+                                    [% IF !data.hide_spam %]
+                                    <option value="spamscore">[% locale.maketext("Spam Score") %]</option>
+                                    [% END %]
+                                    <option value="deliveryuser">[% locale.maketext("Delivery User") %]</option>
+                                    <option value="deliverydomain">[% locale.maketext("Delivery Domain") %]</option>
+                                    <option value="ip">[% locale.maketext("Delivery IP") %]</option>
+                                    <option value="host">[% locale.maketext("Delivery Host") %]</option>
+                                    <option value="router">[% locale.maketext("Router") %]</option>
+                                    <option value="transport">[% locale.maketext("Transport") %]</option>
+                                    <option value="message">[% locale.maketext("Result Message") %]</option>
+                                    <option value='deliveredto'>[% locale.maketext('Delivered To') %]</option>
+                                    <!-- Special No Filter -->
+                                    <option value="">[% locale.maketext("No Filter") %]</option>
+
+                                </select>
+                            </div>
+                            <div class="full_clear">
+                                <div class="br"></div>
+                                <div class="float_left radio_width">
+                                   <span class="report-label"> [% locale.maketext("Search Type:") %]</span>
+                                    <div style="padding-left: 10px; padding-top: 5px;">
+                                        <label><input type="radio" name="searchmatch" value="begins" checked="checked"> [% locale.maketext("Begins With") %]</label><div class="br"></div>
+                                        <label><input type="radio" name="searchmatch" value="eq"> [% locale.maketext("Exact") %]</label><div class="br"></div>
+                                        <label><input type="radio" name="searchmatch" value="contains"> [% locale.maketext("Partial") %]</label>&nbsp;<img src="[% MagicRevision('/images/info.png') %]" id="Partial_ToolTip" style="cursor:help"/><div class="br"></div>
+                                    </div>
+                                </div>
+                                <div class="float_left">
+                                    <span class="report-label"> [% locale.maketext("Delivery Type:") %]</span>
+                                    <div style="padding-left: 10px; padding-top: 5px;">
+                                        <label><input type="radio" name="deliverytype" onclick="restrictAdvanced(false)" value="all" checked="checked"> [% locale.maketext('All Delivery Events') %]</label><div class="br"></div>
+                                        <label><input type="radio" name="deliverytype" onclick="restrictAdvanced(true)" value="remote"> [% locale.maketext('Relayed Emails') %]</label><div class="br"></div>
+                                        <label><input type="radio" name="deliverytype" onclick="restrictAdvanced(true)" value="local"> [% locale.maketext('Local Emails') %]</label><div class="br"></div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="starts">
+                            <div class="report-head">[% locale.maketext('Start Date:') %]</div>
+                            <div class="group">
+                                <input type="text" name="startdate" id="startdate" size="12" />
+                                <span id='start_cal' onclick="show_start_cal()"><img src="[% MagicRevision('/images/calendar.png') %]" alt="select date" /></span>
+                            </div>
+                            <div class="time-wrap">
+                                <div id="startcal">
+                                    <div class="bd"><div id="cal1Container"></div></div>
+                                </div>
+                                <div class="report-head">[% locale.maketext('Start Time:') %]</div>
+                                <input type="text" name="starttime" id="starttime"/>
+                            </div>
+                            <div class="full_clear"></div>
+                        </div>
+                        <div class="ends">
+                            <div class="report-head">[% locale.maketext('End Date:') %]</div>
+                            <div class="group">
+                                <input type="text" name="enddate" id="enddate" size="12" />
+                                <span id='end_cal' onclick="show_end_cal()"><img src="[% MagicRevision('/images/calendar.png') %]" alt="select date" /></span>
+                            </div>
+                            <div class="time-wrap">
+                                <div class="report-head">[% locale.maketext('End Time:') %]</div>
+                                <input type="text" name="endtime" id="endtime"/>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="the-button">
+                        [% SET retention = CPANEL.CPCONF().exim_retention_days  %]
+                        [% IF (!retention) %]
+                        [% SET retention=90 %]
+                        [% END %]
+                        <span class="data90" style="margin-left: 5px;">[% locale.maketext("Data is retained for [quant,_1,day,days].", retention) %]</span>
+                        <button type="submit" class="input-btn btn-primary" id="run-button" onclick="setSpinner(); doupdate(); return false">
+                            <div id="spinner"><img src="[% spinner_url %]"/></div>
+                            <div id="spinner-text">[% locale.maketext("Run Report") %]</div>
+                        </button>
+                    </div>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<div id="cjt_pagenotice_container"></div>
+
+<a name="report"></a>
+<div id='table_container'>
+    <div id='page-control'>
+        <div class="results-output">
+            <div class="results-header">
+            </div>
+            <div class="total-items">
+                <div id="results-header"></div>
+            </div>
+        </div>
+        <div id="floater">
+            <div id="top-page-nav"></div>
+        </div>
+    </div>
+    <div class="br"></div>
+    <div id="option_header" style="display:none;">
+        <div class="table-box">
+            <div class="table-top group">
+                <div style="float: left;width:500px;">
+                    <form action="javascript:void(0)" class="input-with-button-wrapper" onsubmit="setSpinner(); doupdate()"><input id='quicksearch' type="text" placeholder="[% locale.maketext("Search …") %]" /><button type="submit">[% locale.maketext('Go') %]</button></form>
+                    <div class="advanced"><img src="[% MagicRevision('/images/info.png') %]" id="Search_TT" style="cursor:help"/> &nbsp; <a href="javascript:void(0)" onclick='return toggle_filter()' id="adv_search_text">[% locale.maketext('Advanced Search') %]</a></div>
+                </div>
+                <div style='float: right;margin-top:5px;margin-right:5px;' id='toggle_col_options'><a href='javascript:void(0)' onclick='return toggle_options()'><img src="[% MagicRevision('/images/edit-table.png') %]" alt="table options" title="Table Options" /></a></div>
+                <div class="br"></div>
+                <div id='filterItems' [% nvdata.show_advanced ? '' : 'style="display:none"' %]>
+                    <div class="top-filterItems">
+                        <div class="filterItems-Arrow"></div>
+                    </div>
+                    <form class="advanced-section" id="advanced-form" action="javascript:void(0)">
+                        <!-- TODO: 11.34 change x to icon -->
+                        <div class="close-me"><a href="javascript:void(0)" onclick='return toggle_filter()'>X [% locale.maketext('CLOSE') %]</a></div>
+                        <span class="inputs"><label><input type="checkbox" name="success" value="1" [% IF nvdata.show_success || !nvdata.defined('show_success') %]checked[% END %] onclick='return check_filter()' /> [% locale.maketext("Show Deliveries") %]</label></span>
+                        &nbsp;<img src="[% MagicRevision('/images/info.png') %]" id="Success_ToolTip" style="cursor:help"/>
+
+                        <span class="inputs"><label><input type="checkbox" name="defer" value="1" [% IF nvdata.show_defer || !nvdata.defined('show_defer') %]checked[% END %] onclick='return check_filter()' /> [% locale.maketext("Show Deferrals") %]</label></span>
+                        <span class="inputs"><label><input type="checkbox" name="failure" value="1" [% IF nvdata.show_failure || !nvdata.defined('show_failure') %]checked[% END %] onclick='return check_filter()' /> [% locale.maketext("Show Failures") %]</label></span>
+                        &nbsp;<img src="[% MagicRevision('/images/info.png') %]" id="Failure_ToolTip" style="cursor:help"/>
+                        <span class="inputs"><label><input type="checkbox" name="inprogress" value="1" [% IF nvdata.show_inprogress || !nvdata.defined('show_inprogress') %]checked[% END %] onclick='return check_filter()' /> [% locale.maketext("Show In-Progress") %]</label></span>
+                    </form>
+                </div>
+            </div>
+            <div id="deliveryreport" class="deliveryreport"></div>
+            </div>
+        </div>
+        <div id='bottom-nav'>
+            <div id='floater-bottom' style="float:right; padding:0px; margin:0px">
+                <div id="bottom-page-nav"></div>
+            </div>
+            <div class="br"></div>
+        </div>
+        <div class="br"></div>
+    </div>
+    <div id="col_options">
+    <div class="options-top group">
+        <div class="options-header">[% locale.maketext('Table Options') %]</div>
+        <div class="closeit"><a href='javascript:void(0)' title="[% locale.maketext('Close') %]" onclick='header_panel.hide(); return false'>X</a></div>
+    </div>
+    <div class="hd"></div>
+    <div class="options-bd">
+        <div class="info-blurb">[% locale.maketext("Select the columns you wish to display in the table.") %]</div>
+        <div id="option_area">
+        </div>
+    </div>
+</div>
+
+<div class="br"></div>
+<div id="emailreport"></div>
+<!-- TODOl See if this can be standardized & move into cjt -->
+<div style="width: 1px; height: 1px; position:absolute; top:-999999px; left:-999999px;" id="printpanel"></div>
+<div id="dateSelect" style="display:none"></div>
+
+[% PROCESS '_ajaxapp_footer.tmpl' -%]
+
+<script>
+    [% INSERT "/usr/local/cpanel/base/yui-gen/data/data.js" %]
+</script>
+
+<!-- see if this can use PROCESS -->
+[% INCLUDE _calendar.tmpl %]
+
+<script type="text/javascript">
+    var TIMESELECTOR_STYLESHEET = [% MagicRevision('/cjt/css/timeSelector-whm.css').json() -%];
+    [%
+        SET lex_path = CPANEL.get_js_lex_app_rel_path('sharedjs/emailstats_search_optimized.js');
+        INSERT $lex_path IF lex_path;
+        INSERT 'sharedjs/emailstats_search_optimized.js';
+    %]
+    [%
+        SET lex_path = CPANEL.get_js_lex_app_rel_path('sharedjs/email_ui_control_optimized.js');
+        INSERT $lex_path IF lex_path;
+        INSERT 'sharedjs/email_ui_control_optimized.js';
+    %]
+    [% INSERT "/usr/local/cpanel/base/cjt/datasource-min.js" %]
+</script>
+
+<script type="text/javascript">
+    //<![CDATA[
+    var retention = [% retention %];
+    var cfg= {
+        deliverystats: 1,
+        columns: ['type','user','domain','email','sender','sendunixtime','senderhost','senderip','senderauth',[% IF !data.hide_spam %]'spamscore',[% END %]'recipient','deliveredto','deliveryuser','deliverydomain','router','transport','actionunixtime','msgid','host','ip','size','message'],
+        timebuffer: [% cfg.timebuffer || '(60*60*4*1000)' %],
+        user: [% data.user.json() || '""' %],
+        [% IF cfg.unixstarttime %]unixstarttime: [% cfg.unixstarttime %],[% END %]
+        [% IF cfg.unixendtime %]unixendtime: [% cfg.unixendtime %],[% END %]
+        [% IF cfg.mode %]mode: "[% cfg.mode %]",[% END %]
+        [% IF cfg.delayeddisplay %]delayeddisplay: [% cfg.delayeddisplay %],[% END %]
+        starttime: "today"
+    };
+    cfg.columns.push('actions');
+
+    var eximstatstbl = new CPANEL.EximStatsDataTable(cfg);
+
+    // A few light hooks into the exim.js code....
+    resetColumns = ["senderip","senderauth", "ip", "senderhost", "user", "domain", "deliveredto", "deliveryuser","deliverydomain", "router", "transport", "actionunixtime", "host", "size"];
+    default_initial_hidden_columns = [% nvdata.hidden_columns.json() || '["sender","senderip","senderauth", "ip", "senderhost", "user", "domain", "deliveredto", "deliveryuser","deliverydomain", "router", "transport", "actionunixtime", "host", "size"]' %];
+
+    // And stuff unique to this page.
+    default_minimum_columns = 0;
+
+    var tt2= new YAHOO.widget.Tooltip("tt2", {
+            context:"Search_TT",
+            text: [% locale.maketext('This search persists until you clear it. Because searching updates the report, new data may appear after you click [output,class,Go,_1].','ui-term-reference').json() %],
+            autodismissdelay: 100000, xyoffset: [5,10]
+    });
+    var search_tooltip = new YAHOO.widget.Tooltip("tt3", {
+            context:"Partial_ToolTip",
+            text: "[% locale.maketext('This search type may take longer to complete.') %]",
+            autodismissdelay: 100000, xyoffset: [5,10]
+   });
+   var success_includes_filtered_tooltip = new YAHOO.widget.Tooltip("tt6", {
+            context:"Success_ToolTip",
+            text:"[% locale.maketext('Deliveries include messages rejected by spam software after being processed by the mail server.') %]",
+            autodismissdelay: 100000, xyoffset: [5,10]
+   });
+   var failure_includes_rejected_tooltip = new YAHOO.widget.Tooltip("tt7", {
+            context:"Failure_ToolTip",
+            text:"[% locale.maketext('Failures include messages rejected by spam software while being processed by the mail server.') %]",
+            autodismissdelay: 100000, xyoffset: [5,10]
+   });
+
+    var URL_QUERY = CPANEL.util.parse_query_string( location.search.substr(1) ) || {};
+    if ("unixstarttime" in URL_QUERY) {
+        if (URL_QUERY.unixstarttime) {
+            var time_startdate = new Date(1000 * URL_QUERY.unixstarttime);
+            DOM.get('startdate').value = time_startdate.to_ymd_string();
+            DOM.get('starttime').value = time_startdate.getHours() + ':' + time_startdate.getMinutes();
+        }
+        else {
+            DOM.get("startdate").value = "";
+        }
+    }
+    if ("unixendtime" in URL_QUERY) {
+        if (URL_QUERY.unixendtime) {
+            var time_endtime = new Date(1000 * URL_QUERY.unixendtime);
+            DOM.get('enddate').value = time_endtime.to_ymd_string();
+            DOM.get('endtime').value = time_endtime.getHours() + ':' + time_endtime.getMinutes();
+        }
+        else {
+            DOM.get("enddate").value = "";
+        }
+    }
+    if (URL_QUERY.deliverytype) {
+        CPANEL.dom.set_form_el_value( DOM.get("search-fields").deliverytype, URL_QUERY.deliverytype );
+    }
+    if (URL_QUERY.user) { // Sender
+        CPANEL.dom.set_form_el_value( "type-select", "user" );
+        DOM.get("freeform").value = URL_QUERY.user;
+    }
+    else if (URL_QUERY.msgid) {
+        CPANEL.dom.set_form_el_value( "type-select", "msgid" );
+        DOM.get('freeform').value = URL_QUERY.msgid;
+    }
+
+    if (URL_QUERY.user || URL_QUERY.msgid) {
+        CPANEL.dom.set_form_el_value( DOM.get("search-fields").searchmatch, "eq" );
+        EVENT.onDOMReady( DOM.get("run-button").click, DOM.get("run-button"), true );
+    }
+
+function sync_type_select(sel) {
+    var to_disable = !sel.value;
+    DOM.get('freeform').disabled = to_disable;
+    [].forEach.call( sel.form.searchmatch, function(radio) {
+        radio.disabled = to_disable;
+    } );
+}
+//]]>
+</script>
+[% ELSE %]
+    [% PROCESS '_emailstats_unavailable.tmpl' -%]
+[% END %]
+[% END -%]

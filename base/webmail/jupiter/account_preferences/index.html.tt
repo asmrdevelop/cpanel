@@ -1,0 +1,52 @@
+[%
+    SET CPANEL.CPVAR.dprefix = "../";
+
+    SET cpuser = ExpVar.expand('$user');
+    SET authuser = ExpVar.expand('$authuser');
+    SET domain = CPANEL.CPDATA.domain;
+    SET hostname = ExpVar.expand('$hostname');
+
+    SET view_templates = [
+        "views/_resources.ptt",
+        "views/main.ptt"
+    ];
+
+    WRAPPER '_assets/master.html.tt'
+        page_title = locale.maketext('Account Preferences')
+        app_key = "webmail_account_prefs"
+        # Because this is webmail, we have to leave these for now. <_<
+        include_legacy_stylesheets = 1
+        include_legacy_scripts = 1
+        page_stylesheets = [
+            'account_preferences/index.css',
+        ],
+-%]
+
+[% PROCESS '_assets/cjt2_header_include.tt' %]
+
+<script type="text/javascript">
+    var PAGE = PAGE || {};
+    PAGE.emailAddress = "[% authuser %]";
+    PAGE.cPanelUser = "[% cpuser %]";
+    PAGE.displayEmailAddress = "[% authuser == cpuser ? authuser _ '@' _ hostname : authuser %]"
+</script>
+
+<div class='body-content' id="mainContent">
+
+    <cp-alert-list></cp-alert-list>
+
+    <p class="description">
+        [% locale.maketext("Modify your Webmail account settings.") %]
+    </p>
+
+    <div id="viewContent" class="ng-cloak section" ng-view ng-cloak></div>
+
+    [% FOREACH ptt IN view_templates %]
+    <script id="[% ptt %]" type="text/ng-template">
+        [%- PROCESS $ptt -%]
+    </script>
+    [% END %]
+
+</div>
+
+[% END #wrapper -%]

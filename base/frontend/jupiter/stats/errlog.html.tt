@@ -1,0 +1,75 @@
+[%
+    SET CPANEL.CPVAR.dprefix = "../";
+    SET MAX_VISIBLE_LINES = 10;
+    SET main_domain = CPANEL.CPDATA.DNS;
+    SET logs = [{
+        'name'    => 'error_log',
+        'title'   => locale.maketext("Latest web server error log messages:"),
+        'result'  => execute('Stats', 'get_site_errors', { domain => main_domain, log => 'error' }),
+        'no_logs' => locale.maketext('No recent web server errors exist for your domain: [_1]', main_domain)
+    },
+    {
+        'name'    => 'suexec_log',
+        'title'   => locale.maketext("Latest [asis,suEXEC] event log messages:"),
+        'result'  => execute('Stats', 'get_site_errors', { domain => main_domain, log => 'suexec' }),
+        'no_logs' => locale.maketext('No recent [asis,suEXEC] events exist for your domain: [_1]', main_domain)
+    }];
+%]
+
+[% WRAPPER '_assets/master.html.tt'
+    app_key = 'errors'
+-%]
+<div class="body-content">
+    <p id="descErrlog" class="description">
+        [% locale.maketext("The function displays the most recent entries in your website’s error logs in reverse chronological order. You can use this information to find broken links or problems with missing files.") %]
+        [% locale.maketext("For more information, read our [output,url,_1,documentation,target,_2].", "https://go.cpanel.net/Errors", "_blank") %]
+    </p>
+    <div class="section">
+        [% FOREACH log IN logs %]
+            <h2>[% log.title.html %]</h2>
+
+            [% IF !log.result.status %]
+                [% FOREACH error IN log.result.errors %]
+                    <div class="alert alert-danger" role="alert">
+                        <span class="glyphicon glyphicon-remove-sign" aria-hidden="true"></span>
+                        <div class="alert-message">
+                            <strong class="alert-title">
+                                [% locale.maketext('Error:') %]
+                            </strong>
+                            <span class="alert-body">
+                                <span id="error-[% loop.index() %]">
+                                    [% error.html() %]
+                                </span>
+                            </span>
+                        </div>
+                    </div>
+                [% END %]
+            [% ELSE %]
+
+                [% SET data_size = log.result.data.size();
+                    IF !data_size %]
+                    <div class="alert alert-info" role="alert">
+                        <span class="glyphicon glyphicon-info-sign" aria-hidden="true"></span>
+                        <div class="alert-message">
+                            <span class="alert-body">
+                                <span id="no-[% log.name.html() %]-errors">
+                                    [% log.no_logs %]
+                                </span>
+                            </span>
+                        </div>
+                    </div>
+                [% ELSE %]
+                    <textarea id="[% log.name.html() %]-errors" class="form-control" cols="120" rows="[% data_size < MAX_VISIBLE_LINES ? data_size : MAX_VISIBLE_LINES %]" readonly>
+                        [%-
+                            FOREACH line IN log.result.data;
+                                SET entry = line.entry.html();
+                                loop.last() ? entry : entry _ "\n";
+                        END; -%]
+                    </textarea>
+                [% END %]
+            [% END %]
+        [% END %]
+    </div>
+    [% INCLUDE _assets/return_link.html.tt return_location='../index.html' return_link_text=locale.maketext('Go Back') %]
+</div>
+[% END #wrapper -%]

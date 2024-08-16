@@ -1,0 +1,40 @@
+[%#
+    Variables passed in:
+
+    origin                  - the system component from which the notification was requested
+    logger_call             - host server the notification was sent from
+    log_preview             - An arrayref of 10(or less) line preview of attached log file
+
+For more information about how to customize notification templates, read our documentation at https://go.cpanel.net/notificationtemplates
+
+-%]
+
+[%
+    PROCESS "include/colors.tmpl";
+    PROCESS "include/styles.tmpl";
+    PROCESS "include/code_block.tmpl";
+
+    WRAPPER 'wrapper/main.html.tmpl';
+
+    IF NOTICE.subject;
+      NOTICE.email_reason = NOTICE.subject | html;
+    ELSE;
+      NOTICE.email_reason = CPANEL.locale.maketext("“[_1]” called in “[_2]”", "Cpanel::Logger::" _ NOTICE.logger_call, NOTICE.origin);
+    END;
+%]
+
+<p>
+    [% IF NOTICE.logger_call == 'deprecated' %]
+        [% CPANEL.locale.maketext('The system performed a deprecated call within a script. As a result, the system terminated the script.') %]
+    [% ELSIF NOTICE.logger_call == 'invalid' %]
+        [% CPANEL.locale.maketext('The system performed an invalid call within a script.') %]
+    [% END %]
+</p>
+<p>
+    [% code_block(title=NOTICE.log_preview_name.0, formatted_code=NOTICE.log_preview.0) %]
+</p>
+<p>
+    [% CPANEL.locale.maketext('Review the attached log for further details.') %]
+</p>
+
+[% END %]

@@ -1,0 +1,764 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/rebuilddnsconfig                Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+use warnings;
+
+use Cpanel::DNSLib                  ();
+use Cpanel::OS                      ();
+use Cpanel::FileUtils::Move         ();
+use Cpanel::FileUtils::Copy         ();
+use Cpanel::Path                    ();
+use Cpanel::StringFunc::Count       ();
+use Cpanel::StringFunc::Match       ();
+use Cpanel::SafetyBits              ();
+use Cpanel::NameServer::Conf        ();
+use Cpanel::NameServer::Utils::BIND ();
+use Cpanel::Validate::Domain::Tiny  ();
+use Cpanel::DNSLib                  ();
+use Cpanel::SafeDir::MK             ();
+
+use Getopt::Std;
+$Getopt::Std::STANDARD_HELP_VERSION = 1;
+
+######[ declare some globals ]#####################################################################
+
+# default location of zone files used for rebuilding named.conf
+my $def_basedir;
+
+# default location of named.conf
+my $def_namedconf;
+
+# default log directory for named
+my $def_logdir;
+
+# default location of pidfile
+my $def_pidfile = '/var/run/named/named.pid';
+
+# Verbose variable, if set to "1" actions are reported to STDOUT.
+my $cpverbose = 0;
+
+# We sent this to fixrndc, if it sends it back that means we've got a loop
+my $selfcalled = 0;
+
+my %options = ();
+getopts( 'sfv', \%options );
+if ( defined( $options{'v'} ) ) { $cpverbose  = 1; }
+if ( defined( $options{'s'} ) ) { $selfcalled = 1; }
+
+if ( $selfcalled == 1 ) {
+    print "Loop detected, exiting.\n";
+    exit;
+}
+
+######[ set defaults based on distro/OS ]##########################################################
+
+$def_basedir   = Cpanel::OS::dns_named_basedir();    # /var/named
+$def_namedconf = Cpanel::OS::dns_named_conf();       # /etc/named.conf
+$def_logdir    = Cpanel::OS::dns_named_log();        # /var/log/named
+my $perms_hr = Cpanel::OS::var_named_permissions();
+
+######[ ensure base directory structure is created ]###############################################
+
+my ( $chrootdir, $binduser, $bindgroup ) = Cpanel::NameServer::Utils::BIND::find_chrootbinddir();
+my $binduid = getpwnam($binduser)  || die "$binduser not in passwd file";
+my $bindgid = getgrnam($bindgroup) || die "$bindgroup not configured on the system";
+
+# Set up directory structure
+if ( !-d $def_basedir ) {
+    if ( -e _ ) {
+        Cpanel::FileUtils::Move::safemv( $def_basedir, $def_basedir . '.cpback' );
+    }
+    Cpanel::SafeDir::MK::safemkdir( $def_basedir, $perms_hr->{'mode'} );
+}
+else {
+    chmod( $perms_hr->{'mode'}, $def_basedir ) or warn "Can't chmod $def_basedir to $perms_hr->{'mode'}: $!";
+}
+Cpanel::SafetyBits::safe_chown( $perms_hr->{'ownership'}->@*, $def_basedir );
+
+# I would have added the above to iterator but for the differing owner on c9
+my @dirs2create = ( "$def_basedir/data", $def_logdir, '/var/run/named' );
+my @chrootdirs  = map { $chrootdir . $_ } qw{/etc /var /var/named /var/named/data /var/run /var/run/named};
+push @dirs2create, @chrootdirs if $chrootdir;
+foreach my $dir (@dirs2create) {
+    Cpanel::SafeDir::MK::safemkdir_or_die( $dir, 0755 ) if !-e $dir;
+    Cpanel::SafetyBits::safe_chown( $binduid, $bindgid, $dir );
+}
+
+######[ Setup Hint zone file if needed ]###########################################################
+
+if ( !-e "$def_basedir/named.ca" ) {
+    Cpanel::FileUtils::Copy::safecopy( '/usr/local/cpanel/scripts/named.ca', "$def_basedir/named.ca" );
+}
+
+my @rfc1912_files = qw{localdomain.zone named.broadcast named.ip6.local named.local named.zero named.rfc1912.zones};
+if ( grep { !-e $_ } map { $def_basedir . "/$_" } @rfc1912_files ) {
+
+    # RFC1912
+    Cpanel::FileUtils::Copy::safecopy( '/usr/local/cpanel/scripts/named.rfc1912.zones', "$def_basedir/named.rfc1912.zones" );
+    system 'tar', 'xvf', '/usr/local/cpanel/scripts/rfc1912_zones.tar', '-C', $def_basedir;    # uses new .tar without the ./named/ directory so we can use it for both
+    if ($chrootdir) {
+        system 'tar', 'xvf', '/usr/local/cpanel/scripts/rfc1912_zones.tar', '-C', $chrootdir . '/var/named';
+    }
+}
+
+######[ create a brand new named.conf from a default template if needed ]##########################
+
+if ( !-e $def_namedconf || -z _ ) {    # no named.conf or zero bytes
+
+    print "Installing default Bind configuration\n" if $cpverbose;
+
+    #>>>>>[ Write default configuration w/ proper basedir ]>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+
+    if ( open my $conf_fh, '>', $def_namedconf ) {
+        foreach (&getdefault_nameddotconf) {
+            s/###BASE_DIR###/$def_basedir/g;
+            s/###PID_FILE###/$def_pidfile/g;
+            print {$conf_fh} $_;
+        }
+        close $conf_fh;
+    }
+
+    clearcache();
+
+    # Reset ownership
+    Cpanel::SafetyBits::safe_recchown( 'named', 'named', $def_basedir );
+
+    # Force
+    $options{'f'} = 1;
+}
+else {
+    # As of BIND 9.18
+    # The keyword additional_from_cache_line will cause an error
+    # Strip that out if it exists and we are on BIND 9.18+
+
+    my $named_ref = Cpanel::NameServer::Utils::BIND::named_version();
+    if ( $named_ref->{success} && ( "$named_ref->{major}.$named_ref->{minor}" >= 9.18 ) ) {
+        require Path::Tiny;
+
+        my $file         = Path::Tiny::path($def_namedconf);
+        my @lines        = $file->lines();
+        my @output_lines = grep { $_ !~ m/additional-from-cache/ } @lines;
+        $file->spew(@output_lines);
+    }
+}
+
+my $dnslib = Cpanel::DNSLib->new();
+
+my $needpid = 0;
+
+######[> Ensure all .db's have an entry in named.conf and vice versa >]############################
+
+# suck up all zones of the named.conf and zone dir in memory for fast parsing, heavy on mem side but better than thrashing hdd
+
+my %needtoadd;
+my $ndc_fh;
+
+my $namedconf_obj = Cpanel::NameServer::Conf->new();
+
+# start with a freshly rebuild conf file when force is specified (also happens when named.conf was empty)
+if ( $options{'f'} && $namedconf_obj->type() ne 'bind' ) {
+    $namedconf_obj->rebuild_conf();
+}
+my %current_zone_entries = map { $_ => 1 } @{ $namedconf_obj->fetchzones() };
+
+opendir my $zone_dh, $def_basedir or die "Unable to read zone file directory $def_basedir: $!";
+my @zonedir_contents = readdir($zone_dh);
+closedir $zone_dh;
+
+my %current_zone_files = ();
+foreach my $zonefile (@zonedir_contents) {
+    if ( $zonefile =~ /^([\w\-.]+)\.db$/ && Cpanel::Validate::Domain::Tiny::validdomainname($1) ) {
+        $current_zone_files{$1} = 1;
+    }
+}
+
+my %bad_zones = %current_zone_entries;
+delete @bad_zones{ keys %current_zone_files };
+delete $bad_zones{'.'};
+
+my %missing_zones = %current_zone_files;
+delete @missing_zones{ keys %current_zone_entries };
+
+# make sure all zones.db files have entry in named.conf
+# Add missing files to named.conf
+if ( scalar keys %missing_zones ) {
+    print "Adding zones " . join( ' ', keys %missing_zones ) . "\n" if $cpverbose;
+    $namedconf_obj->addzones( keys %missing_zones );
+}
+
+# make sure all entries in named.conf have zone files
+if ( scalar keys %bad_zones ) {
+    print 'Removing zones ' . join( ' ', keys %bad_zones ) . " from configuration, zonefiles missing\n" if $cpverbose;
+    $namedconf_obj->removezones( keys %bad_zones );
+}
+
+$namedconf_obj->finish();
+
+######[> Handle chroot setups >]###################################################################
+
+# This logic is required due to how bind-chroot symlinks /etc/named.conf to the chroot location
+# And how File::Copy will not follow the symlinks, but will recreate them instead
+if ( -l $def_namedconf ) {
+    my $target = readlink $def_namedconf;
+    print "Symlink detected: $target\n";
+
+    if ( open( $ndc_fh, '<', $target ) ) {
+        unlink $def_namedconf;
+        print "Restoring $def_namedconf from $target before proceeding\n";
+        Cpanel::FileUtils::Copy::safecopy( $target, $def_namedconf );
+    }
+    else {
+        print "Failed to read symlinked $def_namedconf [$target]. Cannot continue.\n";
+        exit 1;
+    }
+}
+else {
+    open( $ndc_fh, "<", $def_namedconf );
+}
+
+open( my $ndf_fh, ">", $def_namedconf . '.rebuilddnsconfig' );
+
+if ( !$ndc_fh ) {
+    open( $ndc_fh, "<", $def_namedconf );
+}
+
+my $inc               = 0;
+my $firstline         = 0;
+my $numbrace          = 0;
+my $zonemarker        = 0;
+my $cppcomment        = 0;
+my $currzone          = '';
+my $skip_next_opening = 0;
+my $zonedir           = Cpanel::DNSLib::find_zonedir();
+
+while (<$ndc_fh>) {
+
+    # Rudamentary comment exclusion.
+    if ($cppcomment) {
+        if (m/\*\//) {
+            $cppcomment = 0;
+        }
+        print $ndf_fh $_;
+        next;
+    }
+    if (m/^\s*\#/) {
+        print $ndf_fh $_;
+        next;
+    }
+    if (m/^\s*\/\//) {
+        print $ndf_fh $_;
+        next;
+    }
+    if (m/^\s*\/\*/) {
+        $cppcomment = 1;
+        print $ndf_fh $_;
+        next;
+    }
+    if ( $skip_next_opening && m/^\s*\{\s*$/ ) {
+        $skip_next_opening = 0;
+        $numbrace++;
+        next;
+    }
+    next if m/bind.conf.wp/;
+    next if ( m/\s*include\s+/ && m/rndc.key/ );
+    if ( $needpid && m/pid-file/ ) {
+        next;
+    }
+
+    if (m/\s*zone\s+["']([^"']+)/) {
+        $zonemarker = 1;
+        $currzone   = $1;
+    }
+    elsif (m/\s*include\s+["']([^"']+)/) {
+        my $file      = $1;
+        my $filemtime = ( stat($file) )[9];
+        if ( -f _ ) {
+            copytochroot( $file, $filemtime );
+        }
+    }
+
+    if ($zonemarker) {
+        $numbrace += Cpanel::StringFunc::Count::get_curly_brace_count($_);
+
+        if ( $numbrace == 0 ) {
+            $zonemarker = 0;
+        }
+
+        if (m/(.*[\s\t\;\{])file\s+(["'])([^"']+)(.*)/) {
+            my $postfile    = $4;
+            my $file        = $3;
+            my $prefile     = $2;
+            my $space       = $1;
+            my $relativedir = '';
+            my $fileold     = $file;
+
+            if ( !Cpanel::StringFunc::Match::beginmatch( $file, '/' ) ) {
+                if ( $file =~ m/^([^\/]+)/ ) {
+                    $relativedir = $1;
+                }
+            }
+
+            my $filename = $file;
+            if ( $file =~ m/([^\/]+)$/ ) {
+                $filename = $1;
+            }
+
+            my $filenew = $zonedir . '/' . $filename;
+
+            if ( $file eq $filenew ) {
+                print $ndf_fh $_;
+            }
+            elsif ( !Cpanel::StringFunc::Match::beginmatch( $file, '/' ) ) {
+                $file = $filenew;
+                print "Updating $fileold to $filenew\n";
+
+                #print $ndf_fh "${space}file ${prefile}${filenew}${postfile}";
+            }
+            else {
+                if ( !Cpanel::StringFunc::Match::beginmatch( $file, '/dev/' ) ) {
+                    $filenew = $zonedir . '/' . $filename;
+                    print "Updating $file to $filenew\n";
+
+                    #print $ndf_fh "${space}file ${prefile}${filenew}${postfile}";
+                }
+                else {
+                    $filenew = $file;
+                    print $ndf_fh $_;
+                }
+            }
+
+            my $absfilename = '';
+
+            if ( $relativedir ne '' ) {
+                $absfilename = Cpanel::Path::relative2abspath( $relativedir, $zonedir ) . '/' . $filename;
+            }
+            if ( $absfilename ne '' && -e $absfilename ) {
+                $file = $absfilename;
+            }
+
+            my ( $fileinode,    $filemtime )    = stat($file);
+            my ( $filenewinode, $filenewmtime ) = stat($filenew);
+
+            if ( !$filemtime && $currzone eq '.' ) {
+                next if ($filenewmtime);
+                $file = '/usr/local/cpanel/scripts/named.ca';
+                ( $fileinode, $filemtime ) = stat($file);
+                print "Root hints zone missing. Using default.\n" if $cpverbose;
+            }
+            elsif ( !$filemtime ) {
+                print "!! $file does not exist, unable to locate.\n";
+                print "!! Run /usr/local/cpanel/scripts/cleandns to remove zone without corresponding files.\n";
+                print "!! Or locate the proper zone file and place in $zonedir and rerun\n";
+                print "!! This script with the following options: /script/fixndc -fv\n";
+                next;
+            }
+
+            if ( !$filenewmtime ) {
+                print "Moving $file to $filenew ...\n";
+                Cpanel::FileUtils::Move::safemv( $file, $filenew );
+            }
+            elsif ( $fileinode != $filenewinode && ( $filenewmtime > time() || $filemtime > $filenewmtime ) ) {    # timewarp safe
+                Cpanel::FileUtils::Copy::safecopy( $file, $filenew );
+                Cpanel::SafetyBits::safe_chown( $binduser, $bindgroup, $filenew );
+            }
+
+            copytochroot( $filenew, $filemtime );
+            next;
+        }
+    }
+
+    # Match for zone and file declaration on one line.
+    if ( m/.*[\s\t\;\{]file\s+["'][^"']+/ && m/[\s\;]*zone/ ) {
+        m/(.*[\s\t\;\{])file\s+["']([^"']+)(.*)/;
+        my $file        = $2;
+        my $space       = $1;
+        my $space2      = $3;
+        my $relativedir = '';
+
+        my $currzone = '';
+        my $delim    = '"';
+        if (m/\s*zone\s+(["'])([\w\-\.]+)["']/) {
+            $zonemarker = 1;
+            $currzone   = $2;
+            $delim      = $1;
+        }
+        m/zone\s+(.*)/;
+        $numbrace += Cpanel::StringFunc::Count::get_curly_brace_count($1);
+        if ( $numbrace <= 0 ) {
+            $zonemarker = 0;
+        }
+
+        if ( !Cpanel::StringFunc::Match::beginmatch( $file, '/' ) ) {
+            if ( $file =~ m/^([^\/]+)/ ) {
+                $relativedir = $1;
+            }
+        }
+        my $filename = $file;
+        if ( $file =~ m/([^\/]+)$/ ) {
+            $filename = $1;
+        }
+        my $filenew = $zonedir . '/' . $filename;
+
+        if ( $file eq $filenew ) {
+            print $ndf_fh $_;
+        }
+        elsif ( !Cpanel::StringFunc::Match::beginmatch( $file, '/' ) ) {
+            $file = $filenew;
+            print "Updating $file to $filenew\n";
+
+            #print $ndf_fh "${space}file ${delim}${filenew}${space2}";
+        }
+        else {
+            if ( !Cpanel::StringFunc::Match::beginmatch( $file, '/dev/' ) ) {
+                $filenew = $zonedir . '/' . $filename;
+                print "Updating $file to $filenew\n";
+
+                #print $ndf_fh "${space}file ${delim}${filenew}${space2}";
+            }
+            else {
+                $filenew = $file;
+                print $ndf_fh $_;
+            }
+        }
+
+        my $absfilename = '';
+        if ($relativedir) {
+            $absfilename = Cpanel::Path::relative2abspath( $relativedir, $zonedir ) . '/' . $filename;
+        }
+        if ( $absfilename ne '' && -e $absfilename ) {
+            $file = $absfilename;
+        }
+
+        my $mtime = 0;
+        if ( -e $file ) {
+            $mtime = ( stat(_) )[9];
+            if ( !-e $filenew ) {
+                print "Moving $file to $filenew ...\n";
+                Cpanel::FileUtils::Move::safemv( $file, $filenew );
+            }
+            elsif (( stat($file) )[1] != ( stat($filenew) )[1]
+                && ( ( stat($filenew) )[9] > time() || $mtime > ( stat($filenew) )[9] ) ) {    # timewarp safe
+                Cpanel::FileUtils::Copy::safecopy( $file, $filenew );
+                Cpanel::SafetyBits::safe_chown( $binduser, $bindgroup, $filenew );
+            }
+        }
+        elsif ( $currzone eq '.' ) {
+            next if ( -e $filenew );
+            $file = '/usr/local/cpanel/scripts/named.ca';
+            print "Root hints zone missing. Using default.\n" if $cpverbose;
+            if ( !-e $filenew ) {
+                print "Moving $file to $filenew ...\n";
+                Cpanel::FileUtils::Move::safemv( $file, $filenew );
+            }
+            elsif (( stat($file) )[1] != ( stat($filenew) )[1]
+                && ( ( stat($filenew) )[9] > time() || $mtime > ( stat($filenew) )[9] ) ) {    # timewarp safe
+                Cpanel::FileUtils::Copy::safecopy( $file, $filenew );
+                Cpanel::SafetyBits::safe_chown( $binduser, $bindgroup, $filenew );
+            }
+        }
+        else {
+            print "!! $file does not exist, unable to locate.\n";
+            print "!! Run /usr/local/cpanel/scripts/cleandns to remove zone without corresponding files.\n";
+            print "!! Or locate the proper zone file and place in $zonedir and rerun\n";
+            print "!! This script with the following options: /script/fixndc -fv\n";
+            $filenew = '';
+        }
+
+        if ( $filenew ne '' ) {
+            copytochroot( $filenew, $mtime );
+        }
+    }
+
+    if ( !$inc ) {
+        print $ndf_fh $_;
+    }
+    else {
+        if ($firstline) {
+            $firstline = 0;
+            next;
+        }
+        $numbrace += Cpanel::StringFunc::Count::get_curly_brace_count($_);
+        if ( $numbrace == 0 ) {
+            $inc = 0;
+        }
+    }
+
+    if ( $needpid && m/^\s*options\s*/ ) {
+        if ( !m/\{/ ) {
+
+            #print $ndf_fh "{\n\tpid-file \"/var/run/named/pid\"\;\n";
+            $skip_next_opening = 1;
+        }
+        else {
+
+            #print $ndf_fh "\tpid-file \"/var/run/named/pid\"\;\n";
+        }
+        next;
+    }
+}
+
+close $ndc_fh;
+close $ndf_fh;
+
+Cpanel::FileUtils::Copy::safecopy( $def_namedconf, $def_namedconf . '.prerebuilddnsconfig' );
+
+clearcache();
+
+Cpanel::SafetyBits::safe_chown( $binduser, $bindgroup, $def_namedconf );
+
+if ( $chrootdir ne '' ) {
+    print "Updated $def_namedconf in chroot directory\n" if $cpverbose;
+    if ( -e $chrootdir . $def_namedconf ) {
+        if ( ( stat($def_namedconf) )[1] != ( stat( $chrootdir . $def_namedconf ) )[1] ) {
+            Cpanel::FileUtils::Copy::safecopy( $def_namedconf, $chrootdir . $def_namedconf );
+            Cpanel::SafetyBits::safe_chown( $binduser, $bindgroup, $chrootdir . $def_namedconf );
+        }
+    }
+    else {
+        Cpanel::FileUtils::Copy::safecopy( $def_namedconf, $chrootdir . $def_namedconf );
+        Cpanel::SafetyBits::safe_chown( $binduser, $bindgroup, $chrootdir . $def_namedconf );
+    }
+}
+
+# Reset ownership of named.conf
+print "Changing ownership of $def_namedconf: $binduser:$bindgroup\n" if $cpverbose;
+Cpanel::SafetyBits::safe_chown( $binduser, $bindgroup, $def_namedconf );
+
+if ( !-e '/var/cpanel/usensd' ) {
+    print "Restarting Bind\n" if $cpverbose;
+    system('/usr/local/cpanel/scripts/restartsrv_named');
+}
+else {
+
+    # This will also regenerate the zone database
+    print "Restarting NSD\n" if $cpverbose;
+    system('/usr/local/cpanel/scripts/restartsrv_nsd');
+}
+
+######[ call fixrndc to ensure working rndckey config ]############################################
+
+if ( !-e '/var/cpanel/usensd' ) {
+
+    print "Running `/usr/local/cpanel/scripts/fixrndc -f` to check rndc key\n" if $cpverbose;
+    my $opts = $cpverbose ? '-fvs' : '-fs';
+    exec( '/usr/local/cpanel/scripts/fixrndc', $opts );
+}
+
+exit(0);
+
+################################################################################
+# sub copytochroot
+################################################################################
+
+sub copytochroot {
+    my $filenew = shift;
+
+    # mtime of original file
+    my $mtime = shift || 0;
+    if ( $chrootdir ne '' ) {
+        my $chrootfile = $chrootdir . $filenew;
+        print "Copying $filenew to $chrootfile\n" if $cpverbose;
+        my ( $fsinode, $fsmode, $fsuid, $fsgid, $fsmtime ) = ( stat($filenew) )[ 1, 2, 4, 5, 9 ];
+        my $fsperms = $fsmode & 07777;
+        if ( -e $chrootfile ) {
+            my ( $chrootinode, $chrootmode, $chrootuid, $chrootgid, $chrootmtime ) = ( stat(_) )[ 1, 2, 4, 5, 9 ];
+            my $chrootperms = $chrootmode & 07777;
+            if ($mtime) {
+                my $now = time();
+                if ( $fsinode != $chrootinode
+                    && ( $mtime > $chrootmtime || $mtime > $now || $chrootmtime > $now || $chrootuid != $binduid || $chrootgid != $bindgid || $chrootperms != $fsperms ) ) {    #timewarp safe
+                    if ( Cpanel::FileUtils::Copy::safecopy( $filenew, $chrootfile ) ) {
+                        print "Copied $filenew to chroot environment.\n" if $cpverbose;
+                        Cpanel::SafetyBits::safe_chown( $binduser, $bindgroup, $chrootfile );
+                        Cpanel::SafetyBits::safe_chmod( $fsperms, $chrootfile );
+                        return 1;
+                    }
+                    else {
+                        warn "Problem copying $filenew to $chrootdir";
+                        return 0;
+                    }
+                }
+                else {
+                    print "$filenew already exists in chroot environment.\n" if $cpverbose;
+                    return 1;
+                }
+            }
+            else {
+                if ( $fsinode != $chrootinode ) {
+                    if ( Cpanel::FileUtils::Copy::safecopy( $filenew, $chrootfile ) ) {
+                        Cpanel::SafetyBits::safe_chown( $binduser, $bindgroup, $chrootfile );
+                        Cpanel::SafetyBits::safe_chmod( $fsperms, $chrootfile );
+                        print "Copied $filenew to chroot environment.\n" if $cpverbose;
+                        return 1;
+                    }
+                    else {
+                        warn "Problem copying $filenew to $chrootdir";
+                        return 0;
+                    }
+                }
+                else {
+                    if ( $chrootuid != $binduid || $chrootgid != $bindgid || $chrootperms != $fsperms ) {
+                        Cpanel::SafetyBits::safe_chown( $binduser, $bindgroup, $chrootfile );
+                        Cpanel::SafetyBits::safe_chmod( $fsperms, $chrootfile );
+                    }
+                    print "$filenew already exists in chroot environment.\n" if $cpverbose;
+                    return 1;
+                }
+            }
+            warn "Problem copying $filenew to chroot environment. This should not happen.";
+            return 0;
+        }
+        elsif ( Cpanel::FileUtils::Copy::safecopy( $filenew, $chrootfile ) ) {
+            print "Copied $filenew to chroot environment.\n" if $cpverbose;
+            Cpanel::SafetyBits::safe_chown( $binduser, $bindgroup, $chrootfile );
+            return 1;
+        }
+        else {
+            warn "Problem copying $filenew to chroot environment.\n";
+            return 0;
+        }
+    }
+    return 0;
+}
+
+sub clearcache {
+    if ( -e $def_namedconf . '.cache' ) {
+        unlink( $def_namedconf . '.cache' );
+        unlink( $def_namedconf . '.zonedir.cache' );
+    }
+}
+
+######[ Default named.conf template ]##############################################################
+
+sub getdefault_nameddotconf {
+    my $bind_ipv6_line = '';
+    if ( -f '/etc/cpanel/ipv6/range_allocation_data' ) {
+        $bind_ipv6_line = "\n\    // Enable IPv6\n    listen-on-v6 { any; };   /* updated by cPanel */";
+    }
+
+    my $additional_from_cache_line = "additional-from-cache no;";
+
+    # As of BIND 9.18
+    # The keyword additional_from_cache_line will cause an error
+
+    my $named_ref = Cpanel::NameServer::Utils::BIND::named_version();
+    if ( $named_ref->{success} && ( "$named_ref->{major}.$named_ref->{minor}" >= 9.18 ) ) {
+        $additional_from_cache_line = "";
+    }
+
+    return <<"EOC";
+options {
+    /* make named use port 53 for the source of all queries, to allow
+         * firewalls to block all ports except 53:
+         */
+
+    // query-source    port 53;
+    $bind_ipv6_line
+    recursion no;
+
+    /* We no longer enable this by default as the dns posion exploit
+        has forced many providers to open up their firewalls a bit */
+
+    // Put files that named is allowed to write in the data/ directory:
+    directory                "###BASE_DIR###"; // the default
+    pid-file                 "###PID_FILE###";
+    dump-file                "data/cache_dump.db";
+    statistics-file          "data/named_stats.txt";
+   /* memstatistics-file     "data/named_mem_stats.txt"; */
+    allow-transfer    { "none"; };
+};
+
+logging {
+        channel default_log {
+                file "/var/log/named/named.log" versions 5 size 128M;
+                print-time yes;
+                print-severity yes;
+                print-category yes;
+                severity warning;
+        };
+        category default { default_log; };
+        category general { default_log; };
+};
+
+// All BIND 9 zones are in a "view", which allow different zones to be served
+// to different types of client addresses, and for options to be set for groups
+// of zones.
+//
+// By default, if named.conf contains no "view" clauses, all zones are in the
+// "default" view, which matches all clients.
+//
+// If named.conf contains any "view" clause, then all zones MUST be in a view;
+// so it is recommended to start off using views to avoid having to restructure
+// your configuration files in the future.
+
+view "localhost_resolver" {
+/* This view sets up named to be a localhost resolver ( caching only nameserver ).
+ * If all you want is a caching-only nameserver, then you need only define this view:
+ */
+    match-clients         { 127.0.0.0/24; };
+    match-destinations    { localhost; };
+    recursion yes;
+
+    zone "." IN {
+        type hint;
+        file "###BASE_DIR###/named.ca";
+    };
+
+    /* these are zones that contain definitions for all the localhost
+     * names and addresses, as recommended in RFC1912 - these names should
+     * ONLY be served to localhost clients:
+     */
+    include "###BASE_DIR###/named.rfc1912.zones";
+};
+
+view "internal" {
+/* This view will contain zones you want to serve only to "internal" clients
+   that connect via your directly attached LAN interfaces - "localnets" .
+ */
+    match-clients        { localnets; };
+    match-destinations    { localnets; };
+    recursion yes;
+
+    zone "." IN {
+        type hint;
+        file "###BASE_DIR###/named.ca";
+    };
+
+    // include "###BASE_DIR###/named.rfc1912.zones";
+    // you should not serve your rfc1912 names to non-localhost clients.
+
+    // These are your "authoritative" internal zones, and would probably
+    // also be included in the "localhost_resolver" view above :
+};
+
+view    "external" {
+/* This view will contain zones you want to serve only to "external" clients
+ * that have addresses that are not on your directly attached LAN interface subnets:
+ */
+    recursion no;
+    $additional_from_cache_line
+    // you'd probably want to deny recursion to external clients, so you don't
+    // end up providing free DNS service to all takers
+
+    // all views must contain the root hints zone:
+    zone "." IN {
+        type hint;
+        file "###BASE_DIR###/named.ca";
+    };
+
+    // These are your "authoritative" external zones, and would probably
+    // contain entries for just your web and mail servers:
+
+    // BEGIN external zone entries
+
+};
+EOC
+
+}
+
+###################################################################################################

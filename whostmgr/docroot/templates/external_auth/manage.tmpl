@@ -1,0 +1,75 @@
+[%
+    USE Whostmgr;
+    USE JSON;
+
+    SET PAGE_BASE = '/scripts2/manage_external_auth/';
+    SET PAGE_NAME = Whostmgr.get_page_name_by_url(PAGE_BASE);
+
+    WRAPPER 'master_templates/master.tmpl'
+        header = locale.makevar(PAGE_NAME),
+        breadcrumburl = PAGE_BASE,
+        base =  PAGE_BASE,
+        stylesheets = [
+            Whostmgr.find_file_url('/templates/external_auth/manage.min.css')
+        ],
+        theme='bootstrap',
+        CJT2_EXCLUSIVE = 1,
+        app_key='manage_external_authentication';
+%]
+
+<div id="content"
+        ng-controller="BaseController"
+        class="ng-cloak"
+        ng-cloak>
+    <p>
+        [% locale.maketext("This feature allows you to manage your authentication providers and authenticated users."); %]
+    </p>
+    <div class="callout callout-info">
+        [% locale.maketext("For more information about this feature, please review the documentation at [output,url,_1,_1,target,_blank].","https://go.cpanel.net/cpanelidmanage") %]
+    </div>
+
+    [% FOR provider = data.disabled_failing_providers -%]
+        <div class="alert alert-warning">
+            <span class="glyphicon glyphicon-exclamation-sign"></span>
+            <div class="alert-message">
+                <p>[% locale.maketext('You have configured and enabled the provider module “[_1]”; however, the system cannot use this module because of an error:', provider.provider_namespace.html()) -%]</p>
+
+                <p><pre style="white-space: pre-line">[% provider.provider_failure.html() -%]</pre></p>
+
+                [% IF provider.disabled_services.size -%]
+                    <p>[% locale.maketext('The system has disabled this provider module for the [numerate,_1,service,services] [list_and_quoted,_2].', provider.disabled_services.size, provider.disabled_services) -%]</p>
+                [% END -%]
+                [% FOR failure = provider.failures_to_disable -%]
+                    <p>[% locale.maketext('[output,strong,ERROR:] The system failed to disable this provider module for the service “[_1]” because of an error: [_2]', failure.service_name, failure.failure) -%]</p>
+                [% END -%]
+            </div>
+        </div>
+    [% END -%]
+
+    [% IF Whostmgr.hasroot() %]
+    <ul class="nav nav-tabs external-auth-tab-nav">
+        <li ng-class="{active:current_route_matches('^\/users')}">
+            <a href="" ng-click="go('users')">[% locale.maketext('Manage Users') %]</a>
+        </li>
+        <li ng-class="{active:current_route_matches('^\/providers')}">
+            <a href="" ng-click="go('providers')">[% locale.maketext('Configure') %]</a>
+        </li>
+    </ul>
+    [% END %]
+    <div class="loading" ng-show="loading">
+        <p class="alert alert-info col-xs-12">
+            <span><i class="fas fa-spinner fa-spin"></i> [% locale.maketext('Loading …') %]</span>
+        </p>
+    </div>
+    <div ng-class="{'view-disabled':loading}" ng-view></div>
+    <div growl></div>
+</div>
+
+<script type="text/javascript">
+    var PAGE = PAGE || {};
+    PAGE.allowed_authentication_services = [% data.allowed_authentication_services.json() %];
+</script>
+
+[% PROCESS 'master_templates/cjt2_header_include.tt' %]
+
+[% END %]

@@ -1,0 +1,186 @@
+[%
+    USE Whostmgr;
+    USE NVData;
+    USE JSON;
+    WRAPPER 'master_templates/master.tmpl'
+        app_key = 'assign_ipv6_address'
+        header = locale.maketext('Assign [asis,IPv6] Address')
+        breadcrumburl = '/scripts/ipv6list'
+        stylesheets = [
+            Whostmgr.find_file_url('/templates/ipv6/enable.min.css')
+        ]
+        theme = 'bootstrap'
+        include_legacy_stylesheets = 1
+        scripts = [
+            Whostmgr.find_file_url('/libraries/jquery/current/jquery.min.js'),
+            Whostmgr.find_file_url('/libraries/handlebars/handlebars.min.js'),
+            Whostmgr.find_file_url('/templates/ipv6/enable.min.js')
+        ];
+
+    SET spinner16 = MagicRevision('/images/loading-arrows-16.gif');
+    SET ipv6Ranges = MagicRevision('ipv6range');
+-%]
+
+<div id="content">
+[% IF data.has_v4_mapped %]
+    [% IF data.apache_reserved_ip_count %]
+    <div class="alert alert-danger">
+        <span class="glyphicon glyphicon-remove-sign"></span>
+        <div class="alert-message">[% locale.maketext('Apache must be updated.') %]<br>
+        [% locale.maketext('Your Apache installation is compiled with v4-mapped support enabled and you have Apache Reserved IPs set. This combination will cause your Apache instance to be unusable after enabling IPv6 due to the way that Apache handles IPv6 addresses by default. Please visit [output,url,_1,EasyApache] and click “Build Profile Now” to update Apache with the proper options.', cp_security_token _ '/scripts7/EasyApache4') %]
+    </div>
+    <div class="hidden">
+    [% ELSE %]
+        <div class="alert alert-warning">
+            <span class="glyphicon glyphicon-exclamation-sign"></span>
+            <div class="alert-message">
+                [% locale.maketext('Apache should be updated.') %]<br>
+                [% locale.maketext('Your Apache installation is compiled with v4-mapped support enabled. This is known to cause instability related to the way that Apache binds to specific ports. Please visit [output,url,_1,EasyApache] and click “Build Profile Now” to update Apache with the proper options.', cp_security_token _ '/scripts7/EasyApache4') %]
+            </div>
+        </div>
+    </div>
+    <div>
+    [% END %]
+[% ELSE %]
+    <div>
+[% END %]
+        <form name="ipv6accounts" id="ipv6_accounts_form" class="complex">
+            <div class="row">
+                <div class="col-xs-12">
+                    <h4>[% locale.maketext('Select an Account') %]</h4>
+                </div>
+                <div class="col-xs-12 col-sm-6">
+                    <div id="accounts_container" class="field filter-container">
+                        <div id="account_select_button" class="filter-button filter-select" title="[% locale.maketext('Select All Accounts') %]">*</div>
+                        <div id="account_filter_button" class="filter-button filter-search">&nbsp;</div>
+                        <input type="hidden" id="account_selected" value="" />
+                        <input type="text" placeholder="[% locale.maketext('Filter Accounts') %]" autocomplete="off" id="account_filter" class="filter form-control" />
+                        <ul id="account_list" class="filter-list" tabindex="-1">
+                            <li>[% locale.maketext('Loading Accounts') %]</li>
+                        </ul>
+                    </div>
+                </div>
+                <div class="col-xs-12 col-sm-6">
+                    <p class="help-block">[% locale.maketext('This feature allows users with root access to assign an IPv6 address to a specific account. IPv6 addresses that were assigned without this feature will be erased for the selected users when you enable IPv6 with this feature. Hold shift and click on an account name to select or deselect multiple accounts. Click the blue asterisk to select all accounts.') %]</p>
+                    [%- IF !data.shared_ipv6 %]
+                    <p class="help-block">[% locale.maketext('You have not configured a shared IPv6 address. To do this, use the [output,url,_1,Basic cPanel amp() WHM Setup] interface.', "$cp_security_token/scripts/editsets") %]</p>
+                    [% END %]
+                    <div id="api_notice" class="cjt-pagenotice-container cjt-notice-container"></div>
+                </div>
+            </div>
+        </form>
+        <div class="row">
+            <div class="col-xs-12">
+                <button type="button" title="[% locale.maketext('Enable Account') %]" id="enable_account" class="btn btn-primary">
+                    <div class="spinner"><img src="[% spinner16 %]" /></div>
+                    <div class="button-text">[% locale.maketext('Enable Account') %]</div>
+                </button>
+                <button type="button" title="[% locale.maketext('Disable Account') %]" id="disable_account" class="btn btn-default">
+                    <div class="spinner"><img src="[% spinner16 %]" /></div>
+                    <div class="button-text">[% locale.maketext('Disable Account') %]</div>
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+
+<script type="text/plain" id="account_information_template">
+    <div class="yui-module cjt-notice cjt-pagenotice cjt-notice-{{type}}">
+        <div class="bd">
+            <div class="cjt-notice-content">
+            {{#if message}}
+                <p>{{message}}</p>
+            {{/if}}
+            {{#if ipv6}}
+                {{#unless message}}
+                    {{#if multipleAccounts}}
+                        <p>[% locale.maketext('IPv6 currently enabled for these users.') %]</p>
+                    {{else}}
+                        <p>[% locale.maketext('IPv6 currently enabled for this user.') %]</p>
+                    {{/if}}
+                {{/unless}}
+                {{#if domain}}
+                {{#unless multipleAccounts}}
+                    {{#each ipv6}}
+                        <p class="no-wrap-overflow">[% locale.maketext('IPv6 Address:') %]</p>
+                        <p class="no-top-margin wrap">
+                            <a href="http://[{{this}}]"
+                                title="[% locale.maketext('Open by IPv6 Address') %]"
+                                target="_new">{{wrap this ":"}}</a>
+                        </p>
+                    {{/each}}
+                    <p class="no-wrap-overflow">[% locale.maketext('Primary Domain:') %]</p>
+                    <p class="no-top-margin wrap">
+                        <a href="http://{{domain}}"
+                            title="[% locale.maketext('Open by Domain') %]"
+                            target="_new">{{wrap domain "."}}</a>
+                    </p>
+                    <p class="no-wrap-overflow">[% locale.maketext('IPv6 Subdomain:') %]</p>
+                    <p class="no-top-margin wrap">
+                        <a href="http://ipv6.{{domain}}"
+                            title="[% locale.maketext('Open by IPv6 Proxy') %]"
+                            target="_new">ipv6.<wbr>{{wrap domain "."}}</a>
+                    </p>
+                {{/unless}}
+                {{/if}}
+            {{else}}
+                {{#if noAccount}}
+                    <p>[% locale.maketext('Please select an account from the list') %]</p>
+                {{/if}}
+                {{#unless noAccount}}
+                    {{#unless error}}
+                        <div class="form-group">
+                        {{#if rangeAvailability}}
+                            <label for="select_range">
+                            {{#if multipleAccounts}}
+                                [% locale.maketext('Enable these accounts with IPv6 addresses from the selected range:') %]
+                            {{else}}
+                            [% locale.maketext('Enable this account with an IPv6 address from the selected range:') %]
+                            {{/if}}
+                            </label>
+                            <select id="select_range" class="form-control">
+                            {{#each ranges}}
+                                <option value="{{this}}">
+                                {{#if_eq this "SHARED"}}
+                                    [% locale.maketext("The system’s shared IPv6 address.") %]
+                                {{else}}
+                                    {{this}}
+                                {{/if_eq}}
+                                </option>
+                            {{/each}}
+                            </select>
+                        {{else}}
+                            [% locale.maketext("No IPv6 ranges have been added. Access the [output,url,_1,_2] feature to add an IPv6 range.", ipv6Ranges, locale.maketext('[asis,IPv6] Ranges')) %]
+                        {{/if}}
+                        </div>
+                    {{/unless}}
+                {{/unless}}
+
+            {{/if}}
+            </div>
+        </div>
+    </div>
+</script>
+
+<script type="text/x-handlebars-template" id="accounts_template">
+    <li id="{{account}}"
+    {{#if ipv6}}
+        data-ipv6="{{#ipList ipv6}}{{this}}{{/ipList}}" class="Enabled"
+    {{/if}}
+     data-domain="{{domain}}">
+    {{account}}
+        <span class="enabledMark">[% locale.maketext("ENABLED") %]</span>
+    </li>
+</script>
+
+<script type="text/javascript">
+    CPANEL.namespace("CPANEL.PAGE");
+    CPANEL.PAGE = {
+        users: [% data.users.json() %],
+        ranges: [% data.ranges.json() %],
+        has_v4_mapped: [% data.has_v4_mapped.json() %],
+        apache_reserved_ip_count: [% data.apache_reserved_ip_count.json() %]
+    };
+</script>
+[% END #wrapper -%]

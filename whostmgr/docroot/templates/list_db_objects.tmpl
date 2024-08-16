@@ -1,0 +1,190 @@
+[%
+    USE JSON;
+    USE Postgresql;
+    USE Whostmgr;
+    USE CpanelDB;
+
+    WRAPPER 'master_templates/master.tmpl'
+        header = data.header,
+        app_key = data.db_object_type == 'database' ? 'manage_databases' : 'manage_database_users'
+        stylesheets = [
+            '/css/whm_dynamic_notices.css'
+        ],
+        scripts = [
+            Whostmgr.find_file_url('/libraries/jquery/current/jquery.min.js'),
+            Whostmgr.find_file_url('/libraries/angularjs/1.4.4/angular.min.js'),
+            Whostmgr.find_file_url('/libraries/angularjs/1.4.4/angular-animate.min.js'),
+            Whostmgr.find_file_url('/libraries/angular-ui-bootstrap/optimized/ui-bootstrap-tpls-1.2.5.min.js')
+        ],
+        theme = 'bootstrap';
+
+    PROCESS '_ajaxapp_header.tmpl';
+-%]
+
+[% PROCESS 'warnings/_mysql_version.tmpl' %]
+
+[% IF CpanelDB.use_prefix() %]
+    <section class="callout callout-info">
+        <div class="limit-info">
+            [% locale.maketext('[output,strong,Note]: This interface does not enforce database prefixing. It is possible to rename a prefixed name to a non-prefixed name, but the ownership will not change.') %]
+        </div>
+    </section>
+[% END %]
+
+<div id="cjt_pagenotice_container"></div>
+
+<div id="content" ng-app="getAcctList" ng-controller="initData" ng-cloak>
+    <div ng-if="!all_db_objects.length" class="alert alert-info">
+        <div class="alert-message" ng-bind="empty_message"></div>
+    </div>
+    <div ng-if="show_search">
+        <div class="row search-row">
+            <div class="col-lg-4 col-md-4 col-sm-6 col-xs-6">
+                <div class="input-group">
+                    <input name="find" id="database_filter"
+                                placeholder="[% locale.maketext('Search') %]"
+                                class="form-control filter-list-input"
+                                title="[% locale.maketext('Type in your search filter.') %]"
+                                autocomplete="off"
+                                ng-model="meta.filter"
+                                ng-change="meta.currentPage = 1;"
+                                ng-debounce
+                    />
+                    <div id="searchAction" class="input-group-btn search-list search" ng-click="toggleFilter()" focus-input>
+                        <button class="btn btn-default" ng-click="meta.filter = ''">
+                            <span class="glyphicon" ng-class="{ 'glyphicon-search': !meta.filter, 'glyphicon-remove': meta.filter }" ></span>
+                        </button>
+                    </div>
+
+                </div>
+            </div>
+            <div class="col-lg-7 col-md-7 col-sm-5 col-xs-5 col-xs-offset-1">
+                <div class="form-inline pull-right" ng-if="pageSizes.length > 1">
+                    <div class="form-group page-size-controller">
+                        <select id="package-table-page-size-top" class="form-control" ng-model="meta.pageSize" ng-options="item.value as item.label for item in pageSizes"></select>
+                    </div>
+                    <uib-pagination ng-change="selectPage()"
+                                ng-model="meta.currentPage"
+                                items-per-page="meta.pageSize"
+                                total-items="meta.filteredResults.length"
+                                max-size="4"
+                                direction-links="false"
+                                boundary-links="true"
+                                first-text="[% locale.maketext('First') %]"
+                                last-text="[% locale.maketext('Last') %]"
+                                class="pagination-small">
+                    </uib-pagination>
+                </div>
+            </div>
+        </div>
+        <p class="label label-primary" ng-click="meta.selected = '';">{{ filterMsg() }}</p>
+    </div>
+    <table ng-if="all_db_objects.length" id="pkgtbl" role="table" class="table">
+        <thead>
+            <tr>
+                <th ng-click="toggleSort(meta, 'name')" ng-class="selectedHeaderClass('name')">
+                    <a href="">
+                        [% locale.maketext('Name') %]
+                    </a>
+                </th>
+[% IF Postgresql.is_configured -%]
+                <th ng-click="toggleSort(meta, 'engine')" ng-class="selectedHeaderClass('engine')">
+                    <a href="">
+                        [% locale.maketext('Database Engine') %]
+                    </a>
+                </th>
+[% END -%]
+                <th ng-click="toggleSort(meta, 'cpuser')" ng-class="selectedHeaderClass('cpuser')">
+                    <a href="">
+                        [% locale.maketext('Owner') %]
+                    </a>
+                </th>
+                <th ng-if="!expand_all_rows">
+                    [% locale.maketext('Actions') -%]
+                </th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr ng-repeat-start="dbobj in ((meta.filteredResults = (all_db_objects | filter:meta.filter | orderBy:meta.order:meta.reverse)) | startFrom:(meta.currentPage-1)*meta.pageSize | cpLimitTo:meta.pageSize)">
+                <td ng-bind="dbobj.name" ng-class="selectedColClass('name')">
+                </td>
+[% IF Postgresql.is_configured -%]
+                <td ng-bind="engineToDisplay[dbobj.engine]" ng-class="selectedColClass('engine')">
+                </td>
+[% END -%]
+                <td ng-bind="dbobj.cpuser" ng-class="selectedColClass('cpuser')">
+                </td>
+                <td ng-if="!expand_all_rows">
+                    <button id="db_action_{{dbobj.engine}}_{{dbobj.name}}" type="button" class="btn btn-default btn-sm" ng-click="toggleEdit(this,dbobj)" title="[% data.db_object_type == 'user' ? locale.maketext('Rename this user or set its password.') : locale.maketext('Rename this database.') %]">
+                        <span class="glyphicon glyphicon-pencil"></span>
+                    </button>
+                </td>
+            </tr>
+            <tr ng-repeat-end ng-if="expand_all_rows || dbobj.inEdit" class="active">
+                <td colspan="99" id="edit_{{dbobj.engine}}_{{dbobj.name}}">
+                    <form id="xfer_cpanel_{{dbobj.cpuser}}" action='/xfercpanel' method='POST' target='_blank'>
+                        <input type='hidden' name='user' value="{{dbobj.cpuser}}">
+                        <input type='hidden' name='token' value="[% cp_security_token %]">
+                    </form>
+                    <form ng-init="!dbobj.newName && (dbobj.newName = dbobj.name)" ng-submit="submitDbObjectEdit(dbobj)">
+                        <div class="alert alert-warning" ng-if="dbobj.engine === 'mysql' && db_object_type === 'database'">
+                            <span class="glyphicon glyphicon-exclamation-sign"></span>
+                            <div class="alert-message" ng-bind-html="getRenameWarning(dbobj) | trustAsHtml">
+                            </div>
+                        </div>
+
+                        <div class="alert alert-warning" ng-if="dbobj.engine === 'postgresql' && db_object_type === 'user'">
+                            <span class="glyphicon glyphicon-exclamation-sign"></span>
+                            <div class="alert-message">[% locale.maketext('PostgreSQL uses a user’s name to secure the user’s password internally. As a consequence of this, you must set the user’s password again as part of renaming the user.') %]</div>
+                        </div>
+
+                        <div id="notice_area_for_{{dbobj.engine}}_{{dbobj.name}}"></div>
+
+                        <div ng-class="{'has-error':dbobj.error.name}">
+                            <label for="rename_input_{{dbobj.name}}">[% locale.maketext('Rename to:') %]</label>
+                            <input id="rename_input_{{dbobj.name}}" type="text" size="{{renameSize(dbobj)}}" ng-init="validateName(dbobj)" ng-change="validateName(dbobj); validatePassword(dbobj)" ng-model="dbobj.newName" maxlength="{{CPANEL.sql.get_name_length_limit(dbobj.engine,db_object_type)}}">
+                            <span ng-if="dbobj.error.name">{{dbobj.error.name}}</span>
+                        </div>
+
+                        <div ng-if="db_object_type === 'user'" ng-class="{'has-error':dbobj.error.password}">
+                            <label for="set_password_{{dbobj.name}}">[% locale.maketext('Set Password:') %]</label>
+                            <input type="password" id="set_password_{{dbobj.name}}" type="text" ng-change="validatePassword(dbobj)" ng-model="dbobj.password" ng-debounce placeholder="[% locale.maketext('No change') %]">
+                            <span ng-if="dbobj.password && !dbobj.passwordStrength">[% locale.maketext('Loading …') %]</span>
+                            <span ng-if="dbobj.password && dbobj.passwordStrength">[% locale.maketext('Strength:') %] {{ dbobj.passwordStrengthStr }}</span>
+                            <br />
+                            <span ng-if="dbobj.error.password">{{dbobj.error.password}}</span>
+                        </div>
+
+                        <div class="button-area">
+                            <button type="submit" class="btn btn-default" ng-disabled="(dbobj.name === dbobj.newName) && ((db_object_type !== 'user') || !dbobj.password)"><span class="glyphicon glyphicon-ok"></span> [% locale.maketext('Submit') %]</button>
+                            <button class="btn btn-link" ng-click="dbobj.inEdit = false"><span class="glyphicon glyphicon-remove"></span> [% locale.maketext('Close') %]</button>
+                        </div>
+                    </form>
+                </td>
+            </tr>
+        </tbody>
+    </table>
+</div>
+
+[%# NB: This will be obsolete with the next version of Angular Bootstrap UI (post-0.10.0). -%]
+<script type="text/plain" id="ng_pagination_html">
+    <ul class="pagination">
+        <li ng-repeat="page in pages" ng-class="{active: page.active, disabled: page.disabled}">
+            <a ng-if='!page.active' href="" ng-click="selectPage(page.number)">{{page.text}}</a>
+            <input ng-if='page.active' defaultValue='{{page.number}}' ng-keypress='($event.keyCode === 13) && selectPage(jumpPage)' title="[% locale.maketext('Enter a page number to jump to that page.') %]" maxlength='{{(""+totalPages).length}}' class='cp-page-jumper' size='{{(""+totalPages).length}}' ng-model='jumpPage' ng-init='jumpPage = page.number' ng-disabled='page.disabled || (totalPages === 1)'>
+        </li>
+    </ul>
+</script>
+
+<script>
+    window.PAGE = [% JSON.stringify(data) -%];
+    window.MYSQL_SERVER_VERSION = [% JSON.stringify(data.mysql_server_version) %];
+</script>
+
+[% SET lex_path = locale.cpanel_get_lex_path('/usr/local/cpanel/base/cjt/sql.js', '/cjt/sql.js') %]
+[% IF lex_path %]<script src="[% lex_path %]"></script>[% END %]
+<script src="[% CPANEL.get_js_url('/cjt/sql.js') %]"></script>
+
+[% PROCESS '_ajaxapp_footer.tmpl'; -%]
+
+[% END #wrapper -%]

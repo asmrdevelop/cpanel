@@ -1,0 +1,32 @@
+[%#
+Variables passed in:
+
+origin                  - the system component from which the notification was requested.
+services                - list of services that are unmonitored list contains hashes that get converted below [ [{'service'=>'cpsrvd','description'=>'cPanel Service Daemon'}], ... ]
+
+For more information about how to customize notification templates, read our documentation at https://go.cpanel.net/notificationtemplates
+
+-%]
+
+[%
+    PROCESS "include/colors.tmpl";
+    PROCESS "include/styles.tmpl";
+    PROCESS "include/zebra_table.tmpl";
+%]
+
+
+[%
+
+WRAPPER 'wrapper/main.html.tmpl';
+
+    IF NOTICE.services.size == 1;
+        NOTICE.email_reason = CPANEL.locale.maketext('The server does not currently monitor the “[_1]” service.', NOTICE.services.0.display_name);
+    ELSE;
+        NOTICE.email_reason = CPANEL.locale.maketext('The server has [quant,_1,unmonitored service,unmonitored services].', NOTICE.services.size);
+    END;
+
+   PROCESS "Check/includes/UnmonitoredEnabledServices.body.html.tmpl";
+
+END;
+
+ %]

@@ -1,0 +1,15 @@
+
+  # Greylisting
+  defer   message = Temporarily unable to process your email. Please try again later.
+          # skip if authenticated (with SMTP AUTH ...)
+          !authenticated = *
+          # skip if spf check passes
+          !spf = pass
+          !hosts = +recent_recipient_mail_server_ips : +greylist_trusted_netblocks : +greylist_common_mail_providers : +cpanel_mail_netblocks
+          domains = +local_domains : +relay_domains
+          condition = ${sg{${readsocket{/var/run/cpgreylistd.sock}\
+                       {should_defer ${sg{$sender_host_address}{ }{\x01}} ${sg{$sender_address}{ }{\x01}} ${sg{$local_part@$domain}{ }{\x01}}\n}\
+                       {5s}{\n}{no}}}{\n}{}}
+          log_message = Deferred due to greylisting. Host: '$sender_host_address' From: '$sender_address' To: '$local_part@$domain' SPF: '${if def:spf_result {$spf_result}{unchecked}}'
+
+

@@ -1,0 +1,83 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/updateuserdatacache             Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+# ignore our parent if it dies as this could result in
+# a blank userdatadomains files
+$SIG{'HUP'} = 'IGNORE';
+$SIG{'INT'} = 'IGNORE';
+
+use strict;
+use warnings;
+
+use Getopt::Long                          ();
+use Digest::MD5                           ();    #speed up loading config
+use Cpanel::Config::userdata::UpdateCache ();
+use Cpanel::Logger                        ();
+
+my $logger = Cpanel::Logger->new();
+
+if ( $> != 0 ) {
+    $logger->die("This program can only be run as root");
+}
+
+my ( $collect, $force, $help );
+if (
+    !Getopt::Long::GetOptions(
+        "collect!" => \$collect,
+        "force!"   => \$force,
+        "help!"    => \$help
+    )
+) {
+    print_usage();
+    $logger->die("Invalid command line options");
+}
+
+if ($help) {
+    print_usage();
+    exit();
+}
+
+my @users = @ARGV;
+my $args  = { 'force' => $force, 'collect' => $collect };
+
+if (@users) {
+    eval { Cpanel::Config::userdata::UpdateCache::update( @users, $args ) };
+}
+else {
+    eval { Cpanel::Config::userdata::UpdateCache::update_all_users($args) };
+}
+if ($@) {
+    $logger->warn("An error occurred in building the userdata cache: $@");
+}
+
+exit();
+
+sub print_usage {
+    print <<"USAGE";
+
+$0 [ options ] [ usernames ... ]
+
+    Generates the userdata cache file for the specified users (or *all* users
+    if none are specified) in /var/cpanel/userdata/USERNAME/cache, if any
+    changes have been made for that user since the last time the cache file was
+    generated; and if any user caches were udpated, concatenate all the users'
+    cache files into one central file, /etc/userdatadomains.
+
+    Options:
+
+        --force     Force the regeneration of the specified user cache file(s)
+                    (or all user cache files, if run without arguments), even
+                    if nothing has changed since the last time the cache was
+                    generated
+
+        --collect   Force the concatenation of individual users' cache files
+                    into the central cache, even if nothing has changed; if
+                    run without arguments, *only* the concatenation will be
+                    performed (such as when deleting an account).
+
+USAGE
+}

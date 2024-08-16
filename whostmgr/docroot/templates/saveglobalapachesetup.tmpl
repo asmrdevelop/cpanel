@@ -1,0 +1,57 @@
+[% WRAPPER 'master_templates/master.tmpl'
+    theme = 'bootstrap',
+    extrastyle = '
+.values {
+    margin-left: 20px;
+}
+'
+-%]
+
+[% IF data.save_rc %]
+<br />
+<p class="values">The following settings have been saved:
+<ul>
+[% FOR pair = data.saved;
+    IF ref(pair.value) == 'HASH';
+        SET value = [];
+        FOR thispair = pair.value; value.push(thispair.key) IF thispair.value; END;
+        SET value = value.join(', ');
+    ELSIF ref(pair.value) == 'ARRAY';
+        SET value = pair.value.join(', ');
+    ELSE;
+        SET value = pair.defined('value') ? pair.value : ts_conf.${pair.key}.can_undef;
+    END;
+-%]
+<li><b>[% pair.key FILTER html %]</b>: [% value FILTER html %]</li>
+ [% END %]
+</ul>
+</p>
+<br />
+[% IF data.rejects.keys.size -%]
+<p class="values">The following settings are invalid and were rejected:
+<ul>
+    [% FOR pair = data.rejects -%]
+    <li><b>[% pair.key FILTER html%]</b>: [% pair.value FILTER html -%]</li>
+
+    [% IF data.reject_reasons.defined( pair.key ) -%]
+        <ul><li>[% data.reject_reasons.${pair.key} FILTER html%]</li></ul>
+    [% END -%]
+    [% END -%]
+</ul>
+</p>
+[% END -%]
+<br />
+<p class="alert alert-info">For your changes to take effect, the Apache configuration must be rebuilt and Apache restarted.</p>
+<div>
+<form action="[% cp_security_token %]/scripts2/rebuildhttpdconf">
+<input type="hidden" name="force" value="1" />
+<input class="btn btn-primary" type="submit" value="Rebuild Configuration and Restart Apache" />
+</form>
+</div>
+
+[% ELSE %]
+<br />
+<p class="description">There was a problem saving your settings. Please check the error log (/usr/local/cpanel/logs/error_log) for more details.</p>
+[% END %]
+
+[% END -%]

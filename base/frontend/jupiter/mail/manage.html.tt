@@ -1,0 +1,188 @@
+
+[%
+    SET CPANEL.CPVAR.dprefix = "../";
+
+    IF (ExpVar.expand('$appname') == "webmail") && !FORM.item('account');
+        SET FORM.item('account') = CPANEL.authuser;
+    END;
+%]
+
+[% WRAPPER '_assets/master.html.tt'
+    app_key = 'boxtrapper'
+    page_stylesheets = ['mail/boxtrapper.css']
+%]
+<div class="body-content">
+    [% IF CPANEL.feature('spamassassin') %]
+        [% IF !(ExpVar.expand('$appname') == "webmail") %]
+            <p id="descSpamHighlyRecommended" class="description">
+                [% locale.maketext("We strongly recommend that you use the [asis,Spam Box] feature in [asis,cPanel]’s [output,url,_1,Spam Filters] interface to reduce server loads and backscatter to illegitimate email addresses.", "spam/") %]
+            </p>
+        [% END %]
+    [% END %]
+
+    [% IF (ExpVar.expand('$appname') == "webmail" && !( FORM.item('account') == CPANEL.authuser)) %]
+        <div id="changeSettingsError" class="alert alert-danger" role="alert">
+            <span class='glyphicon glyphicon-remove-sign' aria-hidden="true"></span>
+            <div class='alert-message'>
+                <strong class="alert-title">
+                    [% locale.maketext('Error:') %]
+                </strong>
+                <span class="alert-body">
+                    <span id="changeSettingsErrorMsg">
+                        [% locale.maketext("You are not allowed to change settings for the user “[output,class,_1,status]”.", FORM.item('account')) %]
+                    </span>
+                </span>
+            </div>
+        </div>
+    [% END %]
+
+    [% IF CPANEL.CPDATA.item('DEMO') %]
+    <div class="alert alert-info" role="alert">
+        <span class='glyphicon glyphicon-info-sign' aria-hidden="true"></span>
+        <div class='alert-message'>
+            <strong class="alert-title">
+                [% locale.maketext('Information:') %]
+            </strong>
+            <span class="alert-body">
+                <span id="disabled-in-demo-mode">
+                    [% locale.maketext("Some capabilities of this feature are disabled in demo mode.") %]
+                </span>
+            </span>
+        </div>
+    </div>
+    [% END %]
+    [% IF (!( ExpVar.expand('$appname') == "webmail") || FORM.item('account') == CPANEL.authuser) %]
+
+        <div class="section">
+            <h2 id="hdrConfigureBoxtrapper">
+                [% locale.maketext("Configure BoxTrapper for: [output,strong,_1]", FORM.item('account') ) %]
+            </h2>
+
+            [% SET get_status_result = execute(
+                 "BoxTrapper",
+                 "get_status",
+                 {
+                     email => RAW_FORM.item('account')
+                 });
+               IF !get_status_result.status;
+                   FOREACH error IN get_status_result.errors %]
+                    <div class="alert alert-danger" role="alert">
+                        <span class='glyphicon glyphicon-remove-sign' aria-hidden="true"></span>
+                        <div class='alert-message'>
+                            <strong class="alert-title">
+                                [% locale.maketext('Error:') %]
+                            </strong>
+                            <span class="alert-body">
+                                <span id="error-[% loop.index() %]">
+                                    [% error.html() %]
+                                </span>
+                            </span>
+                        </div>
+                    </div>
+            [%     END;
+                ELSE;
+            %]
+            <form action="changestatus.html" method="post">
+                <p id="boxTrapperStatus">
+                    <strong id="spanCurrentStatus">
+                        [% locale.maketext("Current Status:") %]
+                    </strong>
+
+                    [% SET state = get_status_result.data %]
+                    <span id="current-status">
+                        [% IF state == 1; %]
+                            [% locale.maketext("Enabled") %]
+                        [% ELSE %]
+                            [% locale.maketext("Disabled") %]
+                        [% END %]
+                    </span>
+                        [% IF !CPANEL.CPDATA.item('DEMO') %]
+                    <input id="hdnAccount"
+                           type="hidden"
+                           name="account"
+                           value="[% FORM.item('account') %]" />
+                    <input type="hidden"
+                           name="action"
+                           id="hidden-next-state"
+                           value="[% state == 1 ? 0 : 1 %]">
+                    <input id="btn-toggle-state"
+                           type="submit"
+                           class="btn btn-default"
+                           name="submitaction"
+                           value="[% state == 1 ? locale.maketext('Disable') : locale.maketext('Enable')%]">
+                        [% END %]
+                </p>
+            </form>
+
+            <p id="descConfigureSettings">
+                <form method="post" action="conf.html">
+                    <button class="btn btn-link" id="lnkConfigureSettings" name="account" value="[% FORM.item('account') %]">
+                        [% locale.maketext("Configure Settings") %]
+                    </button>
+                    <br />
+                    [% locale.maketext("Allows you to set up email addresses with BoxTrapper and specify how long to keep logs and queue messages.") %]
+                </form>
+            </p>
+
+            <p id="descEditConfirmMessage">
+                <form method="post" action="editmsgs.html">
+                    <button class="btn btn-link" id="lnkEditConfirmation" name="account" value="[% FORM.item('account') %]">
+                        [% locale.maketext("Edit Confirmation Messages") %]
+                    </button>
+                    <br />
+                    [% locale.maketext("Allows you to change the responses that email senders receive after they send a message to a BoxTrapper-enabled account.") %]
+                </form>
+            </p>
+
+            <p id="descEditWhiteBlackList">
+                <form method="post" action="editlists.html">
+                    <button class="btn btn-link" id="lnkEditWhiteBlackIgnoreList" name="account" value="[% FORM.item('account') %]">
+                        [% locale.maketext("Edit White/Black/Ignore Lists") %]
+                    </button>
+                    <br />
+                    [% locale.maketext("Allows you to permit, deny, and ignore email messages from certain accounts.") %]
+                </form>
+            </p>
+
+            <p id="descBoxConfigurl">
+                <form method="post" action="forwardlist.html">
+                    <button class="btn btn-link" id="lnkConfUrl" name="account" value="[% FORM.item('account') %]">
+                        [% locale.maketext("Forward List") %]
+                    </button>
+                    <br />
+                    [% locale.maketext("Allows you to forward the emails that passed through BoxTrapper authentication to another address.") %]
+                </form>
+            </p>
+
+            <p id="descReviewLog">
+                <form method="post" action="showlog.html">
+                    <button class="btn btn-link" id="lnkReviewLog" name="account" value="[% FORM.item('account') %]">
+                        [% locale.maketext("Review Log") %]
+                    </button>
+                    <br />
+                    [% locale.maketext("An overview of all messages sent to your email accounts, displayed by day.") %]
+                </form>
+            </p>
+
+            <p id="descReviewQueue">
+                <form method="post" action="showq.html">
+                    <button class="btn btn-link" id="lnkReivewQueue" name="account" value="[% FORM.item('account') %]">
+                        [% locale.maketext("Review Queue") %]
+                    </button>
+                    <br />
+                    [% locale.maketext("View any BoxTrapper mail waiting for verification.") %]
+                </form>
+            </p>
+        [% END %]
+        </div>
+    [% END %]
+
+    [% IF (ExpVar.expand('$appname') == "webmail") %]
+        [% INCLUDE _assets/return_link.html.tt return_location='../index.html' return_link_text=locale.maketext('Go Back') %]
+    [% END %]
+
+    [% IF !(ExpVar.expand('$appname') == "webmail") %]
+        [% INCLUDE _assets/return_link.html.tt return_location='boxtrapper.html' return_link_text=locale.maketext('Go Back') %]
+    [% END %]
+</div>
+[% END %]

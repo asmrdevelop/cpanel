@@ -1,0 +1,17 @@
+
+    accept
+        hosts = : +loopback : +recent_authed_mail_ips : +backupmx_hosts
+
+    accept
+        hosts = +trustedmailhosts
+
+    accept
+        condition = ${if match_ip{$sender_host_address}{net-iplsearch;/etc/trustedmailhosts}{1}{0}}
+
+    defer
+        #only rate limit port 25
+        condition = ${if eq {$received_port}{25}{yes}{no}}
+        message = The server has reached its limit for processing requests from your host.  Please try again later.
+        log_message = "Host is ratelimited ($sender_rate/$sender_rate_period max:$sender_rate_limit)"
+        ratelimit = 1.2 / 1h / strict / per_conn / noupdate
+

@@ -1,0 +1,267 @@
+=encoding utf8
+
+=head1 NAME
+
+POSIX::1003::Fcntl - POSIX function fcntl
+
+=head1 SYNOPSIS
+
+  use POSIX::1003::Fcntl;
+
+=head1 DESCRIPTION
+
+One function, which hides many tricks with file-descriptors.  This module
+tries to provide functions which separates the various uses.
+
+=head1 FUNCTIONS
+
+=head2 Standard POSIX
+
+=over 4
+
+=item B<fcntl>($fd, $function, SCALAR)
+
+See C<perlfunc fcntl>.  This raw call to C<fcntl()> is only in some
+cases simple, but often isn't.
+
+=item B<flockfd>($fd, $flags)
+
+Not standard POSIX, but available on many POSIX platforms.  Often
+implemented as L<fcntl()|POSIX::1003::Fcntl/"Standard POSIX">, which is more complex to use.  On other
+platforms implemented as separate OS feature.
+
+Perl core provides a C<flock> which may hide plaform differences.
+This C<flockfd> is the pure version.  Try to use L<setfd_lock()|POSIX::1003::Fcntl/"Additional">, which
+is more portable and flexible.
+
+example: 
+
+  use POSIX::1003::Fcntl ':flock';
+  if(flockfd $fd, LOCK_EX|LOCK_NB) ...
+  flockfd $fd, LOCK_UN;
+
+=item B<lockf>($fd, $flag, $length)
+
+Not standard POSIX, but available on many POSIX platforms.  Often
+implemented via L<fcntl()|POSIX::1003::Fcntl/"Standard POSIX">, which is more complex to use.
+
+example: 
+
+  use POSIX::1003::Fcntl ':lockfd';
+  if(lockf $fd, F_LOCK) ...
+  lockf $fd, F_ULOCK;
+
+=back
+
+=head2 Additional
+
+=over 4
+
+=item B<fcntl_dup>($fd|$fh, %options)
+
+Commands F_DUPFD and F_DUPFD_CLOEXEC: dupplicate a file-descriptor
+to the lowest free fd number.
+
+ -Option       --Default
+  close_on_exec  <false>
+
+=over 2
+
+=item close_on_exec => BOOLEAN
+
+=back
+
+example: 
+
+  my $dup_fd = fcntl_dup \*STDOUT;
+  my $dup_fd = fcntl_dup 2, close_on_exec => 1;
+
+=item B<getfd_control>($fd|$fh)
+
+Control the file descriptor flags, command F_GETFD.
+
+=item B<getfd_flags>($fd|$fh)
+
+Get the file status flags and access modes, command F_GETFL.
+
+example: 
+
+  my $flags = getfd_flags(fd);
+  if ((flags & O_ACCMODE) == O_RDWR)
+
+=item B<getfd_islocked>($fd|$fh, %options)
+
+Command F_GETLCK. Returns the first lock which would prevent getting
+the lock.  The %options are the same as for L<setfd_lock()|POSIX::1003::Fcntl/"Additional">.
+
+example: 
+
+  if(my $lock = getfd_islocked \*IN) ...
+
+=item B<getfd_lease>($fd|$fh)
+
+Command F_GETLEASE.
+
+example: 
+
+ my $lease = getfd_lease(\*STDIN) or die $!;
+ if($lease != F_RDLCK) ...
+
+=item B<getfd_owner>($fd|$fh, %options)
+
+Commands F_GETOWN and F_GETOWN_EX.
+
+example: 
+
+  my ($type, $pid) = getfd_owner($fd);
+  defined $type or die $!;
+  if($type==F_OWNER_PGRP) ...
+
+  my $pid = getfd_owner($fd) or die $!;
+
+=item B<getfd_pipe_size>($fd|$fh)
+
+Command F_GETPIPE_SZ.
+
+example: 
+
+ my $size = getfd_pipe_size($pipe) or die $!;
+
+=item B<getfd_signal>($fd|$fh)
+
+Command F_GETSIG.
+
+example: 
+
+ my $signal = getfd_signal(\*STDOUT) or die $!;
+
+=item B<setfd_control>($fd|$fh, $flags)
+
+Change the file descriptor flags, command F_SETFD.
+
+=item B<setfd_flags>($fd|$fh, $flags)
+
+Change the file status flags and access modes, command F_SETFL.
+
+=item B<setfd_lease>($fd|$fh, $flags)
+
+Command F_SETLEASE.
+
+example: 
+
+ setfd_lease(\*STDOUT, F_WRLCK) or die $!;
+
+=item B<setfd_lock>($fd|$fh, %options)
+
+Commands F_SETLKP and F_SETLKWP.
+Request a lock for (a section of) a file.
+
+ -Option --Default
+  len      <until end of file>
+  private  <false>
+  start    0
+  type     F_RDLCK
+  wait     <false>
+  whence   SEEK_SET
+
+=over 2
+
+=item len => BLOCK_LENGTH
+
+=item private => BOOLEAN
+
+Linux kernel >= 3.15 provides "open file description locks", also known
+as "file-private POSIX locks".  Use them when available.
+
+=item start => FILEPOS
+
+=item type => F_RDLCK|F_WRLCK|F_UNLCK
+
+=item wait => BOOLEAN
+
+=item whence => SEEK_SET|SEEK_CUR|SEEK_END
+
+=back
+
+example: 
+
+  setfd_lock \*IN, type => F_WRLCK, wait => 1
+      or die "cannot lock IN: $!\n";
+
+=item B<setfd_notify>($fd|$fh, $flags)
+
+Command F_NOTIFY.
+
+example: 
+
+  my $d = openfd('/etc', O_RDONLY|O_DIRECTORY) or die $!;
+  setfd_notify($d, DN_ACCESS|DN_CREATE|DN_MULTISHOT) or die $!;
+
+=item B<setfd_owner>($fd|$fh, $pid, %options)
+
+Commands F_GETOWN and F_GETOWN_EX.  The _EX version is attempted
+if provided.
+
+ -Option--Default
+  type    <looks at sign>
+
+=over 2
+
+=item type => F_OWNER_TID|F_OWNER_PID|F_OWNER_PGRP
+
+=back
+
+example: 
+
+  setfd_owner($fh, $pid) or die $!;
+  setfd_owner($fh, $pid, type => F_OWNER_TID) or die $!;
+  setfd_owner($fh, -9);  # $pid=9, type=F_OWNER_PGRP
+
+=item B<setfd_pipe_size>($fd|$fh, $size)
+
+Command F_SETPIPE_SZ.
+
+example: 
+
+ setfd_pipe_size($pipe, 16384) or die $!;
+
+=item B<setfd_signal>($fd|$fh, $signal)
+
+Command F_SETSIG.
+
+example: 
+
+ setfd_signal(\*STDOUT, SIGINT) or die $!;
+
+=back
+
+=head1 CONSTANTS
+
+The following constants are exported, shown here with the values
+discovered during installation of this module.
+
+=for comment
+#TABLE_FCNTL_START
+
+The constant names for this fcntl module are inserted here during
+installation.
+
+=for comment
+#TABLE_FCNTL_END
+
+=head1 SEE ALSO
+
+This module is part of POSIX-1003 distribution version 1.02,
+built on November 10, 2020. Website: F<http://perl.overmeer.net/CPAN>.  The code is based on L<POSIX>, which
+is released with Perl itself.  See also L<POSIX::Util> for
+additional functionality.
+
+=head1 COPYRIGHTS
+
+Copyrights 2011-2020 on the perl code and the related documentation
+ by [Mark Overmeer]. For other contributors see ChangeLog.
+
+This program is free software; you can redistribute it and/or modify it
+under the same terms as Perl itself.
+See F<http://dev.perl.org/licenses/>
+

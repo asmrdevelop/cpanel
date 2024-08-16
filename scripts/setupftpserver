@@ -1,0 +1,418 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/setupftpserver                  Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::setupftpserver;
+
+use 5.010;
+use strict;
+use warnings;
+use Getopt::Long 2.45 qw(
+  GetOptionsFromArray :config auto_version permute
+);
+use Readonly;
+
+use Cpanel::Config::LoadCpConf       ();
+use Cpanel::Config::CpConfGuard      ();
+use Cpanel::Chkservd::Manage         ();
+use Cpanel::RPM::Versions::Directory ();
+use Cpanel::Services::Enabled        ();
+use Cpanel::Services::Restart        ();
+use Cpanel::PID                      ();
+use Cpanel::Init                     ();
+use Cpanel::SafeRun::Simple          ();
+use Cpanel::Encoder::Tiny            ();
+use IO::Handle                       ();
+
+Readonly my @FTP_SERVERS => qw(pure-ftpd proftpd);
+
+delete @ENV{qw(cp_security_token HTTP_REFERER)};
+if ( not caller ) {
+    local $| = 1;
+    my $script = __PACKAGE__->new(@ARGV);
+    exit $script->run();
+}
+
+sub new {
+    my ( $class, @args ) = @_;
+
+    my %attribute;
+    $attribute{'<>'} = sub { $attribute{selected_ftpserver} = shift };
+
+    local @ARGV = @args;
+    GetOptions(
+        \%attribute,
+        qw(current force! html! enable-anonymous! <> help),
+    ) or usage(1);
+    usage(0) if $attribute{help};
+    usage(1)
+      if not $attribute{current}
+      and not $attribute{selected_ftpserver};
+
+    $attribute{cpconf} = Cpanel::Config::LoadCpConf::loadcpconf();
+    return bless \%attribute, $class;
+}
+
+sub get_current { return shift->{cpconf}{ftpserver} }
+
+sub run {
+    my $self = shift;
+
+    my $current_ftpserver =
+      Cpanel::Services::Enabled::is_enabled('ftpd')
+      ? $self->get_current
+      : 'disabled';
+
+    if ( $self->{current} ) {
+        say "Current FTP server type: $current_ftpserver";
+        return 0;
+    }
+
+    if ( !grep { $self->{selected_ftpserver} eq $_ } ( @FTP_SERVERS, 'disabled' ) ) {
+        say "Unknown FTP server specified.\nTry $0 --help";
+        return 1;
+    }
+
+    if ( !$self->{force} && grep { $self->{selected_ftpserver} eq $_ } @FTP_SERVERS ) {
+        my $dir = Cpanel::RPM::Versions::Directory->new(
+            { dont_set_legacy => 1 },
+        );
+        my $target_state = $dir->fetch(
+            {
+                section => 'target_settings',
+                key     => $self->{selected_ftpserver},
+            },
+        );
+
+        if ( $target_state && grep { $target_state eq $_ } qw(unmanaged uninstalled) ) {
+            my %target_state_msg = (
+                unmanaged   => 'flagged to be left alone by cPanel',
+                uninstalled => 'explicitly blocked from installation',
+            );
+            print <<"END_TARGET_STATE_MESSAGE";
+WARNING: You are attempting to switch to $self->{selected_ftpserver}, but it has explicitly been set to $target_state in /var/cpanel/rpm.versions.d/
+This means its packages have been $target_state_msg{$target_state}. If this was unintentional, you may be able to remove
+this flag by running the following command and then re-running $0
+
+    /usr/local/cpanel/scripts/update_local_rpm_versions --del target_settings.$self->{selected_ftpserver}
+
+If you meant to do this, please re-run $0 with --force
+
+END_TARGET_STATE_MESSAGE
+
+            return 2;
+        }
+    }
+
+    die "Conversion process must be performed as root" if $> != 0;
+
+    my $pid_obj = Cpanel::PID->new(
+        { pid_file => '/var/run/setupftpserver.pid' },
+    );
+    if ( $pid_obj->create_pid_file() <= 0 ) {
+        print <<END_ALREADY_RUNNING;
+$0 appears to be running already.
+Please wait for the conversion to finish before attempting another.
+END_ALREADY_RUNNING
+        return 1;
+    }
+
+    # Remove the noanonftp touch file if --enable-anonymous is passed on
+    # command line.
+    my $no_anon_ftp = '/var/cpanel/noanonftp';
+    if ( $self->{'enable-anonymous'} and -e $no_anon_ftp ) {
+        say 'Enabling Anonymous FTP';
+        unlink $no_anon_ftp;
+    }
+
+    elsif ( $current_ftpserver eq 'disabled'
+        and $self->{selected_ftpserver} ne 'disabled'
+        and not -e $no_anon_ftp ) {
+
+        # Default Anonymous FTP off if moving from disabled.
+        say 'Turning Anonymous FTP off';
+        open my $fh, '>', $no_anon_ftp
+          or die "Couldn't create $no_anon_ftp touch file: $!";
+        print {$fh} '';
+        close $fh;
+    }
+
+    {
+        my $cpconf_guard = Cpanel::Config::CpConfGuard->new();
+        $self->{cpconf}{ftpserver} = $cpconf_guard->{data}{ftpserver} = $self->{selected_ftpserver};
+        $cpconf_guard->save();
+    }
+
+    $self->{init} = Cpanel::Init->new();
+
+    #branch to uninstall/install functions
+    $self->disable_chksrvd_monitoring();
+
+    if ( grep { $self->{selected_ftpserver} eq $_ } @FTP_SERVERS ) {
+        $self->enable_ftpserver(
+            $self->{selected_ftpserver},
+            $current_ftpserver,
+        );
+        $self->enable_chksrvd_monitoring();
+    }
+    else {
+        $self->disable_ftpserver($current_ftpserver);
+        $self->install_cpanel_rpms();
+    }
+
+    $pid_obj->remove_pid_file();
+
+    if ( $self->{'enable-anonymous'} ) {
+        say 'Updated FTP Server';
+        Cpanel::SafeRun::Simple::saferun('/usr/local/cpanel/scripts/ftpupdate');
+    }
+
+    say "\nFTP server conversion complete";
+    return 0;
+}
+
+sub disable_ftpserver {
+    my ( $self, $running_ftpserver ) = @_;
+
+    $self->_touch_disable_file();
+    $self->_halt_and_disable_ftp_in_init($running_ftpserver);
+
+    require Cpanel::UIUtils::Update;
+    Cpanel::UIUtils::Update::trigger_ui_updates();
+
+    return;
+}
+
+sub _touch_disable_file {
+    my ($self) = @_;
+    system 'touch', '/etc/ftpddisable';
+    return;
+}
+
+sub _halt_and_disable_ftp_in_init {
+
+    my ( $self, $running_ftpserver ) = @_;
+
+    say "\nHalting $running_ftpserver";
+    my $output = $self->{init}->run_command( $running_ftpserver, 'stop' );
+    say "\nDisabling $running_ftpserver in init system";
+    $output = $self->{init}->run_command_for_one(
+        'disable',
+        $running_ftpserver,
+    );
+
+    return;
+}
+
+sub _unlink_disable_files {
+
+    my ($self) = @_;
+
+    foreach my $disable_file ( qw(ftpd ftpserver), @FTP_SERVERS ) {
+        unlink "/etc/${disable_file}disable"
+          if -e "/etc/${disable_file}disable";
+    }
+
+    return;
+}
+
+sub _unlink_auth_check_disabled {
+
+    my ($self) = @_;
+
+    # This will be recreated if appropriate when configuration is done
+    unlink '/var/cpanel/ftpd_service_auth_check_disabled'
+      if -e '/var/cpanel/ftpd_service_auth_check_disabled';
+
+    return;
+}
+
+sub _build_ftp_conf {
+    my ($self) = @_;
+    my @build_ftp_conf = $self->{html} ? ('--html') : ();
+    system '/usr/local/cpanel/bin/build_ftp_conf', @build_ftp_conf;
+    return;
+}
+
+sub _enable_ftp_server_in_init {
+    my ( $self, $new_ftpserver ) = @_;
+
+    say "\nEnabling $new_ftpserver in init system";
+    my $output = $self->{init}->run_command_for_one(
+        'enable',
+        $new_ftpserver,
+    );
+
+    return;
+}
+
+sub _restart_ftpd {
+
+    my ($self) = @_;
+
+    my @restart_args = $self->{html} ? ( 1, 0, \&Cpanel::Encoder::Tiny::safe_html_encode_str ) : ();
+    print join "\n", Cpanel::Services::Restart::restartservice(
+        'ftpd',
+        @restart_args,
+    );
+
+    return;
+}
+
+sub enable_ftpserver {
+    my ( $self, $new_ftpserver, $current_ftpserver ) = @_;
+
+    $self->_unlink_disable_files();
+
+    if ( $current_ftpserver ne 'disabled' ) {
+        $self->_halt_and_disable_ftp_in_init($current_ftpserver);
+    }
+
+    $self->_unlink_auth_check_disabled();
+
+    say "\nSwitching FTP server to $new_ftpserver";
+    $self->install_cpanel_rpms();
+
+    $self->_build_ftp_conf();
+
+    $self->_enable_ftp_server_in_init($new_ftpserver);
+
+    $self->_restart_ftpd();
+
+    require Cpanel::UIUtils::Update;
+    Cpanel::UIUtils::Update::trigger_ui_updates();
+
+    return;
+}
+
+sub install_cpanel_rpms {
+    my $self = shift;
+
+    say "\nUpdating FTP related packages";
+    system qw(/usr/local/cpanel/scripts/check_cpanel_pkgs --fix --long-list),
+      ( $ENV{'CPANEL_BASE_INSTALL'} ? '--no-broken' : () ),
+      '--targets' => join ',', @FTP_SERVERS;
+
+    return;
+}
+
+sub disable_chksrvd_monitoring {
+    my $self = shift;
+
+    my %monitored_services = Cpanel::Chkservd::Manage::getmonitored();
+    if ( not $monitored_services{'ftpd'} ) {
+        say "\nChksrvd monitoring is disabled";
+        return;
+    }
+
+    say "\nDisabling Chksrvd monitoring";
+    Cpanel::Chkservd::Manage::disable('ftpd');
+    my @args = $self->{html} ? ('--html') : ();
+    system '/usr/local/cpanel/scripts/restartsrv_chkservd', @args;
+
+    return;
+}
+
+sub enable_chksrvd_monitoring {
+    my $self = shift;
+
+    my %monitored_services = Cpanel::Chkservd::Manage::getmonitored();
+    if ( $monitored_services{'ftpd'} ) {
+        say "\nChksrvd monitoring is enabled";
+        return;
+    }
+
+    say "\nEnabling chksrvd monitoring";
+    Cpanel::Chkservd::Manage::enable('ftpd');
+    my @args = $self->{html} ? ('--html') : ();
+    system '/usr/local/cpanel/scripts/restartsrv_chkservd', @args;
+
+    return;
+}
+
+# We don't use pod2usage because it insists upon downcasing "FTP".
+sub usage {
+    my ($retval) = @_;
+    my $fh = $retval ? \*STDERR : \*STDOUT;
+
+    $fh->print(<<EOM);
+Usage: setupftpserver [options] <ftpserver>
+
+Options:
+  --force                    Run setup despite warnings that this may fail.
+  --current                  Display the currently configured FTP server
+  --enable-anonymous         Anonymous now defaults to off when moving from
+                             disabled. This option forces it on
+
+FTP Servers:
+  pure-ftpd  Recommended FTP server on cPanel systems
+  proftpd    Alternate FTP server
+  disabled   Disable local FTP functionality
+
+EOM
+    exit $retval;
+}
+
+1;
+
+__END__
+
+=head1 NAME
+
+setupftpserver - Set up an FTP server for use with cPanel
+
+=head1 SYNOPSIS
+
+  setupftpserver [options] <ftpserver>
+
+=head2 FTP Servers:
+
+=over
+
+=item I<pure-ftpd>
+
+Recommended FTP server on cPanel systems
+
+=item I<proftpd>
+
+Alternate FTP server
+
+=item I<disabled>
+
+Disable local FTP functionality
+
+=back
+
+=head1 OPTIONS
+
+Some options below may be preceded with I<no-> in order to negate them.
+
+=over
+
+=item B<--help>
+
+Print a brief help message and exits.
+
+=item B<--[no-]force>
+
+Run setup despite warnings that this may fail.
+
+=item B<--current>
+
+Display the currently configured FTP server.
+
+=item B<--[no-]enable-anonymous>
+
+Anonymous now defaults to off when moving from disabled.
+This option forces it on.
+
+=item B<--[no-]html>
+
+Output HTML when reconfiguring and restarting FTP services.
+
+=back
+
+=cut

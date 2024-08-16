@@ -1,0 +1,90 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - bin/fix_userdata_perms                  Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+use Cpanel::Locale           ();
+use Cpanel::PwCache::Helpers ();
+use Cpanel::PwCache::Build   ();
+use Cpanel::SafeDir::MK      ();
+
+my $locale = Cpanel::Locale->get_handle();
+
+Cpanel::PwCache::Helpers::no_uid_cache();    #uid cache only needed if we are going to make lots of getpwuid calls
+Cpanel::PwCache::Build::init_passwdless_pwcache();
+my $pwcache_ref = Cpanel::PwCache::Build::fetch_pwcache();
+
+my %GIDS = map { $_->[0] => $_->[3] } @{$pwcache_ref};
+
+# The 'nobody' directory, if there is one, should not be readable by user 'nobody',
+# since that would allow any Apache process to read it.
+$GIDS{'nobody'} = $GIDS{'root'};
+
+my $mode         = 0711;
+my $userdata_dir = '/var/cpanel/userdata';
+
+# Create the userdata directory if it does not already exist
+if ( !-d $userdata_dir ) {
+
+    # If there is a non-directory file at that location, remove it
+    if ( -e $userdata_dir ) {
+        if ( unlink $userdata_dir ) {
+            print "Removing non-directory file $userdata_dir\n";
+        }
+        else {
+            print "Failed to remove non-directory file $userdata_dir\n";
+            exit 1;
+        }
+    }
+    if ( !Cpanel::SafeDir::MK::safemkdir($userdata_dir) ) {
+        print "Failed to create $userdata_dir\n";
+        exit 1;
+    }
+}
+
+if ( ( ( stat($userdata_dir) )[2] & 07777 ) != $mode ) {
+    print "Setting mode on $userdata_dir\n";
+    if ( !chmod $mode, $userdata_dir ) {
+        print "Failed to set mode on $userdata_dir\n";
+        exit 1;
+    }
+}
+if ( opendir my $dh, $userdata_dir ) {
+    $mode = 0750;
+    my $userdir;
+    foreach my $user ( grep !/^\./, readdir $dh ) {
+        $userdir = "$userdata_dir/$user";
+        if ( ( stat($userdir) )[5] != $GIDS{$user} ) {
+            print "Setting group on $userdir ($GIDS{$user})\n";
+            if ( !chown 0, $GIDS{$user}, $userdir ) {
+                print "Failed to set owner on $userdir\n";
+            }
+        }
+        if ( ( ( stat(_) )[2] & 07777 ) != $mode ) {
+            print "Setting mode on $userdir\n";
+            if ( !chmod $mode, $userdir ) {
+                print "Failed to set mode on $userdir\n";
+            }
+        }
+        if ( opendir( my $userd_files, $userdir ) ) {
+            my $modified = scalar map { ( ( stat( $userdir . '/' . $_ ) )[2] & 07777 ) != 0644 && chmod( 0644, $userdir . '/' . $_ ) ? (1) : () } grep { !/^\./ } readdir($userd_files);
+            print "\t" . $locale->maketext(
+                '[quant,_1,file was,files were,No files were] updated in “[_2]”.',
+                $modified, $userdir
+              )
+              . "\n"
+              if $modified;
+            closedir($userd_files);
+
+        }
+    }
+    closedir $dh;
+}
+else {
+    print "Unable to open $userdata_dir for reading.\n";
+}
+
+__END__

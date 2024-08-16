@@ -1,0 +1,243 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/fix-web-vhost-configuration     Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::fix_web_vhost_configuration;
+
+use strict;
+use warnings;
+
+=encoding utf-8
+
+=head1 NAME
+
+scripts/fix-web-vhost-configuration
+
+=head1 USAGE
+
+    fix-web-vhost-configuration ( --help | [--dry-run] ( --user=$name | --all-users ) )
+
+=head1 DESCRIPTION
+
+This script iterates through each user’s web virtual host configuration files
+and removes excess alias names. Certain historical errors in cPanel & WHM make
+it possible for there to be such discrepancies between expected and actual
+configuration.
+
+This does the following:
+
+=over
+
+=item * Identifies any unrecognized alias domains.
+
+=item * If C<--dry-run> is not passed, deletes the following unrecognized
+alias domains:
+
+=over
+
+=item * Active service subdomains (e.g., C<cpanel.example.com>) or
+C<www.> subdomains thereof (e.g., C<www.webmail.example.com>).
+
+=item * C<www.> subdomains (e.g., C<www.mail.example.com>) of any expected
+alias.
+
+=back
+
+Note that this will ignore other unrecognized alias domains.
+
+=item * Identifies and, if C<--dry-run> is not passed, adds missing alias
+domains.
+
+=back
+
+=cut
+
+#----------------------------------------------------------------------
+
+use parent qw( Cpanel::HelpfulScript );
+
+use Try::Tiny;
+
+use Cpanel::iContact::Icons           ();
+use Cpanel::Config::userdata::Aliases ();
+use Cpanel::Config::userdata::Guard   ();
+use Cpanel::Config::userdata::Load    ();
+use Cpanel::Config::WebVhosts         ();
+use Cpanel::Time::ISO                 ();
+use Cpanel::Set                       ();
+
+use constant _OPTIONS => ( 'dry-run', 'user=s', 'all-users' );
+
+__PACKAGE__->new(@ARGV)->run() if !caller;
+
+my $RUN_ID;
+
+sub run {
+    my ($self) = @_;
+
+    $RUN_ID = ( Cpanel::Time::ISO::unix2iso() =~ tr< ><_>r ) . substr( rand, 1 );
+
+    my @cpusers = $self->_determine_cpusers();
+
+    for my $username (@cpusers) {
+        $self->say("\n----- Checking “$username” …");
+
+        _try_warn(
+            sub {
+                my $vh_aliases = Cpanel::Config::userdata::Aliases::get_for_user($username);
+
+                for my $vhname ( keys %$vh_aliases ) {
+                    $self->say("--- Virtual host: “$vhname”");
+
+                    my $expected_ar = $vh_aliases->{$vhname};
+
+                    _try_warn(
+                        sub {
+                            $self->say('- Non-SSL configuration …');
+
+                            my $guard = Cpanel::Config::userdata::Guard->new(
+                                $username,
+                                $vhname,
+                            );
+
+                            $self->_fix_ud_guard_for_expected( $username, $vhname, $guard, $expected_ar );
+                        }
+                    );
+
+                    if ( Cpanel::Config::userdata::Load::user_has_ssl_domain( $username, $vhname ) ) {
+                        _try_warn(
+                            sub {
+                                $self->say('- SSL configuration …');
+
+                                my $guard = Cpanel::Config::userdata::Guard->new_ssl(
+                                    $username,
+                                    $vhname,
+                                );
+
+                                $self->_fix_ud_guard_for_expected( $username, $vhname, $guard, $expected_ar );
+                            }
+                        );
+                    }
+                }
+            }
+        );
+    }
+
+    $self->say("Done!");
+
+    return;
+}
+
+BEGIN {
+    *_icon = \*Cpanel::iContact::Icons::get_icon;
+}
+
+sub _back_up_ud {
+    my ($path) = @_;
+
+    require File::Copy;
+
+    File::Copy::copy( $path => "$path.$RUN_ID" );
+
+    return;
+}
+
+sub _try_warn {
+    my ($todo_cr) = @_;
+
+    try { $todo_cr->() }
+    catch {
+        local $@ = _icon('error') . " $_";
+        warn;
+    };
+
+    return;
+}
+
+sub _fix_ud_guard_for_expected {
+    my ( $self, $username, $vhname, $ud_guard, $expected_ar ) = @_;
+
+    my @file_aliases = split m<\s+>, $ud_guard->data()->{'serveralias'};
+
+    my @excess = Cpanel::Set::difference(
+        \@file_aliases,
+        $expected_ar,
+    );
+
+    my @to_delete;
+
+    if (@excess) {
+        $self->say( _icon('warn') . " Unrecognized: @excess" );
+
+        my $vhsconf = Cpanel::Config::WebVhosts->load($username);
+
+        my @svcs = $vhsconf->ssl_proxy_subdomains_for_vhost($vhname);
+
+        # Remove www.mail, www.www, www.cpanel, etc.
+        my @extra_www = map { "www.$_" } @$expected_ar, @svcs;
+
+        @to_delete = Cpanel::Set::intersection( \@excess, [ @svcs, @extra_www ] );
+
+        if (@to_delete) {
+            $self->say( _icon('warn') . " Pending deletion: @to_delete" );
+        }
+    }
+
+    my @missing = Cpanel::Set::difference(
+        $expected_ar,
+        \@file_aliases,
+    );
+
+    if (@missing) {
+        $self->say( _icon('warn') . " Expected but not found: @missing" );
+    }
+
+    if ( @missing || @to_delete ) {
+        if ( $self->getopt('dry-run') ) {
+            $self->say('Forgoing repair because of “--dry-run” parameter.');
+            $ud_guard->abort();
+        }
+        else {
+            _back_up_ud( $ud_guard->path() );
+
+            $ud_guard->data()->{'serveralias'} = join( ' ', Cpanel::Set::difference( [ @excess, @$expected_ar ], \@to_delete ) );
+            $ud_guard->save() or die "Save failed!";
+
+            $self->say( _icon('success') . ' Fixed!' );
+        }
+    }
+    else {
+        $ud_guard->abort();
+    }
+
+    return;
+}
+
+sub _determine_cpusers {
+    my ($self) = @_;
+
+    my @cpusers;
+
+    if ( $self->getopt('all-users') ) {
+        if ( $self->getopt('user') ) {
+            die $self->help('Give “--all-users” or “--user”, not both.');
+        }
+
+        require Cpanel::Config::Users;
+        @cpusers = Cpanel::Config::Users::getcpusers();
+    }
+    else {
+        my $cpuser = $self->getopt('user') or do {
+            die $self->help('Give “--all-users” or “--user”.');
+        };
+
+        push @cpusers, $cpuser;
+    }
+
+    return @cpusers;
+}
+
+1;

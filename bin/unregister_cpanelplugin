@@ -1,0 +1,152 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - bin/unregister_cpanelplugin             Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+#
+use strict;
+
+$| = 1;
+
+use IPC::Open3                   ();
+use MIME::Base64                 ();
+use Cpanel                       ();
+use Cpanel::FileUtils::TouchFile ();
+use Cpanel::FileUtils::Path      ();
+use Cpanel::SafeDir::MK          ();
+use Cpanel::ModReg               ();
+
+my $mfile = $ARGV[0];
+if ( !-e $mfile ) {
+    die "Usage $0 <cpanelplugin config file>";
+}
+
+Cpanel::SafeDir::MK::safemkdir('/usr/local/cpanel/whostmgr/addonfeatures');
+
+my $rMODCFG = Cpanel::ModReg::loadcfg($mfile);
+
+die "Invalid cpanelplugin file" if !defined $rMODCFG->{'name'};
+
+my $image = MIME::Base64::decode_base64( $rMODCFG->{'image'} );
+
+die "Invalid image (no data)" if $image eq '';
+
+my $file_cmd = Cpanel::FileUtils::Path::findinpath('file');
+if ( !$file_cmd || !-x $file_cmd ) {
+    die "Aborting: 'file' command not found.";
+}
+
+my $wrimg;
+my $ritype;
+my $imgtype = '';
+my $pid     = IPC::Open3::open3( $wrimg, $ritype, ">&STDERR", "file", "-" );
+if ( !defined $pid ) {
+    die "Aborting: failed to fork for image mime check.";
+}
+print {$wrimg} $image;
+close($wrimg);
+$imgtype = readline($ritype);
+close($ritype);
+
+waitpid( $pid, 0 );
+
+die "Invalid image ($imgtype) in cpaddonsfile" if $imgtype !~ /(png|jpe?g|gif)/i;
+
+my $name = $rMODCFG->{'name'};
+$name =~ s/\///g;
+
+my $regdir  = '/var/cpanel/registered_cpanelplugins';
+my $regfile = $regdir . '/' . $name;
+if ( -e $regfile ) { unlink($regfile); }
+
+my $imgext;
+my $finalimg;
+my $rimg;
+if ( $imgtype =~ /png/i ) {
+    $imgext = 'png';
+}
+elsif ( $imgtype =~ /jpe?g/i ) {
+    $imgext = 'jpg';
+}
+elsif ( $imgtype =~ /gif/ ) {
+    $imgext = 'gif';
+}
+
+print "UnRegistering cpanelplugin: ${name}\n";
+print "Searching for themes that support the cpanelplugin system....";
+my %THEMECFGS;
+opendir( my $themedirs, "/usr/local/cpanel/base/frontend" );
+while ( my $theme = readdir($themedirs) ) {
+    next if ( $theme =~ /^\./ );
+    if ( -e "/usr/local/cpanel/base/frontend/" . $theme . '/cpanelplugins.conf' ) {
+        print "$theme\n";
+        $THEMECFGS{$theme} = Cpanel::ModReg::loadcfg( "/usr/local/cpanel/base/frontend/" . $theme . '/cpanelplugins.conf' );
+    }
+}
+print "Done\n";
+foreach my $theme ( keys %THEMECFGS ) {
+    print "Uninstalling image in theme $theme\n";
+    my $installmethod = $THEMECFGS{$theme}->{'method'};
+    my $brandingdir   = "/usr/local/cpanel/base/frontend/" . $theme . '/branding/';
+    my $imgfile       = $brandingdir . $name . '.' . $imgext;
+    print "Removed $imgfile\n";
+    unlink($imgfile);
+
+    if ( $installmethod eq 'dynamicui' || $installmethod eq 'dyanmicui' ) {    #legacy misspelling
+        print "Removing dynamic ui config for $theme....";
+        my @OCC;
+        my $dynamicuidir = "/usr/local/cpanel/base/frontend/" . $theme . '/dynamicui';
+        unlink( $dynamicuidir . '/' . "dynamicui_" . $name . '.conf' );
+        print "Done\n";
+
+        Cpanel::ModReg::rebuildsprites( $theme, $THEMECFGS{$theme}->{'sprites'} );
+        print "Done\n";
+    }
+    elsif ( $installmethod eq 'htmlfilegen' ) {
+        print "Removing html for $theme...";
+        my $dir = $THEMECFGS{$theme}->{'dir'};
+        $dir =~ s/\.//g;
+        my $templatedir = "/usr/local/cpanel/base/frontend/" . $theme . '/' . $dir;
+        unlink( $templatedir . '/' . "cpanelplugin_" . $name . '.html' );
+        print "Done\n";
+    }
+}
+
+print "Removing $name in feature manager ...";
+unlink( '/usr/local/cpanel/whostmgr/addonfeatures' . '/' . $name );
+print "Done\n";
+
+if ( -x "$Cpanel::root/scripts/verify_api_spec_files" ) {
+    print "Rebuilding API specification indexes...";
+    system("$Cpanel::root/scripts/verify_api_spec_files");
+    print "Done\n";
+}
+
+print "UnRegister Complete\n";
+
+if ( -e '/usr/local/cpanel/cpanel' ) {
+    Cpanel::FileUtils::TouchFile::touchfile('/usr/local/cpanel/cpanel');    #clear branding cache
+}
+
+sub loadcfg {
+    my $mfile = shift;
+    my %CFG;
+    my $cfgval;
+    open( my $cpf, '<', $mfile );
+    while ( readline($cpf) ) {
+        next if (/^[\;\#]/);
+        next if (/^\s*$/);
+        chomp();
+        if (/:/) {
+            my $cfgdata;
+            ( $cfgval, $cfgdata ) = split( /:/, $_, 2 );
+            $CFG{$cfgval} = $cfgdata;
+        }
+        else {
+            $CFG{$cfgval} .= "\n" . $_;
+        }
+    }
+    return \%CFG;
+}

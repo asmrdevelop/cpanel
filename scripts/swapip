@@ -1,0 +1,135 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/swapip                          Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::swapip;
+
+#
+
+use strict;
+use warnings;
+
+use Cpanel::BinCheck::Lite     ();
+use Cpanel::LoadModule         ();
+use Cpanel::JSON               ();
+use Cpanel::NAT                ();
+use Whostmgr::Transfers::State ();
+use Whostmgr::DNS::SwapIP      ();
+
+Cpanel::BinCheck::Lite::check_argv();
+
+## if invoked as a script, there is nothing in the call stack
+my $invoked_as_script = !caller();
+__PACKAGE__->script(@ARGV) if ($invoked_as_script);
+
+sub script {
+    my ( $package, @args ) = @_;
+
+    my ( $sourceip, $targetip, @DOMAINS, $zoneref, $showmsgs, $skipsync, $skipreload, $ftpip, $replaceip );
+
+    my $input_ref;
+
+    if ( @args && $args[0] eq '--json' ) {
+        $input_ref = Cpanel::JSON::LoadFileNoSetUTF8( \*STDIN );
+    }
+    elsif ( @args && $args[0] eq '--storable' ) {
+        Cpanel::LoadModule::load_perl_module('Cpanel::SafeStorable');
+        $input_ref = Cpanel::SafeStorable::fd_retrieve( \*STDIN );
+    }
+    elsif ( ref $args[0] ) {
+        $input_ref = $args[0];
+    }
+    else {
+        $sourceip = shift(@args);
+        $targetip = shift(@args);
+        $ftpip    = shift(@args);
+        @DOMAINS  = @args;
+    }
+
+    if ($input_ref) {
+        $sourceip = $input_ref->{'sourceip'};
+        $targetip = ( $input_ref->{'destip'} || $input_ref->{'targetip'} );
+
+        @DOMAINS    = @{ $input_ref->{'domainref'} };
+        $zoneref    = $input_ref->{'zoneref'};
+        $showmsgs   = $input_ref->{'showmsgs'};
+        $skipreload = $input_ref->{'skipreload'};
+        $skipsync   = $input_ref->{'skipsync'};
+        $replaceip  = $input_ref->{'replaceip'};
+
+    }
+
+    if ( ref $sourceip eq 'ARRAY' ) {
+        foreach my $ip (@$sourceip) {
+            $ip = Cpanel::NAT::get_public_ip($ip);
+        }
+    }
+    else {
+        $sourceip = Cpanel::NAT::get_public_ip($sourceip);
+    }
+
+    $targetip = Cpanel::NAT::get_public_ip($targetip);
+    $ftpip    = Cpanel::NAT::get_public_ip($ftpip);
+
+    if ( !$zoneref || !ref $zoneref ) {
+        $zoneref = {};
+    }
+
+    if ( !@DOMAINS ) {
+        print "At least one domain is required.\n";
+        die_usage();
+    }
+
+    if ( !$sourceip ) {
+        print "Error: sourceip missing\n";
+        die_usage();
+    }
+
+    if ( !$targetip ) {
+        print "Error: targetip missing\n";
+        die_usage();
+    }
+
+    my $changes = _changezones( \@DOMAINS, $sourceip, $targetip, $ftpip, $zoneref, $showmsgs, $skipreload, $skipsync, $replaceip );
+
+    print "The system updated “$changes” " . ( $changes == 1 ? 'entry' : 'entries' ) . ".\n";
+
+    return 0;
+}
+
+sub _changezones {
+    my $domainref = shift;
+    my $sourceip  = shift;
+    ## TODO: rename? why is this called $destip here but $targetip above?
+    my $destip     = shift;
+    my $ftpip      = shift;
+    my $zoneref    = shift;
+    my $showmsgs   = shift || 0;
+    my $skipreload = shift || 0;
+    my $skipsync   = shift || 0;
+    my $replaceip  = shift || 'all';
+
+    my $replaced_ar = Whostmgr::DNS::SwapIP::swap_ip_in_zones(
+        domainref  => $domainref,
+        sourceip   => $sourceip,
+        destip     => $destip,
+        ftpip      => $ftpip,
+        zoneref    => $zoneref,
+        showmsgs   => $showmsgs,
+        skipreload => $skipreload,
+        skipsync   => $skipsync,
+        replaceip  => $replaceip,
+        dnslocal   => Whostmgr::Transfers::State::is_transfer() ? $Cpanel::DnsUtils::AskDnsAdmin::LOCAL_ONLY : $Cpanel::DnsUtils::AskDnsAdmin::REMOTE_AND_LOCAL,
+    );
+
+    return scalar @$replaced_ar;
+}
+
+sub die_usage {
+    die "Usage: $0 sourceip destip ftpip domains...\n";
+}
+
+1;

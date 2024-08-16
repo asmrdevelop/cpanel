@@ -1,0 +1,119 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/spamassassindisable             Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+use warnings;
+
+use Cpanel::AccessIds::ReducedPrivileges ();
+use Cpanel::Config::CpConfGuard          ();
+use Cpanel::FileUtils::TouchFile         ();
+use Cpanel::LoginDefs                    ();
+use Cpanel::PwCache::Build               ();
+use Cpanel::Usage                        ();
+
+local $| = 1;
+
+my $quiet = 0;
+my $force = 0;
+my $undo  = 0;
+my %opts  = ( 'q' => \$quiet, 'quiet' => \$quiet, 'f' => \$force, 'force' => \$force, 'undo' => \$undo );
+
+Cpanel::Usage::wrap_options( \@ARGV, \&usage, \%opts );
+
+unless ($quiet) {
+    print "??????????????????????????????????????????????????????????????????\n";
+    print "This will disable SpamAssassin filtering for all accounts\n";
+    print "on the server. If you do not wish to do this, then hit Ctrl-C now.\n";
+    print "??????????????????????????????????????????????????????????????????\n\n";
+}
+unless ($force) {
+    print "Sleeping for 5 seconds ... (Ctrl-C to abort)\n";
+    sleep 5;
+}
+
+Cpanel::PwCache::Build::init_passwdless_pwcache();
+my $pwcache_ref = Cpanel::PwCache::Build::fetch_pwcache();
+my $uid_min     = Cpanel::LoginDefs::get_uid_min();
+my ( $useruid, $usergid, $homedir );
+foreach my $pwref ( grep { $_->[2] >= $uid_min } @{$pwcache_ref} ) {
+    ( $useruid, $usergid, $homedir ) = ( ( @{$pwref} )[ 2, 3, 7 ] );
+
+    # Drop privileges to read/write the directory as the user
+    my $reduced_privs_guard = Cpanel::AccessIds::ReducedPrivileges->new(
+        $useruid, $usergid,
+    );
+
+    if ($undo) {
+
+        my $old_touchfile = $homedir . '/.spamassassinboxdisabled';
+        my $new_touchfile = $homedir . '/.spamassassinboxenable';
+
+        replace_touchfile( $old_touchfile, $new_touchfile, $quiet );
+
+        $old_touchfile = $homedir . '/.spamassassindisabled';
+        $new_touchfile = $homedir . '/.spamassassinenable';
+
+        replace_touchfile( $old_touchfile, $new_touchfile, $quiet );
+    }
+    else {
+
+        my $old_touchfile = $homedir . '/.spamassassinboxenable';
+        my $new_touchfile = $homedir . '/.spamassassinboxdisabled';
+
+        replace_touchfile( $old_touchfile, $new_touchfile, $quiet );
+
+        $old_touchfile = $homedir . '/.spamassassinenable';
+        $new_touchfile = $homedir . '/.spamassassindisabled';
+
+        replace_touchfile( $old_touchfile, $new_touchfile, $quiet );
+    }
+}
+
+exit if $undo;
+
+unless ($quiet) {
+    print "Updating /var/cpanel/cpanel.config\n";
+}
+
+my $cpconf_guard = Cpanel::Config::CpConfGuard->new();
+$cpconf_guard->{'data'}->{'skipspamassassin'} = 1;
+$cpconf_guard->{'data'}->{'skipspambox'}      = 1;
+$cpconf_guard->save();
+
+sub replace_touchfile {
+    my ( $old_touchfile, $new_touchfile, $quiet ) = @_;
+
+    if ( -e $old_touchfile ) {
+        unless ($quiet) {
+            print "Creating $new_touchfile\n";
+            print "Unlinking $old_touchfile\n";
+        }
+        if ( !-e $new_touchfile ) {
+            Cpanel::FileUtils::TouchFile::touchfile($new_touchfile);
+        }
+        unlink($old_touchfile);
+    }
+
+    return;
+}
+
+sub usage {
+    print <<EOM;
+spamassassindisable - disable spamassassin for all accounts
+
+    Options:
+        --force     bypass 5 second sleep
+        --quiet     do not provide any output on STDOUT
+        --help      display this message and exit
+        --undo      re-enable spamassassin for all the users for which this has been disabled by this script
+
+The force and quiet are useful when running this
+script as a part of an automated process (e.g. cron).
+
+EOM
+    exit;
+}

@@ -1,0 +1,219 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/reset_mail_quotas_to_sane_values
+#                                                  Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+use warnings;
+
+use Cpanel::LoadFile                ();
+use Cpanel::PwCache::Helpers        ();
+use Cpanel::PwCache::Build          ();
+use Cpanel::Usage                   ();
+use Cpanel::PwCache                 ();
+use Cpanel::AccessIds::SetUids      ();
+use Cpanel::Config::LoadCpUserFile  ();
+use Cpanel::Config::HasCpUserFile   ();
+use Cpanel::Config::Users           ();
+use Cpanel::Config::LoadUserDomains ();
+use Cpanel::SafeFile                ();
+use Cpanel::Email::Maildir          ();
+
+my $version = '1.1';
+my $verbose = 0;
+my $confirm = 0;
+my $force   = 0;
+
+# Max quota is actually 1 byte less than get_max_email_quota
+# but we'll silently fix the 1 byte issue below
+my $max_quota = Cpanel::Email::Maildir::get_max_email_quota();
+
+# Argument processing
+my %opts = (
+    'verbose' => \$verbose,
+    'confirm' => \$confirm,
+    'force'   => \$force,
+);
+
+Cpanel::Usage::wrap_options( \@ARGV, \&usage, \%opts );
+
+if ( $> == 0 && !$confirm ) {
+    print "Must specify \"--confirm\" to begin. Please read and understand the usage.\n\n";
+    usage(1);
+}
+umask(0077);    # Keep maildirsize file perms consistent with Exim
+
+my $pwcache_ref;
+my %CPUSERS;
+my $saveversion     = 0;
+my $suid            = 0;
+my $userdomains_ref = {};
+
+if ( $> == 0 ) {
+    $suid = 1;
+    Cpanel::PwCache::Helpers::no_uid_cache();    #uid cache only needed if we are going to make lots of getpwuid calls
+
+    Cpanel::PwCache::Build::init_passwdless_pwcache();
+    $pwcache_ref = Cpanel::PwCache::Build::fetch_pwcache();
+    my $users_arr_ref = Cpanel::Config::Users::getcpusers();
+    $userdomains_ref = Cpanel::Config::LoadUserDomains::loaduserdomains( {}, 0, 1 );
+
+    %CPUSERS = map { $_ => undef } @{$users_arr_ref};
+    if ( @ARGV && $ARGV[$#ARGV] !~ m/^-/ ) {
+        if ( exists $CPUSERS{ $ARGV[$#ARGV] } ) {
+            %CPUSERS = ( $ARGV[$#ARGV] => 1 );    #only do one user
+        }
+        else {
+            %CPUSERS = ();
+        }
+    }
+    my $last_version = Cpanel::LoadFile::loadfile('/var/cpanel/version/reset_mail_quotas_to_sane_values') || '';
+    if ( $last_version eq $version && !$force ) {
+        print "You must use --force to run this utility once it has already been run.\n";
+        exit 1;
+    }
+    $saveversion = 1;
+}
+else {
+    $confirm = 1;
+    my @PW = Cpanel::PwCache::getpwuid($>);
+    $pwcache_ref = [ \@PW ];
+    %CPUSERS     = ( $PW[0] => 1 );
+
+    my @DOMAINS;
+    if ( Cpanel::Config::HasCpUserFile::has_cpuser_file( $PW[0] ) ) {
+        my $user_info = Cpanel::Config::LoadCpUserFile::loadcpuserfile( $PW[0] );    #we want to load the default so we can use the storable cache
+        @DOMAINS = ( $user_info->{'DOMAIN'} );
+        if ( ref $user_info->{'DOMAINS'} ) {
+            push @DOMAINS, @{ $user_info->{'DOMAINS'} };
+        }
+    }
+    $userdomains_ref->{ $PW[0] } = \@DOMAINS;
+}
+
+my ( $user, $useruid, $usergid, $homedir );
+foreach my $pwref (@$pwcache_ref) {
+    ( $user, $useruid, $usergid, $homedir ) = (@$pwref)[ 0, 2, 3, 7 ];
+    next if ( !exists $CPUSERS{$user} );
+    if ( !$homedir || !-d $homedir ) {
+        print "Skipping $user\n (no home directory)\n";
+        next;
+    }
+
+    #All the domains
+    my @DOMAINS = ref $userdomains_ref->{$user} ? @{ $userdomains_ref->{$user} } : ();
+    my @needs_cleanup;
+    foreach my $domain (@DOMAINS) {
+        if ( -f $homedir . '/etc/' . $domain . '/quota' && -s _ ) {
+            push @needs_cleanup, $domain;
+        }
+    }
+
+    if ( !@needs_cleanup ) {
+        if ($verbose) {
+            print "Skipping $user as no domains have a quota file.\n";
+        }
+        next;
+    }
+
+    #only fork+setuid if we have something do to
+    if ( my $pid = fork() ) {
+        waitpid( $pid, 0 );
+    }
+    else {
+        if ($suid) {
+            Cpanel::PwCache::Build::pwclearcache();
+            Cpanel::AccessIds::SetUids::setuids( $useruid, $usergid ) || die "Could not setuid to $user";
+        }
+
+        foreach my $domain (@needs_cleanup) {
+            next if ( !$domain );
+            normalize_domain_quota( $homedir, $domain, 1 );
+        }
+        exit;
+    }
+}
+
+if ($saveversion) {
+    if ( open( my $v_fh, '>', '/var/cpanel/version/reset_mail_quotas_to_sane_values' ) ) {
+        print {$v_fh} $version;
+        close($v_fh);
+    }
+}
+
+sub normalize_domain_quota {
+    my ( $homedir, $domain, $skip_check_existance ) = @_;
+    my $dir = $homedir . '/etc/' . $domain;
+
+    if ( !$skip_check_existance ) {
+        return 0 if !-f $dir . '/quota' || -z _;
+    }
+    my %quota_by_user;
+    my $altered  = 0;
+    my $safelock = Cpanel::SafeFile::safeopen( \*QUOTAFH, '+<', $dir . '/quota' );
+    if ($safelock) {
+        while ( my $line = readline( \*QUOTAFH ) ) {
+            chomp $line;
+            my ( $user, $quota ) = split( /:/, $line, 2 );
+
+            next if !$user || !$quota;
+
+            # Quota values above 2GB will be converted to unlimited
+            if ( ( int $quota ) > $max_quota ) {
+                print "Quota for user $user\@$domain exceedes maximum of $max_quota.  Quota removed.\n" if $verbose;
+                $altered = 1;
+                next;
+            }
+
+            # Remove 1 byte for quota values equal to 2GB
+            if ( ( int $quota ) == $max_quota ) {
+                $quota   = $max_quota - 1;
+                $altered = 1;
+            }
+            $quota_by_user{$user} = $quota;
+        }
+        seek( QUOTAFH, 0, 0 );
+
+        if ($altered) {
+            print "Updated quota file for $domain.\n" if $verbose;
+            if ( scalar keys %quota_by_user ) {
+                print QUOTAFH join( "\n", map { $_ . ':' . $quota_by_user{$_} } keys %quota_by_user ) . "\n";
+            }
+            truncate( QUOTAFH, tell(QUOTAFH) );
+        }
+        Cpanel::SafeFile::safeclose( \*QUOTAFH, $safelock );
+        return 1;
+    }
+    return 0;
+}
+
+sub usage {
+    my ($exit) = @_;
+    $exit = $exit ? 1 : 0;
+
+    print <<'EOM';
+Usage: reset_mail_quotas_to_sane_values <modifier> <user>
+
+This utility regenerates quota files and removes any quotas
+above the maximum allowed size of : $max_size
+
+Modifier Flags:
+    --force - This required flag indicates that the utility
+        should be run even if it has already been run in the past
+
+    --confirm - This required flag indicates that the utility
+        should proceed to regenerate the quota files
+        based upon the provided options. It is required for
+        normal operation.
+
+    --verbose - This optional flag turns on verbose mode for
+        enhanced activity reporting to STDOUT.
+
+    --help - display this message and exit.
+
+EOM
+    exit $exit;
+}

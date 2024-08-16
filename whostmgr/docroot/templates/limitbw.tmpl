@@ -1,0 +1,97 @@
+[% WRAPPER 'master_templates/master.tmpl' theme="yui";
+    breadcrumburl = '/scripts2/limitbwlist',
+    app_key = 'limit_bandwidth_usage';
+
+SET unlimited = (bwlimit=='unlimited') ? 1 : 0 ;
+IF unlimited == 1;
+    SET bwlimit = "";
+END;
+
+-%]
+<body>
+<style type="text/css">
+TABLE { width: 750px; }
+TD { padding: 3px; }
+</style>
+<p><em>[% locale.maketext('Please note that these limits only apply to http bandwidth usage and not the total bandwidth usage for an account.') %]</em></p>
+<table class="tablecomplex2">
+    <form method="POST" action="[% cp_security_token %]/scripts2/dolimitbw">
+    <tr>
+        <td colspan="4" background="[% bggif %]" class="cellheader">
+        <div> <span class="b2">[% locale.maketext('Bandwidth Limiter') %]</span></div>
+        </td>
+    </tr>
+    <tr>
+        <td class="lightbg">[% locale.maketext('User') %]</td>
+        <td class="lightbg">[% locale.maketext('Bandwidth Used') %]</td>
+        <td class="lightbg">[% locale.maketext('Bandwidth Limit') %]</td>
+        <td class="lightbg"></td>
+   </tr>
+   <tr>
+        <td class="heavybg" align="left" valign="top">[% user FILTER html %] ([% domain FILTER html %]) <input type="hidden" name="user" value="[% user FILTER html %]"></td>
+        <td class="heavybg" align="right" valign="top">[% locale.maketext('[numf,_1] MB', used) %]</td>
+        <td class="heavybg" align="left" valign="top">
+                            <input type="radio" name="limit" value="unlimited" [% IF unlimited %]checked="checked"[% END %] onclick="setUnlimited()" id="nolimit"/>
+                                <label for="nolimit">[% locale.maketext('Unlimited') %]</label>
+                            <br/>
+                            <input type="radio" name="limit" id="limit" value="fixed" onclick="setFixed()" [% IF !unlimited %]checked="checked"[% END %]/>
+                            <input type="text" id="bwlimit" name="bwlimitfake" value="[% bwlimit %]" onfocus="setFixed();"> [% locale.maketext('[output,acronym,MB,Megabytes]') %] <img src="" alt="" id="bwlimit_error" class="no_panel"/>
+                            <input type="hidden" name="bwlimit" id="bwlimitreal" value="" />
+                            <br/>
+        </td>
+        <td class="heavybg"   valign="top"><input type="submit" id="submitIt" class="btn-primary" value="[% locale.maketext('Change') %]"></td>
+    </tr>
+    </form>
+</table>
+<script type="text/javascript">
+
+    var last_value = parseInt('[% bwlimit %]') || '';
+    var bwlimit = document.getElementById('bwlimit');
+    var bwlimitreal = document.getElementById('bwlimitreal');
+    var nolimit = document.getElementById('nolimit');
+
+    var setHidden = function () {
+        bwlimitreal.value = (nolimit.checked) ? 'unlimited' : bwlimit.value;
+    }
+
+    var setUnlimited = function () {
+        last_value = bwlimit.value;
+        bwlimit.value = '';
+        validation.verify();
+        setHidden();
+    }
+
+    var setFixed = function () {
+        bwlimit.value=last_value;
+        document.getElementById('limit').checked=true;
+        validation.verify();
+        setHidden();
+    }
+
+    CPANEL.validate.validBWLimit = function (str) {
+        setHidden();
+        if (nolimit.checked) { return true; }
+        last_value=bwlimit.value;
+        if (bwlimit.value.length==0) { return false; }          // Can not be null
+        if (/^\d+$/.test(bwlimit.value)) { return true; } // simple integer
+        if (/[^\d\.e+]/i.test(bwlimit.value)) { return false; }  // Check for characters that are not numbers periods, e or +
+        if (/[e+]/i.test(bwlimit.value)) { // if e+ is present check the notation
+            //Scientific notiation rules
+            if (bwlimit.value.split(/e/i).length>2) {return false} // Can only have one e
+            if (bwlimit.value.split('+').length>2) {return false}  // Can only have one +
+            if (bwlimit.value.split(/e\+/i).length<2) {return false} // Must have one e+ substring
+            if (/^e\+/i.test(bwlimit.value)) {return false} // Can't start as e+
+            if (/e\+$/i.test(bwlimit.value)) {return false} // Can't end as e+
+            return (/((\b[0-9]+)?\.)?\b[0-9]+([eE][-+]?[0-9]+)?\b/i.test(bwlimit.value)); // And a more generic test...
+        }
+    }
+
+    var validation = new CPANEL.validate.validator("[% locale.maketext("Limit Bandwidth") %]");
+    validation.add(bwlimit, 'validBWLimit', "[% locale.maketext("The bandwidth limit must be a number. Exponents are allowed (e.g. 1024e+3).") %]");
+    validation.attach();
+    CPANEL.validate.attach_to_form('submitIt', validation);
+
+    setHidden();
+
+</script>
+[% END -%]

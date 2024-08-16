@@ -1,0 +1,84 @@
+#!/usr/local/cpanel/bin/python-packman
+# -*- coding: utf-8 -*-
+
+# cpanel - bin/packman_get_multiinfo_json          Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+# NOTE: We purposefully set this to the system python
+#       because we need to interact with the system yum library.
+
+from __future__ import print_function
+import getopt
+import sys
+import packman
+import operator
+
+
+def usage():
+    print("Usage: " + sys.argv[0] + " <options>")
+    print("")
+    print("Options:")
+    print("    --package [PACKAGE [PACKAGE ...]]")
+    print("        A package like 'zsh'")
+    print("    --prefix [PREFIX [PREFIX ...]]")
+    print("        A package prefix like 'ea-'")
+    print("    --disable-excludes  (optional)   Disable yum excludes")
+    print(
+        "    --populate-provides (optional)   Populate the requires and conflicts fields"
+    )
+    print("")
+    print(
+        "You must supply --package or --prefix. Specifying both you'll get results from both"
+    )
+
+
+if len(sys.argv) == 1:
+    usage()
+    sys.exit(1)
+
+try:
+    (opts, args) = getopt.getopt(
+        sys.argv[1:],
+        "",
+        ["populate-provides", "disable-excludes", "prefix=", "package="],
+    )
+except getopt.GetoptError as err:
+    print(str(err))
+    usage()
+    sys.exit(2)
+
+package = []
+prefix = []
+disable_excludes = False
+populate_provides = False
+
+for flag in opts:
+    if flag[0] == "--disable-excludes":
+        disable_excludes = True
+    elif flag[0] == "--populate-provides":
+        populate_provides = True
+    elif flag[0] == "--prefix":
+        prefix.append(flag[1])
+    elif flag[0] == "--package":
+        package.append(flag[1])
+
+if not prefix and not package:
+    usage()
+    sys.exit(1)
+
+packman.init_yum(disable_excludes)
+
+packman.output_json(
+    packman.get_info_for_packages_and_prefixes(
+        package, prefix, populate_provides=populate_provides
+    )
+)
+
+# this optimization allows the caller
+# to be unblocked a tiny bit quicker
+
+sys.stdout.close()
+sys.stderr.close()
+sys.exit(0)

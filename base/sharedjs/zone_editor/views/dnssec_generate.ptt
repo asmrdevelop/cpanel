@@ -1,0 +1,214 @@
+<cp-alert type="danger" id="notAllowedWarning" ng-show="dnssec.loading_error">{{ dnssec.loading_error_message }}</cp-alert>
+<section id="dns_sec_generate_container" ng-hide="dnssec.loading_error">
+    <div class="row">
+        <div class="col-xs-12 col-sm-8 col-md-6">
+            <form name="dnssec.generateForm" novalidate>
+                <div class="panel panel-default">
+                    <div class="panel-heading">
+                        <h2 class="widget-title pull-left flip">
+                            [% locale.maketext('Create [asis,DNSSEC] keys') %]
+                        </h2>
+                        <div class="pull-right flip">
+                            <button type="button"
+                                class="btn btn-default btn-xs"
+                                id="lnkshowHideHelp"
+                                ng-click="dnssec.toggleHelp()">
+                                [% locale.maketext("Show/Hide Help") %]
+                                <i class="far fa-question-circle form-info-sign"></i>
+                            </button>
+                        </div>
+                        <div class="clearfix"></div>
+                    </div>
+                    <div class="panel-body">
+                        <div class="form-group">
+                            <div class="row">
+                                <div class="col-xs-12">
+                                    <label for="lblDomain">
+                                        [% locale.maketext('Domain') %]
+                                    </label>
+                                </div>
+                                <div class="col-xs-12">
+                                    <span id="lblDomain" class="wordbreak">
+                                        {{dnssec.domain}}
+                                    </span>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="form-group">
+                            <div class="row">
+                                <div class="col-xs-12">
+                                    <toggle-label-info
+                                        for="setup"
+                                        label-text="[% locale.maketext('Key Setup') %]"
+                                        label-id="lblSetup"
+                                        info-icon-id="icoSetup"
+                                        info-block-id="txtSetup"
+                                        show-info-block="{{dnssec.settings.showAllHelp}}"
+                                        >
+                                        [% locale.maketext('How the system creates the security key.') %]
+                                    </toggle-label-info>
+                                </div>
+                            </div>
+                            <div class="row">
+                                <div class="col-xs-12">
+                                    <div class="radio">
+                                        <label>
+                                            <input type="radio"
+                                                name="setup"
+                                                id="classicSetup"
+                                                ng-model="dnssec.details.setup"
+                                                ng-click="dnssec.onSetupSelect($event)"
+                                                value="classic">
+                                            <span>[% locale.maketext('Classic') %]</span>
+                                        </label>
+                                        <span class="help-block">[% locale.maketext('Creates a [asis,ZSK] (Zone Signing Key) and a [asis,KSK] (Key Signing Key) keypair.') %]</span>
+                                    </div>
+                                    <div class="radio">
+                                        <label>
+                                            <input type="radio"
+                                                name="setup"
+                                                id="simpleSetup"
+                                                ng-model="dnssec.details.setup"
+                                                ng-click="dnssec.onSetupSelect($event)"
+                                                value="simple">
+                                            <span>[% locale.maketext('Simple') %]</span>
+                                        </label>
+                                        <span class="help-block">[% locale.maketext('Creates a [asis,CSK] (Combined Signing Key) which will be used as both the [asis,ZSK] and [asis,KSK].') %]</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="form-group">
+                            <div class="row">
+                                <div class="col-xs-12">
+                                    <toggle-label-info
+                                        for="algorithm"
+                                        label-text="[% locale.maketext('Algorithm') %]"
+                                        label-id="lblAlgorithm"
+                                        info-icon-id="icoAlgorithm"
+                                        info-block-id="txtAlgorithm"
+                                        show-info-block="{{dnssec.settings.showAllHelp}}"
+                                        >
+                                        [% locale.maketext('The algorithm that the system will use to create the security key.') %]
+                                    </toggle-label-info>
+                                </div>
+                            </div>
+                            <div class="row">
+                                <div class="col-xs-12">
+                                    <div class="radio">
+                                        <label>
+                                            <input type="radio"
+                                                name="algorithm"
+                                                id="algorithm8"
+                                                ng-model="dnssec.details.algorithm"
+                                                ng-disabled="!dnssec.isClassicSetup()"
+                                                value="8">
+                                            <span>RSA/SHA-256 (Algorithm 8)</span>
+                                            <span class="label label-default">[% locale.maketext('Most Commonly Supported') %]</span>
+                                        </label>
+                                        <span class="help-block">[% locale.maketext('Most domain registrars support this algorithm.') %]</span>
+                                    </div>
+                                    <div class="radio">
+                                        <label>
+                                            <input type="radio"
+                                                name="algorithm"
+                                                id="algorithm10"
+                                                ng-model="dnssec.details.algorithm"
+                                                ng-disabled="!dnssec.isClassicSetup()"
+                                                value="10">
+                                            <span>RSA/SHA-512 (Algorithm 10)</span>
+                                        </label>
+                                    </div>
+                                    <div class="radio">
+                                        <label>
+                                            <input type="radio"
+                                                name="algorithm"
+                                                id="algorithm13"
+                                                ng-model="dnssec.details.algorithm"
+                                                value="13">
+                                            <span>ECDSA Curve P-256 with SHA-256 (Algorithm 13)</span>
+                                            <span class="label label-default">[% locale.maketext('Recommended') %]</span>
+                                        </label>
+                                        <span class="help-block">[% locale.maketext('We recommend that you use this algorithm if your domain registrar supports it.') %]</span>
+                                    </div>
+                                    <div class="radio">
+                                        <label>
+                                            <input type="radio"
+                                                name="algorithm"
+                                                id="algorithm14"
+                                                ng-model="dnssec.details.algorithm"
+                                                value="14">
+                                            <span>ECDSA Curve P-384 with SHA-384 (Algorithm 14)</span>
+                                        </label>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="form-group">
+                            <div class="row">
+                                <div class="col-xs-12">
+                                    <toggle-label-info
+                                        for="status"
+                                        label-text="[% locale.maketext('Status') %]"
+                                        label-id="lblStatus"
+                                        info-icon-id="icoStatus"
+                                        info-block-id="txtStatus"
+                                        show-info-block="{{dnssec.settings.showAllHelp}}"
+                                        >
+                                        [% locale.maketext('Select whether to activate the newly-created key.') %]
+                                    </toggle-label-info>
+                                </div>
+                            </div>
+                            <div class="row">
+                                <div class="col-xs-12">
+                                    <div class="radio">
+                                        <label>
+                                            <input type="radio"
+                                                name="status"
+                                                id="activateit"
+                                                ng-model="dnssec.details.active"
+                                                ng-value="true"
+                                                value="true">
+                                            <span>[% locale.maketext('Active') %]</span>
+                                        </label>
+                                    </div>
+                                    <div class="radio">
+                                        <label>
+                                            <input type="radio"
+                                                name="status"
+                                                id="donotactivateit"
+                                                ng-model="dnssec.details.active"
+                                                ng-value="false"
+                                                value="false">
+                                            <span>[% locale.maketext('Not Active') %]</span>
+                                        </label>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="panel-footer clearfix">
+                        <button id="btnGenerateKey"
+                                type="submit"
+                                spinner-id="spinnerGenerateKey"
+                                cp-action="dnssec.generate(dnssec.details)">
+                                <i class="fas fa-plus" aria-hidden="true"></i>
+                                [% locale.maketext("Create") %]
+                        </button>
+                        <button id="btnCancel"
+                            type="button"
+                            class="btn btn-link pull-right flip"
+                            ng-click="dnssec.backToListView()"
+                            aria-label="[% locale.maketext('Go back to the list of keys.') %]">
+                            <i class="fas" ng-class="{ 'fa-arrow-left': !dnssec.isRTL, 'fa-arrow-right': dnssec.isRTL }" aria-hidden="true"></i>
+                            [% locale.maketext('Go Back') %]
+                        </button>
+                    </div>
+                </div>
+            </form>
+        </div>
+        <ng-include src="'views/dnssec_sidebar_help.html.tt'"></ng-include>
+    </div>
+</section>
+

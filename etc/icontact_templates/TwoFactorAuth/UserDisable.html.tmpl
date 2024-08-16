@@ -1,0 +1,40 @@
+[%#
+Variables passed in:
+user              - The account name of the user who disabled 2FA
+policy_enabled    - True if 2FA is currently enabled and available on the server
+
+Optional arguments:
+possessor         - The user who actually disabled it
+action_url        - URL to page where user can setup 2FA
+-%]
+
+[%
+    PROCESS "include/colors.tmpl";
+    PROCESS "include/styles.tmpl";
+
+    WRAPPER 'wrapper/main.html.tmpl';
+
+    NOTICE.email_reason = CPANEL.locale.maketext('Two-factor authentication removed from your account');
+-%]
+
+<p>
+    [% IF NOTICE.possessor.defined %]
+        [% CPANEL.locale.maketext('The system administrator removed two-factor authentication from your “[_1]” account.', NOTICE.user) %]
+    [% ELSE %]
+        [% CPANEL.locale.maketext('You removed two-factor authentication from your “[_1]” account.', NOTICE.user) %]
+    [% END %]
+</p>
+[% IF NOTICE.policy_enabled %]
+<p>
+    [% IF NOTICE.action_url %]
+        [% CPANEL.locale.maketext('To reconfigure two-factor authentication, visit [output,url,_1].', NOTICE.action_url) %]
+    [% ELSE %]
+        [% CPANEL.locale.maketext('For more information about Two-Factor Authentication, read our documentation at [output,url,_1].', 'https://go.cpanel.net/2fa') %]
+    [% END %]
+</p>
+[% END %]
+<p>
+    [% CPANEL.locale.maketext('You may delete the old entry from your authentication app.') %]
+</p>
+
+[% END %]

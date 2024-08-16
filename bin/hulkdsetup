@@ -1,0 +1,145 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - bin/hulkdsetup                          Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package bin::hulkdsetup;
+
+use strict;
+use warnings;
+
+use Cpanel::Rand::Get        ();
+use Cpanel::Usage            ();
+use Cpanel::Logger           ();
+use Cpanel::LoadFile         ();
+use Cpanel::SafeDir::MK      ();
+use Cpanel::Config::Hulk     ();
+use Cpanel::Sys::Hostname    ();
+use Cpanel::Hulk::Admin::DB  ();
+use Cpanel::FileUtils::Write ();
+use Whostmgr::Services::Load ();
+
+use Try::Tiny;
+
+our $VERSION = '4.1';
+### This version number should match the values in /u/l/c/bin/cphulk_pam_ctl
+### and /u/l/c/src/pam_hulk/pam_hulk.c
+my $pam_hulk_version = $VERSION;
+
+exit run(@ARGV) unless caller();
+
+sub run {
+    my @cmdline_args = @_;
+
+    # TODO: This modulino needs to have its core functionality moved to
+    # a module and have its test coverage improved.  Once done the
+    # install/* scripts should call the module directly instead of
+    # loading this modulino.
+    my $logger;
+    my $force    = 0;
+    my $noreload = 0;
+    my %opts     = (
+        'force'    => \$force,
+        'noreload' => \$noreload,
+    );
+
+    Cpanel::Usage::wrap_options( \@cmdline_args, \&usage, \%opts );
+
+    if ( !-e '/var/cpanel/version/cphulk_pam_ctl' || Cpanel::LoadFile::loadfile('/var/cpanel/version/cphulk_pam_ctl') ne $pam_hulk_version ) {
+        system '/usr/local/cpanel/bin/cphulk_pam_ctl', '--enable';
+        if ( open( my $cp_fh, '>', '/var/cpanel/version/cphulk_pam_ctl' ) ) {
+            print {$cp_fh} $pam_hulk_version;
+            close($cp_fh);
+        }
+    }
+
+    # If the directory containing the db file doesn't exist, create it
+    if ( !-d $Cpanel::Config::Hulk::conf_dir ) {
+        if ( !Cpanel::SafeDir::MK::safemkdir($Cpanel::Config::Hulk::conf_dir) ) {
+            my $message = $!;
+            $logger ||= Cpanel::Logger->new();
+            $logger->warn("Directory $Cpanel::Config::Hulk::conf_dir does not exist and could not be created: $message");
+        }
+    }
+
+    my $dbh = Cpanel::Hulk::Admin::DB::initialize_db($force);
+
+    if ($dbh) {
+        init_app_keys($dbh);
+        Whostmgr::Services::Load::reload_service('cphulk') unless $noreload;
+        return 0;
+    }
+
+    print $DBI::errstr, "\n";
+    return 1;
+}
+
+sub init_app_keys {
+    my $dbh = shift;
+
+    my @APPS     = ( 'dovecot', 'exim', 'pure-ftpd', 'cpaneld', 'webmaild', 'whostmgrd', 'pam', 'cpdavd', 'cpanelpasswd', 'cpwebcalls' );
+    my $hostname = Cpanel::Sys::Hostname::gethostname();
+
+    mkdir( '/var/cpanel/cphulkd',      0755 );
+    mkdir( '/var/cpanel/cphulkd/keys', 0755 );
+
+    # Do it this way rather than via SQL so that if an exception
+    # happens the transaction is automatically rolled back.
+    local $dbh->{'AutoCommit'} = 0;
+
+    my $sql = 'REPLACE INTO auths (SERVER,USER,PASS) VALUES( ?, ?, ? );';
+    my $sth = $dbh->prepare($sql);
+
+    foreach my $app (@APPS) {
+        my $randdata = Cpanel::Rand::Get::getranddata(16);
+        my $keyfile  = "/var/cpanel/cphulkd/keys/$app";
+
+        if ( $app eq 'dovecot' && -s $keyfile ) {
+
+            # we store this in the /etc/dovecot/auth_policy.conf
+            # file and have to rebuild + restart if we change it.
+            $randdata = Cpanel::LoadFile::load($keyfile);
+        }
+        else {
+            Cpanel::FileUtils::Write::overwrite( $keyfile, $randdata, 0640 );
+        }
+
+        my $mailnull_uid = scalar( ( getpwnam('mailnull') )[2] );
+        my $mail_gid     = scalar( ( getpwnam('mail') )[3] );
+
+        # Exim may not yet be installed.  If not we will
+        # fix this on the next run of Install::SecurityCheck
+        if ( $app eq 'exim' && $mailnull_uid && $mail_gid ) {
+            chmod( 0640, $keyfile );
+        }
+        else {
+            chmod( 0600, $keyfile );
+        }
+
+        if ( !$sth->execute( $hostname, $app, $randdata ) ) {
+            print $DBI::errstr, "\n";
+        }
+    }
+
+    $dbh->commit();
+
+    return 1;
+}
+
+sub usage {
+    print <<EOM;
+hulkdsetup [--force]
+
+Set up cPHulkd for use.
+
+--force: Update the schema, even if that would involve dropping tables.
+         Use with caution.
+--noreload: Do not reload cphulkd
+
+EOM
+    exit;
+}
+
+1;

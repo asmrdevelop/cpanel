@@ -1,0 +1,516 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/unsuspendacct                   Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::unsuspendacct;
+
+use strict;
+use warnings;
+
+use Try::Tiny;
+
+use Cpanel::Passwd::Shell                      ();
+use Cpanel::Auth::Shadow                       ();
+use Cpanel::SafeFile                           ();
+use AcctLock                                   ();
+use Cpanel::PwCache                            ();
+use Cpanel::ConfigFiles                        ();
+use Cpanel::Validate::Domain::Tiny             ();
+use Cpanel::Exception                          ();
+use Cpanel::Dovecot::Action                    ();
+use Cpanel::FileUtils::Match                   ();
+use Cpanel::Hooks                              ();
+use Cpanel::Hostname                           ();
+use Cpanel::OS                                 ();
+use Cpanel::PwCache::Clear                     ();
+use Cpanel::AccessIds::ReducedPrivileges       ();
+use Cpanel::AcctUtils::AccountingLog           ();
+use Cpanel::AcctUtils::Domain                  ();
+use Cpanel::AcctUtils::Owner                   ();
+use Cpanel::AcctUtils::DomainOwner::Tiny       ();
+use Cpanel::SafetyBits                         ();
+use Cpanel::Config::LoadCpConf                 ();
+use Cpanel::Config::LoadCpUserFile             ();
+use Cpanel::Config::LoadWwwAcctConf            ();
+use Cpanel::Config::CpUserGuard                ();
+use Cpanel::ConfigFiles                        ();
+use Cpanel::IP::Remote                         ();
+use Cpanel::Quota::Temp                        ();
+use Cpanel::ServerTasks                        ();
+use Cpanel::Services::Enabled                  ();
+use Cpanel::Logger                             ();
+use Cpanel::Auth::Digest::DB::Manage           ();
+use Cpanel::Mailman::ListManager               ();
+use Cpanel::MysqlUtils::Suspension             ();
+use Whostmgr::Accounts::SuspensionData::Writer ();
+use Whostmgr::Accounts::Email                  ();
+use Whostmgr::Accounts::Unsuspend              ();
+use Whostmgr::Accounts::Unsuspend::Htaccess    ();
+use Cpanel::Validate::Domain::Normalize        ();
+use Cpanel::Notify                             ();
+use Cpanel::Sys::Setsid::Fast                  ();
+use Getopt::Long                               ();
+use Cpanel::Team::Constants                    ();
+use Cpanel::Team::Config                       ();
+
+use Cpanel::Locale 'lh';
+
+exit( run(@ARGV) ) unless caller;
+
+my $logger;
+
+sub run {    ## no critic qw(Subroutines::ProhibitExcessComplexity)
+    my @argv = @_;
+
+    my $retain_service_proxies = 0;
+    my $usage                  = 0;
+    my $child_ok               = 0;
+
+    Getopt::Long::GetOptionsFromArray(
+        \@argv,
+        'retain-service-proxies' => \$retain_service_proxies,
+        'help|usage'             => \$usage,
+        'child-ok'               => \$child_ok,
+    );
+
+    my $user = $argv[0];
+
+    $logger = Cpanel::Logger->new();
+
+    local $ENV{'REMOTE_USER'} = $ENV{'REMOTE_USER'};
+    local $ENV{'USER'}        = $ENV{'USER'};
+
+    if ( ( !$ENV{'USER'} || !$ENV{'REMOTE_USER'} ) && $> == 0 ) {
+        $ENV{'REMOTE_USER'} = 'root';    ## no critic qw(Variables::RequireLocalizedPunctuationVars) - local above
+        $ENV{'USER'}        = 'root';    ## no critic qw(Variables::RequireLocalizedPunctuationVars) - local above
+    }
+
+    if ($user) {
+        $user =~ s/\///g;
+    }
+
+    return usage(0) if $usage;
+    return usage(1) if ( !$user || $user eq 'root' );
+
+    my $pass = ( Cpanel::PwCache::getpwnam($user) )[1];
+    if ( !$pass ) {
+        print "“$user” is not a user on this system. Maybe it’s a domain?\n";
+
+        my $old_user = $user;
+        $user = Cpanel::AcctUtils::DomainOwner::Tiny::getdomainowner( $user, { default => undef } );
+
+        if ($user) {
+            print "“$user” is the user who owns that domain. Verifying user …\n";
+
+            $pass = ( Cpanel::PwCache::getpwnam($user) )[1] or do {
+                die "Invalid user ($user)\n";
+            };
+        }
+        else {
+            die "“$old_user” isn’t a domain, either. Exiting …\n";
+        }
+
+        if ( $old_user ne $user ) {
+            print "Domain lookup of domain '$old_user' yielded user '$user'\n";
+        }
+    }
+
+    unless ( $pass =~ m/^\!/ || $pass =~ m/^\*/ ) {
+        print lh->maketext( 'An error occurred while attempting to unsuspend “[_1]”. The user “[_1]” is not in a suspended state.', $user ) . "\n";
+        if ( -e "/var/cpanel/bwlimited/$user" ) {
+            print "\nThe user is currently bandwidth limited. You may remove this limitation by increasing their bandwidth limit.\n";
+        }
+        return 1;
+    }
+
+    if ( !$child_ok ) {
+        my $cpuser_obj = Cpanel::Config::LoadCpUserFile::load_or_die($user);
+        if ( $cpuser_obj->child_workloads() ) {
+            print "To unsuspend “$user”, do so on the account’s parent node.\n";
+            return 1;
+        }
+    }
+
+    if ( !do_hook( $user, 'pre' ) ) {
+        print "Pre-unsuspend hook script returned failure.\n";
+        return 1;
+    }
+    system '/usr/local/cpanel/scripts/preunsuspendacct', @argv if -x '/usr/local/cpanel/scripts/preunsuspendacct';
+
+    # Load account creation defaults
+    my $cref = Cpanel::Config::LoadWwwAcctConf::loadwwwacctconf();
+
+    # Determine default shell
+    my $shell = $cref->{'DEFSHELL'};
+    if ( !$shell || !-e $shell ) {
+        $shell = '/bin/bash';
+    }
+
+    my $homedir = Cpanel::PwCache::gethomedir($user);
+    my %CPCONF  = Cpanel::Config::LoadCpConf::loadcpconf();
+    if ( exists $CPCONF{'acls'} && $CPCONF{'acls'} eq '1' ) {
+        if ( my $pid = fork() ) {
+            waitpid( $pid, 0 );
+        }
+        else {
+            Cpanel::Sys::Setsid::Fast::fast_setsid();
+            Cpanel::SafetyBits::setuids($user);
+            system(
+                'setfacl',
+                '-kb',
+                '-m', 'group:nobody:x',
+                '-m', 'group:mail:x',
+                '-m', 'group:cpanel:x',
+                '-m', 'group:mailnull:x',
+                '-m', 'group:65535:x',
+                '-m', 'group:ftp:x', '--',
+                $homedir
+            );
+            chmod 0750, $homedir;
+            exit;
+        }
+    }
+    else {
+        chmod( 0711, $homedir );    # root owns parent
+    }
+
+    if ( -e '/var/cpanel/fileprotect' ) {
+        my $httpgid = ( getgrnam('nobody') )[2];
+        my $useruid = ( getpwnam($user) )[2];
+        Cpanel::SafetyBits::safe_userchgid( $useruid, $httpgid, $homedir . '/public_html' );
+        Cpanel::SafetyBits::safe_chmod( 0750, $useruid, $homedir . '/public_html' );
+        Cpanel::SafetyBits::safe_userchgid( $useruid, $httpgid, $homedir . '/.htpasswds' );
+        Cpanel::SafetyBits::safe_chmod( 0750, $useruid, $homedir . '/.htpasswds' );
+
+    }
+    else {
+        Cpanel::SafetyBits::safe_chmod( 0755, $user, $homedir . '/public_html' );
+        Cpanel::SafetyBits::safe_chmod( 0755, $user, $homedir . '/.htpasswds' );
+    }
+
+    #
+    # Since scripts/suspendacct will chagne the permissions of this file to 0000,
+    # it is necessary to perform the chmod() operation as root to actually be able
+    # to restore the permissions.
+    #
+    if ( -e '/var/cpanel/noanonftp' ) {
+        Cpanel::SafetyBits::safe_chmod( 0750, $user, $homedir . '/public_ftp' );
+    }
+    else {
+        Cpanel::SafetyBits::safe_chmod( 0755, $user, $homedir . '/public_ftp' );
+    }
+
+    print "Unsuspending outgoing email....";
+    Whostmgr::Accounts::Email::unsuspend_outgoing_email( 'user' => $user );
+    print "Done\n";
+
+    my %SUINFO;
+    if ( open my $suspended_info_fh, '<', '/var/cpanel/suspendinfo/' . $user ) {
+        while ( readline $suspended_info_fh ) {
+            chomp;
+            my ( $name, $value ) = split( /=/, $_ );
+            next if ( !$name || !$value );
+            $SUINFO{$name} = $value;
+        }
+        close $suspended_info_fh;
+        unlink '/var/cpanel/suspendinfo/' . $user;
+    }
+
+    my $cpuser_guard = Cpanel::Config::CpUserGuard->new($user);
+    my $cpuser_data  = $cpuser_guard->{'data'};
+    delete $cpuser_data->{'SUSPENDED'};
+    $cpuser_guard->save();
+
+    AcctLock::acctlock();
+
+    # Reset shell
+    my $newshell;
+    if    ( !$SUINFO{'shell'} )   { $newshell = '/usr/local/cpanel/bin/noshell'; }
+    elsif ( -x $SUINFO{'shell'} ) { $newshell = $SUINFO{'shell'} }
+    else                          { $newshell = $shell; }
+
+    try {
+        Cpanel::Passwd::Shell::update_shell_without_acctlock( 'user' => $user, 'shell' => $newshell );
+    }
+    catch {
+        print Cpanel::Exception::get_string($_) . "\n";
+    };
+
+    my $crypted_pass = ( Cpanel::PwCache::getpwnam($user) )[1];
+    $crypted_pass =~ s{^\!+}{}g;
+
+    my ( $status, $statusmsg ) = Cpanel::Auth::Shadow::update_shadow_without_acctlock( $user, $crypted_pass );
+    print $statusmsg . "\n" if !$status;
+
+    AcctLock::acctunlock();
+
+    Cpanel::Auth::Digest::DB::Manage::unlock($user) if Cpanel::Auth::Digest::DB::Manage::has_entry($user);
+
+    my @DNS = ( $cpuser_data->{'DOMAIN'} );
+    if ( exists $cpuser_data->{'DOMAINS'} ) { push @DNS, @{ $cpuser_data->{'DOMAINS'} } }
+
+    {
+        my $tempquota = Cpanel::Quota::Temp->new( user => $user );
+        $tempquota->disable();
+
+        if ( -e "$homedir/etc/webdav/shadow" ) {
+            print "Unsuspending webdav users\n";
+            unsuspendshadowfile( $user, "$homedir/etc/webdav/shadow" );
+        }
+
+        foreach my $dns (@DNS) {
+            $dns = Cpanel::Validate::Domain::Normalize::normalize( $dns, 1 );
+            next if !Cpanel::Validate::Domain::Tiny::validdomainname($dns);
+            if ( -f "${homedir}/etc/${dns}/shadow" && !-l "${homedir}/etc/${dns}/shadow" ) {
+                print "Unsuspending email account logins for $dns .... ";
+                unsuspendshadowfile( $user, "${homedir}/etc/${dns}/shadow" );
+                print "Done\n";
+            }
+        }
+
+        Cpanel::Dovecot::Action::flush_all_auth_caches_for_user($user);
+    }
+
+    my $dns_list             = join( '|', map { quotemeta($_) } @DNS );
+    my $suspended_list_files = Cpanel::FileUtils::Match::get_matching_files(
+        "$Cpanel::ConfigFiles::MAILMAN_ROOT/suspended.lists",
+        "_(?:$dns_list)" . '$'
+    );
+
+    foreach my $list ( @{$suspended_list_files} ) {
+        my ($list_name) = $list =~ m{^.*/([^/]+)$};
+        $list_name =~ tr{_}{@};
+        print "Unsuspending mailing list for $list_name\n";
+
+        my $unsuspended_list = $list;
+        $unsuspended_list =~ s/\/suspended.lists\//\/lists\//;
+        if ( -e $unsuspended_list ) { rename( $unsuspended_list, $unsuspended_list . '.' . time() ) }
+        rename( $list, $unsuspended_list );
+
+        Cpanel::Mailman::ListManager::regenerate_list($unsuspended_list);
+    }
+
+    #FIXME: Everything in this script should eventually be done via this function call.
+    try {
+        Whostmgr::Accounts::Unsuspend->new($user);
+    }
+    catch {
+        warn Cpanel::Exception::get_string($_);
+    };
+
+    warn if !eval {
+        Whostmgr::Accounts::SuspensionData::Writer->new()->unsuspend($user);
+        1;
+    };
+
+    print "Unsuspending websites...\n";
+    Whostmgr::Accounts::Unsuspend::Htaccess::unsuspend_htaccess( $user, \@DNS );
+    _generate_account_suspension_include();
+
+    my $ftpfile = "$Cpanel::ConfigFiles::FTP_PASSWD_DIR/$user";
+
+    # Manipulation of these files isn't thread safe.
+    # The root file is intentionally locked before checking the existence of the suspended file.
+    my $ftplock = Cpanel::SafeFile::safelock($ftpfile);
+    if ( -e $ftpfile . '.suspended' ) {
+        my $ftpsuspendedlock = Cpanel::SafeFile::safelock("$ftpfile.suspended");
+        print "Unsuspending FTP accounts...\n";
+        if ( -e $ftpfile ) {
+            unlink $ftpfile;
+        }
+        rename $ftpfile . '.suspended', $ftpfile or warn "Could not rename $ftpfile.suspended to $ftpfile";
+        Cpanel::SafeFile::safeunlock($ftpsuspendedlock);
+    }
+    Cpanel::SafeFile::safeunlock($ftplock);
+
+    Cpanel::ServerTasks::schedule_task( ['CpDBTasks'], 10, "ftpupdate" );
+
+    print "${user}'s account is now active\n";
+
+    my $domain = Cpanel::AcctUtils::Domain::getdomain($user);
+
+    my $user_crontab_dir = Cpanel::OS::user_crontab_dir();
+    if ( -f "$user_crontab_dir.suspended/$user" ) {
+        unlink "$user_crontab_dir/$user";
+        rename "$user_crontab_dir.suspended/$user", "$user_crontab_dir/$user";
+    }
+
+    if ( Cpanel::Services::Enabled::are_provided('mysql') ) {
+        print "Unsuspending mysql users\n";
+        Cpanel::MysqlUtils::Suspension::unsuspend_mysql_users($user);
+    }
+
+    # Unsuspending Team Accounts
+    if ( -e "$Cpanel::Team::Constants::TEAM_CONFIG_DIR/$user" ) {
+        print "Unsuspending team account ... ";
+        eval { Cpanel::Team::Config->new($user)->unsuspend_team(); };
+        $@ ? warn "Unable to suspend Team Account" : print "Done\n";
+    }
+
+    my $owner = Cpanel::AcctUtils::Owner::getowner($user);
+    $owner =~ s/\n//g;
+    my $host;
+    if ( $owner eq '' || $owner eq 'root' || $user eq $owner ) {
+        $host = Cpanel::Hostname::gethostname();
+    }
+    else {
+        $host = Cpanel::AcctUtils::Domain::getdomain($owner);
+    }
+
+    #if the account reseller does not exist on this server we fall back to root
+    if ( !$host ) {
+        $host  = Cpanel::Hostname::gethostname();
+        $owner = 'root';
+    }
+
+    my %account_unsuspension_notification = (
+        'user'              => $user,
+        'user_domain'       => $domain,
+        'env_remote_user'   => $ENV{'REMOTE_USER'},
+        'env_user'          => $ENV{'USER'},
+        'host_server'       => $host,
+        'origin'            => 'Unsuspend Account',
+        'source_ip_address' => Cpanel::IP::Remote::get_current_remote_ip(),
+    );
+
+    # send root notification
+
+    Cpanel::Notify::notification_class(
+        'class'            => 'unsuspendacct::Notify',
+        'application'      => 'unsuspendacct::Notify',
+        'constructor_args' => [%account_unsuspension_notification]
+    );
+
+    # send one to account reseller as well as long as they are not root
+    if ( $owner ne 'root' ) {
+        Cpanel::Notify::notification_class(
+            'class'            => 'unsuspendacct::Notify',
+            'application'      => 'unsuspendacct::Notify',
+            'constructor_args' => [ %account_unsuspension_notification, 'to' => $owner, 'username' => $owner ]
+        );
+    }
+
+    Cpanel::AcctUtils::AccountingLog::append_entry( 'UNSUSPEND', [ $user, $domain ] );
+
+    Cpanel::PwCache::Clear::clear_global_cache();
+    do_hook( $user, 'post' );
+    system '/usr/local/cpanel/scripts/postunsuspendacct', @argv if -x '/usr/local/cpanel/scripts/postunsuspendacct';
+
+    # The new default is to remove all backend service proxying unless otherwise specified
+    if ($retain_service_proxies) {
+        print "Keep service proxying settings for this account...Done\n";
+    }
+    else {
+        {
+            print "The system will disable service proxying for this account...";
+            require Cpanel::AccountProxy::Transaction;
+            local $SIG{'__WARN__'} = sub { print "\n" . shift . "\n" };
+
+            Cpanel::AccountProxy::Transaction::unset_all_backends_and_update_services($user);
+            print "Done\n";
+        }
+    }
+
+    print "$user\'s account has been unsuspended\n";
+
+    return 0;
+}
+
+sub do_hook {
+    my ( $user,   $stage )      = @_;
+    my ( $result, $hooks_msgs ) = Cpanel::Hooks::hook(
+        {
+            'category'      => 'Whostmgr',
+            'event'         => 'Accounts::unsuspendacct',
+            'stage'         => $stage,
+            'escalateprivs' => 1,
+        },
+        {
+            'args' => {
+                'user' => $user,
+            },
+            'result' => 1,
+            'user'   => 'root',
+        },
+    );
+    if ( ref $hooks_msgs eq 'ARRAY' && @$hooks_msgs != 0 ) {
+        foreach my $error ( @{$hooks_msgs} ) {
+            print $error;
+        }
+        return 0;
+    }
+    return 1;
+}
+
+sub unsuspendshadowfile {
+    my ( $user, $file ) = @_;
+
+    my $access_ids = Cpanel::AccessIds::ReducedPrivileges->new($user);
+    return _unsuspendshadowfile($file);
+}
+
+sub _unsuspendshadowfile {
+    my ($file) = @_;
+    return if !-e $file;
+    my $shadowlock = Cpanel::SafeFile::safeopen( \*SHF, '+<', $file );
+    if ( !$shadowlock ) {
+        $logger->die("Could not update $file: $!");
+    }
+    my @CT = <SHF>;
+    seek( SHF, 0, 0 );
+    foreach (@CT) {
+        my @DC = split( /:/, $_ );
+        chomp( $DC[$#DC] );
+        foreach my $field ( 1, 8 ) {
+            while ( $DC[$field] =~ m/^\*LOCKED\*/ ) {
+                $DC[$field] =~ s/^\*LOCKED\*//;
+            }
+        }
+        print SHF join( ':', @DC ) . "\n";
+    }
+    truncate( SHF, tell(SHF) );
+    return Cpanel::SafeFile::safeclose( \*SHF, $shadowlock );
+}
+
+sub _generate_account_suspension_include {
+    require "/usr/local/cpanel/scripts/generate_account_suspension_include";    ## no critic qw(Modules::RequireBarewordIncludes) -- refactoring this is too large
+    generate_account_suspension_include::update_include_and_restart_httpd();
+    return 1;
+}
+
+sub usage {
+    my ( $retval, $msg ) = @_;
+    my $fh = $retval ? \*STDERR : \*STDOUT;
+
+    my $p = $0;
+    $p =~ s{^.+/(.+)$}{$1};
+
+    if ( !defined $msg ) {
+        $msg = <<EOF;
+Usage: $p user [--retain-service-proxies] [--usage | --help]
+
+Unsuspend a user's account
+
+where
+    user -- is a valid user name (required)
+
+    If --retain-service-proxies is specified, then any service proxy backends that
+    were put in place as a result of a transfer-related suspension will be retained.
+
+    The --child-ok argument defeats the usual protection against
+    unsuspending distributed accounts on child nodes. Ordinarily you should
+    suspend and unsuspend distributed accounts on their parent nodes.
+    Use of this flag is UNSUPPORTED.
+
+    Now supports driving instructions via --help, --usage
+EOF
+    }
+
+    print {$fh} $msg;
+    return $retval;
+}
+
+1;

@@ -1,0 +1,288 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - bin/reassign_post_terminate_cruft       Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+use Cpanel::Usage                                           ();
+use Cpanel::OSSys                                           ();
+use Cpanel::CleanupStub                                     ();
+use Cpanel::SafeFind                                        ();
+use Cpanel::iContact::Class::killacct::PostTerminateCleanup ();
+use Cpanel::PwCache                                         ();
+use Cpanel::Lchown                                          ();
+
+my $background_execution = 0;
+my @dirs                 = ('/');
+my $output               = '';
+my $notify;
+my $reassign;
+my $reclaimed_size = 0;
+my $has_fchown     = 1;
+my $reassign_username;
+my $username;
+
+Cpanel::Usage::wrap_options( \@ARGV, \&usage, { 'background' => \$background_execution, 'notify' => \$notify, 'reassign' => \$reassign, 'username' => \$username, 'reassign-username' => \$reassign_username } );
+
+@ARGV = ( grep( !/^--/, @ARGV ) );
+
+my $uid_gid = shift;
+my $uid     = 0;
+my $gid     = 0;
+
+if ( $uid_gid =~ /^(\d+):(\d+)$/ ) {
+    $uid = $1;
+    $gid = $2;
+}
+elsif ( $uid_gid =~ /^(\d+)$/ ) {
+    $uid = $1;
+}
+else {
+    print "Invalid UID/GID specified.\n\n";
+    usage();
+}
+
+unless ( $uid && $uid > 99 ) {
+    print "Invalid UID specified.\n\n";
+    usage();
+}
+
+unless ( $gid == 0 || ( $gid > 99 ) ) {
+    print "Invalid GID specified.\n\n";
+    usage();
+}
+
+my $new_uid = 0;
+my $new_gid = 0;
+if ($reassign) {
+    if ( $reassign =~ /^(\d+):(\d+)$/ ) {
+        $new_uid = $1;
+        $new_gid = $2;
+    }
+    else {
+        print "Invalid reassign parameter specified.  Please use --reassign=<uid>:<gid>\n\n";
+        usage();
+    }
+}
+
+if ( scalar @ARGV ) {
+    @dirs = @ARGV;
+}
+
+if ($background_execution) {
+    print "Running as background process.\n";
+    exit if fork();
+    Cpanel::OSSys::setsid();
+    Cpanel::CleanupStub::daemonclosefds();
+    exit if fork();
+}
+
+# Filter directories for dupes
+
+my %dirmap = map { my $dir = $_; $dir =~ s{/*$}{/}; $dir => 1 } @dirs;
+if ( exists $dirmap{'/'} ) {
+
+    # If we're searching / noting else matters
+    %dirmap = ('/');
+}
+else {
+    foreach my $dir ( keys %dirmap ) {
+        my $orig = $dir;
+        while ( $dir =~ s{[^/]+/+$}{} && $dir ) {
+            if ( exists $dirmap{$dir} ) {
+                delete $dirmap{$orig};
+                last;
+            }
+        }
+    }
+}
+
+if ($username) {
+    output("*** Searching for files owned by $username ($uid_gid) ***\n");
+}
+if ($reassign_username) {
+    output( "*** Files will be reassigned to $reassign_username " . ( $reassign ? "($reassign)" : '(0:0)' ) . " ***\n" );
+}
+
+# Iterate over all directories looking for cruft
+foreach my $dir ( keys %dirmap ) {
+    output("*** Beginning check of $dir ***\n");
+    chdir('/');
+    Cpanel::SafeFind::find(
+        {
+            wanted => sub {
+                return if ( !$File::Find::name );
+                my ( $device, $inode, $mode, $fuid, $fgid ) = ( lstat($File::Find::name) )[ 0, 1, 2, 4, 5 ];
+                if ( $fuid == $uid ) {
+                    output(" - Found matching UID at $File::Find::name\n");
+                }
+                elsif ( $gid && $fgid == $gid ) {
+                    output(" - Found matching GID at $File::Find::name\n");
+                }
+                else {
+                    return;
+                }
+                if ( -l _ ) {
+                    my ( $directory, $file ) = split_path($File::Find::name);
+                    my $lock_data = lock_directory($directory);
+                    unless ($lock_data) {
+                        output("   Unable to lock parent directory\n");
+                        return;
+                    }
+                    my ( $link_device, $link_inode, $link_mode, $link_uid, $link_gid ) = ( lstat($file) )[ 0, 1, 2, 4, 5 ];
+                    if ( $link_device == $device && $link_inode == $inode && $link_uid == $fuid && $link_gid == $fgid ) {
+                        Cpanel::Lchown::lchown( $new_uid, $new_gid, $file );
+                        output("   Owner changed from $link_uid:$link_gid to $new_uid:$new_gid\n");
+                    }
+                    else {
+                        output("   Attributes of symlink changed.  No action will be taken.\n");
+                    }
+                    unlock_directory($lock_data);
+                }
+                elsif ( -d _ ) {
+                    output("   Target is a directory.  Locking down.\n");
+                    if ( open( my $target_fh, '<', $File::Find::name ) ) {
+                        my ( $fh_dev, $fh_inode, $fh_mode, $fh_uid, $fh_gid ) = ( stat($target_fh) )[ 0, 1, 2, 4, 5 ];
+                        if ( $fh_dev == $device && $fh_inode == $inode && $fh_uid == $fuid && $fh_gid == $fgid ) {
+                            chmod( oct(700), $target_fh );
+                            output( "   Permissions changed from " . sprintf( "%06o", $fh_mode ) . " to 040700\n" );
+                            if ( chdir($target_fh) ) {
+                                chown( $new_uid, $new_gid, '.' );
+                                output("   Owner changed from $fh_uid:$fh_gid to $new_uid:$new_gid\n");
+                                chdir('/');
+                            }
+                        }
+                        close $target_fh;
+                    }
+                }
+                else {
+                    output("   Target is a file.  Locking down.\n");
+                    if ( open( my $target_fh, '<', $File::Find::name ) ) {
+                        my ( $fh_dev, $fh_inode, $fh_mode, $fh_uid, $fh_gid ) = ( stat($target_fh) )[ 0, 1, 2, 4, 5 ];
+                        if ( $fh_dev == $device && $fh_inode == $inode && $fh_uid == $fuid && $fh_gid == $fgid ) {
+                            chmod( oct(600), $target_fh );
+                            output( "   Permissions changed from " . sprintf( "%06o", $fh_mode ) . " to 000600\n" );
+
+                            if ($has_fchown) {
+
+                                # Is there a better way of knowing if the OS supports fchown?
+                                eval { chown( $new_uid, $new_gid, $target_fh ); };
+                                if ($@) {
+                                    $has_fchown = 0;
+                                }
+                                else {
+                                    output("   Owner changed from $fh_uid:$fh_gid to $new_uid:$new_gid\n");
+                                }
+                            }
+
+                            if ( !$has_fchown ) {
+                                my ( $directory, $file ) = split_path($File::Find::name);
+                                my $lock_data = lock_directory($directory);
+                                if ($lock_data) {
+                                    ( $fh_dev, $fh_inode, $fh_mode, $fh_uid, $fh_gid ) = ( stat($file) )[ 0, 1, 2, 4, 5 ];
+                                    if ( $fh_dev == $device && $fh_inode == $inode && $fh_uid == $fuid && $fh_gid == $fgid ) {
+                                        chown( $new_uid, $new_gid, $file );
+                                        output("   Owner changed from $fh_uid:$fh_gid to $new_uid:$new_gid\n");
+                                    }
+                                    else {
+                                        output("   Attributes of file changed.  No action will be taken.\n");
+                                    }
+                                    unlock_directory($lock_data);
+                                }
+                                else {
+                                    output("   Unable to lock parent directory.  No action will be taken\n");
+                                }
+
+                            }
+                        }
+                    }
+                }
+            },
+            'follow'   => 0,
+            'no_chdir' => 1,
+        },
+        $dir
+    );
+    output("*** Ending check of $dir ***\n");
+}
+
+# Send notification if necessary
+if ($notify) {
+    $username ||= ( Cpanel::PwCache::getpwuid($uid) )[0] || 'uid-' . $uid;
+    my $logname = 'post-terminate-' . $username . '-cleanup-log.txt';
+    Cpanel::iContact::Class::killacct::PostTerminateCleanup->new(
+        'origin'       => 'killacct',
+        'uid_gid'      => $uid_gid,
+        'attach_files' => [ { name => $logname, content => \$output } ],
+    );
+}
+
+sub usage {
+    print <<EO_HELP;
+Usage: reassign_post_terminate_cruft [options] <uid>[:<gid>] [directory...]
+
+  Reassigns any files left over after an account is terminated.
+
+Options:
+
+    --background  Run in the background rather than interactively
+    --help              Brief help message
+    --notify            Send notification to Account Removal notification device
+                        configured in the WebHost Manager Contact Manager
+    --reassign          Optional uid:gid to reassign the files to (default 0:0)
+    --reassign-username Optional username for the reassignment target to include
+                        in notification
+    --username          Optional username to include in notification
+
+Specifying one or more directories to search is optional.  If no
+directories are listed, then / will be used as the starting point
+for the file search.
+
+EO_HELP
+
+    exit 0;
+}
+
+# Handle spooling for background execution
+sub output {
+    $output .= $_[0];
+    if ( !$background_execution ) {
+        print $_[0];
+    }
+}
+
+sub lock_directory {
+    my $dir = shift;
+
+    # Change directory to the parent of the file
+    chdir($dir) || return;
+
+    # Lock down access to the parent directory
+    my ( $dir_mode, $dir_uid, $dir_gid ) = ( stat('.') )[ 2, 4, 5 ];
+
+    chown( 0, 0, '.' );
+    chmod( oct(700), '.' );
+
+    return { 'mode' => $dir_mode, 'uid' => $dir_uid, 'gid' => $dir_gid };
+
+}
+
+sub unlock_directory {
+    my $lock_data = shift || return;
+
+    chmod( $lock_data->{'mode'}, '.' );
+    chown( $lock_data->{'uid'}, $lock_data->{'gid'}, '.' );
+    chdir('/');
+}
+
+sub split_path {
+    my $fullpath = shift || die "No path supplied to split_path";
+    if ( $fullpath =~ m{^(.*/)([^/]+)$} ) {
+        return ( $1, $2 );
+    }
+    else {
+        die "Unable to make sense of $fullpath";
+    }
+}

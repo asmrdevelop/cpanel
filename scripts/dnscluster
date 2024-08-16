@@ -1,0 +1,164 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/dnscluster                      Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+BEGIN {
+    pop(@INC) if ( $INC[$#INC] eq '.' );
+}
+
+$| = 1;
+
+use strict;
+use Cpanel::DnsUtils::Sync ();
+use Cpanel::Usage          ();
+
+if ( !@ARGV ) {
+    show_usage();
+}
+Cpanel::Usage::usage( \@ARGV, \&show_usage );
+
+if ( !-e '/var/cpanel/useclusteringdns' ) {
+    print STDERR "DNS Clustering is not enabled\n";
+    exit 1;
+}
+
+my $action    = $ARGV[0];
+my $full_sync = ( grep( /^\-?-f/i, @ARGV ) ? 1 : 0 );
+
+if ( $action eq 'synczonelocal' ) {
+    my $zone = $ARGV[1];
+    if ( !$zone ) {
+        show_usage();
+    }
+    synczonelocal($zone);
+}
+elsif ( $action eq 'synczone' ) {
+    my $zone = $ARGV[1];
+    if ( !$zone ) {
+        show_usage();
+    }
+    synczone($zone);
+}
+elsif ( $action eq 'syncall' ) {
+    syncall($full_sync);
+}
+elsif ( $action eq 'syncalllocal' || $action eq 'synclocal' ) {
+    syncalllocal($full_sync);
+}
+else {
+    show_usage();
+    exit 1;
+}
+
+sub synczone {
+    my $domain = shift;
+    print "Syncing $domain to all machines in cluster...";
+    my ( $response, $err ) = Cpanel::DnsUtils::Sync::sync_zone($domain);
+    print $err ? $err : $response;
+    print "Done\n";
+}
+
+sub synczonelocal {
+    my $domain = shift;
+    print "Syncing $domain to local machine...";
+
+    my ( $response, $err ) = Cpanel::DnsUtils::Sync::sync_zone_local($domain);
+    print $err ? $err : $response;
+    print "Done\n";
+}
+
+sub syncall {
+    my $full_sync = shift;
+    print "Syncing Zones to all machines in cluster....";
+
+    my $user_domains_only = ( $full_sync ? 0 : 1 );
+    if ( !$user_domains_only ) { print "(full)..."; }
+
+    if ( my $pid = fork() ) {
+        while ( waitpid( $pid, 1 ) != -1 ) {
+            syswrite( STDOUT, '.' );
+            select( undef, undef, undef, 0.1 );
+        }
+    }
+    else {
+
+        # The default is to sync all domains in the cluster
+        # for consistancy with previous behavior
+        # full (!user_domains_only) then send 0
+        # !full (user_domains_only) then send 1
+        #
+        Cpanel::DnsUtils::Sync::sync_zones($user_domains_only);
+        exit(0);
+    }
+    print "Done\n";
+}
+
+sub syncalllocal {
+    my $full_sync = shift;
+    print "Syncing Zones to local machine....";
+
+    my $user_domains_only = ( $full_sync ? 0 : 1 );
+    if ( !$user_domains_only ) { print "(full)..."; }
+
+    if ( my $pid = fork() ) {
+        while ( waitpid( $pid, 1 ) != -1 ) {
+            syswrite( STDOUT, '.' );
+            select( undef, undef, undef, 0.1 );
+        }
+    }
+    else {
+
+        # The default is to sync all domains in the cluster
+        # for consistancy with previous behavior
+        # full (!user_domains_only) then send 0
+        # !full (user_domains_only) then send 1
+        #
+        Cpanel::DnsUtils::Sync::sync_zones_local($user_domains_only);
+        exit(0);
+    }
+    print "Done\n";
+}
+
+sub show_usage {
+    print <<'EOM';
+Usage: dnscluster [ACTION] [OPTIONS]...
+
+Examples:
+   /usr/local/cpanel/scripts/dnscluster syncall --full               # Sync all zones (even ones not in /etc/userdomains)
+   /usr/local/cpanel/scripts/dnscluster synczonelocal mydomain.org   # Sync mydomain.org to the local machine
+
+Actions:
+    syncall [--full] - make sure all dns zones are
+       in sync within the cluster. If any zone files
+       are out out of sync, the ones with the largest
+       serial numbers will be copied to all servers.
+
+    syncalllocal [--full] - make sure all dns zones are
+       in sync within the cluster. If any zone files are
+       out out of sync, the ones with the largest serial
+       numbers will be copied to the local server only.
+
+    synczone <zone> - sync one zone
+       If the zone is out out of sync, the one with the largest
+       serial number will be copied to all servers.
+
+    synczonelocal <zone> - sync one zone
+       If the zone is out out of sync, the one with the largest
+       serial number will be copied to the local server.
+
+Operation modifiers:
+    -F, --full
+       If the --full flag is specified then zones that are not
+       local to this server (in /etc/userdomains) will be pulled
+       in as well.  This was the default behavior prior to 11.24.5
+
+Help:
+    -H, --help (or no arguments)
+       This will show this screen.
+
+EOM
+    exit;
+}

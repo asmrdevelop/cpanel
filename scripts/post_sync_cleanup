@@ -1,0 +1,211 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/post_sync_cleanup               Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+#
+# This is the authorative code used to sync /usr/local/cpanel
+# Accept no imitators.
+#
+package scripts::post_sync_cleanup;
+
+use strict;
+use warnings;
+
+use v5.026;
+
+use Cpanel::Usage               ();
+use Cpanel::TimeHiRes           ();
+use Cpanel::SafeRun::Object     ();
+use Cpanel::IOCallbackWriteLine ();
+use Cpanel::Update::Logger      ();
+
+my $prev_logger_status = '';
+
+exit( run(@ARGV) // 0 ) unless caller;
+
+sub run {
+    my (@args) = @_;
+
+    if ( $> != 0 ) {
+        print "This cPanel maintenance script must be run as root, not uid $> \n";
+        return 1;
+    }
+
+    umask(0022);
+
+    # Command line parameters passed:
+    my $logfile_path = 0;
+    my ( $pbar_start, $pbar_stop );
+    Cpanel::Usage::wrap_options(
+        \@args,
+        \&usage,
+        {
+            'log'        => \$logfile_path,
+            'pbar-start' => \$pbar_start,
+            'pbar-stop'  => \$pbar_stop,
+        }
+    );
+
+    $pbar_start //= 0;
+    $pbar_stop  //= 100;
+
+    # initialize logger
+    logger( $logfile_path, $pbar_start )->update_pbar($pbar_start);
+
+    my %action;
+
+    # run taskrun: install/* scripts
+    if ( -x '/usr/local/cpanel/bin/taskrun' ) {
+        $action{'status'} = 'Running tasks';
+
+        $action{'cmd'} = [
+            '/usr/local/cpanel/bin/taskrun',
+            '--log_file=' . $logfile_path,
+            '--pbar-start=' . $pbar_start,
+            '--pbar-stop=' . ( $pbar_stop - 5 )
+        ];
+        process( { %action, nolog => 1 } );
+
+        logger()->set_need_notify() if $? != 0;
+    }
+
+    logger()->update_pbar( $pbar_stop - 3 );
+
+    # Save the restart for last
+    # If we are running from a browser window, this will break the
+    #   connection by restarting the server process
+    restart_services();
+
+    logger()->update_pbar($pbar_stop);
+
+    return 1 if logger()->get_need_notify();
+
+    return;
+}
+
+sub process {
+    my ($cmd_ref) = @_;
+    my @cmd = @{ $cmd_ref->{'cmd'} };
+
+    my $logger = logger();
+    if ( $prev_logger_status ne $cmd_ref->{'status'} ) {
+        $logger->info("Processing: $cmd_ref->{'status'}");
+        $prev_logger_status = $cmd_ref->{'status'};
+    }
+
+    $logger->info(" - Processing command `@cmd`");
+    my $run;
+    my ( $program, @args ) = @cmd;
+
+    # also redirect STDERR to STDOUT
+    my $start_time = Cpanel::TimeHiRes::time();
+
+    if ( $cmd_ref->{nolog} ) {
+
+        # let's the process use its own logger
+        $run = Cpanel::SafeRun::Object->new(
+            program => $program,
+            args    => \@args,
+            stdout  => \*STDOUT,
+            stderr  => \*STDOUT,
+        );
+    }
+    else {
+        my $out_fh = Cpanel::IOCallbackWriteLine->new( sub { $logger->info( "   [$program] $_[0]", 1 ); } );
+        $run = Cpanel::SafeRun::Object->new(
+            program => $program,
+            args    => \@args,
+            stdout  => $out_fh,
+            stderr  => $out_fh,
+        );
+    }
+    my $end_time = Cpanel::TimeHiRes::time();
+    if ( $run->CHILD_ERROR() ) {
+        my $msg = join( q< >, map { $run->$_() // () } qw( autopsy stdout stderr ) );
+        $logger->warn("   [$program] Error: $msg");
+        $? = $run->CHILD_ERROR();    ## no critic qw(Variables::RequireLocalizedPunctuationVars) -- this is still checked in run so its needed for historical compatibility
+    }
+    my $exec_time = sprintf( "%.3f", ( $end_time - $start_time ) );
+    $logger->info("Completed “$program” in $exec_time second(s).");
+
+    return;
+}
+
+# initialize a cache logger on the first call, or return our cached logger object
+sub logger {
+    my ( $logfile_path, $pbar_start ) = @_;
+
+    state $logger;
+
+    return $logger if defined $logger;
+
+    $pbar_start //= 0;
+
+    # If called without --log, or with --log but without a specified path,
+    # create a default logfile path
+    if ( !$logfile_path || $logfile_path eq '1' ) {
+        my $now = time();
+        $logfile_path = '/var/cpanel/updatelogs/update.postsync.' . $now . '.log';
+    }
+
+    $logger = Cpanel::Update::Logger->new(
+        {
+            'logfile'   => $logfile_path,
+            'stdout'    => 1,
+            'log_level' => 'info',
+            pbar        => $pbar_start
+        }
+    );
+
+    return $logger;
+}
+
+sub usage {
+    print qq{Usage: $0 [options]};
+    print qq{
+
+    Options:
+      --help             Brief help message
+      --man              Detailed help
+      --log=[filename]   Specify a log file [optional]
+      --pbar-start=[int] Percentage used to start the progress bar ( default value 0 )
+      --pbar-stop=[int]  Percentage used to stop the progress bar ( default value 100 )
+
+     Note: This script is designed to be run by cPanel programs directly ONLY.
+     Please see upcp instead. It's probably what you want.
+
+};
+    exit;
+}
+
+## c47822: move former install's restart_services (was in upcp)
+sub restart_services {
+    my %action = ( status => q[Restarting services] );
+
+    logger()->info("==> Starting cPanel....");
+
+    # We used to check Cpanel::Server::Type::is_dnsonly here, but the startup
+    # script itself already does this. As such, don't do that here anymore.
+    # CPANEL-28473: Skip queueprocd restart at all times here, as if:
+    # 1) This is upcp, then we needed to restart it earlier
+    # 2) This is install, then we already skip queueprocd in etc/init/startup.
+    $action{'cmd'} = [qw{/usr/local/cpanel/etc/init/startup --skip-queueprocd}];
+    process( \%action );
+
+    if ( !$ENV{'CPANEL_BASE_INSTALL'} ) {
+        ## c47822: missing from former install's restart_services
+        ## c49669: run the update every time this script is called
+        $action{'cmd'} = [ "/usr/local/cpanel/whostmgr/bin/whostmgr2", "--updateaddons-no-locales" ];
+        process( \%action );
+
+        $action{'cmd'} = ["/usr/local/cpanel/bin/update_appconfig_apps"];
+        process( \%action );
+    }
+
+    logger()->info("==> Post Install Complete");
+
+    return;
+}

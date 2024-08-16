@@ -1,0 +1,116 @@
+<tbody>
+    <tr ng-repeat="domain in getDomains() track by domain.domain" id="{{domain.domain}}" class="domain-lister-view no-animate">
+        <td class="batchSelectTd">
+            <input ng-disabled="( !canRedirectHTTPS && !domain.isHttpsRedirecting ) || (domain.nonHTTPS && !domain.isHttpsRedirecting)" ng-if="domain.type != DOMAIN_TYPE_CONSTANTS.ALIAS && domain.type != DOMAIN_TYPE_CONSTANTS.ADDON" type="checkbox" ng-model="domain.selected" ng-change="itemSelected(domain)">
+        </td>
+        <td data-title="{{ :: headerItems[0].label }}" id="{{domain.domain}}_domain">
+            <div class="row-expand-container hidden-lg hidden-md">
+                <button id="{{domain.domain}}_collapseButton" class="btn btn-link"
+                    type="button"
+                    title="[% locale.maketext('View details.') %]"
+                    aria-label="[% locale.maketext('View details.') %]"
+                    ng-click="domain.showExtraInfo = !domain.showExtraInfo"
+                    >
+                    <i class="fas"
+                        ng-class="{ 'fa-chevron-right': !isRTL && !domain.showExtraInfo, 'fa-chevron-left': isRTL && !domain.showExtraInfo, 'fa-chevron-down': domain.showExtraInfo }"
+                        aria-hidden="true"
+                        >
+                    </i>
+                </button>
+            </div>
+            <span id="{{domain.domain}}_domain_link"  ng-if="domain.isWildcard"  disable="disabled">
+                {{ :: domain.domain }}
+            </span>
+            <a id="{{domain.domain}}_domain_link"
+                class="table-link url-link cutoff_with_ellipses no-animate"
+                title="[% locale.maketext('Click to display the “[_1]” website.', '{{ domain.domain }}') %]"
+                ng-if="!domain.isWildcard"
+                ng-href="{{ domain.protocol }}://{{ :: domain.domain }}"
+                target="_blank">
+                    <span title="[% locale.maketext('This is “[_1]”’s associated subdomain.', '{{ :: domain.associatedAddonDomain.domain || domain.associatedAddonDomain }}') %]" aria-hidden="true">
+                        <i ng-if="domain.associatedAddonDomain" class="fas fa-link"></i>
+                    </span>
+                    <i class="fas fa-external-link-alt" aria-hidden="true"></i>
+                    {{ :: domain.domain }}
+            </a>
+            <span ng-if="domain.type === DOMAIN_TYPE_CONSTANTS.MAIN" class="label label-info no-animate">[% locale.maketext('Main Domain') %]</span>
+            <button
+                id="{{ :: domain.domain}}_manage_btn"
+                type="button"
+                class="btn btn-outline-primary btn-sm no-animate hidden-md hidden-lg pull-right"
+                ng-click="actionButtonClicked('manage', domain)">
+                <i class="fas fa-wrench" aria-hidden="true"></i>
+                <span>[% locale.maketext('Manage') %]</span>
+            </button>
+            <div class="extraInfoSection hidden-md hidden-lg" ng-show="domain.showExtraInfo && webserverRoleAvailable">
+                <dl>
+                    <dt>[% locale.maketext('Document Root') %]</dt>
+                    <dd>
+                        <docroot id="{{domain.domain}}_documentRoot_docroot_collapsed" docroot="{{ domain.documentRoot }}" homedir="{{ :: domain.homedir }}"></docroot>
+                    </dd>
+                    <dt>[% locale.maketext('Redirects To') %]</dt>
+                    <dd>
+                        <a id="{{ :: domain.domain}}_redirect_link_collapsed" title="[% locale.maketext('Click to display the “[_1]” website.', '{{ domain.redirectsTo }}') %]" ng-if="domain.redirectsTo" class="table-link url-link no-animate" ng-href="{{ :: domain.redirectsTo }}" target="_blank">
+                            <i class="fas fa-external-link-alt" aria-hidden="true"></i>
+                            {{ :: domain.redirectsTo }}
+                        </a>
+                        <p ng-if="!domain.redirectsTo" disable="disabled">[% locale.maketext("Not Redirected"); %]</p>
+                    </dd>
+                    <dt>[% locale.maketext('Force HTTPS Redirect') %]</dt>
+                    <dd>
+                        <toggle-switch ng-disabled="( !canRedirectHTTPS && !domain.isHttpsRedirecting ) || (domain.nonHTTPS && !domain.isHttpsRedirecting)" ng-if="domain.type != DOMAIN_TYPE_CONSTANTS.ALIAS && domain.type != DOMAIN_TYPE_CONSTANTS.ADDON" class="domainToggle" id="{{ domain.domain }}_redirectToggle" enabled-label="[% locale.maketext('On') %]" disabled-label="[% locale.maketext('Off') %]" no-spinner="false" ng-model="domain.isHttpsRedirecting" on-toggle="setSingleDomainHTTPSRedirect(domain)">
+                        </toggle-switch>
+                        <i ng-if="domain.nonHTTPS && domain.type != DOMAIN_TYPE_CONSTANTS.ALIAS && domain.type != DOMAIN_TYPE_CONSTANTS.ADDON" class="fas fa-exclamation-triangle" tooltip-placement="top" uib-tooltip-html="HTTPSRedirectWarning"></i>
+                        <i ng-if="domain.type == DOMAIN_TYPE_CONSTANTS.ADDON || domain.type == DOMAIN_TYPE_CONSTANTS.ALIAS" class="fas fa-question-circle" tooltip-placement="top" uib-tooltip-html="AliasRowWarning"></i>
+                        <i ng-if="!domain.hasValidHTTPSAliases && !domain.nonHTTPS && domain.type != DOMAIN_TYPE_CONSTANTS.ALIAS && domain.type != DOMAIN_TYPE_CONSTANTS.ADDON" class="fas fa-info-circle" tooltip-placement="top" uib-tooltip-html="AliasWarning"></i>
+                    </dd>
+                </dl>
+                <a
+                id="{{ :: domain.domain}}_createEmail_btn_collapsed"
+                class="btn btn-outline-primary btn-sm no-animate"
+                ng-if="EMAIL_ACCOUNTS_APP_EXISTS && !domain.isWildcard"
+                ng-href="../email_accounts/index.html#/create?domain={{ :: domain.domain }}"
+                target="_blank">
+                    <i class="fas fa-external-link-alt" aria-hidden="true"></i>
+                    <span>[% locale.maketext('Create Email') %]</span>
+                </a>
+            </div>
+        </td>
+        <td ng-if="webserverRoleAvailable" data-title="{{ :: headerItems[1].label }}" id="{{domain.domain}}_documentRoot" class="col-md-3 hidden-sm hidden-xs">
+            <docroot id="{{domain.domain}}_documentRoot_docroot" docroot="{{ domain.documentRoot }}" homedir="{{ :: domain.homedir }}"></docroot>
+        </td>
+        <td ng-if="webserverRoleAvailable" data-title="{{ :: headerItems[2].label }}" id="{{domain.domain}}_redirect" class="hidden-sm hidden-xs">
+            <a id="{{ :: domain.domain}}_redirect_link" title="[% locale.maketext('Click to display the “[_1]” website.', '{{ domain.redirectsTo }}') %]" ng-if="domain.redirectsTo" class="table-link url-link cutoff_with_ellipses no-animate" ng-href="{{ :: domain.redirectsTo }}" target="_blank">
+                <i class="fas fa-external-link-alt" aria-hidden="true"></i>
+                {{ :: domain.redirectsTo }}
+            </a>
+            <p ng-if="!domain.redirectsTo" disable="disabled">[% locale.maketext("Not Redirected"); %]</p>
+        </td>
+        <td ng-if="webserverRoleAvailable" data-title="{{ :: headerItems[3].label }}" id="{{domain.domain}}_https_redirect" class="hidden-sm hidden-xs">
+            <toggle-switch ng-disabled="( !canRedirectHTTPS && !domain.isHttpsRedirecting ) || (domain.nonHTTPS && !domain.isHttpsRedirecting)" ng-if="domain.type != DOMAIN_TYPE_CONSTANTS.ALIAS && domain.type != DOMAIN_TYPE_CONSTANTS.ADDON" class="domainToggle" id="{{ domain.domain }}_redirectToggle" enabled-label="[% locale.maketext('On') %]" disabled-label="[% locale.maketext('Off') %]" no-spinner="false" ng-model="domain.isHttpsRedirecting" on-toggle="setSingleDomainHTTPSRedirect(domain)">
+            </toggle-switch>
+            <i ng-if="domain.nonHTTPS && domain.type != DOMAIN_TYPE_CONSTANTS.ALIAS && domain.type != DOMAIN_TYPE_CONSTANTS.ADDON" class="fas fa-exclamation-triangle" tooltip-placement="top" uib-tooltip-html="HTTPSRedirectWarning"></i>
+            <i ng-if="domain.type == DOMAIN_TYPE_CONSTANTS.ADDON || domain.type == DOMAIN_TYPE_CONSTANTS.ALIAS" class="fas fa-question-circle" tooltip-placement="top" uib-tooltip-html="AliasRowWarning"></i>
+            <i ng-if="!domain.hasValidHTTPSAliases && !domain.nonHTTPS && domain.type != DOMAIN_TYPE_CONSTANTS.ALIAS && domain.type != DOMAIN_TYPE_CONSTANTS.ADDON" class="fas fa-info-circle" tooltip-placement="top" uib-tooltip-html="AliasWarning"></i>
+        </td>
+        <td data-title="{{ :: headerItems[4].label }}" id="{{domain.domain}}_actions" class="domain-lister-view-actions no-animate action-column hidden-sm hidden-xs">
+            <button
+                id="{{ :: domain.domain}}_manage_btn"
+                class="btn btn-outline-primary btn-sm no-animate"
+                ng-click="actionButtonClicked('manage', domain)">
+                <i class="fas fa-wrench" aria-hidden="true"></i>
+                <span>[% locale.maketext('Manage') %]</span>
+            </button>
+            <a
+                id="{{ :: domain.domain}}_createEmail_btn"
+                class="btn btn-outline-primary btn-sm no-animate"
+                ng-if="EMAIL_ACCOUNTS_APP_EXISTS && !domain.isWildcard"
+                ng-href="../email_accounts/index.html#/create?domain={{ :: domain.domain}}"
+                target="_blank">
+                <i class="fas fa-external-link-alt" aria-hidden="true"></i>
+                <span>[% locale.maketext('Create Email') %]</span>
+            </a>
+        </td>
+        <td ng-if="showConfigColumn"><!-- for configurations --></td>
+    </tr>
+</tbody>

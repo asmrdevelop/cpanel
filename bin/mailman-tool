@@ -1,0 +1,49 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - bin/mailman-tool                        Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+use warnings;
+
+use Cpanel::Kill               ();
+use Cpanel::Rlimit             ();
+use Cpanel::CloseFDs           ();
+use Cpanel::Config::LoadCpConf ();
+use Cpanel::ConfigFiles        ();
+use Cpanel::Server::Type       ();
+use Cpanel::Sys::Setsid        ();
+
+use Cpanel::ServerTasks ();
+
+exit if Cpanel::Server::Type::is_dnsonly();
+
+my $cpconf_ref = Cpanel::Config::LoadCpConf::loadcpconf();
+
+if ( !$cpconf_ref->{'skipmailman'} ) {
+    print "Restarting mailman\n";
+    if ( my $pid = fork() ) {
+        waitpid( $pid, 0 );
+    }
+    else {
+        Cpanel::Sys::Setsid::full_daemonize();
+        Cpanel::Rlimit::set_rlimit_to_infinity();
+        chdir '/';
+        Cpanel::CloseFDs::fast_daemonclosefds();
+
+        system "$Cpanel::ConfigFiles::MAILMAN_ROOT/bin/mailmanctl", '-s', 'stop';
+        exec "$Cpanel::ConfigFiles::MAILMAN_ROOT/bin/mailmanctl", '-s', 'start';
+        exit;
+    }
+}
+else {
+    system "$Cpanel::ConfigFiles::MAILMAN_ROOT/bin/mailmanctl", '-s', 'stop';
+    sleep 2;
+    Cpanel::Kill::killall( 'TERM', 'mailmanctl' );
+}
+
+Cpanel::ServerTasks::queue_task( [ 'ApacheTasks', 'EximTasks' ], 'buildeximconf --restart', 'build_apache_conf', 'apache_restart --force' );
+
+exit 0;

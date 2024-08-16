@@ -1,0 +1,230 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/ipusage                         Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+#
+
+package scripts::ipusage;
+
+use strict;
+use warnings;
+
+use Cpanel::IP::Loopback            ();
+use Cpanel::FtpUtils::Server        ();
+use Cpanel::Sys::Hostname           ();
+use Cpanel::SafeRun::Simple         ();
+use Cpanel::PwCache                 ();
+use Cpanel::Config::LoadWwwAcctConf ();
+use Cpanel::ConfigFiles             ();
+use Cpanel::Config::LoadUserDomains ();
+use Cpanel::Config::userdata::Load  ();
+use Cpanel::Config::userdata::Cache ();
+use Cpanel::ConfigFiles::Apache     ();
+use Cpanel::DIp::MainIP             ();
+use Cpanel::DIp::Update             ();
+use Cpanel::NAT                     ();
+
+exit( __PACKAGE__->script( \@ARGV ) ) if not caller();
+
+sub script {
+    my $pkg = shift;
+    print $pkg->get_ipusage();
+    return 0;
+}
+
+sub get_ipusage {    ## no critic qw(Subroutines::ProhibitExcessComplexity)
+    my $pkg        = shift;
+    my $apacheconf = Cpanel::ConfigFiles::Apache->new();
+
+    my $wwwacct_ref   = Cpanel::Config::LoadWwwAcctConf::loadwwwacctconf();
+    my $ethdev        = $wwwacct_ref->{'ETHDEV'} || 'eth0';
+    my $hostname      = Cpanel::Sys::Hostname::gethostname();
+    my $using_proftpd = Cpanel::FtpUtils::Server::using_proftpd();
+    my $proftpconf    = '/etc/proftpd.conf';
+    my $httpconf      = $apacheconf->file_conf();
+    my $ss            = '';
+    my %ASN;
+    my %PSN;
+    my @MIPS;
+    my @IPS;
+    my $mainip;
+
+    Cpanel::DIp::Update::update_dedicated_ips_and_dependencies_or_die();
+
+    my $vhost_ipblock;
+    my $in_vhost       = 0;
+    my $in_proxy_vhost = 0;
+    my $vhost_servername;
+
+    my $userdata = Cpanel::Config::userdata::Cache::load_cache();
+
+    for my $dns_name ( keys %$userdata ) {
+        my ( $type, $ip, $ip_ssl ) = ( @{ $userdata->{$dns_name} } )[ 2, 5, 6 ];
+        next unless ( $type eq 'main' || $type eq 'sub' );
+        if ($ip) {
+            $ip =~ s{:.*}{};    # trim port number
+            $ASN{$ip}->{$dns_name} = 1;
+        }
+        if ($ip_ssl) {
+            $ip_ssl =~ s{:.*}{};    # trim port number
+            $ASN{$ip_ssl}->{$dns_name} = 1;
+        }
+    }
+
+    my $nobody = Cpanel::Config::userdata::Load::load_userdata_main('nobody');
+    if ( $nobody && $nobody->{'main_domain'} ) {
+        my $ip = Cpanel::DIp::MainIP::getmainserverip();
+        $ASN{$ip}->{ $nobody->{'main_domain'} } = 1 if $ip;
+    }
+
+    while ( my ( $ip, $vh_set ) = each %ASN ) {
+        $ASN{$ip} = [ sort keys %$vh_set ];
+    }
+
+    $in_vhost = 0;
+    if ($using_proftpd) {
+        my $ok = open my $PROCONF, q{<}, $proftpconf;
+        while ( my $line = <$PROCONF> ) {
+            if ( $line =~ /^\s*<virtualhost\s*(\S.*?)\s*>\s*$/i ) {
+                $vhost_ipblock = $1;
+                $in_vhost      = 1;
+            }
+            elsif ( $line =~ /^\s*\<\/virtualhost/i ) {
+                $in_vhost = 0;
+            }
+            elsif ( $in_vhost == 1 && $line =~ /^\s*servername\s*(\S+)/i ) {
+                $vhost_servername = $1;
+                foreach my $vhost_ip ( split( /\s+/, $vhost_ipblock ) ) {
+                    $vhost_ip =~ s/:\S+$//;
+                    $PSN{$vhost_ip} .= ",$vhost_servername";
+                }
+            }
+        }
+        close $PROCONF;
+    }
+    elsif ( -d '/etc/pure-ftpd' ) {
+        if ( opendir my $pureftpd_dh, '/etc/pure-ftpd' ) {
+            my $true_userdomains = Cpanel::Config::LoadUserDomains::loadtrueuserdomains( {}, 1 );
+            while ( my $file = readdir $pureftpd_dh ) {
+                next if $file !~ m/^\d+\.\d+\.\d+\.\d+$/;
+                if ( -l '/etc/pure-ftpd/' . $file && -e '/etc/pure-ftpd/' . $file ) {
+                    my $owner_uid = ( stat(_) )[4];
+                    my $user      = Cpanel::PwCache::getpwuid($owner_uid);
+                    if ( $true_userdomains->{$user} ) {
+                        $PSN{$file} = 'ftp.' . $true_userdomains->{$user};
+                    }
+                }
+            }
+            closedir $pureftpd_dh;
+        }
+    }
+
+    @MIPS = split( /\n/, Cpanel::SafeRun::Simple::saferun( '/sbin/ip', '-4', 'addr', 'show', $ethdev ) );
+
+    foreach my $ipx (@MIPS) {
+        if ( $ipx =~ /(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}).+\s+$ethdev$/ ) {
+            $mainip = $1;
+            last;
+        }
+    }
+
+    {
+
+        # Since we'll be grep'ing for a particular English language string, we make
+        # sure ifconfig will spout its output in that (default) language.
+        local $ENV{LANG} = 'C';
+
+        @IPS = grep( qr/inet addr/, split( /\n/, Cpanel::SafeRun::Simple::saferun( '/sbin/ip', '-4', 'addr', 'show' ) ) );
+    }
+
+    my $whm50 = defined $ENV{"WHM50"} && $ENV{"WHM50"} ne '';
+
+    my $output = q{};
+    if ($whm50) {
+        $output .= q{
+<script type="text/javascript" src="/js/sorttable.js"></script>
+
+<table border=1 class=sortable id=ipusage>
+<tr class=cellheader>
+
+<th><b>IP Address</b></th>
+<th nonsortable=true><b>Http Usage</b></th>
+<th nonsortable=true><b>Ftp Usage</b></th>
+<th nonsortable=true><b>Mail Usage</b></th>
+
+</tr>};
+    }
+
+    foreach my $ip (@IPS) {
+        next if ( $ip !~ /\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}/ );
+        $ip =~ m/(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}){1}/;
+        if ( !Cpanel::IP::Loopback::is_loopback($1) ) {
+            $ip = $1;
+            $PSN{$ip} = '' if ( !defined $PSN{$ip} );
+            $PSN{$ip} =~ s/^\,//g;
+            $output .= '<tr><td>' if $whm50;
+            $output .= Cpanel::NAT::get_public_ip($ip) . " ";
+            $output .= '</td><td>' if $whm50;
+            my @adomains = exists $ASN{$ip} ? @{ $ASN{$ip} } : ();
+            my $sdomains = join ',', @adomains;
+
+            if ( exists $ASN{$ip} ) {
+                if ( !$whm50 ) {
+                    $output .= "[http: $sdomains] ";
+                }
+                else {
+                    $output .= "$_ " for @adomains;
+                }
+                $ss .= "${ip}_http=$sdomains\n";
+            }
+
+            $output .= '</td><td>' if $whm50;
+
+            if ( $PSN{$ip} ne '' ) {
+                if ( !$whm50 ) {
+                    $output .= "[ftp: $PSN{$ip}] ";
+                }
+                else {
+                    $output .= "$PSN{$ip} ";
+                }
+                $ss .= "${ip}_ftp=$PSN{$ip}\n";
+            }
+
+            $output .= '</td><td>' if $whm50;
+
+            my $mailstuff = '';
+            foreach my $dom (@adomains) {
+                $dom =~ s/^www\.//g;
+                if ( -e "$Cpanel::ConfigFiles::VALIASES_DIR/$dom" ) {
+                    my $dcount = 0;
+                    my $ok     = open my $DOM, '<', "$Cpanel::ConfigFiles::VALIASES_DIR/$dom";
+                    while (<$DOM>) { $dcount++; }
+                    close $DOM;
+                    if ( $dcount > 0 ) {
+                        $mailstuff = $mailstuff . "$dom($dcount accts) ";
+                    }
+                }
+            }
+
+            if ( $mailstuff ne '' ) {
+                $ss = $ss . "${ip}_mail=$mailstuff\n";
+                if ( !$whm50 ) {
+                    $output .= "[mail: $mailstuff] ";
+                }
+                else {
+                    $output .= "$mailstuff ";
+                }
+            }
+            $output .= '</td></tr>' if $whm50;
+            $output .= "\n";
+        }
+    }
+
+    $output .= '</table>' if $whm50;
+    return $output;
+}
+
+1;

@@ -1,0 +1,225 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/refresh-dkim-validity-cache     Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+#----------------------------------------------------------------------
+# NOTE: See Cpanel/DKIM/ValidityCache/Sync.pm for a more code-friendly
+# analogue to this script.
+#----------------------------------------------------------------------
+
+package scripts::refresh_dkim_validity_cache;
+
+use strict;
+use warnings;
+
+=encoding utf-8
+
+=head1 NAME
+
+scripts/refresh-dkim-validity-cache
+
+=head1 USAGE
+
+    refresh-dkim-validity-cache ( --help | --all-domains | --initialize )
+
+    refresh-dkim-validity-cache --domain $d1 --domain $d2 ...
+
+=head1 DESCRIPTION
+
+This script refreshes the DKIM validity cache so that the system
+will add DKIM signatures for all messages whose sender domain has a
+correct DKIM configuration—but B<only> those messages.
+
+It notes all changes made to the cache and prints a summary at the end.
+
+=head1 OPTIONS
+
+=over
+
+=item * C<--all-domains> - Refreshes every domain’s validity cache.
+(This can take a while!) Excludes C<--domain> and C<--initialize>.
+
+=item * C<--domain> - Accepts a domain as argument. May be given multiple
+times.
+
+=item * C<--initialize> - Creates the validity cache anew if it doesn’t
+already exist. All users are recorded as having valid DKIM, with the
+understanding that a subsequent run of this script with C<--all-domains>
+will remove invalid entries. (This is to ensure that DKIM signing doesn’t
+fail temporarily while the cache is being created.)
+C<--initialize> excludes C<--domain> and implies C<--all-domains>.
+This is only useful in rare cases and shouldn’t ordinarily be done.
+
+=back
+
+=cut
+
+use Try::Tiny;
+
+use parent qw( Cpanel::HelpfulScript );
+
+use constant _OPTIONS => (
+    'initialize',
+    'all-domains',
+    'domain=s@',
+);
+
+__PACKAGE__->new(@ARGV)->run() if !caller;
+
+sub run {
+    my ($self) = @_;
+
+    my $given_domains_ar = $self->getopt('domain');
+
+    my $every_domain_yn = $self->getopt('all-domains');
+
+    my $init_yn = $self->getopt('initialize');
+
+    if ($every_domain_yn) {
+        if ( $init_yn || $given_domains_ar ) {
+            die $self->help('“--all-domains” excludes “--initialize” and “--domain”.');
+        }
+    }
+    elsif ($init_yn) {
+        if ($given_domains_ar) {
+            die $self->help('“--initialize” excludes “--all-domains” and “--domain”.');
+        }
+    }
+    elsif ( !$given_domains_ar ) {
+        die $self->help('No arguments given!');
+    }
+
+    require Cpanel::DKIM::ValidityCache;
+
+    my $all_domains_ar = _load_all_domains();
+
+    my $cache_all_ar = Cpanel::DKIM::ValidityCache->get_all();
+
+    my %old_lookup;
+
+    my $init_obj;
+
+    if ($cache_all_ar) {
+        if ($init_yn) {
+            $self->say('The cache is already initialized.');
+            return;
+        }
+
+        %old_lookup = map { $_ => undef } @$cache_all_ar;
+
+        require Cpanel::Set;
+        my @stale = Cpanel::Set::difference(
+            [ keys %old_lookup ],
+            $all_domains_ar,
+        );
+
+        for (@stale) {
+            $self->say("Removing stale entry for “$_” …");
+            _write_or_warn( 'unset', $_ );
+        }
+    }
+    elsif ($init_yn) {
+        require Cpanel::DKIM::ValidityCache::TempDir;
+        $init_obj = Cpanel::DKIM::ValidityCache::TempDir->new();
+    }
+
+    $_ = 0 for my ( $added, $removed );
+
+    for my $domain ( sort @$all_domains_ar ) {
+
+        # Skip all wildcards.
+        next if 0 == index( $domain, '*' );
+
+        if ( !$every_domain_yn && !$init_yn ) {
+            my $proceed_yn = grep { $_ eq $domain } @$given_domains_ar;
+
+            next if !$proceed_yn;
+        }
+
+        if ($init_yn) {
+            _write_or_warn( set => $domain );
+            $added++;
+        }
+        else {
+            $self->say("Checking “$domain” …");
+
+            try {
+                if ( _domain_has_valid_dkim($domain) ) {
+                    $self->say("\t✅ Valid!");
+
+                    if ( !exists $old_lookup{$domain} ) {
+                        _write_or_warn( set => $domain );
+                        $added++;
+                        $self->say("\t➕ Added to cache.");
+                    }
+                }
+                else {
+                    $self->say("\t⛔ Not valid.");
+
+                    if ( exists $old_lookup{$domain} ) {
+                        require Cpanel::DKIM::ValidityCache::Write;
+                        Cpanel::DKIM::ValidityCache::Write->unset($domain);
+                        $removed++;
+                        $self->say("\t➖ Removed from cache.");
+                    }
+                }
+            }
+            catch {
+                warn "$domain: $_";
+            };
+        }
+    }
+
+    $self->say();
+
+    if ($init_yn) {
+        $init_obj->install();
+        $self->say("The cache is initialized. ($added entries added)");
+    }
+    else {
+        $self->say("Done! $added added, $removed removed.");
+    }
+
+    return;
+}
+
+sub _write_or_warn {
+    my ( $fn, $name ) = @_;
+
+    require Cpanel::DKIM::ValidityCache::Write;
+    local $@;
+    warn if !eval { Cpanel::DKIM::ValidityCache::Write->$fn($name); 1 };
+
+    return;
+}
+
+sub _load_all_domains {
+
+    require Cpanel::Config::LoadUserDomains;
+
+    # 1 = give me a domain-to-user hash
+    my $du_hr = Cpanel::Config::LoadUserDomains::loaduserdomains( undef, 1 );
+
+    require Cpanel::Sys::Hostname;
+
+    # Ensure that we can DKIM-sign mail sent from the hostname.
+    my $hostname = Cpanel::Sys::Hostname::gethostname();
+    $du_hr->{$hostname} ||= undef;
+
+    return [ sort keys %$du_hr ];
+}
+
+sub _domain_has_valid_dkim {
+    my ($domain) = @_;
+
+    require Cpanel::DnsUtils::MailRecords;
+
+    my $resp_ar = Cpanel::DnsUtils::MailRecords::validate_dkim_records_for_domains( [$domain] );
+
+    return ( ( $resp_ar->[0]{'state'} // q<> ) eq 'VALID' );
+}
+
+1;

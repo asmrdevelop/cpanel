@@ -1,0 +1,516 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - bin/install_cpaddons                    Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package bin::install_cpaddons;
+
+use strict;
+use warnings;
+
+use Cpanel::Repos                 ();
+use Cpanel::cPAddons::Filter      ();
+use Cpanel::Cron::Utils           ();
+use Cpanel::Logger                ();
+use Cpanel::OS                    ();
+use Cpanel::Server::Type::License ();
+use Cpanel::Update::Crontab       ();
+use File::Copy                    ();
+use Getopt::Long                  ();
+use Whostmgr::Cpaddon::Conf       ();
+use Whostmgr::Addons::Manager     ();
+
+# install the addons that they currently have:
+my @current = ();
+my ( $help, $verbose ) = ( 0, 0 );
+
+# These modules are no longer supported. There are no updates.
+# They may not be managed in WHM.
+my @blacklist = qw();    # TODO: LC-7874
+
+# All cpanelsync-distributed addons have been deprecated. Users may
+# receive limited updates until we will move them into the blacklist,
+# at which point they will not be available anymore.
+my @deprecated = Cpanel::cPAddons::Filter::ADDONS_CURRENTLY_DEPRECATED;
+
+# This configuration is used to install a modern RPM distribution alongside
+# existing legacy installs in preparation for migrating addon to the new
+# distribution. Only add items here that have a migration path in our RPM
+# distribution channel.
+my @conversion_spec = (
+    {
+        legacy_addon_path      => '/usr/local/cpanel/cpaddons/cPanel/Blogs/WordPress',
+        replacement_addon_path => '/usr/local/cpanel/cpaddons/cPanel/Blogs/WordPressX',
+        replacement_rpm        => 'wordpress-cpaddon',
+    },
+);
+
+# Only root
+if ( $> != 0 ) {
+    my $logger = Cpanel::Logger->new();
+    $logger->die("This script must be run by the root user.");
+    exit(2);
+}
+
+# Make sure the remote user is set up correctly
+$ENV{'REMOTE_USER'} = 'root' if $> == 0 && !$ENV{'REMOTE_USER'};
+
+if ( !caller() ) {
+
+    if ( !Cpanel::OS::supports_cpaddons() ) {
+        die qq[cPAddons are not supported on this distro.\n];
+    }
+
+    if ( -e q[/var/cpanel/cpaddons.disabled] ) {
+        die qq[cPAddons are disabled on this server.\n];
+    }
+
+    my $exit_value = ( __PACKAGE__->script(@ARGV) );
+    exit($exit_value);
+}
+
+=head1 NAME
+
+bin/install_cpaddons
+
+=head1 DESCRIPTION
+
+Perform install time tasks for the cpaddons system.
+
+=cut
+
+sub script {
+    my @arguments = @_;
+    my $opts      = {};
+    Getopt::Long::GetOptionsFromArray(
+        \@arguments,
+        'help|h'    => \$opts->{'help'},
+        'verbose|v' => \$opts->{'verbose'},
+    ) || return usage( 1, "Invalid usage. See --help\n" );
+
+    return usage(0) if $opts->{'help'};
+
+    my ( $ok, $msg ) = ( 0, '' );
+
+    set_up_crontab($opts);
+
+    #--------------------------------------------------------
+    # We are making the blacklist a real blacklist. The items
+    # in the current blacklist (prior to Oct 2017) are actually
+    # only deprecated since we expect upgrades and uninstalls
+    # to still work for them.
+    #--------------------------------------------------------
+    # - Use blacklist if the addon is no longer trusted to run
+    #     or incompatible now.
+    # - Use deprecated if you just don't want it to be
+    #     installable anymore.
+    #--------------------------------------------------------
+    ( $ok, $msg ) = migrate_68_blacklist_to_70_deprecated_list($opts);
+    return error( 1001, $msg ) if !$ok;
+    set_up_blacklist( $opts, @blacklist );
+    set_up_deprecated( $opts, @deprecated );
+    uninstall_blacklisted_addons($opts);
+    set_up_rpms($opts);
+
+    return 0;
+}
+
+=head1 FUNCTIONS
+
+=head2 set_up_crontab(OPTS)
+
+Sets up the cron entry for cpaddons that handles the daily addon activities.
+
+=head3 ARGUMENTS
+
+=over
+
+=item OPTS - HASHREF
+
+Runtime options
+
+=over
+
+=item verbose - flag
+
+Prints additional output to the CLI.
+
+=back
+
+=back
+
+=cut
+
+sub set_up_crontab {
+    my $opts = shift || {};
+
+    print "Setting up the cron jobs for the addons.\n" if $opts->{verbose};
+
+    # Need cron entry but don't have, or the reverse, insert or delete  as appropriate
+
+    # Cannot get current cron list for some reason, don't clobber crontab
+    my @CT = split /\n/, Cpanel::Cron::Utils::fetch_user_crontab('root');
+    return unless @CT;
+
+    my $cpaddons_regex = qr{/cgi/cpaddons_report[.]pl\b};
+    my $have_entry     = grep { !/^\s*#/ && m{$cpaddons_regex} } @CT;
+
+    # If we are dnsonly mode, the entry must be absent, else it must be present
+    my $need_entry = Cpanel::Server::Type::License::is_cpanel();
+
+    if ( $need_entry xor $have_entry ) {
+
+        if ($need_entry) {    # insert
+            push @CT, scalar Cpanel::Update::Crontab::get_cpaddons_cron_entry() . "\n";
+        }
+        else {                # delete
+            @CT = grep { !/$cpaddons_regex/ } @CT;
+        }
+        Cpanel::Cron::Utils::save_root_crontab( join "\n", @CT );
+    }
+    return;
+}
+
+=head2 set_up_blacklist(OPTS, ADDON, ...)
+
+Sets up the blacklisted cpaddons list with additional ones blacklisted by cpanel.
+
+Blacklisting indicates the addon should no longer be used by anyone. It can not be
+installed, or updated.
+
+=head3 ARGUMENTS
+
+=over
+
+=item OPTS - HASHREF
+
+Runtime options
+
+=over
+
+=item verbose - flag
+
+Prints additional output to the CLI.
+
+=back
+
+=item ADDON - String
+
+The name of an addon to blacklist. You may provide multiple addons in the arguments list.
+
+=back
+
+=cut
+
+sub set_up_blacklist {
+    my ( $opts, @blacklist ) = @_;
+    $opts = {} if !$opts;
+    print "Setting up the blacklist of addons.\n" if $opts->{verbose};
+    return Cpanel::cPAddons::Filter::update_blacklist(@blacklist);
+}
+
+=head2 set_up_deprecated(OPTS, ADDON)
+
+Sets up the deprecated cpaddons list with additional ones cPanel has deprecated.
+
+Deprecated cpaddons are addons that cpanel has set up a deprecation plan for. They
+can not be installed, but if installed can continue to be used in limited ways until
+they transion from the deprecated list to the blacklist.
+
+=head3 ARGUMENTS
+
+=over
+
+=item OPTS - HASHREF
+
+Runtime options
+
+=over
+
+=item verbose - flag
+
+Prints additional output to the CLI.
+
+=back
+
+=item ADDON - String
+
+The name of an addon to mark as deprecated. You may provide multiple addons in the argument list.
+
+=back
+
+=cut
+
+sub set_up_deprecated {
+    my ( $opts, @deprecated ) = @_;
+    $opts = {} if !$opts;
+    print "Setting up the deprecated list of addons.\n" if $opts->{verbose};
+    return Cpanel::cPAddons::Filter::update_deprecated(@deprecated);
+}
+
+=head2 migrate_68_blacklist_to_70_deprecated_list(OPTS)
+
+Migrate the earlier "blacklist" into the decrecated list. This allows us to
+use the blacklist to ban module from running and the deprecated list to ban
+modules from installing henceforth.
+
+This is a precautionary step to preserve the behavior of any plugins that were
+already installed.
+
+=head3 ARGUMENTS
+
+=over
+
+=item OPTS - HASHREF
+
+Runtime options
+
+=over
+
+=item verbose - FLAG
+
+Prints additional output to the CLI.
+
+=back
+
+=back
+
+=cut
+
+sub migrate_68_blacklist_to_70_deprecated_list {
+    my $opts = shift || {};
+    if ( _file_exists($Cpanel::cPAddons::Filter::BLACKLIST_FILE_PATH)
+        && !_file_exists($Cpanel::cPAddons::Filter::DEPRECATED_FILE_PATH) ) {
+        print "Migrating the pre-v70 deprecation list to the v70 deprecated list.\n" if $opts->{verbose};
+
+        # migrating the 68 blacklist to 70 deprecated list.
+        # blacklist will only be for addons that should never
+        # run at all, deprecated is for addons that should not
+        # be installable.
+        my $ok = File::Copy::move( $Cpanel::cPAddons::Filter::BLACKLIST_FILE_PATH, $Cpanel::cPAddons::Filter::DEPRECATED_FILE_PATH );
+        if ( !$ok ) {
+            return ( $ok, "Failed to migrate the addons deprecation list from $Cpanel::cPAddons::Filter::BLACKLIST_FILE_PATH to $Cpanel::cPAddons::Filter::DEPRECATED_FILE_PATH." );
+        }
+        return $ok;
+    }
+    else {
+        if ( $opts->{verbose} ) {
+            if ( !_file_exists($Cpanel::cPAddons::Filter::BLACKLIST_FILE_PATH) ) {
+                print "Skipping migration of the pre-v70 deprecation list since it does not exists.\n";
+            }
+            elsif ( _file_exists($Cpanel::cPAddons::Filter::DEPRECATED_FILE_PATH) ) {
+                print "Skipping migration of the pre-v70 deprecation list since it has already been created.\n";
+            }
+        }
+        return 1;
+    }
+}
+
+=head2 set_up_rpms()
+
+Installs modern RPM equivalent cPAddon if a legacy version of the same cPAddon is
+already installed. This is in preparation to migrate the existing legacy installs
+to the modern installer.
+
+=over
+
+=item OPTS - HASHREF
+
+Runtime options
+
+=over
+
+=item verbose - flag
+
+Prints additional output to the CLI.
+
+=back
+
+=back
+
+=cut
+
+sub set_up_rpms {
+    my $opts = shift || {};
+
+    print "Scanning installed addons to find compatible RPM addon installers.\n" if $opts->{verbose};
+
+    Cpanel::Repos->new()->install_repo( name => 'cPAddons' );
+
+    my @rpms_to_install;
+    for my $conv (@conversion_spec) {
+        if ( _dir_exists( $conv->{legacy_addon_path} ) && !_dir_exists( $conv->{replacement_addon_path} ) ) {
+            push @rpms_to_install, $conv->{replacement_rpm};
+        }
+    }
+
+    if (@rpms_to_install) {
+        print " - Installing RPM addon installers to replace legacy installers.\n" if $opts->{verbose};
+        require Whostmgr::Cpaddon;
+        Whostmgr::Cpaddon::install_addon(@rpms_to_install);
+    }
+    elsif ( $opts->{verbose} ) {
+        print " - No qualifying legacy addons are installed.\n";
+    }
+
+    # To be implemented in a future story: The actual conversion
+
+    return;
+}
+
+=head2 uninstall_blacklisted_addons()
+
+Uninstalls any blacklisted addons that are currently installed on the system.
+
+=over
+
+=item OPTS - HASHREF
+
+Runtime options
+
+=over
+
+=item verbose - flag
+
+Prints additional output to the CLI.
+
+=back
+
+=back
+
+=cut
+
+sub uninstall_blacklisted_addons {
+    my $opts = shift || {};
+
+    my $blacklist = Cpanel::cPAddons::Filter::get_blacklisted_addons();
+    my ( $AVAILABLE_MODULES, $CURRENT_MODULES ) = Whostmgr::Cpaddon::Conf::load( force => 1 );
+
+    my $manager = Whostmgr::Addons::Manager->new(
+        CURRENT_MODULES   => $CURRENT_MODULES,
+        AVAILABLE_MODULES => $AVAILABLE_MODULES,
+        notify_fn         => \&_print_notice,
+    );
+
+    my $changed = 0;
+    foreach my $module (@$blacklist) {
+        print "Uninstalling blacklisted addon $module.\n" if $opts->{verbose};
+        $CURRENT_MODULES->{$module} = $manager->uninstall( $module, 1 );
+        $changed = 1;
+    }
+
+    if ($changed) {
+        Whostmgr::Cpaddon::Conf::write_conf( config_definitions => $CURRENT_MODULES );
+    }
+    return 1;
+}
+
+=head2 usage(RETVAL, MESSAGE)
+
+Prints the custom message, the help message and returns the exit code.
+
+=head3 ARGUMENTS
+
+=over
+
+=item RETVAL - Number
+
+Exit code to return.
+
+=item MESSAGE - String - Optional
+
+Custom message to add to the help output.
+
+=back
+
+=cut
+
+sub usage {
+    my ( $retval, $message ) = @_;
+    my $fh = $retval ? \*STDERR : \*STDOUT;
+
+    $message //= <<USAGE;
+Set up the cPAddons subsystem.
+
+What it does?
+
+ * Sets up the initial directory structure for addons if missing.
+ * Sets up the cron jobs for the addon subsystem.
+ * Merges any updates to the addon blacklist. These modules may not be
+   installed or updated. No updates will be provided for these modules.
+   If any of these are installed on the system, they will be removed.
+ * Merges any updates to the addon deprecation list. These modules may
+   not be installed as cPanel is no longer supporting them. These modules
+   can be updated if already installed. Only limited critical updates will
+   be provided for these modules and only until they are moved to the
+   blacklist at the end of their deprecation life-cycle.
+ * Uninstalls any blacklisted addons that are installed on the system.
+ * Installs the WordPress cPAddon RPM if the legacy WordPress cPAddon is
+   already installed.
+
+Options:
+ --help         Print this usage info.
+ --verbose      Prints additional output for each step.
+
+USAGE
+    print {$fh} $message;
+    return $retval;
+}
+
+=head2 error(RETVAL, MESSAGE)
+
+Prints the error message and returns the exit code.
+
+=head3 ARGUMENTS
+
+=over
+
+=item RETVAL - Number
+
+Exit code to return.
+
+=item MESSAGE - String - Optional
+
+Error message to print.
+
+=back
+
+=cut
+
+sub error {
+    my ( $retval, $message ) = @_;
+    print STDERR $message if $message;
+    return $retval;
+}
+
+# for unit tests
+sub _dir_exists {
+    return -d $_[0];
+}
+
+sub _file_exists {
+    return -e $_[0];
+}
+
+# printer for the streamed messages from the
+# Whostmgr::Addons::Manager class.
+sub _print_notice {
+    my ( $message, $type ) = @_;
+    if ( $type eq 'error' ) {
+        print "Error: $message\n";
+    }
+    elsif ( $type eq 'warning' ) {
+        print "Warning: $message\n";
+    }
+    elsif ( $type eq 'success' ) {
+        print "Success: $message\n";
+    }
+    else {
+        print "$message\n";
+    }
+    return;
+}
+
+1;

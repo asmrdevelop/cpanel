@@ -1,0 +1,255 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - bin/convertmaildir                      Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+my $VERSION = 2.1;
+
+use strict;
+use Cpanel::PwCache                      ();
+use Cpanel::PwCache::Helpers             ();
+use Cpanel::PwCache::Build               ();
+use Cpanel::Quota::Parse                 ();
+use Cpanel::AccessIds::ReducedPrivileges ();
+use Cpanel::AccessIds::SetUids           ();
+use Cpanel::Config::LoadCpUserFile       ();
+use Cpanel::Config::HasCpUserFile        ();
+use Cpanel::Binaries                     ();
+use Cpanel::SafeRun::Errors              ();
+use Cpanel::SafeRun::Simple              ();
+
+$SIG{'INT'} = $SIG{'HUP'} = sub {
+    print "convertmaildir: Ignoring signal to avoid mail corruption\n";
+    return;
+};
+
+my $reserved_files_regex = qr/
+    ^
+    (?:
+        \.
+        | dovecot[-_.]
+        | courier
+        | diskusage[-_.]
+        | maildirsize$
+        | subscriptions$
+    )
+/x;
+
+# Perl binary must be executable by users, otherwise infinite loop
+my $perl_binary = '/usr/bin/perl';
+while ( -l $perl_binary ) {
+    $perl_binary = readlink $perl_binary;
+}
+my $raw_perms = ( stat($perl_binary) )[2];
+if ( defined $raw_perms ) {
+    my $other_executable = $raw_perms & 00001;
+    if ( !$other_executable ) {
+        print "Updating $perl_binary for other execution.\n";
+        chmod( $raw_perms | 00001, $perl_binary );
+    }
+}
+$| = 1;
+
+my $verbose = ( @ARGV && $ARGV[0] eq '--verbose' ) ? 1 : 0;
+if ($verbose) {
+    shift @ARGV;
+    print "convertmaildir $VERSION\n";
+}
+
+my $quotas_are_on = 1;
+my $oneuser       = $ARGV[0];
+
+if ( $oneuser && !Cpanel::PwCache::getpwnam($oneuser) ) {
+    die "Usage: $0 [--verbose] [user]\n";
+}
+
+my ( $quota_in_megs, $quotaon_cmd, $quotaoff_cmd, $domains, $pwcache_ref );
+if ($oneuser) {
+    die "'$oneuser' is not a recognized user.\n"
+      unless Cpanel::Config::HasCpUserFile::has_cpuser_file($oneuser);
+
+    my $cpuser = Cpanel::Config::LoadCpUserFile::loadcpuserfile($oneuser);
+    $pwcache_ref = [ [ Cpanel::PwCache::getpwnam($oneuser) ] ];
+    $domains     = { $oneuser => [ $cpuser->{'DOMAIN'}, @{ $cpuser->{'DOMAINS'} } ] };
+}
+else {
+    system('/usr/local/cpanel/scripts/updateuserdomains');
+    $quotaon_cmd  = Cpanel::Binaries::path('quotaon');
+    $quotaoff_cmd = Cpanel::Binaries::path('quotaoff');
+    require Cpanel::Config::LoadUserDomains;
+    $domains = Cpanel::Config::LoadUserDomains::loaduserdomains( {}, 0, 1 );
+    Cpanel::PwCache::Helpers::no_uid_cache();    #uid cache only needed if we are going to make lots of getpwuid calls
+    Cpanel::PwCache::Build::init_passwdless_pwcache();
+    $pwcache_ref = Cpanel::PwCache::Build::fetch_pwcache();
+}
+
+my ( @TODO, $user, $user_uid, $user_gid, $homedir );
+foreach my $pw (@$pwcache_ref) {
+    next if !exists $domains->{ $pw->[0] };
+    ( $user, $user_uid, $user_gid, $homedir ) = @{$pw}[ 0, 2, 3, 7 ];
+    next if ( $homedir eq '/' || !-d $homedir );
+    my @mainusermboxes;
+    @TODO = ();
+    print "======> Checking ${user} <======\n" if $verbose;
+
+    # Drop privileges for reads in user's home directory.
+    my $reduced_privs = ( ( $user ne 'root' ) && ( $user ne 'toor' ) ) ? Cpanel::AccessIds::ReducedPrivileges->new($user) : undef;
+    my %domain_map    = map { $_ => undef } @{ $domains->{$user} };
+
+    # Scan for domains that domains with mail accounts that may have been deleted
+    my %deleted_domain_map;
+    if ( opendir my $etc_dh, "${homedir}/etc" ) {
+        while ( my $file = readdir $etc_dh ) {
+            next if ( $file =~ m{ \A [.] [.]? \z }xms );
+
+            if ( -d "${homedir}/etc/$file" && !exists $domain_map{$file} ) {
+                $deleted_domain_map{$file} = undef;
+            }
+        }
+        close $etc_dh;
+    }
+    else {
+        print "Warning: could not open ${homedir}/etc: $!\n";
+    }
+
+    if ( !-d "${homedir}/mail/storage" ) {    #mdbox
+        if ( -f "${homedir}/mail/inbox" ) {
+            print "==> Checking ${homedir}/mail/inbox..." if $verbose;
+            push @TODO, { 'src' => "${homedir}/mail/inbox", 'dest' => "${homedir}/mail" };
+        }
+        my @filelist;
+
+        if ( opendir my $mail_dh, $homedir . '/mail' ) {
+            while ( my $taintedfile = readdir $mail_dh ) {
+                my ($file) = $taintedfile =~ m{ (.*) }xms;
+                next if ( $file =~ m{ \A [.] [.]? \z }xms );
+
+                # Skip over domain directories
+                next if exists $domain_map{$file};
+                next if exists $deleted_domain_map{$file};
+                if ( -f $homedir . '/mail/' . $file ) {
+                    push @mainusermboxes, $file;
+                }
+                elsif (-d $homedir . '/mail/' . $file
+                    && $file ne 'cur'
+                    && $file ne 'new'
+                    && $file ne 'tmp' ) {
+                    push @filelist, $file;
+                }
+            }
+            closedir $mail_dh;
+        }
+        while ( my $file = shift(@filelist) ) {
+            next if ( $file =~ $reserved_files_regex );
+
+            push @TODO, { 'recursive' => 1, 'src' => "${homedir}/mail/${file}", 'dest' => "${homedir}/mail" };
+        }
+
+    }
+    foreach my $domain ( keys %domain_map ) {
+        next if ( $domain =~ m{ \A [.] [.]? \z }xms || !-d "${homedir}/mail/${domain}" );
+        my @subusers;
+        if ( opendir( my $ud_dh, "${homedir}/mail/${domain}" ) ) {
+            while ( my $subuser = readdir($ud_dh) ) {
+                $subuser =~ /(.*)/;
+                $subuser = $1;
+                next if ( $subuser =~ m{ \A [.] [.]? \z }xms || !-d "${homedir}/mail/${domain}/${subuser}" );
+                push @subusers, $subuser;
+            }
+            closedir($ud_dh);
+        }
+        else {
+            print "Warning: could not open ${homedir}/mail/${domain}\n";
+        }
+        while ( my $subuser = shift(@subusers) ) {
+            next if -d "${homedir}/mail/${domain}/${subuser}/storage";    # mdbox
+            if ( -f "${homedir}/mail/${domain}/${subuser}/inbox" ) {
+                if ($verbose) {
+                    print "==> Checking ${homedir}/mail/${domain}/${subuser}/inbox...";
+                    print "==> Done\n";
+                }
+                push @TODO, { 'src' => "${homedir}/mail/${domain}/${subuser}/inbox", 'dest' => "${homedir}/mail/${domain}/${subuser}" };
+            }
+            push @TODO, { 'recursive' => 1, 'src' => "${homedir}/mail/${domain}/${subuser}", 'dest' =>, "${homedir}/mail/${domain}/${subuser}" };
+        }
+    }
+    print "==> Checking any remaining mboxes in $homedir/mail\n" if $verbose;
+    foreach my $file (@mainusermboxes) {
+        next if ( $file =~ $reserved_files_regex );
+        push @TODO, { 'src' => $homedir . '/mail/' . $file, 'dest' => $homedir . '/mail/.' . $file };
+    }
+
+    # Restore privileges now.
+    $reduced_privs = undef;
+
+    if ($verbose) {
+        print "==> Done\n";
+    }
+
+    if (@TODO) {
+
+        # Disable quotas
+        if ($oneuser) {
+            $quota_in_megs = get_user_quota($oneuser);
+            if ($quota_in_megs) {
+                print "======> Disabled quota for $oneuser ($quota_in_megs)M <======\n" if $verbose;
+                system '/usr/local/cpanel/scripts/editquota', $oneuser, '0M';
+            }
+        }
+        elsif ($quotas_are_on) {
+            $quotas_are_on = 0;
+            if ( -x $quotaoff_cmd ) {
+                print "======> Turned off system quotas <======\n" if $verbose;
+                system $quotaoff_cmd, '-a';
+            }
+        }
+
+        if ( my $pid = fork() ) {
+            waitpid( $pid, 0 );
+        }
+        else {
+            if ( $user ne 'root' && $user ne 'toor' ) {
+                Cpanel::AccessIds::SetUids::setuids($user);
+            }
+            my @CMD;
+            foreach my $cmd (@TODO) {
+                @CMD = ( '/usr/local/cpanel/bin/mb2md', $cmd->{'recursive'} ? ('-R') : (), '-s', $cmd->{'src'}, '-d', $cmd->{'dest'} );
+                if ($verbose) {
+                    print "\t\t" . ( $cmd->{'recursive'} ? 'Recursively ' : '' ) . "Converting $cmd->{'src'}.....";
+                    system(@CMD);
+                    print "Done\n";
+                }
+                else {
+                    Cpanel::SafeRun::Errors::saferunallerrors(@CMD);
+                }
+            }
+            exit;
+        }
+    }
+
+    if ($verbose) {
+        print "======> Done with $user <======\n";
+    }
+}
+
+# Restore quotas
+if ($oneuser) {
+    if ($quota_in_megs) {
+        print "======> Restored quota for $oneuser ($quota_in_megs)M <======\n" if $verbose;
+        system '/usr/local/cpanel/scripts/editquota', $oneuser, $quota_in_megs . 'M';
+    }
+}
+else {
+    if ( -x $quotaon_cmd && !$quotas_are_on ) {
+        print "======> Turned on system quotas <======\n" if $verbose;
+        system $quotaon_cmd, '-a';
+    }
+}
+
+sub get_user_quota {
+    my $user  = shift;
+    my $quota = Cpanel::SafeRun::Simple::saferun( '/usr/local/cpanel/bin/quota', $user );
+    return ( Cpanel::Quota::Parse::parse_quota($quota) )[1];
+}

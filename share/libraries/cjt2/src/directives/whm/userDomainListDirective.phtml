@@ -1,0 +1,174 @@
+<div class="row user-domain-list-directive account-selector-area" ng-class="{'user-selected':selectedUser,'user-summary-showing':selectedUser && selectedUserObj.summary}">
+    <!--ng-form name="{{parentID}}Form" -->
+        <div class="col-md-12">
+            <div class="form-group">
+                <div class="row">
+                    <div class="col-xs-12">
+                        <search id="{{ :: parentID }}_Search" title="{{ :: getString('Search for a user or a domain.') }}" ng-model="meta.filterValue" ng-change="fetch()"></search>
+                    </div>
+                </div>
+                <div class="row quick-filter-container">
+                    <div class="col-xs-12">
+                        <quick-filters id="{{ :: parentID }}_QuickFilters" title="{{ :: getString('Search By:') }}" active="quickFilterValue" on-filter-change="fetch()">
+                            <quick-filter-item id="quickFilterItem_all" title="{{ :: getString('Search by both users and domains.') }}" value="">{{ :: getString('All') }}</quick-filter-item>
+                            <quick-filter-item id="quickFilterItem_users" title="{{ :: getString('Search by users only.') }}" value="user">{{ :: getString('Users') }}</quick-filter-item>
+                            <quick-filter-item id="quickFilterItem_domains" title="{{ :: getString('Search by domains only.') }}" value="domain">{{ :: getString('Domains') }}</quick-filter-item>
+                        </quick-filters>
+                    </div>
+                </div>
+            </div>
+
+            <div class="form-group">
+                <div class="row">
+                    <div class="col-md-12">
+                        <div class="panel panel-default">
+                            <div class="panel-body account-table-panel-body" id="{{parentID}}_list" ui-scroll-viewport >
+                                <table class="table table-striped fixed-width-table" summary="{{ :: getString('A list of users and domains from which to choose.') }}">
+                                    <colgroup>
+                                        <col style="width:30px">
+                                        <col >
+                                    </colgroup>
+                                    <tbody>
+                                        <tr id="{{ :: parentID }}_Row_{{ :: domain.user }}"  class="domain_row no-animate" ui-scroll="domain in datasource" adapter="uiScrollAdapter" start-index="0" ng-click="userSelected(domain)" ng-class="{selected:selectedUser == domain.user, 'callout callout-warning edit-locked text-muted':domain.editLocked}">
+                                            <td class="account-table-radio text-center">
+                                                <input
+                                                    type="radio"
+                                                    id="{{ :: parentID }}_Row_{{ :: domain.user }}_radio"
+                                                    ng-required="required"
+                                                    name="user"
+                                                    ng-disabled="domain.editLocked"
+                                                    aria-label="{{ :: getRadioAriaLabel(domain.user, domain.domain) }}"
+                                                    title="{{ :: getRadioAriaLabel(domain.user, domain.domain) }}"
+                                                    value="{{ ::domain.user }}"
+                                                    ng-model="selectedUser" />
+                                            </td>
+                                            <td class="account-table-title">
+                                                <div>
+                                                    <div class="cutoff_with_ellipses"><label for="{{ :: parentID }}_Row_{{ :: domain.user }}_radio" class="left-to-right" ng-bind-html="domain.decoratedTitle"></label></div>
+                                                </div>
+                                                <div ng-if="domain.editLocked">
+                                                    <div>{{ domain.editLockedMessage }}</div>
+                                                </div>
+                                                <div ng-if="!hideAccountSummary && domain.user !== 'root' && !domain.without_domain && domain.selected">
+                                                    <table ng-if="domain.summary" class="table responsive-table account-summary-table fixed-width-table" summary="{{ :: domain.summaryTableSummary }}">
+                                                        <thead>
+                                                            <tr>
+                                                                <th>{{ :: getString('[asis,IP] Address') }}</th>
+                                                                <th>{{ :: getString('Owner') }}</th>
+                                                                <th>{{ :: getString('Email Addresses') }}</th>
+                                                                <th>{{ :: getString('Start Date') }}</th>
+                                                                <th>{{ :: getString('Theme') }}</th>
+                                                                <th>{{ :: getString('Package') }}</th>
+                                                                <th>{{ :: getString('Disk Usage') }}</th>
+                                                            </tr>
+                                                        </thead>
+                                                        <tbody>
+                                                            <tr>
+                                                                <td class="cutoff_with_ellipses" data-title="{{ :: getString('[asis,IP] Address') }}">{{ ::domain.summary.ip }}</td>
+                                                                <td class="cutoff_with_ellipses" data-title="{{ :: getString('Owner') }}">{{ ::domain.summary.owner }}</td>
+                                                                <td class="cutoff_with_ellipses" data-title="{{ :: getString('Email Addresses') }}">
+                                                                    <div ng-repeat="email in domain.summary.emails track by $index">
+                                                                        <a class="account-summary-email" href="mailto:{{::email}}" title="{{::email}}">
+                                                                            {{ ::email }} <span class='fas fa-external-link-alt'></span>
+                                                                        </a>
+                                                                    </div>
+                                                                    <span ng-if="domain.summary.emails.length == 0">*{{ :: getString("unknown") }}*</span>
+                                                                </td>
+                                                                <td class="cutoff_with_ellipses" data-title="{{ :: getString('Start Date') }}">{{ ::domain.summary.localStartdate }}</td>
+                                                                <td class="cutoff_with_ellipses" data-title="{{ :: getString('Theme') }}">{{ ::domain.summary.theme }}</td>
+                                                                <td class="cutoff_with_ellipses" data-title="{{ :: getString('Package') }}">
+                                                                    <button type="button" class="btn btn-link" ng-click="viewPackageDetails(domain)">
+                                                                        {{ ::domain.summary.plan }}
+                                                                        <span ng-if="domain.show_package" class='fas fa-eye-slash fa-sm'></span>
+                                                                    </button>
+                                                                    <span ng-if="loadingUserPackage[domain.user]"><i class="fas fa-spinner fa-spin"></i></span>
+                                                                </td>
+                                                                <td class="cutoff_with_ellipses" data-title="{{ :: getString('Disk Usage') }}">{{ ::domain.diskInfo }}</td>
+                                                            </tr>
+                                                        </tbody>
+                                                    </table>
+                                                    <div ng-if="domain.requestingSummary" class="account-summary-loading">
+                                                        <span><i class="fas fa-spinner fa-spin"></i> {{ :: getString('Loading Account Summary …') }}</span>
+                                                    </div>
+                                                    <div ng-if="!domain.requestingSummary && !domain.summary" class="account-summary-error">
+                                                        {{ :: getString('The system failed to load the account summary.') }}
+                                                    </div>
+                                                </div>
+                                            </td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                                <div ng-if="filteredDomains.length === 0" class="callout callout-info no-results-msg">
+                                    <span id="{{ :: parentID }}_noResultsMessage" ng-bind="noResultsMessage()"></span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <ng-transclude></ng-transclude>
+    <!--/ng-form-->
+    <script type="text/ng-template" id="package-details.ptt">
+        <div class="modal-header">
+            <h4 class="modal-title" id="modal-title" ng-bind="getTitle()"></h4>
+        </div>
+        <div class="modal-body" id="modal-body">
+            <table class="table table-sm account-summary-table">
+                <tbody>
+                    <tr>
+                        <td>{{ :: getString('Bandwidth') }}</td>
+                        <td>{{ getPackageValue(packageDetails,'BWLIMIT') }}</td>
+                    </tr>
+                    <tr>
+                        <td>{{ :: getString('CGI Access?') }}</td>
+                        <td>{{ getPackageValue(packageDetails,'CGI') }}</td>
+                    </tr>
+                    <tr>
+                        <td>{{ :: getString('cPanel Theme') }}</td>
+                        <td>{{ getPackageValue(packageDetails,'CPMOD') }}</td>
+                    </tr>
+                    <tr>
+                        <td>{{ :: getString('Feature List') }}</td>
+                        <td>{{ getPackageValue(packageDetails,'FEATURELIST') }}</td>
+                    </tr>
+                    <tr>
+                        <td>{{ :: getString('Shell access?') }}</td>
+                        <td>{{ getPackageValue(packageDetails,'HASSHELL') }}</td>
+                    </tr>
+                    <tr>
+                        <td>{{ :: getString('Dedicated IP?') }}</td>
+                        <td>{{ getPackageValue(packageDetails,'IP') }}</td>
+                    </tr>
+                    <tr>
+                        <td>{{ :: getString('FTP Accounts') }}</td>
+                        <td>{{ getPackageValue(packageDetails,'MAXFTP') }}</td>
+                    </tr>
+                    <tr>
+                        <td>{{ :: getString('Email Lists') }}</td>
+                        <td>{{ getPackageValue(packageDetails,'MAXLST') }}</td>
+                    </tr>
+                    <tr>
+                        <td>{{ :: getString('Email Accounts') }}</td>
+                        <td>{{ getPackageValue(packageDetails,'MAXPOP') }}</td>
+                    </tr>
+                    <tr>
+                        <td>{{ :: getString('Databases') }}</td>
+                        <td>{{ getPackageValue(packageDetails,'MAXSQL') }}</td>
+                    </tr>
+                    <tr>
+                        <td>{{ :: getString('Subdomains') }}</td>
+                        <td>{{ getPackageValue(packageDetails,'MAXSUB') }}</td>
+                    </tr>
+                    <tr>
+                        <td>{{ :: getString('Quota') }}</td>
+                        <td>{{ getPackageValue(packageDetails,'QUOTA') }}</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+        <div class="modal-footer">
+            <button class="btn btn-primary" type="button" ng-click="$close()">Done</button>
+        </div>
+    </script>
+</div>

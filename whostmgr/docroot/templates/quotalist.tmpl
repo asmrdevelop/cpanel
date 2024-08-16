@@ -1,0 +1,230 @@
+[% USE JSON -%]
+[% USE Whostmgr -%]
+[% USE CPScalar -%]
+[% IF ! data.only_show_over_quota; breadcrumburl = '/scripts/quotalistsel'; END -%]
+[% WRAPPER 'master_templates/master.tmpl' theme="yui"
+    scripts = ['/js/sorttable.js']
+    app_key = data.only_show_over_quota == 1 ? 'show_accounts_over_quota' : 'quota_modification'
+    extrastyle = '
+input.quota {
+    text-align: right;
+    width: 5em;
+}
+table.brick {
+    width: 100%;
+}
+.brickcontainer {
+    margin-left: 20px;
+}
+tr.tdredshade {
+    background-color: #ffaaaa;
+    font-size: inherit;
+}
+.form-group {
+    margin-bottom: 5px;
+}
+.align-numbers {
+    text-align: right;
+}
+html[dir=rtl] .callout-info {
+    border-left-color: transparent;
+    border-right-color: #2980b9;
+}
+.callout-info {
+    background-color: #d7edf9;
+    border-left-color: #2980b9;
+}
+'
+-%]
+[%- IF Whostmgr.template_vars.envtype == 'virtuozzo' || Whostmgr.template_vars.envtype == 'vzcontainer' %]
+    <div class="callout callout-info">
+        Your system uses Virtuozzo containers. For disk quotas to work, your hosting provider may need to enable quotas on the host node. More information is
+        available in our <a target="_blank" href="https://go.cpanel.net/vzquotas">documentation</a>.
+    </div>
+[%- END %]
+[% IF data.quotas_enabled -%]
+[% SET DEFAULT_QUOTA = 250;  #Do we have a setting for this? -%]
+[% PROCESS '_ajaxapp_styles.tmpl' -%]
+[% PROCESS '_ajaxapp_header.tmpl' -%]
+<br />
+<script>
+function form_changed() {
+    var quota = this.quota;
+    if ( this.quota_control ) {
+        var changed = this.quota_control[0].defaultChecked
+            ? ( (quota.value !== quota.defaultValue) || !this.quota_control[0].checked )
+            : this.quota_control[0].checked
+        ;
+    }
+    else {
+        var changed = (quota.value !== quota.defaultValue)
+    }
+
+    var valid = true;
+    if (changed && !quota.disabled) {
+        valid = !!parseInt(quota.value.trim());
+    }
+
+    this.getElementsByTagName("button")[0].disabled = !changed || !valid;
+
+    return changed && valid;
+};
+
+var ERROR_NOTICE;
+function save_quota(form) {
+    if ( form_changed.call(form) ) {
+        var progress = new CPANEL.ajax.Progress_Panel( null, {
+            status_html: '[% locale.maketext('Updating quota for “[output,class,_1,code]” …','{user}') %]'.replace( "{user}", form.user.value.html_encode() )
+        } );
+
+        var button = form.getElementsByTagName("button")[0];
+        var source = document.activeElement;
+
+        progress.show_from_source( source );
+
+        var quota = form.quota.disabled ? 'unlimited' : parseInt(form.quota.value.trim());
+
+        var call = CPANEL.api( {
+            func: "editquota",
+            data: { user: form.user.value, quota:quota },
+            callback: {
+                failure: function(o) {
+                    progress.hide_to_point(source);
+
+                    var err = String(o.cpanel_error || o.error || o);
+
+                    if (ERROR_NOTICE) {
+                        ERROR_NOTICE.cfg.setProperty("content", err.html_encode());
+                    }
+                    else {
+                        ERROR_NOTICE = new CPANEL.widgets.Page_Notice({level:"error", content:err.html_encode(), replaces:ERROR_NOTICE});
+                    }
+                },
+                success: function(o) {
+                    progress.hide_to_point(source);
+
+                    if (ERROR_NOTICE && ERROR_NOTICE.element) {
+                        var old_notice = ERROR_NOTICE;
+                        ERROR_NOTICE = null;
+                        CPANEL.animate.slide_up(old_notice.element)
+                        .onComplete.subscribe( old_notice.destroy, old_notice, true );
+                    }
+
+                    CPANEL.dom.set_form_defaults(form);
+                    button.disabled = true;
+                    DOM.getAncestorByTagName(form,"td").setAttribute("sorttable_customkey",quota);
+
+                    new CPANEL.ajax.Dynamic_Notice({level:"success", content:"[% locale.maketext('Success!') %]"});
+
+                    if (form.user.value in USER_USED_KIB) {
+                        var row = DOM.getAncestorByTagName(form, "tr");
+                        if (USER_USED_KIB[form.user.value] < (quota * 1024) || quota === 'unlimited') {
+                            DOM.removeClass( row, "tdredshade" );
+                        }
+                        else {
+                            DOM.addClass( row, "tdredshade" );
+                        }
+                    }
+                }
+            }
+        } );
+    }
+};
+
+var USER_USED_KIB = {};
+</script>
+<div id="cjt_pagenotice_container"></div>
+<div class="brickcontainer">
+<div class="brickcontainer2">
+    <table class="sortable brick" id="qlist">
+    <thead>
+    <tr class="cellheader">
+            <th class="heavybg">&nbsp;User&nbsp;</th>
+            <th class="sorttable_space heavybg">&nbsp;Space&nbsp;Used&nbsp;</th>
+            <th class="sorttable_numeric heavybg">&nbsp;Quota&nbsp;</th>
+        </tr>
+     </thead>
+     <tbody>
+[%
+    SET totalused = 0;
+    SET anyone_over_quota = 0;
+    SET tclass = '';
+
+    FOR userdata IN data.users.sort('domain');
+
+        SET tclass = (loop.index % 2) ? 'tdshade2' : 'tdshade1';
+        IF userdata.over_quota;
+            tclass = tclass _ ' tdredshade';
+        END;
+
+        SET used_disp = CPScalar.sprintf('%.2f', (userdata.used || 0) / 1024) _ '&nbsp;MB';
+        SET limit_disp = userdata.limit
+            ? ((userdata.limit || 0) div 1024)
+            : DEFAULT_QUOTA
+        ;
+-%]
+
+        <tr class="[% tclass %]">
+            <td>
+            &nbsp;[% userdata.domain %] [[% userdata.name %]]
+[% IF (data.showres != userdata.name) && Whostmgr.hasroot() && userdata.is_reseller %]<br /><a href="[% cp_security_token %]/scripts/quotalist?showres=[% userdata.name FILTER uri %]">Show only this reseller's accounts</a>[% END %]
+            <td class="align-numbers">[% used_disp %]&nbsp;</td>
+            <td sorttable_customkey="[% userdata.limit ? (userdata.limit div 1024) : 'unlimited' -%]">
+            <form id="[% userdata.name FILTER html %]_form" action="javascript:void(0)" onsubmit="save_quota(this)">
+                <input type="hidden" name="user" value="[% userdata.name FILTER html %]" />
+[% IF data.can_set_unlimited || !userdata.limit -%]
+                <div class="form-group">
+                <input type="radio" name="quota_control" value="custom" [% IF userdata.limit %]checked="checked"[% END %] />
+                <input type="text" class="quota" name="quota" value="[% limit_disp %]" [% IF !userdata.limit %]disabled="disabled"[% END %] />&nbsp;MB
+                </div>
+                <div class="form-group">
+                <label><input type="radio" name="quota_control" value="unlimited" [% IF !userdata.limit %]checked="checked"[% END %] [% IF !data.can_set_unlimited %]disabled="disabled"[% END %] /> [% locale.maketext('Unlimited') %]</label>
+                </div>
+[% ELSE -%]
+<div class="form-group">
+<input type="text" class="quota" name="quota" value="[% limit_disp %]" [% IF !userdata.limit %]disabled="disabled"[% END %] />&nbsp;MB
+</div>
+[% END -%]
+                <button type="submit" disabled="disabled" class="btn-primary">[% locale.maketext('Save') %]</button>
+            </form>
+            <script>EVENT.onDOMReady(function() {
+                var form = DOM.get([% userdata.name.json() %] + "_form");
+[% IF data.can_set_unlimited || !userdata.limit -%]
+                var gis = new CPANEL.ajax.Grouped_Input_Set( form, form.quota_control[0], form.quota_control[1] );
+[% END -%]
+                EVENT.on( form, "click", form_changed );
+                EVENT.on( form, "keyup", form_changed );
+                USER_USED_KIB[[% userdata.name.json() %]] = [% userdata.used || 0 %];
+            });</script>
+            </td>
+        </tr>
+[% END -%]
+
+</tbody><tfoot>
+[% IF ! data.only_show_over_quota -%]
+<tr><td class="mediumbg"><b>&nbsp;Total&nbsp;Space&nbsp;Used&nbsp;</td><td class="align-numbers"><b>&nbsp;[% CPScalar.sprintf('%.2f', data.total_used / 1024) %]&nbsp;MB&nbsp;</td><td>&nbsp;</td></tr>
+[% ELSIF !data.anyone_over_quota -%]
+<tr><td class="mediumbg" colspan="4"><b>No users are over their quota.</td></tr>
+[% END -%]
+    </tfoot>
+    </table>
+<br />
+[% IF Whostmgr.hasroot() && data.showres -%]
+[% WRAPPER '_brick.tmpl' bricktitle='Limited Output' -%]
+Only accounts belonging to [% data.showres %] are being shown. If you wish to see all accounts,
+<a href='[% cp_security_token %]/scripts/quotalist'>click here</a>.
+[% END -%]
+[% END -%]
+[% IF ! data.only_show_over_quota && (totalused > 0) -%]
+[% WRAPPER '_brick.tmpl' bricktitle='Hints' -%]
+If all users are listed having 0 disk space used and this is incorrect, please
+<a href='[% cp_security_token %]/scripts/newquota'>click here</a> to rebuild your quota files.
+[% END -%]
+[% END -%]
+</div></div>
+[% PROCESS '_ajaxapp_footer.tmpl' -%]
+[% ELSE -%]
+No quotas are enabled on this system.
+[% END -%]
+
+[% END #wrapper -%]

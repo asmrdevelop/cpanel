@@ -1,0 +1,82 @@
+[% IF Whostmgr.has_license_flag('dev') -%]
+    [% SET server_details = Whostmgr.get_server_info(); -%]
+    <div class="callout callout-cpanel developerLicenseWarning" role="region" aria-label=[% locale.maketext('Development License') %]>
+        [% mail_subject = server_details.hostname _ " ( " _ server_details.mainip _ ", " _ server_details.mainserverip _ " ) is using a development license in a production environment." -%]
+        [% mail_subject = mail_subject.uri() -%]
+        <h1>[% locale.maketext('Development License') -%]</h1>
+        <span>[% locale.maketext('This server currently uses a development license. If you are using this server in a production environment, please notify [output,url,_1,cs@cpanel.net] immediately.', "mailto:cs@cpanel.net?subject=$mail_subject") -%]</span>
+    </div>
+[% ELSIF Whostmgr.has_license_flag('trial') -%]
+    [% SET server_details = Whostmgr.get_server_info(); -%]
+    [% SET vars = Whostmgr.template_vars(); -%]
+    [% DEFAULT analytics_for_current_user = '';
+       SET analytics_for_current_user = NVData.get('analytics', undef, 0, 'whm'); %]
+    [% SET is_root_user = CPANEL.authuser == 'root'; %]
+    [%
+       # If is root user and in trial and analytics not set for this user
+       IF is_root_user && analytics_for_current_user == '';
+           # Default it to on for this user.
+           analytics_for_current_user = 'on';
+           SET default_to_on = 1;
+       END;
+    -%]
+    <div id="divTrialLicenseWarning" class="callout callout-cpanel trialLicenseWarning" role="region" aria-label=[% locale.maketext('Trial License') %]>
+        <h1>[% locale.maketext('Trial License') -%]</h1>
+        <div class="trial-warning-content">
+            [% locale.maketext('This installation of [asis,cPanel amp() WHM] is for trial use, is limited to 30 user accounts, and will expire at the end of the trial period.') -%]
+            [% IF is_root_user; %]
+            [% locale.maketext('Upgrade to a paid copy of [asis,cPanel amp() WHM] to use the software after that period.') %]
+            [% IF analytics_for_current_user == 'on' && default_to_on %]
+            <div class="padding-top-10">
+                [% locale.maketext('To help us improve our users’ experience with our products, we have enabled Interface Analytics data collection for the root user.') %]
+            </div>
+            [% END %]
+            <div class="padding-top-10">
+            [% locale.maketext('When you purchase a license, you must provide the following information:') %]
+            </div>
+            <ul class="trial-list">
+                <li><b>License Type: </b><span id="licenseTypeInfo">[% vars.envtype && vars.envtype != 'standard' ? "VPS" : "Dedicated" %]</span></li>
+                <li><b>IP Address: </b><span id="mainServerIPInfo">[% server_details.publicmainserverip %]</span></li>
+            </ul>
+            <a target="_parent" href="[% cp_security_token %]/scripts12/license_purchase_status/" id="lnkLicensePurchase" class="btn btn-cpanel">[% locale.maketext('Purchase a License') %]</a>
+            [% END %]
+        </div>
+    </div>
+[% ELSIF Whostmgr.is_test_build() -%]
+    [% SET expire_epoch = Whostmgr.get_expire_time(); -%]
+    <div class="callout callout-cpanel trialLicenseWarning" role="region" aria-label=[% locale.maketext('Test Build') %]>
+        <h1>[% locale.maketext('Test Build') -%]</h1>
+        <span>
+            [% IF expire_epoch %]
+                [% locale.maketext('Thank you for testing this pre-release test build. This build is not intended for production use and is delivered AS-IS, with no warranties expressed or implied.') %] [% locale.maketext('This build will expire on [comment,a date][_1].', "<span id='expireText' style='display:none'>$expire_epoch</span>") %]
+            [% ELSE %]
+                [% locale.maketext('Thank you for testing this pre-release test build. This build is not intended for production use and is delivered AS-IS, with no warranties expressed or implied.') %]
+            [% END %]
+        </span>
+        [% IF expire_epoch %]
+          [%# We render this in localtime on the client side because it avoids loading Perl’s date localization modules on every page. %]
+        <script type="text/javascript">
+          var expireTimeElement = document.getElementById('expireText');
+          var epoch = parseInt( expireTimeElement.textContent, 10 );
+
+          var d = new Date(0);
+          d.setUTCSeconds(epoch);
+
+          // TODO: Ideally we’d use LOCALE for this, but we can’t
+          // be sure that LOCALE has CLDR data yet.
+
+          var dateOpts = {
+            weekday: "long",
+            year: "numeric",
+            month: "long",
+            day: "numeric",
+            timeZone: "UTC",
+            timeZoneName: "short",
+          };
+
+          expireTimeElement.textContent = d.toLocaleString(undefined, dateOpts);
+          expireTimeElement.style.display = "";
+        </script>
+        [% END %]
+    </div>
+[% END -%]

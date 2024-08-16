@@ -1,0 +1,68 @@
+[%#
+Variables passed in:
+
+whm_login_url           - the url for WHM logins
+cpanel_version          - the cPanel version that was/is being installed.
+exim_backup_path        - the path to the saved config backup
+log_preview             - an arrayref of file previews
+previous_config_version - The previously installed configuration version
+current_config_version  - The currently installed configuration version
+new_config_version      - The new configuration version
+is_whm                  - True if this message is being displayed in WHM
+cf_and_replacecf_paths  - an arrayref of paths to cf and replacecf
+
+For more information about how to customize notification templates, read our documentation at https://go.cpanel.net/notificationtemplates
+
+-%]
+<p>
+    [% CPANEL.locale.maketext("To complete this update from configuration version “[_1]” to version “[_2]”, perform the following steps:", NOTICE.current_config_version, NOTICE.new_config_version); %]
+
+    <ul>
+      [% IF !NOTICE.is_whm %]
+        [% PROCESS "Check/includes/EximConfig.WHMLoginSteps.html.tmpl" %]
+      [% END %]
+        <li>
+            [% IF NOTICE.is_whm %]
+             [% CPANEL.locale.maketext('Click the “[output,url,_1,_2]” tab.', 'javascript:select_exim_backup();', 'Backup') # Exim Configuration tab names are not translated %]
+            [% ELSE %]
+              [% CPANEL.locale.maketext('Click the “[_1]” tab.', 'Backup') # Exim Configuration tab names are not translated %]
+            [% END %]
+        </li>
+        <li>
+          [% CPANEL.locale.maketext('Click “[_1]”.', 'Run Backup') # Not translated %]
+        </li>
+        <li>
+            [% IF NOTICE.is_whm %]
+             [% CPANEL.locale.maketext('Click the “[output,url,_1,_2]” tab.', 'javascript:select_exim_reset();', 'Reset') # Exim Configuration tab names are not translated %]
+            [% ELSE %]
+              [% CPANEL.locale.maketext('Click the “[_1]” tab.', 'Reset') # Exim Configuration tab names are not translated %]
+            [% END %]
+        </li>
+        <li>
+          [%-
+            # The phrase being passed as an arg is not translated, and will not appear translated in the 'Reset' interface - so we are going to pass it as an arg without maketext-ing it.
+            CPANEL.locale.maketext('Select “[_1]” from the menu.', 'Reset cPanel &amp; WHM Exim configuration files, one option at a time, until the installed Exim configuration is valid.' );
+          -%]
+        </li>
+        <li>
+          [% CPANEL.locale.maketext('Click “[_1]”.', 'Reset') # Not translated %]
+        </li>
+        <li>
+            [% IF NOTICE.is_whm %]
+                [%
+                    CPANEL.locale.maketext('Under the “[output,url,_1,_2]” and “[output,url,_3,_4]” tabs, use the data from your backup to update and reinstall your custom settings.',
+                    'javascript:select_exim_basic();', 'Basic Editor',  # Exim Configuration tab names are not translated
+                    'javascript:select_exim_advanced();', 'Advanced Editor',    # Exim Configuration tab names are not translated
+                    );
+                    %]
+            [% ELSE %]
+                [%
+                    CPANEL.locale.maketext('Under the “[_1]” and “[_2]” tabs, use the data from your backup to update and reinstall your custom settings.',
+                        'Basic Editor', # Exim Configuration tab names are not translated
+                        'Advanced Editor',  # Exim Configuration tab names are not translated
+                    );
+                %]
+            [% END %]
+        </li>
+    </ul>
+</p>

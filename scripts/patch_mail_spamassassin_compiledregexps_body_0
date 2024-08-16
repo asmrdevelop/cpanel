@@ -1,0 +1,66 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/patch_mail_spamassassin_compiledregexps_body_0
+#                                                  Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+BEGIN {
+    if ( $ARGV[0] && -d $ARGV[0] ) {
+        unshift @INC, $ARGV[0];
+    }
+}
+
+eval 'local $SIG{__DIE__}; use Mail::SpamAssassin::CompiledRegexps::body_0;';
+use Cpanel::SafeFile        ();
+use Cpanel::LoadFile        ();
+use Cpanel::SafeRun::Simple ();
+use Cpanel::Logger          ();
+
+my $module_path = $INC{'Mail/SpamAssassin/CompiledRegexps/body_0.pm'};
+if ( !$module_path ) {
+    print "Mail::SpamAssassin::CompiledRegexps::body_0 not used. No patch needed.\n";
+    exit;
+}
+
+my $logger = Cpanel::Logger->new();
+
+my $txt = Cpanel::LoadFile::loadfile($module_path);
+if ( !$txt ) {
+    $logger->die("Unable to load $module_path");
+}
+if ( $txt !~ m/(?:require|use)\s+DynaLoader/ ) { exit; }
+if ( $txt =~ m/XSLoader/ )                     { exit; }
+
+print "Removing bloated DynaLoader Dep from Mail::SpamAssassin::CompiledRegexps::body_0.\n";
+
+my $mod_fh = Cpanel::SafeFile::safeopen( \*ER, '+<', $module_path );
+if ( !$mod_fh ) {
+    $logger->die("Could not edit $module_path");
+}
+my @EN = <ER>;
+seek( ER, 0, 0 );
+my $inconfig = 0;
+foreach (@EN) {
+    s/require\s+DynaLoader/use XSLoader/g;
+    s/use\s+DynaLoader/use XSLoader/g;
+    s/DynaLoader/XSLoader/g;
+    s/^bootstrap.*/XSLoader::load 'Mail::SpamAssassin::CompiledRegexps::body_0', \$VERSION\;/g;
+    s/^(\s*)(Mail::SpamAssassin::CompiledRegexps::body_0|__PACKAGE__)->bootstrap.*/$1XSLoader::load 'Mail::SpamAssassin::CompiledRegexps::body_0', \$VERSION\;/g;
+    print ER $_;
+}
+truncate( ER, tell(ER) );
+Cpanel::SafeFile::safeclose( \*ER, $mod_fh );
+
+my $is_ok = Cpanel::SafeRun::Simple::saferun( '/usr/local/cpanel/scripts/check_mail_spamassassin_compiledregexps_body_0', $ARGV[0] );
+chomp $is_ok;
+if ( !$is_ok || $is_ok ne 'ok' ) {
+    print "Patching Failed, restoring previous Mail::SpamAssassin::CompiledRegexps::body_0!\n";
+    my $mod_fh2 = Cpanel::SafeFile::safeopen( \*ER, '>', $module_path );
+    if ( !$mod_fh2 ) {
+        $logger->die("Could not edit $module_path");
+    }
+    print ER $txt;
+    Cpanel::SafeFile::safeclose( \*ER, $mod_fh2 );
+}

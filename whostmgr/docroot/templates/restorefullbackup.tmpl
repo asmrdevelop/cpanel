@@ -1,0 +1,158 @@
+[%
+    USE JSON;
+    USE Whostmgr;
+    WRAPPER 'master_templates/master.tmpl'
+        stylesheets = [
+            '/css/whm_dynamic_notices.css',
+            '/css2/newform.css'
+        ],
+        scripts = [
+            '/yui/datasource/datasource-min.js'
+            '/yui/autocomplete/autocomplete-min.js'
+            '/cjt/combobox-min.js'
+        ],
+        theme = 'bootstrap',
+        app_key = 'restore_a_full_backup_cpmove_file';
+-%]
+
+<style>
+    .cjt-combobox-expander {
+        cursor: pointer;
+    }
+</style>
+
+<div id="content">
+    <div id="infoField">
+        <p>
+            [% locale.maketext('This feature will restore full backups, cPanel backups, and cPanel move files and save them in one of the following formats:') %]
+            <ul>
+                [%# do not localize these, they are formats and can thus not be translated %]
+                <li>cpmove-{USER}</li>
+                <li>cpmove-{USER}.tar</li>
+                <li>cpmove-{USER}.tar.gz</li>
+                <li>{USER}.tar</li>
+                <li>{USER}.tar.gz</li>
+                <li>backup-{MM.DD.YYYY}_{HH-MM-SS}_{USER}.tar</li>
+                <li>backup-{MM.DD.YYYY}_{HH-MM-SS}_{USER}.tar.gz</li>
+            </ul>
+            <p>
+            [% locale.maketext('The files must be in one of the following directories on the server: [list_or,_1]', [ '/home', '/home2', '/home3', '/root', '/usr', '/usr/home', '/web' ] ) %]
+            </p>
+            <p>
+                <strong>[% locale.maketext('You must upload the file to one of the above directories before you can use this feature.') %]</strong>
+            </p>
+        </p>
+    </div>
+    [% INCLUDE _pending_transfers.tmpl %]
+    <form class="col-sm-6" role="form" id="restoreForm" action="../scripts5/quickrestore" method="post" enctype="multipart/form-data">
+            [% SET restricted_by_default = 1 %]
+            [% PROCESS _restricted_restore_option.tmpl %]
+            <fieldset>
+                <legend>
+                    [% locale.maketext('Settings') %]
+                </legend>
+                <div class="form-group">
+                    <label>[% locale.maketext('Transfer Method:') %]</label>
+                    <div class="radio">
+                        <label>
+                            <input type="radio" id="restoreWithUsername" name="restoreOption" checked="checked">
+                            [% locale.maketext('Restore with Username') %]
+                        </label>
+                    </div>
+                    <div class="radio">
+                        <label>
+                            <input type="radio" id="restoreWithFile" name="restoreOption">
+                            [% locale.maketext('Restore with File') %]
+                        </label>
+                    </div>
+                </div>
+                <div id="userInputWrapper">
+                    <div class="form-group">
+                        <label for="user">[% locale.maketext('Username for the account that you wish to restore:') %]</label>
+                        <div class="row">
+                            <div class="col-sm-6">
+                                <div class="comboBoxWrapper">
+                                    <input type="text" name="user" id="user" class="form-control">
+                                    <a id="userexpander"></a>
+                                </div>
+                            </div>
+                            <div id="user_error" class="col-sm-6">
+                            </div>
+                        </div>
+                        <div class="help-block" id="filepathDisplay">
+                        </div>
+                    </div>
+                </div>
+                <div id="fileInputWrapper">
+                    <div class="form-group">
+                        <label for="user">[% locale.maketext('File to restore with:') %]</label>
+                        <div class="row">
+                            <div class="col-sm-6">
+                                <input type="file" name="restorePackage" id="restorePackage" disabled="disabled"/>
+                            </div>
+                            <div id="restorePackage_error" class="col-sm-6">
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label>[% locale.maketext('When you update the A records to migrate from the original server’s address to the destination’s server address, do you wish to:') %]</label>
+                    <div class="radio">
+                        <label>
+                            <input type="radio" id="xferpoint" value="all" name="replaceip" checked="checked">
+                            [% locale.maketext('Replace all instances of the original server’s IP address with the new IP address, such as in custom A records (default).') %]
+                        </label>
+                    </div>
+                    <div class="radio">
+                        <label>
+                            <input type="radio" id="auth_root" value="basic" name="replaceip">
+                            [% locale.maketext('Only replace basic cPanel-provided A records in zone files.') %]
+                        </label>
+                    </div>
+                </div>
+                <div class="checkbox">
+                    <label>
+                        <input  type="checkbox"
+                                name="force_overwrite"
+                                id="force_overwrite"
+                                value="1"/>
+                        [% locale.maketext('Overwrite the existing user.') %]
+                    </label>
+                </div>
+                [% IF data.available_ip_count %]
+                <div class="checkbox">
+                    <label>
+                        <input  type="checkbox"
+                                name="ip"
+                                id="ip"
+                                value="1"/>
+                        [% locale.maketext('Assign a Dedicated IP Address') %]
+                    </label>
+                </div>
+                [% ELSE %]
+                <div class="checkbox">
+                    <label class="disabled">
+                        <input  type="checkbox"
+                                name="ip"
+                                id="ip"
+                                disabled="disabled"
+                                value="0"/>
+                        [% locale.maketext('Assign a Dedicated IP Address') %]
+                    </label>
+                    <span class="help-block">
+                        [% locale.maketext('A dedicated [asis,IP] address is not available because the system does not have any free [asis,IP] addresses.') %]
+                    </span>
+                </div>
+                [% END %]
+                <input type="hidden" id="filepath" name="filepath"/>
+            </fieldset>
+        <button type="submit" title="Restore" id="restoreButton" class="btn btn-primary">
+            [% locale.maketext('Restore') %]
+        </button>
+    </form>
+</div>
+<script text="text/javascript">
+    CPANEL.namespace("CPANEL.PAGE");
+</script>
+[% INCLUDE _transfer_api_info.tmpl %]
+[% END #wrapper -%]

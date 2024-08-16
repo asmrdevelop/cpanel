@@ -1,0 +1,164 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/update_existing_mail_quotas_for_account
+#                                                  Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::update_existing_mail_quotas_for_account;
+
+use cPstrict;
+
+use parent qw( Cpanel::HelpfulScript );
+
+use Cpanel::AcctUtils::Account ();
+use Cpanel::Config::Users      ();
+use Cpanel::JSON               ();
+use Cpanel::PIDFile            ();
+use Cpanel::SafeRun::Errors    ();
+
+use Try::Tiny;
+
+=encoding utf-8
+
+=head1 NAME
+
+scripts::update_existing_mail_quotas_for_account
+
+=head1 SYNOPSIS
+
+    update_existing_mail_quotas_for_account [ --all --quota <quota_in_megabytes> | --user <username> --quota <quota_in_megabytes> | --help ]
+
+    NOTE: <quota_in_megabytes> must be a positive integer.  Use 0 for unlimited or maximum allowed quota (based on MAX_EMAILACCT_QUOTA for account).
+
+=head1 DESCRIPTION
+
+This command will update the quota for all existing email accounts for a given user
+or for all users on the system
+
+=cut
+
+our $PID_FILE = '/var/run/update_existing_mail_quotas_for_account.pid';
+
+# Use bin/uapi instead of Cpanel::API::execute because this script is uncompiled
+# and the API code we need is not shipped
+our $uapi_bin = '/usr/local/cpanel/bin/uapi';
+
+sub _OPTIONS {
+    return qw( user=s all quota=i );
+}
+
+__PACKAGE__->new(@ARGV)->script() unless caller();
+
+sub script ($self) {
+
+    my $quota = $self->getopt('quota');
+    if ( !defined $quota || $quota < 0 ) {
+        print "\n" . $self->help();
+        return;
+    }
+
+    if ( $self->getopt('user') ) {
+        my $user = $self->getopt('user');
+        print "Changing quota to ‘${quota}MB’ for all email accounts owned by the user ‘$user’\n";
+
+        try {
+            $self->call_for_one_user( $user, $quota );
+        }
+        catch {
+            warn "There was an error updating the quotas of all email addresses for ‘$user’: $_\n";
+        };
+
+        return;
+    }
+    elsif ( !$self->getopt('all') ) {
+        print "\n" . $self->help();
+        return;
+    }
+
+    Cpanel::PIDFile->do(
+        $PID_FILE,
+        sub {
+            print "Changing quota to ‘${quota}MBs’ for all email accounts of all users\n";
+
+            for my $user ( Cpanel::Config::Users::getcpusers() ) {
+                try {
+                    $self->call_for_one_user( $user, $quota );
+                }
+                catch {
+                    warn "There was an error updating the quotas of all email addresses for ‘$user’: $_\n";
+                };
+            }
+        }
+    );
+
+    return;
+}
+
+sub call_for_one_user ( $self, $user, $quota ) {
+
+    Cpanel::AcctUtils::Account::accountexists_or_die($user);
+
+    my $mail_accounts = $self->get_mail_accounts($user);
+    foreach my $mail_account (@$mail_accounts) {
+        my ( $email, $domain ) = split /@/, $mail_account;
+        try {
+            print "… updating ‘$mail_account’ account for ‘$user’ user\n";
+            $self->update_mail_quota( { user => $user, quota => $quota, email => $email, domain => $domain } );
+        }
+        catch {
+            warn "There was an error updating the quota for ‘$mail_account’: $_\n";
+        };
+    }
+
+    return;
+}
+
+sub update_mail_quota ( $self, $opts ) {
+
+    my $json = Cpanel::SafeRun::Errors::saferunnoerror(
+        $uapi_bin,
+        $< ? () : ( '--user', $opts->{user} ),    # if we are running as root, we need to tell it which user to run the API call for
+        '--output', 'json',
+        'Email',    'edit_pop_quota',
+        'email',    $opts->{email},
+        'domain',   $opts->{domain},
+        'quota',    $opts->{quota},
+    );
+    my $res = Cpanel::JSON::Load($json);
+
+    if ( !$res->{result}{status} ) {
+        my $errors = join( "\n", @{ $res->{result}{errors} } );
+        die "Email::list_pops API call failed:  $errors";
+    }
+
+    return;
+}
+
+sub get_mail_accounts ( $self, $user ) {
+
+    my $json = Cpanel::SafeRun::Errors::saferunnoerror(
+        $uapi_bin,
+        $< ? () : ( '--user', $user ),    # if we are running as root, we need to tell it which user to run the API call for
+        '--output', 'json',
+        'Email',    'list_pops',
+    );
+    my $res = Cpanel::JSON::Load($json);
+
+    if ( !$res->{result}{status} ) {
+        my $errors = join( "\n", @{ $res->{result}{errors} } );
+        die "Email::list_pops API call failed:  $errors";
+    }
+
+    my $data     = $res->{result}{data};
+    my $accounts = [];
+    foreach my $account_href ( @{ $res->{result}{data} } ) {
+        next if $account_href->{login} eq 'Main Account';
+        push @$accounts, $account_href->{login};
+    }
+
+    return $accounts;
+}
+
+1;

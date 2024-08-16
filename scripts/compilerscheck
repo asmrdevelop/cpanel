@@ -1,0 +1,31 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/compilerscheck                  Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::compilerscheck;
+
+use strict;
+use warnings;
+
+__PACKAGE__->script() unless caller();
+
+sub script {
+    my ($self) = @_;
+
+    if ( !getgrnam('compiler') ) { print "[compilerscheck] compiler group missing\n"; return; }
+    if ( !getpwnam('cpanel') )   { print "[compilerscheck] cpanel user missing\n";    return; }
+
+    require Whostmgr::Groups;
+    my $gr_ref = Whostmgr::Groups::getgroups('cpanel');
+    if ( !grep( /^compiler$/, @{$gr_ref} ) ) {
+        print "Adding cpanel to the compiler group.....";
+        Whostmgr::Groups::add_user_to_group( 'cpanel', 'compiler' );
+        print "Done\n";
+    }
+
+    return;
+
+}

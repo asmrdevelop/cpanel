@@ -1,0 +1,97 @@
+[%
+    USE JSON;
+    USE Whostmgr;
+    WRAPPER 'master_templates/master.tmpl'
+        app_key = 'copy_an_account_from_another_server_with_an_account_password'
+        stylesheets = [
+            '/css/whm_dynamic_notices.css'
+        ],
+        theme = 'bootstrap';
+
+-%]
+
+[% IF Whostmgr.get_max_users() && Whostmgr.minimum_accounts_needed( Whostmgr.get_max_users() ) %]
+    [%- PROCESS 'menu/_license_excess_create.tmpl' -%]
+    [%#
+        these are referenced by the js that is auto-loaded
+        preventing auto-load would require significant work in _loadjs.tmpl
+        and since that's used on every page, this is a smaller fix
+    %]
+    <input aria="hidden" id="submit-button" type="hidden"></input>
+[% ELSE %]
+
+    <div id="content">
+        <div id="infoField">
+            <p>
+                <ul>
+                    <li>[% locale.maketext('This feature uses the cPanel API to generate a backup of the account and transfer it to the server for restoration.') %]</li>
+                    <li>[% locale.maketext('If you are able to create a full backup, it is much preferable to do so and restore the backup file via [output,url,_1,Restore a Full Backup/cpmove file].', '../scripts5/quickrestorecpmovefile') %]</li>
+                </ul>
+            </p>
+        </div>
+
+        [% INCLUDE _pending_transfers.tmpl %]
+        <div class="row">
+            <form class="col-sm-6" action="../scripts5/donorootcopy" method="POST" name="mainform" id="mainform" role="form">
+                <!-- prevent password autofill -->
+                <input type="text" style="display:none">
+                <input type="password" autocomplete='off' style="display:none">
+
+                [% SET restricted_by_default = 1 %]
+                [% PROCESS _restricted_restore_option.tmpl %]
+                <fieldset>
+                    <legend>
+                        [% locale.maketext('Settings') %]
+                    </legend>
+                    <div class="form-group">
+                        <label for="host">[% locale.maketext('Server to copy from (IP or FQDN):') %]</label>
+                        <div class="row">
+                            <div class="col-sm-6">
+                                <input type="text" id="host" name="host" class="form-control">
+                            </div>
+                            <div class="col-sm-6">
+                                <div id="host_error">
+                                </div>
+                            </div>
+                        </div>
+                        <div class="help-block">
+                            [% locale.maketext('If the site is not reachable and the server is online, this should be the address of the server that contains the account.') %]
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label for="user">[% locale.maketext('Username to copy:') %]</label>
+                        <div class="row">
+                            <div class="col-sm-6">
+                                <input type="text" id="user" name="user" class="form-control">
+                            </div>
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label for="pass">[% locale.maketext('User’s password:') %]</label>
+                        <div class="row">
+                            <div class="col-sm-6">
+                                <input type="password" autocomplete='off' id="pass" name="pass" class="form-control">
+                            </div>
+                        </div>
+                    </div>
+                    <div class="checkbox">
+                        <label>
+                            <input  type="checkbox"
+                                    name="ip"
+                                    id="ip"
+                                    value="1"/>
+                            [% locale.maketext('Give New Account an IP Address') %]
+                        </label>
+                    </div>
+                </fieldset>
+                <button type="submit" title="Copy Account" class="btn btn-primary" id="submit-button">
+                    <div class="button-text">
+                        [% locale.maketext('Copy Account') %]
+                    </div>
+                </button>
+            </form>
+        </div>
+    </div>
+    [% INCLUDE _transfer_api_info.tmpl %]
+[% END  -%]
+[% END #wrapper -%]

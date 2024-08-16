@@ -1,0 +1,57 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/restorecpuserfromcache          Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use Cpanel::FileUtils::Copy     ();
+use Cpanel::Rand                ();
+use Cpanel::Config::CpUserGuard ();
+
+$| = 1;
+
+my $user = $ARGV[0];
+if ( !$user ) {
+    print "Enter the user to restore from /var/cpanel/users.cache to /var/cpanel/users? ";
+    $user = <STDIN>;
+}
+chomp($user);
+$user =~ s/\///g;
+if ( !-e '/var/cpanel/users.cache/' . $user ) {
+    print "Sorry, $user file does not exist in /var/cpanel/users.cache\n";
+    exit 1;
+}
+if ( -e '/var/cpanel/users/' . $user ) {
+    print "Sorry, $user file does already exists in /var/cpanel/users, please move it away first.\n";
+    exit 1;
+}
+
+my $tmpfile  = Cpanel::Rand::get_tmp_file_by_name( '/var/cpanel/users.cache/' . $user, undef, $Cpanel::Rand::TYPE_FILE, $Cpanel::Rand::SKIP_OPEN );    # audit case 46806 ok
+my @PATH     = split( /\//, $tmpfile );
+my $basefile = pop(@PATH);
+
+Cpanel::FileUtils::Copy::safecopy( '/var/cpanel/users.cache/' . $user, $tmpfile );
+open( my $rf, '>', '/var/cpanel/users/' . $basefile );
+print {$rf} "#dummy file\n";
+close($rf);
+chmod( 0640, '/var/cpanel/users/' . $basefile );
+utime 0, 0, '/var/cpanel/users/' . $basefile;
+
+print "Trying to load cache file....";
+my $cpuser_guard = Cpanel::Config::CpUserGuard->new($user);
+if ( !$cpuser_guard || !$cpuser_guard->{'data'} ) {
+    print "Failed to load cpusers file for user: $user.\n";
+    unlink($tmpfile);
+    exit 1;
+}
+print "Loaded OK!\n";
+$cpuser_guard->save();
+
+chmod( 0640, '/var/cpanel/users/' . $user );
+system( 'chown', '0:' . $user, '/var/cpanel/users/' . $user );
+unlink( '/var/cpanel/users/' . $basefile );
+unlink($tmpfile);
+
+print "$user file restored to /var/cpanel/users/$user\n\n";
+exit 0;

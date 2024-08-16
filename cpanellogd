@@ -1,0 +1,76 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - cpanellogd                              Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+## no critic qw(TestingAndDebugging::RequireUseWarnings)
+
+use Cpanel::CloseFDs ();
+use Cpanel::Env      ();
+use Cpanel::BWFiles  ();
+
+my $MAX_SHUTDOWN_WAIT_TIME = 100;
+
+if ( $ARGV[0] eq '--stop' ) {
+    my $previous_pid = cpanellogd_is_running();
+    exit 0 unless $previous_pid;    # already stopped
+    kill 'INT', $previous_pid;
+
+    # Wait a little while for processes to shut down.
+    my $bail_time = time + $MAX_SHUTDOWN_WAIT_TIME;
+    while ( time <= $bail_time ) {
+        exit 0 unless cpanellogd_is_running();
+
+        # We need to sent SIGINT again to get
+        # cpanellogd to break out of the loop
+        # and shutdown cleanup if it did not happen
+        # after the first time
+        kill 'INT', $previous_pid;
+        require Cpanel::TimeHiRes;
+        Cpanel::TimeHiRes::sleep(0.025);
+    }
+    exit 1;
+}
+
+Cpanel::Env::clean_env( 'keep' => ['IGNORELASTRUN'] );
+
+Cpanel::CloseFDs::fast_closefds();
+
+if ( !@ARGV ) {
+    setpriority( 0, 0, 18 );    #one higher then tailwatchd (nice 18)
+}
+
+if ( open my $fh, '>>', "/usr/local/cpanel/logs/stats_log" ) {
+    my $time = time;
+    print {$fh} "-- EXEC MARKER (PID $$ at $time)--\n";
+    close $fh;
+}
+
+fixupPerms();
+
+# For Profiling
+#$ENV{'NYTPROF'}="start=init:file=/tmp/nytprof.out";
+#$ENV{'IGNORELASTRUN'}=1;
+#exec 'perl','-d:NYTProf','/usr/local/cpanel/libexec/cpanellogd', @ARGV;
+
+exec '/usr/local/cpanel/libexec/cpanellogd', @ARGV;
+
+sub fixupPerms {
+    unlink '/var/cpanel/users/cpanel';
+    chmod( oct('0755'), '/usr/local/cpanel/etc' );
+
+    my $bandwidth_dir = Cpanel::BWFiles::default_dir();
+    chown 0, 10, $bandwidth_dir;
+    chmod( oct('0711'), $bandwidth_dir );
+
+    return;
+}
+
+sub cpanellogd_is_running {
+    require Cpanel::Services::Hot;
+
+    return Cpanel::Services::Hot::is_pid_file_active('/var/run/cpanellogd.pid');
+}

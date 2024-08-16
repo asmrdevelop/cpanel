@@ -1,0 +1,209 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/unsuspendmysqlusers             Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::unsuspendmysqlusers;
+
+use cPstrict;
+
+=encoding utf-8
+
+=head1 NAME
+
+unsuspendmysqlusers
+
+=head1 USAGE
+
+    unsuspendmysqlusers [--local-only] [--team] <username>
+
+=cut
+
+#----------------------------------------------------------------------
+
+use parent 'Cpanel::HelpfulScript';
+
+use Cpanel::DB::Map::Reader                ();
+use Cpanel::DB::Utils                      ();
+use Cpanel::Mysql::Passwd                  ();
+use Cpanel::MysqlUtils::Connect            ();
+use Cpanel::MysqlUtils::Quote              ();
+use Cpanel::MysqlUtils::Compat             ();
+use Cpanel::MysqlUtils::Compat::Suspension ();
+use Cpanel::MysqlUtils::Command            ();
+use Cpanel::Logger                         ();
+use Cpanel::MysqlUtils::Version            ();
+
+use constant _OPTIONS => (
+    'local-only',
+    'team',
+);
+
+use constant _ACCEPT_UNNAMED => 1;
+
+#----------------------------------------------------------------------
+
+__PACKAGE__->new(@ARGV)->run() if !caller;
+
+sub run ($self) {
+    my ($username) = $self->getopt_unnamed();
+    if ( !length $username ) {
+        die $self->full_help();
+    }
+
+    return unsuspend( $username, $self->getopt('team'), $self->getopt('local-only') );
+}
+
+sub unsuspend ( $cpuser, $team, $local_only_yn = 0 ) {
+    my $logger = Cpanel::Logger->new();
+
+    my ( $team_owner, $team_user, $mysql_team_user );
+
+    # unsuspend the team-user mysql account alone
+    if ( defined $team ) {
+        ( $team_owner, $team_user ) = split /_/, $cpuser;
+        $mysql_team_user = $cpuser;
+        $cpuser          = $team_owner;
+    }
+    my $map = Cpanel::DB::Map::Reader->new( 'cpuser' => $cpuser, engine => 'mysql' );
+
+    my @user_list = $map->get_dbusers_plus_cpses();
+
+    # Case48428 - Need to include the parent user associated with the database and not just virtual users
+    # when suspending accounts in MySQL.
+    # Also, the DB map datastore might have a different owner name associated with the user
+    # account which the databases are tied to.
+    my @db_owner = (
+        $cpuser,
+        Cpanel::DB::Utils::username_to_dbowner($cpuser),
+    );
+    push @user_list, @db_owner;
+
+    Cpanel::MysqlUtils::Connect::connect();
+
+    # In order for the unsuspend code to work with account that have
+    # been migrated from older versions of mysql/maria we need to
+    # fixup the mysql users table to be in the expected state.
+    #
+    # Cpanel::MysqlUtils::Compat::Suspension::normalize_suspension will
+    # convert the accounts that have the old style suspension system
+    # to be locked if the server supports it.
+    Cpanel::MysqlUtils::Compat::Suspension::normalize_suspension(
+        Cpanel::MysqlUtils::Connect::get_singleton(),
+    );
+
+    my $row_name = Cpanel::MysqlUtils::Compat::get_mysql_user_auth_field();
+
+    my $user_list = !defined $team ? join ',', map { Cpanel::MysqlUtils::Quote::quote($_) } @user_list : Cpanel::MysqlUtils::Quote::quote($mysql_team_user);
+    my $result    = Cpanel::MysqlUtils::Command::sqlcmd("SELECT User, Host, $row_name from mysql.user WHERE user IN ($user_list);") || '';
+    my @lines     = split /\n/, $result;
+    my %result;
+    foreach my $line (@lines) {
+        my ( $key, $host, $value ) = split /\s+/, $line, 3;
+        next if $local_only_yn && !_host_is_local($host);
+
+        $result{$key}{$host} = $value || '*' x 41;
+    }
+
+    my $mysql = Cpanel::Mysql::Passwd->new( { cpuser => $cpuser } );
+
+    foreach my $user ( keys %result ) {
+        foreach my $host ( keys %{ $result{$user} } ) {
+            if ( length( $result{$user}{$host} ) == 41 ) {
+
+                # New style suspension
+                if ( $result{$user}{$host} =~ m/^\-/ ) {
+                    $result{$user}{$host} =~ s/\-//;
+
+                    # Handling for NULL passwords
+                    if ( $result{$user}{$host} =~ m/^\*+$/ ) {
+                        $logger->info("MySQL user $user has a blank password!");
+                        $result{$user}{$host} = '';
+                    }
+                    else {
+                        $result{$user}{$host} = reverse $result{$user}{$host};
+                        $result{$user}{$host} = '*' . $result{$user}{$host};
+                    }
+                }
+
+                # Legacy suspension
+                elsif ( $result{$user}{$host} =~ m/^\+/ ) {
+                    $result{$user}{$host} =~ s/\+/\*/;
+                }
+
+                # Old passwords passed with new length
+                elsif ( $result{$user}{$host} =~ m/^!+([0-9a-f]{16})$/ ) {
+                    $result{$user}{$host} = reverse($1);
+                }
+            }
+            elsif ( length( $result{$user}{$host} ) == 40 ) {
+                $result{$user}{$host} = '*' . $result{$user}{$host};
+                if ( $result{$user}{$host} =~ m/^\*+$/ ) {
+                    $result{$user}{$host} = '';
+                }
+            }
+            else {    # Case 76857
+                $result{$user}{$host} =~ s/^!([0-9a-f]{16})/reverse($1)/e;
+            }
+        }
+    }
+
+    my @sql_cmds;
+
+    foreach my $user ( keys %result ) {
+        foreach my $host ( keys %{ $result{$user} } ) {
+            my $pass = $result{$user}{$host};
+
+            my $mysql_version = _long_mysql_version_or_default();
+
+            # Per docs on MySQL 5.7.6 - https://dev.mysql.com/doc/refman/5.7/en/grant.html
+            # We can no longer use GRANT statements to change the password.
+            # However, since 5.7 ships with Account Locking capabilities, we will utilize that instead to lock the accounts.
+            if ( Cpanel::MysqlUtils::Version::is_at_least( $mysql_version, '5.7.6' )
+                && !Cpanel::MysqlUtils::Version::is_at_least( $mysql_version, '10.0.0' ) ) {
+
+                push @sql_cmds, 'ALTER USER ' . Cpanel::MysqlUtils::Quote::quote($user) . '@' . Cpanel::MysqlUtils::Quote::quote($host) . ' ACCOUNT UNLOCK;';
+
+            }
+            else {
+                # Passing in 1 to specify a password change
+                $mysql->passwduser_hash( $user => $pass, 1 );
+            }
+        }
+    }
+
+    push @sql_cmds, 'FLUSH PRIVILEGES';
+
+    # This must be done in the foreground or pkgacct will break.
+    Cpanel::MysqlUtils::Command::sqlcmd( \@sql_cmds );
+
+    return 1;
+
+}
+
+sub _host_is_local ($host) {
+    require Cpanel::NAT;
+    require Cpanel::Domain::Local;
+
+    $host = Cpanel::NAT::get_local_ip($host);
+
+    return Cpanel::Domain::Local::domain_or_ip_is_on_local_server($host);
+}
+
+sub _long_mysql_version_or_default {
+    local $@;
+    my $long_version = eval { Cpanel::MysqlUtils::Version::current_mysql_version()->{'long'} };
+
+    if ($@) {
+
+        # current_mysql_version has extensive logic to determine the current
+        # version.  If it fails, MySQL is likely beyond repair and we need to reinstall.
+        return $Cpanel::MysqlUtils::Version::DEFAULT_MYSQL_RELEASE_TO_ASSUME_IS_INSTALLED;
+    }
+
+    return $long_version;
+}
+
+1;

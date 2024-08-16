@@ -1,0 +1,121 @@
+<br />
+
+<script>
+function movedown() {
+    var dirIndexEl = document.getElementById('dirindex');
+
+    var current_selected = dirIndexEl.selectedIndex;
+
+    if (current_selected < 0 || current_selected == dirIndexEl.options.length - 1) { return; }
+
+    var next_item = dirIndexEl.options[current_selected + 1];
+    var current_item = dirIndexEl.options[current_selected];
+
+    var next_item_text = next_item.text;
+    var next_item_value = next_item.value;
+    var current_item_text = current_item.text;
+    var current_item_value = current_item.value;
+
+    next_item.text=current_item_text;
+    next_item.value=current_item_value;
+
+    current_item.text=next_item_text;
+    current_item.value=next_item_value;
+
+    current_selected++;
+    dirIndexEl.selectedIndex = current_selected;
+}
+
+
+function moveup() {
+    var dirIndexEl = document.getElementById('dirindex');
+
+    var current_selected = dirIndexEl.selectedIndex;
+    if (current_selected <= 0) { return; }
+
+    var previous_item = dirIndexEl.options[current_selected - 1];
+    var current_item = dirIndexEl.options[current_selected];
+
+    var previous_item_text = previous_item.text;
+    var previous_item_value = previous_item.value;
+    var current_item_text = current_item.text;
+    var current_item_value = current_item.value;
+
+    previous_item.text=current_item_text;
+    previous_item.value=current_item_value;
+
+    current_item.text=previous_item_text;
+    current_item.value=previous_item_value;
+
+    current_selected--;
+    dirIndexEl.selectedIndex = current_selected;
+}
+
+function preSubmit() {
+    var dirIndexEl = document.getElementById('dirindex');
+    for (var i=0;i<dirIndexEl.options.length;i++) {
+        dirIndexEl.options[i].selected=true;
+    }
+}
+function  addindex() {
+    var dirIndexEl = document.getElementById('dirindex');
+    var name = prompt('Enter the name of the new index file','');
+    var icount = dirIndexEl.options.length;
+    dirIndexEl.options[icount] = new Option(name,name);
+    dirIndexEl.setAttribute('size',parseInt(dirIndexEl.getAttribute('size'))+1);
+}
+function unsel() {
+    var dirIndexEl = document.getElementById('dirindex');
+    var i;
+    for (i=0;i<dirIndexEl.options.length;i++) {
+        dirIndexEl.options[i].selected=false;
+    }
+}
+function removeindex() {
+    var dirIndexEl = document.getElementById('dirindex');
+    var i;
+    var size = parseInt(dirIndexEl.getAttribute('size'));
+    for(i=dirIndexEl.options.length-1;i>=0;i--)
+    {
+        if(dirIndexEl.options[i].selected) {
+            dirIndexEl.remove(i);
+            size--;
+        }
+    }
+    dirIndexEl.setAttribute('size',size);
+
+}
+</script>
+<p class="description">Add/Remove and adjust the order of directory index filenames</p>
+<div>
+    <form action="%action%" method="POST" onSubmit="preSubmit();">
+
+<table>
+<tr>
+<td>
+    <input type="hidden" name="valid_submit" value="1" />
+    <select multiple size="%indexcount%" name="dirindex" id='dirindex'>
+!@directoryindex@!
+        <option selected value="%uri_filename%">%html_filename%</option>
+!@directoryindex@!
+    </select>
+</td>
+<td>
+    <input type="button" value="Move Up" onClick="moveup();" class="btn btn-default">
+    <br />
+    <br />
+    <input type="button" value="Add" onClick="addindex();" class="btn btn-default">
+    <input type="button" value="Remove" onClick="removeindex();" class="btn btn-default">
+    <br />
+    <br />
+    <input type="button" value="Move Down" onClick="movedown();" class="btn btn-default">
+
+
+    </td>
+</tr>
+</table>    <br />
+    <input type="submit" value="Save" class="btn btn-primary" />
+    </form>
+</div>
+
+<script>unsel();</script>

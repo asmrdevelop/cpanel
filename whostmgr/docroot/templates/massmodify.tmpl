@@ -1,0 +1,219 @@
+[%
+# cpanel - whostmgr/docroot/templates/massmodify.tmpl
+#                                                  Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+USE CPScalar;
+USE NVData;
+
+SET hide_locale_notice = !data.has_invalid_locales;
+SET show_warnings = !hide_locale_notice;
+
+WRAPPER 'master_templates/master.tmpl' theme="yui"
+    app_key = 'modify_upgrade_multiple_accounts'
+    scripts = ['/js/sorttable.js']
+    stylesheets = ['/templates/massmodify.min.css', '/templates/common/revised_notices.min.css',]
+-%]
+<script type="text/javascript">
+function selectMatching(table,searchby,regmatch,deselect) {
+    var re = new RegExp(regmatch.toLowerCase());
+    var tblEle = document.getElementById(table);
+    var trList = tblEle.getElementsByTagName('tr');
+    var choosecell = 1;
+    for(var i=0;i<searchby.length;i++) {
+        if (searchby[i].checked) {
+            choosecell = i + 1;
+            break;
+        }
+    }
+
+
+    for (var i=0;i < trList.length;i++)
+    {
+        var thisTr = trList[i];
+        var tdList = thisTr.getElementsByTagName('td');
+
+        var thisTd = tdList[choosecell];
+
+        if (!thisTd) { continue; }
+        var matchTxt = thisTd.innerHTML.toLowerCase();
+
+        var mat = re.exec(matchTxt);
+
+        if (mat != null) {
+            if (deselect) {
+                tdList[0].firstChild.checked = false;
+            } else {
+                tdList[0].firstChild.checked = true;
+            }
+        }
+    }
+}
+</script>
+
+[% IF show_warnings %]
+<div id="warning_banners">
+    [% IF data.has_invalid_locales %]
+        <div id="unsupported_locale_warning" class="callout callout-warning">
+            <div id="unsupported_locale_warning_text">
+                [% locale.maketext('[output,strong,Warning:]') -%]
+                [% locale.maketext('There are account(s) on the server that use deprecated locales. The system will mark these accounts with an “!”. These accounts will automatically default to English until you select a different locale.') %]
+            </div>
+        </div>
+    [% END %]
+</div>
+[% END %]
+
+<form action="[% action FILTER html %]" method="POST" name="secform">
+<table cellpadding="10" cellspacing="10">
+    <tr>
+        <td>
+            <table class="sortable" id="userstable">
+                <thead>
+                    <tr class="scellheader">
+                        <th nonsortable="true">&nbsp;</th>
+                        <th>Domain</th>
+                        <th>User</th>
+                        <th>Owner</th>
+                        <th>Package</th>
+                        <th>[% locale.maketext("Theme") %]</th>
+                        <th>[% locale.maketext("Locale") %]</th>
+                    </tr>
+                </thead>
+                <tbody>
+                [% FOR userdata = data.userdata.sort('domain') -%]
+                    <tr>
+                        <td><input type="checkbox" name="acct-[% userdata.name FILTER html %]" value="1"></td>
+                        <td>[% userdata.domain %]</td>
+                        <td>[% userdata.name %]</td>
+                        <td>[% userdata.owner %]</td>
+                        <td>[% userdata.package %]</td>
+                        <td class="themeName">
+                            [% userdata.theme %]
+                        </td>
+                        <td class="localeName">
+                            [% userdata.readable_locale %]
+                            [% IF !userdata.locale_is_valid %]
+                            <i class="fas fa-exclamation-triangle"
+                               title="[% locale.maketext('Locale is not installed') -%]"
+                               aria-label="[% locale.maketext('Locale is not installed') -%]"></i>
+                            [% END %]
+                        </td>
+                    </tr>
+                [% END -%]
+                </tbody>
+            </table>
+        </td>
+        <td>
+            <table>
+                <tbody>
+                    <tr>
+                        <td>
+                            <input type="radio" name="searchby" value="1"> Search by Domain <br />
+                            <input type="radio" name="searchby" value="2" checked="checked"> Search by User <br />
+                            <input type="radio" name="searchby" value="3"> Search by Reseller/Owner <br />
+                            <input type="radio" name="searchby" value="4"> Search by Package <br />
+                            <input type="radio" name="searchby" value="5"> [% locale.maketext("Search by Theme") %] <br />
+                            <input type="radio" name="searchby" value="6"> [% locale.maketext("Search by Locale") %] <br />
+                            <div>
+                                <input type="text" name="regenter" value=""><br />
+                                <input type="button" class="btn-secondary" onClick="selectMatching('userstable',this.form.searchby,document.secform.regenter.value,0)" value="Select Matching Users"><br />
+                                <input type="button" class="btn-secondary" onClick="selectMatching('userstable',this.form.searchby,document.secform.regenter.value,1)" value="DeSelect Matching Users">
+                            </div>
+                        </td>
+                    </tr>
+                </tbody>
+            </table>
+        </td>
+    </tr>
+</table>
+
+<table>
+[% IF data.hasroot -%]
+<tr> <td><span class="b2">Reseller</span></td> <td>
+<select name="reseller">
+    <option value="-">Choose a Reseller</option>
+    <option value="root">root</option>
+[% FOR reseller = data.resellers -%]
+    <option value="[% reseller %]">[% reseller -%]</option>
+[% END -%]
+</select></td></tr>
+<tr>
+    <td><span class="b2">Theme</span></td>
+    <td>
+        <select name="theme"><option value="-">Choose a Theme</option>
+[% FOR theme = data.themes -%]
+        <option value="[% theme FILTER html %]">
+        [% theme FILTER html %]
+        </option>
+[% END -%]
+        </select>
+    </td>
+</tr>
+<tr>
+      <td><span class="b2">Start Date</span></td>
+
+      <td>
+      <select name="month">
+      <option value="Choose a Month">Choose a Month</option>
+[% FOR month = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'] -%]
+    <option value="[% loop.index -%]">[% month %]</option>
+[% END -%]
+    </select>
+<select name="day">
+        <option value="Choose a Day">Choose a Day</option>
+[% FOR date = [ 1 .. 31 ] -%]
+        <option value="[% date %]">[% date %]</option>
+[% END -%]
+      </select>
+      <select name="year">
+      <option value="Choose a Year">Choose a Year</option>
+[% FOR year = [ 1990 .. 2100 ] -%]
+        <option value="[% year -%]">[% year %]</option>
+[% END -%]
+      </select>
+
+      </td>
+      </tr>
+[% END #hasroot -%]
+<tr>
+   <td><span class="b2">Locale</span></td>
+   <td><select name="locale">
+[%
+    data.locale_options_no_default = 1;
+    data.locale_choose_one_option_value = '-';
+    data.locale_choose_one_option_label = locale.maketext('Choose a locale …');
+    PROCESS '_locale_option_tags.tmpl';
+-%]
+</select>
+<div class="help-block">
+    [% user_feedback_text_for_more_locales() %]
+</div>
+</td>
+</tr>
+   <tr>
+   <td><span class="b2">Package</span></td>
+   <td><select name="pkg"><option value="-">Choose a Package</option>
+[% FOR package = data.packages -%]
+    [% IF package.length > 50 -%]
+        <option value="[% package FILTER html %]">[% package.substr(0,50) FILTER html %]…</option>[%# see case 62397 post 3 regarding localized elide %]
+    [% ELSE -%]
+        <option value="[% package FILTER html -%]">[% package FILTER html -%]</option>
+    [% END -%]
+[% END -%]
+</select>
+</td>
+</tr>
+</table>
+<p>
+   You need only change values that you wish to change.<br />
+</p>
+<input type="submit" class="btn-primary" value="Change"><br />
+</form>
+
+[% data.selected_locale -%]
+[% selected_locale -%]
+
+[% END -%]

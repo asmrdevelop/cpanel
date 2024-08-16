@@ -1,0 +1,79 @@
+[%#
+Variables passed in:
+
+user                 - the user the message is about
+user_domain          - the domain of the user the message is about
+origin               - the system component from which the request originated
+log                  - the output log from the backup transaction
+backupdest           - the type of backup that is occuring (remote, local, passiveftp)
+ftpuser              - remote user for the backupdest
+ftpserver            - remote server for backupdest
+pkgfile              - file name of the backup
+pkgdir               - directory the file name exists in
+errors               - an arrayref of errors accumulated during the packaging and transport of the backup
+
+For more information about how to customize notification templates, read our documentation at https://go.cpanel.net/notificationtemplates
+
+-%]
+
+[%
+    PROCESS "include/colors.tmpl";
+    PROCESS "include/styles.tmpl";
+
+
+    WRAPPER 'wrapper/main.html.tmpl';
+    IF NOTICE.pkgfile;
+        IF NOTICE.errors.size;
+            NOTICE.email_reason = CPANEL.locale.maketext('A full backup has completed, but the upload has failed.');
+        ELSE;
+            NOTICE.email_reason = CPANEL.locale.maketext('A full backup has completed and is available for download.');
+        END;
+    ELSE;
+        NOTICE.email_reason = CPANEL.locale.maketext('An attempt to create a full backup has failed.') ;
+    END;
+
+    NOTICE.prettydest = (NOTICE.backupdest == 'passiveftp' ? 'Passive FTP' :
+        (NOTICE.backupdest == 'ftp' ? 'FTP' :
+        (NOTICE.backupdest == 'scp' ? 'SCP' :
+        'Unknown')));
+
+%]
+
+<p>
+    [% IF NOTICE.pkgfile %]
+        [% CPANEL.locale.maketext('You can access a list of locally-stored backups via [asis,cPanel]’s “[_1]” interface:', CPANEL.locale.maketext('Backup')) %]
+        <br />
+        [% CPANEL.locale.maketext('cPanel') %]
+         &gt; [% CPANEL.locale.maketext('Backup') %]
+         &gt; [% CPANEL.locale.maketext('Download a Full Account Backup') %]
+        ([% CPANEL.locale.maketext('[output,url,_1,_1,target,_2]',NOTICE.backup_url,'_blank') %])
+        <br />
+        <br />
+        [% CPANEL.locale.maketext('The backup file is named “[_1]”',NOTICE.pkgfile) %]<br />
+        [% IF NOTICE.backupdest != 'homedir' %]
+            [% IF NOTICE.pkgdir %]
+                [% CPANEL.locale.maketext('The backup transferred via “[_1]” to the server “[_2]” as user “[_3]” in the “[_4]” directory.',NOTICE.prettydest,NOTICE.ftpserver,NOTICE.ftpuser,NOTICE.pkgdir) %]<br />
+            [% ELSE %]
+                [% CPANEL.locale.maketext('The backup transferred via “[_1]” to the server “[_2]” as user “[_3]” in the default directory.',NOTICE.prettydest,NOTICE.ftpserver,NOTICE.ftpuser) %]<br />
+            [% END %]
+        [% ELSE %]
+            [% CPANEL.locale.maketext('The server saved the backup file in the “[_1]” directory.',NOTICE.pkgdir) %]<br />
+        [% END %]
+    [% %]
+
+    [% ELSE %]
+    [% CPANEL.locale.maketext('You can try again via [asis,cPanel]’s “[_1]” interface with the “[_2]” button.', CPANEL.locale.maketext('Backup'), CPANEL.locale.maketext('Download a Full Account Backup')) %]<br />
+    [% END %]
+
+    [%
+        IF NOTICE.errors.size;
+            PROCESS "include/zebra_table.tmpl";
+            zebra_table(items=NOTICE.errors, titles=[CPANEL.locale.maketext('The backup process encountered the following [numerate,_1,error,errors]:', NOTICE.errors.size)]);
+        END;
+    %]
+</p>
+<p style="[% font_style %];font-size:11px;">
+   [% CPANEL.locale.maketext('The raw log file is attached to this email.') %]
+</p>
+
+[% END %]

@@ -1,0 +1,229 @@
+[%
+    USE SSL;
+
+    CPANEL.CPVAR.dprefix = '../';
+
+    SET old_default = execute_or_die("Variables", "get_user_information", {
+        name => 'ssl_default_key_type'
+    }).data.ssl_default_key_type;
+
+    # Update user default for ssl key types
+    IF FORM.default_ssl_key_type;
+        SET set_default_key_type_result = execute("SSL", "set_default_key_type", {
+            type   => FORM.default_ssl_key_type,
+        });
+    END;
+    SET key_types_and_labels = SSL.key_types_and_labels;
+
+    SET opt_system = SSL.key_type_system();
+
+    SET system_default = CPANEL.CPCONF.ssl_default_key_type;
+
+    # These descriptions also exist in
+    # whostmgr/docroot/templates/ng-apps-src/apps/ssl-tls-configuration/src/app/app.component.ts
+    # So updates should be made in both places
+    SET key_descriptions = SSL.key_type_descriptions();
+
+    IF set_default_key_type_result && set_default_key_type_result.status;
+        # Because there's a bit of a cache condition, use the value to we
+        # set it to if the api call was successful
+        # see COBRA-11816
+        SET chosen_default = FORM.default_ssl_key_type;
+    ELSE;
+        SET chosen_default = execute("Variables", "get_user_information", {
+            name => 'ssl_default_key_type'
+        }).data.ssl_default_key_type;
+    END;
+
+    SET chosen_default_is_custom = (opt_system != chosen_default);
+
+    SET has_autossl = CPANEL.feature('autossl');
+
+    WRAPPER '_assets/master.html.tt'
+        app_key = 'ssl_tls'
+        embed_stylesheets = ["css/ux-styles.min.css"],
+        embed_scripts = ["js2/ssl/index.js"],
+        page_stylesheets = ['css2-min/ssl/index.css']
+-%]
+
+[% MACRO current_setting_macro BLOCK -%]
+    <span class="label label-info" title="[% locale.maketext("This is your current setting.") %]">[% locale.maketext('Current') %]</span>
+[% END -%]
+
+<div class="body-content content">
+    [% IF CPANEL.feature('sslmanager') %]
+    <div class="row">
+        <div class="col-xs-12 col-md-10">
+            <p id="descSSL" class="description">[% locale.maketext('The SSL/TLS Manager will allow you to generate SSL certificates, certificate signing requests, and private keys. These are all parts of using SSL to secure your website. SSL allows you to secure pages on your site so that information such as logins, credit card numbers, etc are sent encrypted instead of plain text. It is important to secure your site’s login areas, shopping areas, and other pages where sensitive information could be sent over the web.') %]</p>
+        </div>
+    </div>
+    [% END %]
+    <div class="row">
+        <div class="col-xs-12 col-md-10">
+            [% IF CPANEL.feature('sslmanager') %]
+                [% IF set_default_key_type_result %]
+                <div class="col-xs-12">
+                    <div class="section">
+                        <!-- Update Result Messaging -->
+                        [% IF !set_default_key_type_result.status %]
+                            <div id="updateRequestResult" class="alert alert-danger"  role="alert">
+                                <span id="updateKeyErrorMessage" class="glyphicon glyphicon-exclamation-sign" aria-hidden="true"></span>
+                                [% FOREACH error IN set_default_key_type_result.errors %]
+                                    <div class="alert-message">
+                                        [% error %]
+                                    </div>
+                                [% END %]
+                            </div>
+                        [% ELSE %]
+                            <div id="updateRequestResult" class="alert alert-success"  role="alert">
+                                <span id="updateKeySuccessMessage" class="glyphicon glyphicon-ok-sign" aria-hidden="true"></span>
+                                <div class="alert-message">
+                                                                [% locale.maketext("The system updated your default [asis,SSL/TLS] key type.") %]
+                                                                [% IF has_autossl -%]
+                                                                    [% locale.maketext("[asis,AutoSSL] will try to renew your certificates.") %]
+                                                                [% END -%]
+                                </div>
+                            </div>
+                        [% END %]
+                    </div>
+                </div>
+                [% END %]
+
+                <!-- main panel -->
+                <div class="col-xs-12 col-sm-12 col-md-8 pull-left flip">
+                    <form id="defaultKeyTypeForm" method="post" target="_self">
+                        <div class="panel panel-default">
+                            <div class="panel-heading">
+                                <div class="widget-title pull-left flip">[% locale.maketext('Default [asis,SSL/TLS] Key Type') %]</div>
+                                <div class="pull-right flip">
+                                    <button type="button"
+                                        class="btn btn-default btn-xs toggle-help-btn"
+                                        id="lnkShowHideHelp">
+                                            <span class="hide-help-label">[% locale.maketext("Hide Help Text") %]</span>
+                                            <span class="show-help-label">[% locale.maketext("Show Help Text") %]</span>
+                                            <i class="far fa-question-circle form-info-sign" aria-hidden="true"></i>
+                                    </button>
+                                </div>
+                                <div class="clearfix"></div>
+                            </div>
+                            <div class="panel-body">
+                                <section>
+                                    <div id="defaultSSLTypeGroup" class="form-group">
+                                        <div class="row">
+                                            <div class="col-xs-12">
+                                                <p>[% locale.maketext('The default key type for [asis,SSL/TLS] certificates and [output,abbr,CSR,Certificate Signing Request]s.') %]</p>
+
+                                                <div class="radio">
+                                                    <label>
+                                                        <input
+                                                            type="radio"
+                                                            name="default_ssl_key_type"
+                                                            value="[% opt_system %]"
+                                                            [% (opt_system == chosen_default) ? 'checked="checked"' : '' %]
+                                                        >
+                                                        <div>
+                                                            [% locale.maketext('Use the system’s default key type.') %]
+                                                            <span class="label label-success">[% locale.maketext('Recommended') %]</span>
+                                                            [% IF !chosen_default_is_custom; current_setting_macro; END -%]
+                                                        </div>
+                                                        <span class="help-block">[% locale.maketext('Current value: [_1]', SSL.get_key_type_label(system_default)) %]</span>
+                                                    </label>
+                                                    <span class="help-block key-description-help-block">[% locale.maketext('Select this if you don’t know which key type is best for you.') %]</span>
+                                                </div>
+
+                                                [% FOREACH key_type IN key_types_and_labels %]
+                                                [% SET key_type_value = key_type.type %]
+                                                <div class="radio" >
+                                                    <label>
+                                                        <input type="radio" name="default_ssl_key_type" value="[% key_type_value %]" [% key_type_value == chosen_default ? 'checked="checked"' : '' %] />
+                                                        [% key_type.label %]
+                                                    </label>
+                                                    [% IF key_type_value == chosen_default %]
+                                                        [% current_setting_macro -%]
+                                                    [% END %]
+                                                    <span class="help-block key-description-help-block">[% key_descriptions.$key_type_value %]</span>
+                                                </div>
+                                                [% END %]
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div class="callout callout-info hidden" id="keyChangWarningCallout">
+                                        <p>[% locale.maketext('When you change this setting, the server will replace [output,strong,all] [asis,AutoSSL]-issued certificates that use a different key type.') %]</p>
+                                    </div>
+                                </section>
+                            </div>
+                            <div class="panel-footer">
+                                <div>
+                                    <button type="submit" class="btn btn-primary">
+                                        <i class="fas fa-save" aria-hidden="true"></i>
+                                        [% locale.maketext("Save") %]
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </form>
+                </div>
+                <!-- / main panel -->
+
+                <div class="col-xs-12 col-md-4 col-lg-4 pull-right flip">
+                    <div class="section">
+                        <section class="widget">
+                            <h3 class="widget-title" id="hdrPrivate"> [% locale.maketext("Private Keys (KEY)") %]</h3>
+                            <ul>
+                                <li>
+                                    <a id="lnkPrivate" href="keys.html">
+                                        <i class="fas fa-file-alt" aria-hidden="true"></i>
+                                        [% locale.maketext("Generate, view, upload, or delete your private keys.") %]
+                                    </a>
+                                </li>
+                            </ul>
+                            <h3 class="widget-title" id="hdrCSR">[% locale.maketext("Certificate Signing Requests (CSR)") %]</h3>
+                            <ul>
+                                <li>
+                                    <a id="lnkRequests" href="csrs.html">
+                                        <i class="fas fa-file-alt" aria-hidden="true"></i>
+                                        [% locale.maketext("Generate, view, or delete SSL certificate signing requests.") %]
+                                    </a>
+                                </li>
+                            </ul>
+                            <h3 class="widget-title" id="hdrCRT">[% locale.maketext("Certificates (CRT)") %]</h3>
+                            <ul>
+                                <li>
+                                    <a id="lnkCRT" href="crts.html">
+                                        <i class="fas fa-file-alt" aria-hidden="true"></i>
+                                        [% locale.maketext("Generate, view, upload, or delete SSL certificates.") %]
+                                    </a>
+                                </li>
+                            </ul>
+                            [% IF ExpVar.expand('$isallowedssl') && CPANEL.feature('sslinstall') -%]
+                                <h3 class="widget-title" id="hdrInstall">[% locale.maketext('Install and Manage SSL for your site (HTTPS)') %]</h3>
+                                <ul>
+                                    <li>
+                                        <a id="lnkInstall" href="install.html">
+                                            <i class="fas fa-file-alt" aria-hidden="true"></i>
+                                            [% locale.maketext('Manage SSL sites.') %]
+                                        </a>
+                                    </li>
+                                </ul>
+                            [% END %]
+                        </section>
+                    </div>
+                </div>
+            [% ELSE %]
+                <div class="alert alert-danger">
+                    <span class="glyphicon glyphicon-exclamation-sign"></span>
+                    <div class="alert-message">
+                        <strong>[% locale.maketext('Error:') %]</strong> [% locale.maketext('You do not have access to this feature!') %]
+                    </div>
+                </div>
+            [% END %]
+        </div>
+    </div>
+
+</div>
+<script>
+    PAGE.opt_system = [% opt_system.json() %];
+    PAGE.old_choice = [% chosen_default.json() %];
+    PAGE.has_autossl = [% has_autossl ? 1 : 0 -%];
+</script>
+[% END #wrapper %]

@@ -1,0 +1,66 @@
+[%
+USE Whostmgr;
+
+WRAPPER 'master_templates/master.tmpl'
+    header = locale.maketext('Upgrade to Latest Version')
+    breadcrumburl = '/scripts2/upcpform'
+    theme = 'bootstrap'
+    extrastyle ='
+.progress {
+    margin-bottom: 0;
+}
+';
+-%]
+<div class="row">
+<div class="col-xs-12">
+    <div class="form-group">
+        <div class="progress">
+            <div id="progress_bar"
+                class="progress-bar"
+                role="progressbar"
+                aria-valuenow="2"
+                aria-valuemin="0"
+                aria-valuemax="100"
+                style="min-width: 2em; width: 0%;">0%</div>
+        </div>
+        <p id="status_text" class="help-block">Starting upgrade.</p>
+    </div>
+[% IF data.already_running %]
+    <div class="alert alert-info" id="alreadyRunningNotice">
+        <span class="glyphicon glyphicon-info-sign"></span>
+        <div class="alert-message">
+            [% locale.maketext('There is another upcp process running, and you are watching the log from the existing process.') %]
+        </div>
+    </div>
+[% END %]
+    <div class="alert alert-info" id="defaultNotice">
+        <span class="glyphicon glyphicon-info-sign"></span>
+        <div class="alert-message">
+            [% locale.maketext('Click on log output below to enable/disable autoscrolling.') %]
+        </div>
+    </div>
+
+[%# iframe width=100% for benefit of the ipad -%]
+<iframe width="100%" id="upcp_output" class="pre-scrollable" src="[% cp_security_token %]/cgi/process_tail.cgi?process=Upcp"></iframe>
+</div>
+</div>
+
+<script type="text/javascript">
+var status_field = document.getElementById("status_text");
+var progress_bar = document.getElementById("progress_bar");
+
+function update_ui_status(new_status) {
+    status_field.textContent = new_status;
+}
+
+function update_percent(new_percent) {
+    progress_bar.style.width = new_percent + "%";
+    progress_bar.textContent = new_percent + "%";
+    progress_bar.setAttribute("aria-valuenow", new_percent);
+    if (new_percent === 100) {
+        update_ui_status("[% locale.maketext('Upgrade complete.') %]");
+        progress_bar.className += " progress-bar-success";
+    }
+}
+</script>
+[% END #wrapper -%]

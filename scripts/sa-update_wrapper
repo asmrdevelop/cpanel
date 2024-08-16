@@ -1,0 +1,112 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/sa-update_wrapper               Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+use warnings;
+use Cpanel::Binaries            ();
+use Cpanel::SafeRun::Object     ();
+use Cpanel::SpamAssassin::Rules ();
+
+alarm(3600);
+
+if ($>) {
+    die "$0: must run as root";
+}
+
+my $saupdate_bin = Cpanel::Binaries::path('sa-update');
+
+if ( $ENV{CPANEL_BASE_INSTALL} ) {
+    print STDERR "“$0” refuses to run during a cPanel installation.\n";
+    exit(0);
+}
+
+if ( !$saupdate_bin ) {
+    die "$0: Found no sa-update path!\n";
+}
+
+if ( !-e $saupdate_bin ) {
+    die "$0: “$saupdate_bin” is missing!\n";
+}
+
+if ( !-x _ ) {
+    die "$0: “$saupdate_bin” is not executable!\n";
+}
+
+sub run_saupdate {
+    my $gpg_option = shift;
+    if ( !$gpg_option ) {
+        my $gpg_bin = Cpanel::Binaries::path('gpg');
+        $gpg_option = !-x $gpg_bin ? '--nogpg' : '--gpg';
+    }
+    print "[*] Cleaning up from previous updates.....\n";
+    clean_up_updates();
+    print "[*] Running sa-update ($saupdate_bin).....\n";
+    print "[*] Please note that 'IO::Socket::IP' and 'Net::Patricia' are not needed by our implementation of SpamAssassin.\n[*] The warnings related to them can be safely ignored.\n\n";
+
+    my $run = Cpanel::SafeRun::Object->new(
+        'program'      => $saupdate_bin,
+        'args'         => [ $gpg_option, grep( /-Q/i, @ARGV ) ? () : ('-D') ],
+        'stdout'       => \*STDOUT,
+        'stderr'       => \*STDOUT,
+        'timeout'      => 3600,
+        'read_timeout' => 3600,
+    );
+    if ( $run->CHILD_ERROR() ) {
+        if ( $run->signal_code() || _sa_update_exit_code_is_a_real_failure( $run->error_code() ) ) {
+            $run->die_if_error();
+        }
+    }
+
+    print "Done\n";
+    return;
+}
+
+sub _sa_update_exit_code_is_a_real_failure {
+    my ($error_code) = @_;
+
+    # sa-update uses nonzero error codes to indicate
+    # certain success states:
+    # https://spamassassin.apache.org/full/3.1.x/doc/sa-update.html#exit_codes
+    #
+    # exit code of 0 = updates installed
+    return 0 if !$error_code;
+
+    # exit code of 1 = no updates needed
+    return 0 if $error_code == 1;
+
+    # exit code of 2 = lint of files failed, perl die or general failure
+    return 1 if $error_code == 2;
+
+    # exit code of 3 = at least one channel download filed, but the updater found a backup server to update from successfully
+    return 0 if $error_code == 3;
+
+    # exit code of 4+ = error downloading or extracting and all channels failed
+    return 1;
+}
+
+sub clean_up_updates {
+    my $version = eval { require Mail::SpamAssassin; $Mail::SpamAssassin::VERSION };
+    return unless defined $version;
+    my $dir = "/var/lib/spamassassin/$version/updates_spamassassin_org";
+    return unless opendir( my $dh, $dir );
+    while ( defined( my $file = readdir $dh ) ) {
+        unlink "$dir/$file" if $file =~ /^\d+\.tar\.gz(?:\.(?:asc|sha1))?$/;
+    }
+    closedir($dh);
+    return;
+}
+
+run_saupdate();
+
+print "Checking update....";
+if ( !Cpanel::SpamAssassin::Rules::has_rules_installed() ) {
+    print "update failed...retrying without gpg...\n";
+    run_saupdate('--nogpg');
+}
+else {
+    print "update ok!\n";
+}

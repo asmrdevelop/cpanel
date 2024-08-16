@@ -1,0 +1,380 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/generate_maildirsize            Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+use warnings;
+
+use Cpanel::Usage                        ();
+use Cpanel::PwCache::Helpers             ();
+use Cpanel::PwCache::Build               ();
+use Cpanel::PwCache                      ();
+use Cpanel::JSON                         ();    # PPI USE OK - speed up loaduserdomains
+use Cpanel::AccessIds::ReducedPrivileges ();
+use Cpanel::Config::LoadCpUserFile       ();
+use Cpanel::Config::HasCpUserFile        ();
+use Cpanel::Config::Users                ();
+use Cpanel::Config::LoadCpConf           ();
+use Cpanel::Config::LoadUserDomains      ();
+use Cpanel::Email::DiskUsage             ();
+use Cpanel::Email::Maildir::Utils        ();
+use Cpanel::Email::Maildir               ();
+use Cpanel::Email::Mailbox               ();
+use Cpanel::AdminBin::Serializer         ();    # PPI USE OK - speed up loaduserdomains
+use Try::Tiny;
+
+my $onlyrecalculate = 0;
+my $verbose         = 0;
+my $rename          = 0;
+my $confirm         = 0;
+my $allaccounts     = 0;
+
+# Max quota is actually 1 byte less than get_max_email_quota
+# but we'll silently fix the 1 byte issue below
+my $max_quota = Cpanel::Email::Maildir::get_max_email_quota();
+
+# Argument processing
+my %opts = (
+    'onlyrecalculate' => \$onlyrecalculate,
+    'verbose'         => \$verbose,
+    'rename'          => \$rename,
+    'confirm'         => \$confirm,
+    'allaccounts'     => \$allaccounts,
+);
+
+Cpanel::Usage::wrap_options( \@ARGV, \&usage, \%opts );
+
+# When we are regenerating files we must tell Cpanel::Email::DiskUsage to ignore
+# the existing maildirsize files or they will be used to regenerate themselves.
+local $Cpanel::Email::DiskUsage::IGNORE_MAILDIRSIZE_FILES = 1;
+local $Cpanel::Email::DiskUsage::VERBOSE                  = $verbose;
+
+if ( $> == 0 && !$confirm ) {
+    print "Must specify \"--confirm\" to begin. Please read and understand the usage.\n\n";
+    usage(1);
+}
+umask(0077);    # Keep maildirsize file perms consistent with Exim
+
+my $cpconf = Cpanel::Config::LoadCpConf::loadcpconf_not_copy();
+
+my $pwcache_ref;
+my %CPUSERS;
+my $userdomains_ref = {};
+my $suid            = 0;
+
+if ( $> == 0 ) {
+    $suid = 1;
+    Cpanel::PwCache::Helpers::no_uid_cache();    #uid cache only needed if we are going to make lots of getpwuid calls
+    Cpanel::PwCache::Build::init_passwdless_pwcache();
+    $pwcache_ref = Cpanel::PwCache::Build::fetch_pwcache();
+    my $users_arr_ref = Cpanel::Config::Users::getcpusers();
+    $userdomains_ref = Cpanel::Config::LoadUserDomains::loaduserdomains( undef, 0, 1 );
+
+    %CPUSERS = map { $_ => undef } @{$users_arr_ref};
+    if ( @ARGV && $ARGV[-1] !~ m/^-/ ) {
+        if ( exists $CPUSERS{ $ARGV[-1] } ) {
+            %CPUSERS     = ( $ARGV[-1] => 1 );    #only do one user
+            $allaccounts = 1;                     # Specified because a user was provided and they may or may not be using boxtrapper
+        }
+        else {
+            %CPUSERS = ();
+        }
+    }
+}
+else {
+    $rename      = 1;
+    $allaccounts = 1;
+    my @PW = Cpanel::PwCache::getpwuid_noshadow($>);
+    $pwcache_ref = [ \@PW ];
+    %CPUSERS     = ( $PW[0] => 1 );
+    die "Unable to load cPanel user data.\n" unless Cpanel::Config::HasCpUserFile::has_cpuser_file( $PW[0] );
+    my $user_info = Cpanel::Config::LoadCpUserFile::loadcpuserfile( $PW[0] );    #we want to load the default so we can use the storable cache
+
+    if ( !scalar keys %{$user_info} ) {
+        die "Unable to load cPanel user data.\n";
+    }
+
+    my @DOMAINS = ( $user_info->{'DOMAIN'} );
+
+    if ( ref $user_info->{'DOMAINS'} ) {
+        push @DOMAINS, @{ $user_info->{'DOMAINS'} };
+    }
+    $userdomains_ref->{ $PW[0] } = \@DOMAINS;
+}
+
+my $mailgid = ( Cpanel::PwCache::getpwnam('mailnull') )[3];
+if ( !$mailgid ) {
+    $mailgid = ( Cpanel::PwCache::getpwnam('mail') )[3];
+    if ( !$mailgid ) {
+        die "!! Unable to determine mail user GID !!\n";
+    }
+}
+
+Cpanel::PwCache::Build::pwclearcache();
+
+foreach my $pwref (@$pwcache_ref) {
+    my ( $user, $useruid, $usergid, $homedir ) = (@$pwref)[ 0, 2, 3, 7 ];
+    my @recalc_list;
+    next if ( !exists $CPUSERS{$user} );
+    if ( !$homedir || !-d $homedir ) {
+        print "Skipping $user - (no home directory)\n";
+        next;
+    }
+
+    my @DOMAINS = ref $userdomains_ref->{$user} ? @{ $userdomains_ref->{$user} } : ();
+    my @check_list;
+
+    #The main user
+    my $check_main_user = 0;
+    if ( !$allaccounts && !-e $homedir . '/etc/.boxtrapperenable' ) {
+        print "Skipping user $user (Not using BoxTrapper)\n" if $verbose;
+    }
+    else {
+        if ($onlyrecalculate) {
+            if ( -e $homedir . '/mail/maildirsize' ) {
+                if ( ( stat(_) )[7] >= 5120 ) {
+                    print "Recalculating user $user (maildirsize file >= 5120 bytes)\n" if $verbose;
+                    $check_main_user = 1;
+                }
+                elsif ( ( stat(_) )[7] == 0 ) {
+                    print "Recalculating user $user (maildirsize file == 0 bytes)\n" if $verbose;
+                    $check_main_user = 1;
+                }
+                else {
+                    print "Skipping user $user (maildirsize file already exists and is not >= 5120 bytes)\n" if $verbose;
+                }
+            }
+            else {
+                $check_main_user = 1;
+            }
+        }
+
+        # Passed flags for all accounts and not to only recalculate
+        else {
+            $check_main_user = 1;
+        }
+    }
+
+    foreach my $domain ( grep { $_ } @DOMAINS ) {
+
+        # We avoid try/catch here for speed since on an up to date
+        # system its most of the execution time.
+        local $@;
+        my @users = eval { Cpanel::Email::Maildir::Utils::get_maildir_users_under_dir( $homedir . '/mail/' . $domain ); };
+        if ($@) {
+            warn;
+            next;
+        }
+
+        foreach my $mail_user (@users) {
+            if ( !$allaccounts && !-e $homedir . '/etc/' . $domain . '/' . $mail_user . '/.boxtrapperenable' ) {
+                print "Skipping user $mail_user\@$domain (Not using BoxTrapper)\n" if $verbose;
+                next;
+            }
+            if ($onlyrecalculate) {
+                if ( -e $homedir . '/mail/' . $domain . '/' . $mail_user . '/maildirsize' ) {
+                    if ( ( stat(_) )[7] >= 5120 ) {
+                        print "Recalculating mail user $mail_user\@$domain (maildirsize file >= 5120 bytes)\n" if $verbose;
+                        push @check_list, $mail_user . '@' . $domain;
+                    }
+                    elsif ( ( stat(_) )[7] == 0 ) {
+                        print "Recalculating mail user $mail_user\@$domain (maildirsize file == 0 bytes)\n" if $verbose;
+                        push @check_list, $mail_user . '@' . $domain;
+                    }
+                    else {
+                        print "Skipping mail user $mail_user\@$domain (maildirsize file already exists and is not >= 5120 bytes)\n" if $verbose;
+                        next;
+                    }
+                }
+                else {
+                    push @check_list, $mail_user . '@' . $domain;
+                }
+            }
+
+            # Passed flags for all accounts and not to only recalculate
+            else {
+                push @check_list, $mail_user . '@' . $domain;
+            }
+        }
+    }
+    if ( !@check_list && !$check_main_user ) {
+        if ($verbose) { print "Skipping $user as there are no files to unlink or recalculate.\n"; }
+        next;
+    }
+    if ($verbose) {
+        if ($check_main_user) {
+            print "Rebuilding the maildirsize files for: $user\n";
+        }
+        if (@check_list) {
+            print "Rebuilding the maildirsize files for: " . join( ',', @check_list ) . "\n";
+        }
+    }
+
+    # This will result in the main user's maildirsize file being wrong, so we
+    # need to do it before generating the maildirsize file.
+    unlink("$homedir/mail/dovecot-quota");
+    _recalc_quota_or_warn($user) unless $onlyrecalculate;
+
+    my $generate_coderef = sub {
+
+        #All the domains
+        # Only setuids after we actually have something do to?
+
+        if ($check_main_user) {
+
+            if ( Cpanel::Email::Mailbox::looks_like_mdbox("$homedir/mail") ) {
+                print "Skipping user $user (using mdbox)\n" if $verbose;
+            }
+            else {
+                print "Checking user $user\n" if $verbose;
+                my ( $size, $count ) = Cpanel::Email::DiskUsage::mainacctdiskused( $homedir, $homedir . '/mail/maildirsize', $rename );
+                if ( open my $mdsize_fh, '>', $homedir . '/mail/maildirsize' ) {
+                    print 'Writing ' . $homedir . '/mail/maildirsize' . " for user $user\n" if $verbose;
+
+                    print {$mdsize_fh} "0S,0C\n";
+                    print {$mdsize_fh} $size . ' ' . $count . "\n";
+
+                    close $mdsize_fh;
+                    chown $useruid, $mailgid, $homedir . '/mail/maildirsize';
+                    chmod 0600, $homedir . '/mail/maildirsize';
+                }
+                else {
+                    warn "Unable to write: $homedir/mail/maildirsize: $!";
+                }
+            }
+        }
+
+        my %DOMAIN_QUOTAS;
+        foreach my $email (@check_list) {
+
+            my ( $mail_user, $domain ) = split( /\@/, $email, 2 );
+            my $quota_ref = exists $DOMAIN_QUOTAS{$domain} ? $DOMAIN_QUOTAS{$domain} : ( $DOMAIN_QUOTAS{$domain} = _get_mail_domain_quota( $homedir, $domain ) );
+
+            if ( Cpanel::Email::Mailbox::looks_like_mdbox( $homedir . '/mail/' . $domain . '/' . $mail_user ) ) {
+                print "Skipping user $mail_user\@$domain (using mdbox)\n" if $verbose;
+                next;
+            }
+            print "Checking user $mail_user\@$domain\n" if $verbose;
+
+            my ( $size, $count ) = Cpanel::Email::DiskUsage::recalculate_email_account_disk_usage( $homedir, $mail_user, $domain, $homedir . '/mail/' . $domain . '/' . $mail_user . '/maildirsize', $rename );
+            if ( open my $mdsize_fh, '>', $homedir . '/mail/' . $domain . '/' . $mail_user . '/maildirsize' ) {
+                print 'Writing ' . $homedir . '/mail/' . $domain . '/' . $mail_user . '/maildirsize' . " for user $mail_user\n" if $verbose;
+
+                if ( !exists $quota_ref->{$mail_user} || !$quota_ref->{$mail_user} ) {
+                    print {$mdsize_fh} "0S,0C\n";
+                }
+                else {
+                    print {$mdsize_fh} sprintf( "%.0f", $quota_ref->{$mail_user} ) . "S,0C\n";
+                }
+
+                print {$mdsize_fh} $size . ' ' . $count . "\n";
+
+                close $mdsize_fh;
+                chown $useruid, $mailgid, $homedir . '/mail/' . $domain . '/' . $mail_user . '/maildirsize';
+                chmod 0600, $homedir . '/mail/' . $domain . '/' . $mail_user . '/maildirsize';
+                unlink("$homedir/mail/$domain/$mail_user/dovecot-quota");
+                push @recalc_list, $mail_user . '@' . $domain unless $onlyrecalculate;
+            }
+            else {
+                warn "Unable to write: $homedir/mail/$domain/$mail_user/maildirsize: $!";
+            }
+        }
+        return 1;    # must return true
+    };
+
+    if ($suid) {
+        eval { Cpanel::AccessIds::ReducedPrivileges::call_as_user( $generate_coderef, $useruid, $usergid ) } || warn "Could not setuid to $user: $@";
+    }
+    else {
+        $generate_coderef->();
+    }
+
+    _recalc_quota_or_warn($_) for (@recalc_list);
+}
+
+sub _get_mail_domain_quota {
+    my $homedir = shift;
+    my $domain  = shift;
+    my $dir     = $homedir . '/etc/' . $domain;
+
+    return if !-f $dir . '/quota' || -z _;
+
+    my %quota;
+    if ( open my $quota_fh, '<', $dir . '/quota' ) {
+        while ( my $line = readline $quota_fh ) {
+            chomp $line;
+            my ( $user, $quota ) = split( /:/, $line, 2 );
+
+            # Quota values above $max_quota will be converted to unlimited
+            next if !$user || !$quota || ( int $quota ) > $max_quota;
+
+            # Remove 1 byte for quota values equal to $max_quota
+            $quota = ( int $quota ) == $max_quota ? $max_quota - 1 : $quota;
+
+            $quota{$user} = $quota;
+        }
+        close $quota_fh;
+    }
+
+    #ALWAYS RETURN HASHREF
+    return \%quota;
+}
+
+sub _recalc_quota_or_warn {
+    my ($account) = @_;
+
+    require Cpanel::Dovecot::Utils if !$INC{'Cpanel/Dovecot/Utils.pm'};
+    my $ret;
+    try {
+        $ret = Cpanel::Dovecot::Utils::recalc_quota( 'account' => $account );
+    }
+    catch {
+        local $@ = $_;
+        warn;
+    };
+    return $ret;
+}
+
+sub usage {
+    my ($exit) = @_;
+    $exit = $exit ? 1 : 0;
+
+    print <<'EOM';
+Usage: generate_maildirsize <modifier> <user>
+
+This utility regenerates maildirsize files used by the maildir+
+capable clients to assist in mailbox size calculations.
+
+Modifier Flags:
+    --confirm - This flag indicates that we really want to use this
+        utility
+
+    --allaccounts - This utility was originally intended to
+        assist cPanel BoxTrapper with updating maildirsize
+        files. Without this optional flag, generate_maildirsize
+        will only operate on BoxTrapper enabled accounts.
+
+    --rename - This optional flag indicates that the utility
+        should rename individual message files to include the
+        message size in the filename. This addition to the
+        file name format is supported by Exim and greatly
+        improves Exim's ability to update the maildirsize
+        file.  POP3 accounts that store mail on the server may
+        be forced to download their messages again if this
+        option is used.
+
+    --verbose - This optional flag turns on verbose mode for
+        enhanced activity reporting to STDOUT.
+
+    --onlyrecalculate - This optional flag turns will cause generate_maildirsize to
+        only regenerate maildirsize files that are missing or are larger then 5120
+        bytes.
+
+    --help - display this message and exit.
+
+EOM
+    exit $exit;
+}

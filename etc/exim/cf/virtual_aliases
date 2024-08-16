@@ -1,0 +1,10 @@
+valias_domain_file:
+  driver = redirect
+  allow_defer
+  allow_fail
+  domains = !$primary_hostname : dsearch;/etc/vdomainaliases
+  user = "%CPANEL-domain-owner%"
+  condition = ${lookup {$domain_data} lsearch {/etc/vdomainaliases/$domain_data}{yes}{no} }
+  address_data = router=$router_name redirect=${quote:${quote_local_part:$local_part}@${lookup{$domain_data}lsearch{/etc/vdomainaliases/$domain_data}}}
+  data = ${extract{redirect}{$address_data}}
+

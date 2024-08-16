@@ -1,0 +1,49 @@
+[%
+USE Whostmgr;
+USE CPSort;
+
+FOREACH addon_data = plugins_data.cpsort('showname');
+    '<div class="item" role="page">';
+    IF addon_data.cgi;
+        "<a id='lnkAddon_${addon_data.tagname}' class='item-link' uniquekey='plugins_${addon_data.uniquekey}' href='$cp_security_token/cgi/${addon_data.cgi}' target='${addon_data.target}'>";
+    END;
+
+    IF addon_data.icon;
+        "<img id='imgAddon_${addon_data.tagname}' class='itemImageWrapper' src='/addon_plugins/${addon_data.icon}'/>";
+    ELSE;
+    # TODO: Replace 'find_file_url' with 'get_icon_url'?
+        SET auto_icon_url = Whostmgr.find_file_url("icons/${addon_data.tagname}.png")
+            || Whostmgr.find_file_url('icons/plugin_placeholder.png')
+        ;
+
+        IF auto_icon_url;
+            "<img id='imgAddon_${addon_data.tagname}' class='itemImageWrapper' src='$auto_icon_url'/>";
+        END;
+    END;
+
+    "<span id='lblAddon_${addon_data.tagname}' class='itemTextWrapper'>${addon_data.showname}</span>";
+    '</a>';
+    '</div>';
+END;
+'</div>';
+-%]
+
+<script type="text/javascript">
+/**
+ * Click events are wired to the page icon links. This allows
+ * these links to select the active page on the left menu.
+ * This is done only for the page links in Plugins category. Links
+ * in other categories are directly handled through breadcrumbs.
+ */
+document.addEventListener("DOMContentLoaded", function() {
+    var pageLinks = document.querySelectorAll("a.item-link");
+    for (var i = 0, len = pageLinks.length; i < len; i++) {
+        // TODO: Rewrite the logic when left navi is back
+        // pageLinks[i].addEventListener("click", function(e) {
+        //     if (parent.frames.commander && parent.frames.commander.commander) {
+        //         parent.frames.commander.commander.util.selectActivePageFromPageIcons(this);
+        //     }
+        // });
+    }
+});
+</script>

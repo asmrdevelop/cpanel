@@ -1,0 +1,495 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/smartcheck                      Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::smartcheck;
+
+use strict;
+use warnings;
+use Cpanel::DataStore        ();
+use Getopt::Param            ();
+use Cpanel::StringFunc::Trim ();
+use Cpanel::SafeRun::Dynamic ();
+
+our $bin                       = '/usr/local/cpanel/3rdparty/bin/smartctl';
+our $last_sent                 = '/var/cpanel/last_smartcheck_msg_alert';
+our $fstab_file                = '/etc/fstab';
+our $cust_d_file               = '/var/cpanel/smartcheck_custom_dash_d.yaml';
+our $disable_file              = '/var/cpanel/disablesmartcheck';
+our $smart_enabled_rgx_21      = 'Drive supports S.M.A.R.T. and is enabled';
+our $smart_enabled_rgx_5x      = '.*SMART.*Enabled|Available.*has.*SMART';
+our $smart_enabled_rgx_6x      = '.*SMART.*Enabled|Available.*has.*SMART';
+our $smart_enabled_rgx_default = '.*SMART.*Enabled|Available.*has.*SMART';
+
+sub get_smartctl {
+    my %smart = (
+        'url'         => 'http://smartmontools.sourceforge.net/',
+        'version_cmd' => '-V',
+        'version_rgx' => '^smartctl\s*(?:version)?\s*',
+
+        # 2.1 is retained for historical reasons and may be removed without notice
+        '2.1' => {
+            'smart_enabled_cmd' => '-i',
+            'smart_enabled_rgx' => $smart_enabled_rgx_21,
+            'errors_only'       => '-l',
+            'ok_drive_rgx'      => [qw(/sd /hd)],
+        },
+
+        # 5.37 is the last version of smartmontools directly distributed with cP/WHM
+        '5.37' => {
+            'smart_enabled_cmd' => '-i',
+            'smart_enabled_rgx' => $smart_enabled_rgx_5x,
+            'errors_only'       => '-q errorsonly -H -l selftest -l error',
+            'ok_drive_rgx'      => [qw(/sd /hd)],
+        },
+
+        # 5.42 is the latest version of smartmontools provided via yum for CentOS 5
+        '5.42' => {
+            'smart_enabled_cmd' => '-i',
+            'smart_enabled_rgx' => $smart_enabled_rgx_5x,
+            'errors_only'       => '-q errorsonly -H -l selftest -l error',
+            'ok_drive_rgx'      => [qw(/sd /hd)],
+        },
+
+        # 5.43 is the latest version of smartmontools provided via yum for CentOS 6
+        '5.43' => {
+            'smart_enabled_cmd' => '-i',
+            'smart_enabled_rgx' => $smart_enabled_rgx_5x,
+            'errors_only'       => '-q errorsonly -H -l selftest -l error',
+            'ok_drive_rgx'      => [qw(/sd /hd)],
+        },
+
+        # 6.2 is the latest version of smartmontools provided via yum for CentOS 7
+        '6.2' => {
+            'smart_enabled_cmd' => '-i',
+            'smart_enabled_rgx' => $smart_enabled_rgx_6x,
+            'errors_only'       => '-q errorsonly -H -l selftest -l error',
+            'ok_drive_rgx'      => [qw(/sd /hd)],
+        },
+
+        # default is suitable for all known versions of 5.x and 6.x
+        'default' => {
+            'smart_enabled_cmd' => '-i',
+            'smart_enabled_rgx' => $smart_enabled_rgx_default,
+            'errors_only'       => '-q errorsonly -H -l selftest -l error',
+            'ok_drive_rgx'      => [qw(/sd /hd)],
+        },
+    );
+    return \%smart;
+}
+
+sub _get_enabled_string {
+    my ( $smart, $vrs, $dsk ) = @_;
+    my $disk_enabled = '';
+    Cpanel::SafeRun::Dynamic::livesaferun(
+        'prog'      => [ $bin, split( /\s+/, $smart->{$vrs}->{'smart_enabled_cmd'} ), $dsk ],
+        'formatter' => sub {
+            my ($line) = @_;
+            $disk_enabled .= $line;
+            return '';
+        },
+    );
+    return $disk_enabled;
+}
+
+sub is_smart_enabled {
+    my ( $smart, $vrs, $dsk ) = @_;
+    my $disk_enabled = _get_enabled_string( $smart, $vrs, $dsk );
+    return ( $disk_enabled =~ m/$smart->{$vrs}->{'smart_enabled_rgx'}/i ) ? 1 : undef;
+}
+
+sub _extract_version {
+    my ( $line, $quit_saferun_loop_sr ) = @_;
+
+    my $vrs;
+    my $smart = get_smartctl();
+
+    # handle if $line is undef
+    if ($line) {
+        if ( $line =~ m/^$smart->{'version_rgx'}\s*(\d+\.\d+)/ ) {
+            $vrs = $1;
+            ${$quit_saferun_loop_sr} = 1;
+        }
+    }
+
+    # if the version can't be determined or is not found in the smartctl hash, use 'default'
+    $vrs = 'default' if ( !$vrs || !exists $smart->{$vrs} );
+
+    return $vrs;
+}
+
+sub get_smart_version {
+    my $smart = shift;
+    my ( $vrs, $output );
+    Cpanel::SafeRun::Dynamic::livesaferun(
+        'prog'      => [ $bin, split( /\s+/, $smart->{'version_cmd'} ) ],
+        'formatter' => sub {
+            my ($line) = @_;
+            $output .= $line;
+            return '';
+        },
+    );
+    $vrs = _extract_version($output);
+
+    return $vrs;
+}
+
+sub run {
+
+    my %smart = %{ get_smartctl() };
+
+    my $custom_d = Cpanel::DataStore::fetch_ref($cust_d_file);
+
+    my $param = Getopt::Param->new(
+        {
+            'help_coderef' => sub {
+                print <<"SMARTCHECK_HELP";
+$0 - check the status of your harddrive(s) with smartctl.
+
+   --help    this screen
+   --quiet   bare minimum output
+   --noemail output to screen only, do not send email
+
+TROUBLESHOOTING
+
+If you have a hard drive that keeps getting this output via $0:
+
+  "Checking /dev/sda....S.M.A.R.T does not appear to be enabled for this device."
+
+You may confirm directly if your hard drive supports SMART using the following command:
+
+  # smartctl -i /dev/YOURHDD
+
+After this, if you are certain it has SMART support enabled, then you can tell $0
+to specify a given drive type to smartctl using a simple YAML file:
+
+  $cust_d_file (described in detail in the following section)
+
+If after verifying using smartctl directly that your drive is supported and you have added
+a custom configuration, it is possible that $0 is simply not properly detecting
+that your drive is supported. In this case, please file a bug report.
+
+CONFIGURATION FILE
+
+You may add custom configurations, per drive, to $cust_d_file"
+
+This file may contain simple key/value values where the key is the drive and the value is the value of
+that drive's type.
+
+For example to tell smartctl that /dev/sda and /dev/sdb is an "ata" we create this YAML file:
+
+  ---
+  /dev/sda: ata
+  /dev/sdb: ata
+
+Then the next time it's run we'll see this output instead:
+
+  Checking /dev/sda....
+      Adding custom '-d ata' flag for /dev/sda from $cust_d_file
+  Ok
+
+For more information on -d options available for supporting drives behind RAID controllers, see:
+
+  http://www.smartmontools.org/wiki/Supported_RAID-Controllers
+
+While YAML files are plain text, its best to initialize the configuration file are shown below.
+
+To write the initial entry into $cust_d_file:
+
+  perl -MYAML::Syck=DumpFile -e 'DumpFile("$cust_d_file", {"/dev/sda"=>"ata"});'
+
+To dump the current has to the screen:
+
+  perl -MYAML::Syck=LoadFile -MData::Dumper -e 'print Dumper(LoadFile("$cust_d_file"));'
+
+Note: Subsequent entries should be handed added since the above two commands overrite any existing file.
+
+$cust_d_file may also be used to add additional drives that do not have entrieds
+directly in $fstab_file.
+SMARTCHECK_HELP
+                exit;
+            },
+        }
+    );
+
+    require Digest::SHA;
+
+    my %drive_lookup;
+    my $msg      = '';
+    my $didhowdy = 0;
+    my $quiet    = $param->get_param('quiet')  ? 1 : 0;
+    my $nomail   = $param->get_param('nomail') ? 1 : 0;
+    my $debug    = 0;
+
+  FINDSMARTCTL:
+    if ( !-l $bin ) {
+        for my $smartctl (qw(/usr/sbin/smartctl /usr/local/sbin/smartctl)) {
+            if ( -e $smartctl ) {
+
+                #if an existing exists and we still have the old, replace it with a link
+                if ( -e $bin ) {
+                    unlink $bin or die "Could not remove old cPanel smartctl: $!";
+                }
+                system 'ln', '-s', $smartctl, $bin;
+                last;
+            }
+        }
+    }
+
+    my $link = readlink($bin) || 'smartctl';
+
+  DONTRUNIF:
+    {
+        if ( !-e $bin ) {    # or -l or -x instead ???
+            exit;
+        }
+
+        if ( -e $disable_file ) {
+            exit;
+        }
+    }
+
+    my $vrs = get_smart_version( \%smart );
+    $smart{'BINVER'} = ( $vrs ne 'default' ) ? $vrs : 'unknown';
+
+    # unsupported SCSI was here
+
+    my @mounts;
+  FINDDISKS:
+    {
+        Cpanel::SafeRun::Dynamic::livesaferun(
+            'prog'      => ['mount'],
+            'formatter' => sub {
+                my ($line) = @_;
+                push @mounts, $line;
+                return '';
+            },
+        );
+
+        open my $fstab,, '<', $fstab_file or die "Could not open $fstab_file: $!";
+        my @fstab_lines = <$fstab>;
+        close $fstab;
+
+        for my $mount_lines ( @mounts, @fstab_lines ) {
+            next if $mount_lines =~ m{ (?:cdrom | floppy | noauto) }xms;
+            my ($drive) = $mount_lines =~ /^(\/\S+)/;
+            if ($drive) {
+                $drive =~ s{\d+$}{}g;
+                $drive_lookup{$drive} = 1;
+            }
+        }
+
+        # add additional possible entries from custom config
+        for my $dsk ( keys %$custom_d ) {
+            $drive_lookup{$dsk} = 1;
+        }
+    }
+
+  CHECKDISKS:
+    {
+        for my $dsk ( sort keys %drive_lookup ) {
+            next if !grep { $dsk =~ m/\Q$_\E/ } @{ $smart{$vrs}->{'ok_drive_rgx'} };
+            if ( !$didhowdy ) {
+                print qq{Using smartcheck version profile "$vrs" for smartctl ($smart{'BINVER'})\n}
+                  if !$quiet;
+                $didhowdy++;
+            }
+
+            print "Checking $dsk...." unless $quiet;
+            if ( exists $custom_d->{$dsk} && $custom_d->{$dsk} =~ m{^\S+$} ) {
+                print "\n\tAdding custom '-d $custom_d->{$dsk}' flag for $dsk from $cust_d_file\n" if !$quiet;
+                $smart{$vrs}->{'smart_enabled_cmd'} = "-d $custom_d->{$dsk} $smart{$vrs}->{'smart_enabled_cmd'}";
+            }
+
+            if ( is_smart_enabled( \%smart, $vrs, $dsk ) ) {
+                my $error = '';
+                Cpanel::SafeRun::Dynamic::livesaferun(
+                    'prog'      => [ $bin, split( /\s+/, $smart{$vrs}->{'errors_only'} ), $dsk ],
+                    'formatter' => sub {
+                        my ($line) = @_;
+                        $error .= $line;
+                        return '';
+                    },
+                );
+                $error = Cpanel::StringFunc::Trim::ws_trim($error);
+
+                if ($error) {
+                    $msg .= <<"MSG_END";
+                S.M.A.R.T Errors on $dsk
+                From Command: $link $smart{$vrs}->{'errors_only'} $dsk
+                $error
+                ----END $dsk--
+
+MSG_END
+                    print "\nErrors:\n $error\n\n" if !$quiet;
+                }
+                else {
+                    print "Ok\n" if !$quiet;
+                }
+            }
+            else {
+                print "S.M.A.R.T does not appear to be enabled for this device.\n"
+                  if !$quiet;
+            }
+        }
+    }
+
+    if ( $msg && -e $last_sent ) {
+        $msg = '' if Digest::SHA->new(512)->addfile($last_sent)->hexdigest eq Digest::SHA::sha512_hex($msg);
+    }
+
+  ALERT_FAILINGDISKS:
+    {
+        if ( $msg ne '' ) {
+            if ( open my $last_fh, '>', $last_sent ) {
+                print {$last_fh} $msg;
+                close $last_fh;
+            }
+            else {
+                warn "Could not open $last_sent for writing: $!";
+            }
+
+            my $subject = '[cPanel smartcheck] Possible Hard Drive Failure Soon';
+            my $smsg    = <<"SMART_END";
+IMPORTANT: Do not ignore this email! !!!! READ IT THOUROUGHLY !!
+
+Your system's smartctl utility has detected some errors.
+(see the "---- smartctl report --" section below for details).
+You should investigate those errors according to `man smartctl`
+and documentation at $smart{'url'}
+including their mailing list. You can disable this check by doing:
+ `touch /var/cpanel/disablesmartcheck`
+and reenable it at anytime by removing that file.
+If you do find issues you should consider using smartd to
+monitor your drives instead of/along with this script.
+
+This email was generated by the cPanel smartcheck script and is
+reporting errors from your S.M.A.R.T enabled drives with the
+given commands below. It is up to you to investigate further
+and take appropriate steps:
+
+  !!!! Do not submit tickets or bug reports if you get this email.
+    Use the avenues outlined in this email to deal with your
+    system's S.M.A.R.T setup. !!
+
+To begin your troubleshooting you may want to run
+ `/usr/local/cpanel/scripts/smartcheck --nomail` as root via SSH.
+
+---- smartctl report --
+$msg
+SMART_END
+
+            if ( !$nomail ) {
+                require Cpanel::Notify;
+                Cpanel::Notify::notification_class(
+                    'class'            => 'Check::Smart',
+                    'application'      => 'Check::Smart',
+                    'constructor_args' => [
+                        'origin'       => 'smartcheck',
+                        'attach_files' => [ { name => 'SMART-log.txt', content => \$msg } ],
+                    ]
+                );
+            }
+
+            if ($debug) {
+                print "This was emailed unless you used --nomail:\n" . "Subject: $subject\n\n$smsg";
+            }
+        }
+    }
+    return;
+}
+
+run() if !caller();
+
+1;
+
+__END__
+
+=head1 NAME
+
+/scripts/smartcheck
+
+=head1 USAGE
+
+  /scripts/smartcheck [--help] | [--quiet --noemail]
+
+=head1 REQUIRED ARGUMENTS
+
+None
+
+=head1 OPTIONS
+
+=over 4
+
+=item -- help
+
+List the help section, then exit immediately.
+
+=item --quiet
+
+Do not output the normal dialog to STDOUT.
+
+=item --noemail
+
+Do not send an email alert if a disk is found to be failing.
+
+=back
+
+=head1 DESCRIPTION
+
+This utility is a wrapper around smartmontool's smartctl tool. It is run regularly
+as part of C</scripts/maintenance>. It may be run independently from the commandline
+or as part of a more frequently occurring crontab entry.
+
+If hard drives that are SMART enabled show signs of impending failure, this utility
+will generate the necessary warnings necessary to alert the admin of this server.
+
+=head1 DIAGNOSTICS
+
+None
+
+=head1 CONFIGURATION
+
+C</var/cpanel/smartcheck_custom_dash_d.yaml> may be used for two purposes.
+
+First, it may be used to define the type (passed to smartctl's -d flag) for a specific
+drive if smartctl is unable to determine this without help.
+
+Secondly, the configuration file may be used to define SMART enabled hard drives that
+are not directly listed in the system's C</etc/fstab> file.
+
+For more information on -d options available for supporting drives behind RAID
+controllers, please visit:
+
+L<http://www.smartmontools.org/wiki/Supported_RAID-Controllers>
+
+=head1 EXIT STATUS
+
+Exit status is 0 (success) unless an unexpected error occurs, in which case it will
+die (255).
+
+=head1 DEPENDENCIES
+
+This utility requires that a modern version of smartmontools be installed. It has been
+tested to work with versions 5.x and 6.x, although there is legacy support for version
+2.1.
+
+=head1 INCOMPATIBILITIES
+
+None
+
+=head1 SEE ALSO
+
+The help section displayed using the C<--help> option is very handy.
+
+=head1 BUGS AND LIMITATIONS
+
+SMART checks are only made on SMART enabled hard drives that have device names
+beginning with "hd" and "sd".
+
+=head1 LICENSE AND COPYRIGHT
+
+   Copyright 2022 cPanel, L.L.C.

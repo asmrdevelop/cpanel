@@ -1,0 +1,102 @@
+[%
+    USE JSON;
+    USE Whostmgr;
+    WRAPPER 'master_templates/master.tmpl'
+        header = data.initiator_info.name || data.header,
+        breadcrumburl = data.initiator_info.url || '/scripts5/account_copy_input',
+        theme = 'bootstrap',
+        stylesheets = [
+            '/cjt/css/wrapped-select.css',
+            '/css2/newform.css',
+            '/yui/progressbar/assets/progressbar-core.css'
+            '/yui/progressbar/assets/skins/sam/progressbar.css',
+        ],
+        scripts = [
+           '/libraries/handlebars/handlebars.min.js'
+        ];
+    PROCESS '_ajaxapp.tmpl';
+-%]
+<!--[if IE 9]>
+<style type="text/css">
+    .cjt-pagenotice-container .cjt-notice .bd {
+        border-radius: 0;
+    }
+    #content #destination_type {
+        min-width: 250px;
+    }
+
+  </style>
+<![endif]-->
+<style>
+#output {
+    margin-bottom: 15px;
+}
+#error_messages {
+  padding-top: 10px;
+}
+.transfer_item {
+    font-size: 14pt;
+    font-weight: 700;
+    padding-bottom: 5px;
+}
+.return-link {
+  margin-bottom: 15px;
+}
+[% INSERT 'css/transfers/TransferLogRender.css' %]
+</style>
+
+[% SET spinner16 = MagicRevision('/images/loading-arrows-16.gif'); %]
+
+<div id="content" class="yui-skin-sam">
+    <div id="summary"></div>
+    [% PROCESS _transfer_error_messages.tmpl %]
+<!--    <div id="spinner"><img src="[% spinner16 %]"></div> -->
+    <div id="output" class="well"></div>
+</div>
+
+<div class="return-link">
+        <a href="transfer_session?transfer_session_id=[% data.transfer_session_id.uri() %]" id="lnkReturn" class="btn btn-primary">
+            <span class="glyphicon glyphicon-circle-arrow-left"></span>
+            [% locale.maketext("View Session Summary") %]
+        </a>
+</div>
+
+[% PROCESS _transfer_error_script.tmpl %]
+
+<script>
+
+var DOM = YAHOO.util.Dom;
+var EVENT = YAHOO.util.Event;
+var transfer_session_id = [% data.transfer_session_id.json() %];
+var logfile = [% data.log_file.json() %];
+
+EVENT.on('lnkReturn', 'click', function(e){
+    if ( window.opener.location.href.match(/transfer_session/ ) ) {
+      if (e) {
+        EVENT.preventDefault(e);
+      }
+      window.close();
+    }
+}
+);
+
+var start = function() {
+  var mock_tail_window = {
+      'ui': {
+        'bodyElement':DOM.get('output'),
+        'summaryElement':DOM.get('summary'),
+        'setProgressBarPercentage': function() {},
+      }
+  };
+  var masterErrorProcessorObj = new TransferMasterErrorLogProcessor(transfer_session_id, {}, DOM.get('error_messages'),  DOM.get('errorDetailsMessage'), DOM.get('errorDetailsWrapper'));
+  var log_renderer = new TransferLogRender(mock_tail_window);
+  var tail = new TransferLogTail( transfer_session_id, 'child', masterErrorProcessorObj );
+  tail.addLog( logfile, function(msg, logfile) { log_renderer.renderMessage(msg)} );
+};
+
+
+EVENT.on(window,'load', start);
+
+</script>
+
+[% END #wrapper -%]

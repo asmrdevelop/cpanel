@@ -1,0 +1,101 @@
+<section class="list-section">
+
+    <div class="row search-page-container">
+        <div class="col-xs-12 col-sm-12 col-md-6 col-lg-5">
+            <search id="email_table_search" ng-model="meta.filterValue"
+                autocomplete="off"
+                debounce="750"
+                autofocus
+                ng-change="fetch()">
+            </search>
+            <quick-filters title="[% locale.maketext('Filter:') %]" active="meta.quickFilterValue" on-filter-change="deselectAll(); fetch()">
+                <quick-filter-item value="all">[% locale.maketext('All') %]</quick-filter-item>
+                <quick-filter-item value="{{ true }}">[% locale.maketext('Allowed') %]</quick-filter-item>
+                <quick-filter-item value="{{ false }}">[% locale.maketext('Blocked') %]</quick-filter-item>
+            </quick-filters>
+        </div>
+    </div>
+
+    <div class="row action-bar">
+        <div class="col-xs-12">
+            <div class="pull-left flip hidden-xs">
+                <div class="table-action-button-container">
+                    <label class="table-action-button-label table-action-button-sm">
+                        <input type="checkbox"
+                            id="checkAllInList"
+                            title="{{ getSelectAllToggleTitle() }}"
+                            ng-checked="allAreSelected()"
+                            ng-click="toggleSelectAll()">
+                    </label>
+                </div>
+                <button id="btnBlockSelection"
+                    class="btn btn-sm btn-danger"
+                    type="button"
+                    ng-disabled="!selectedAllowed.length"
+                    cp-action="blockCountries(selectedItems)"
+                    title="[% locale.maketext('Block Selected') %]">
+                        <i class="fas fa-ban" aria-hidden="true"></i>
+                    [% locale.maketext('Block Selected') %]
+                </button>
+
+                <button id="btnAllowSelection"
+                    class="btn btn-sm btn-success"
+                    type="button"
+                    ng-disabled="!selectedBlocked.length"
+                    cp-action="unblockCountries(selectedItems)"
+                    title="[% locale.maketext('Allow Selected') %]">
+                        <i class="fas fa-check" aria-hidden="true"></i>
+                    [% locale.maketext("Allow Selected") %]
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <table id="countries_table" class="table table-striped no-animate" ng-class="{'table-overlay':countriesUpdating}">
+        <thead>
+            <tr>
+                <th class="mass_edit_checkbox"></th>
+                <th class="name_column">
+                    <span toggle-sort id="sortName" onsort="fetch" sort-meta="meta" sort-field="name">
+                        [% locale.maketext('Country Name') %]
+                    </span>
+                </th>
+                <th class="status_header">[% locale.maketext('Allowed') %]</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr class="info empty-row" ng-if="loading || items.length === 0" >
+                <td colspan="4">
+                    <i ng-show="loading" class="fas fa-spinner fa-spin"></i>
+                    <span ng-show="loading">[% locale.maketext('Loading countries data …') %]</span>
+                    <span ng-show="!loading && items.length === 0" >[% locale.maketext('The countries list is empty.') %]</span>
+                </td>
+            </tr>
+            <tr ng-repeat="item in filteredList" class="no-animate"
+                ng-class="{success:item.allowed,danger:!item.allowed}">
+                <td class="mass_edit_checkbox no-animate check-column">
+                    <input type="checkbox"
+                        id="{{ :: item.code}}_checked"
+                        class="countries_select_item no-animate"
+                        title="{{getToggleSelectTitle(item)}}"
+                        ng-checked="exists(item.code, selectedItems)"
+                        ng-click="toggleSelect(item.code, selectedItems)">
+                </td>
+                <td class="name-column no-animate"><label for="{{ :: item.code}}_checked">{{ :: item.name}} ({{ :: item.code}})</label></td>
+                <td class="no-animate toggle-column">
+                    <toggle-switch id="toggleAllow_{{ :: item.code}}"
+                           title="{{ getTitleLabel(item.name, item.allowed) }}"
+                           ng-model="item.allowed"
+                           on-toggle="toggleBlocked(item)"
+                           aria-label="{{ getAriaLabel(item.name, item.allowed) }}"
+                           enabled-label=""
+                           disabled-label=""
+                           no-spinner="false"
+                           class="no-animate">
+                    </toggle-switch>
+                </td>
+            </tr>
+        </tbody>
+    </table>
+
+</section>

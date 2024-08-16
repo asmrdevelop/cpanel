@@ -1,0 +1,29 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/rebuilduserssldb                Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+use Cpanel::Locale           ();
+use Cpanel::PwCache          ();
+use Cpanel::SSLStorage::User ();
+use Digest::MD5              ();
+
+my $user = $ARGV[0];
+if ( !length $user ) {
+    $user = Cpanel::PwCache::getusername();
+}
+
+my ( $ssl_ok, $sslstorage ) = Cpanel::SSLStorage::User->new( user => $user );
+die "$sslstorage\n" if !$ssl_ok;
+
+my $locale = Cpanel::Locale->get_handle();
+
+print $locale->maketext('Rebuilding SSL datastore …') . "\n";
+
+my ( $ok, $repair_ar ) = $sslstorage->rebuild_records();
+die "$repair_ar\n" if !$ok;
+
+print $locale->maketext('Done!') . "\n";

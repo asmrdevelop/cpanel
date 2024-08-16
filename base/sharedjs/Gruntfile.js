@@ -1,0 +1,15 @@
+/* global module: false, global: true, __dirname: false */
+
+module.exports = function(grunt) {
+
+    "use strict";
+
+    global.BUILD_ROOT = __dirname;
+
+    grunt.loadNpmTasks("grunt-cpanel-optimizer");
+    grunt.loadNpmTasks("grunt-cpanel-karma");
+
+    grunt.registerTask("default", [
+        "optimize"
+    ]);
+};

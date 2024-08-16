@@ -1,0 +1,16 @@
+
+sub call_cpwrap {
+    my ( $function, @ARGS ) = @_;
+
+    my @JSON_ENCODED_ARGS = map { aggressive_json_safe_encode($_) } @ARGS;
+    my $data = join( ' ', @JSON_ENCODED_ARGS );
+    my $json_template = qq[{"function":"$function","namespace":"Cpanel","version":2,"action":"run","data":"$data","send_data_only":1,"module":"exim"}\r\n\r\n];
+    require Cpanel::Encoder::Exim;
+    return eval { Exim::expand_string( '${readsocket{/usr/local/cpanel/var/cpwrapd.sock}{' . Cpanel::Encoder::Exim::unquoted_encode_string_literal($json_template) . '}{10s}}' ); };
+}
+
+sub aggressive_json_safe_encode {
+    my ($arg) = @_;
+    $arg =~ tr/^a-zA-Z0-9!#\$\-=?^_{}~:.//cd;
+    return $arg;
+}

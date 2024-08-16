@@ -1,0 +1,134 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/fix-listen-on-localhost         Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+use warnings;
+use Cpanel::Usage                   ();
+use Cpanel::Update::Logger          ();
+use Cpanel::NameServer::Utils::BIND ();
+use Cpanel::FileUtils               ();
+
+# not tidy
+my $force   = 0;
+my $verbose = 0;
+my $debug   = 0;
+
+# default value comes from Cpanel::NameServer::Utils::BIND
+my $file = Cpanel::NameServer::Utils::BIND::find_namedconf();
+
+my %opts = (
+    'force'   => \$force,
+    'verbose' => \$verbose,
+    'debug'   => \$debug,
+    'file'    => \$file,
+);
+
+# ==== init process options
+
+Cpanel::Usage::wrap_options( \@ARGV, \&usage, \%opts );
+
+# set logger ( default level to fatal )
+my $level = $verbose ? 'info' : 'fatal';
+$level = 'debug' if $debug;
+my $logger = Cpanel::Update::Logger->new( { 'stdout' => 1, 'log_level' => $level } );
+
+# ==== main code start here
+
+my @files = ($file);
+
+# add extra file if chroot is enable
+my ($chrootdir) = Cpanel::NameServer::Utils::BIND::find_chrootbinddir();
+push( @files, join( $chrootdir, '/', $file ) )
+  if $chrootdir && $chrootdir ne '';
+
+# fix for each file
+my $need_to_reload;
+foreach my $f (@files) {
+    $need_to_reload ||= fix_file( file => $f, force => $force );
+}
+
+# relaod service if possible
+if ($need_to_reload) {
+    require Cpanel::DnsUtils::RNDCQueue::Adder;
+    require Cpanel::ServerTasks;
+    Cpanel::DnsUtils::RNDCQueue::Adder->add("reload");
+    Cpanel::ServerTasks::schedule_task( ['BINDTasks'], 1, 'rndc_queue' );
+}
+
+exit;
+
+### helpers
+
+sub fix_file {
+    my (%opts) = @_;
+
+    $logger->info("file candidate : $file");
+
+    eval { _check_prerequire( \%opts ); };
+    return if ($@);
+    $logger->info("file $file will be fixed");
+
+    # replace safely the file line at this step
+    # listen-on { 127.0.0.1; }; => listen-on { any; };
+    Cpanel::FileUtils::regex_rep_file(
+        $opts{file},
+        {
+            qr{^\s*listen\-on.*{\s*127.0.0.1;\s*};\s*$} => q{    listen-on { any; }; /*      updated by cPanel*/\n},
+        }
+    );
+
+    1;
+}
+
+sub _check_prerequire {
+    my ($opts) = @_;
+
+    my $file = $opts->{file};
+
+    # do not apply force on these set of prerequires
+    _die_and_next("No file defined")            unless defined $file;
+    _die_and_next("File '$file' doesn't exist") unless -e $file;
+
+    # these ones can be disables using force option
+    return if $opts->{force};
+
+    # basic prerequire to avoid to touch file if not needed
+    system("grep listen-on $file | grep -v '//' | grep 127.0.0.1 >/dev/null");
+    _die_and_next("cannot find listen-on 127.0.0.1") unless $? == 0;
+}
+
+sub _die_and_next {
+    my $msg = shift || 'Unknown error';
+    $logger->error($msg);
+    die($msg);
+}
+
+sub usage {
+    my $prog = $0;
+    $prog =~ s{^.+/(.+)$}{$1};
+    print <<EOF;
+$prog [options] [ -f FILE ]
+
+This script will convert the default listen-on entry in named.conf from
+    listen-on { 127.0.0.1; };
+to a more widely entry
+    listen-on { any; };
+
+Only works on IPv4.
+
+Parameters:
+    --file=FILE, -f FILE - you can specify a FILE default one will be /etc/namedb/named.conf
+
+Modifiers Flags:
+
+    --force - will update the file without checking any conditions
+    --verbose - display some friendly verbose messages
+    --debug - display more messages
+    --help - dislay this help message and exit
+EOF
+    exit;
+}

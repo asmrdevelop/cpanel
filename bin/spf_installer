@@ -1,0 +1,115 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - bin/spf_installer                       Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+use strict;
+use warnings;
+
+use Cpanel::SPF                 ();
+use Cpanel::AcctUtils::Account  ();
+use Cpanel::Config::CpUserGuard ();
+
+# Since SPF mechanisms can be prefixed with + or -, they can be interpreted as
+# options and extracted from the arguments by Getopt::Long::GetOptions*().
+# Configure Getopt::Long so these values pass through and remain in the args.
+# Additionally, require the full option to avoid accidentally interpreting a
+# mechanism as the short version of an option.
+use Getopt::Long qw(:config pass_through no_auto_abbrev);
+
+use strict;
+
+exit _main(@ARGV) unless caller;
+
+sub _main {
+    my (@args) = @_;
+
+    Getopt::Long::GetOptionsFromArray(
+        \@args,
+        'help|usage' => \my $printHelp,
+    );
+
+    if ($printHelp) {
+        printHelp();
+        return 0;
+    }
+
+    my $user = $args[0];
+
+    if ( !length $user ) {
+        print qq{Error: You must provide a user name.\n\n};
+        printHelp();
+        return 1;
+    }
+    elsif ( $user eq 'system' ) {
+        print qq{Error: You cannot setup SPF for the “system” user.\n\n};
+        printHelp();
+        return 1;
+    }
+    elsif ( !Cpanel::AcctUtils::Account::accountexists($user) ) {
+        print qq{Error: User “$user” does not exist.\n\n};
+        printHelp();
+        return 1;
+    }
+
+    my $cpuser_guard = Cpanel::Config::CpUserGuard->new($user);
+    my $cpuser_data  = $cpuser_guard->{'data'};
+    $cpuser_data->{'HASSPF'} = 1;
+    $cpuser_guard->save();
+
+    my ( $status, $msg ) = Cpanel::SPF::setup_spf( 'user' => $user, 'spf_keys' => $args[1], 'is_complete' => $args[2], 'overwrite' => $args[3], 'preserve' => $args[4] );
+    unless ($status) {
+        $msg ||= 'Failed to set up SPF for this user.';
+        print STDERR "$msg\n";
+        return 1;
+    }
+
+    return 0;
+}
+
+sub printHelp {
+    print <<HELP;
+Usage: $0 <user> [policy [is-complete [overwrite [preserve]]]]
+
+Installs an SPF policy in TXT records for the given user's domains.
+
+Note: The following will be prepended to the policy: +a +mx +ip4:<main-IP>.
+
+Options:
+    <user>      User whose domains will receive the SPF record.
+
+    <policy>
+                Comma delimited list of SPF mechanisms to include in the
+                policy, e.g:
+                '+ip4:192.0.2.0/24,-ip4:203.0.113.5,+ip6:2001:db8:1a34::/64'.
+                Default: ""
+
+    <is-complete>
+                Indicates whether the policy represents a complete record,
+                that is, whether it should terminate with "-all".  Use "1"
+                to indicate that it is; otherwise, use "0".  Default: "0"
+
+    <overwrite>
+                Indicates whether all SPF records should be overwritten for
+                the user.  If not, only select records will be replaced; see
+                Overwrite.  Use "1" to indicate that it should; otherwise,
+                use "0".  Default: "0"
+
+    <preserve>
+                Indicates that existing mechanisms should be retained from the
+                current SPF record for the domain.  Use "1" to indicate that
+                they should be kept; otherwise, use "0".  Default: "0"
+
+Overwrite
+
+When this script is run, the zone file for the domain is inspected and the
+first SPF record that is found (generally, the main domain) is recorded.  Any
+other subdomains that have an identical SPF record to this one are replaced.
+If <overwrite> is "1", then all SPF records, regardless of whether their
+content matches the first record, are replaced.
+
+HELP
+    return;
+}

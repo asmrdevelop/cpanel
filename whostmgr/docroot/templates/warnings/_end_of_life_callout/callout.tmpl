@@ -1,0 +1,225 @@
+[%# Displays an obtrusive end-of-life software warning.
+
+    INPUTS:
+    'eol_callout_name' used to store callout display settings in NVDATA, e.g. "mysql55"
+    'eol_software_name' software name to be displayed, e.g. "MySQL 5.5"
+    'eol_date' epoch time for EOL date (will be displayed in user-friendly format), e.g. 1544832000
+    'eol_read_more_link' go link for docs or other relevant info, e.g. "https://go.cpanel.net/mysql55replacement"
+    'eol_read_more_target' target for eol_read_more_link, e.g. "cpblog-mysql55replacement"
+    'eol_upgrade_link' link to UI for upgrades, e.g. cp_security_token _ "/scripts/mysqlupgrade"
+    'eol_survey_link' OPTIONAL. If provided, will be shown in modal + collapsed callout, e.g. "https://www.surveymonkey.com/r/T9GWXB6"
+-%]
+[%
+    USE NVData;
+    USE Resource;
+
+    SET eol_nvdata_key = "eol_callout:" _ eol_callout_name,
+        callout_last_displayed_key = eol_nvdata_key _ ":last_displayed",
+        callout_last_displayed = NVData.get(callout_last_displayed_key),
+        is_survey_visited_key = eol_nvdata_key _ ":is_survey_visited",
+        is_survey_visited = NVData.get(is_survey_visited_key),
+        load_modal = eol_survey_link && is_survey_visited != "true";
+
+    SET eol_stylesheet_url = calculate_mode_css_url( Whostmgr.find_file_url( '/templates/warnings/_end_of_life_callout/callout.css' ), !CPANEL.is_debug_mode_enabled() );
+%]
+[% IF load_modal %]
+    [%
+        SET jquery_url = calculate_mode_js_url( Whostmgr.find_file_url( '/libraries/jquery/current/jquery.js' ), !CPANEL.is_debug_mode_enabled() ),
+            bootstrap_js_url = calculate_mode_js_url( Whostmgr.find_file_url( '/libraries/bootstrap/optimized/js/bootstrap.js' ), !CPANEL.is_debug_mode_enabled() );
+    %]
+[% END %]
+
+<link rel="stylesheet" type="text/css" href="[% eol_stylesheet_url %]" />
+
+<section id="eolCallout" class="eol-callout text-center hide">
+    <img src="[% Whostmgr.find_file_url('images/cp-whm-hose.svg') %]" aria-hidden="true">
+    <p class="eol-callout-title">[% locale.maketext("Uh oh! We noticed a problem with your server.") %]</p>
+    <p class="eol-callout-content">
+        <span>[% locale.maketext("You appear to be running [output,strong,_1], which has reached end of life.", eol_software_name) %]</span>
+        <span>[% locale.maketext("Upgrade now to prevent security and compatibility problems.") %]</span>
+    </p>
+    <div>
+        <a class="btn btn-default eol-callout-btn" href="[% eol_read_more_link %]" target="[% eol_read_more_target %]">
+            <i class="fas fa-external-link-alt" aria-hidden="true"></i> [% locale.maketext("Read More") %]
+        </a>
+        <a class="btn btn-primary eol-callout-btn" href="[% eol_upgrade_link %]">
+            [% locale.maketext("Upgrade Now") %] <i class="fas fa-arrow-end" aria-hidden="true"></i>
+        </a>
+    </div>
+    <div>
+        <span id="calloutCollapseLink" class="eol-callout-dismiss-link">
+            [% locale.maketext("Not Right Now") %]
+        </span>
+    </div>
+</section>
+<!-- Callout collapses into banner when user clicks calloutCollapseLink -->
+<section id="eolBanner" class="hide">
+    <div class="eol-banner">
+        <img id="testimg" src="[% Whostmgr.find_file_url('images/cp-whm-hose.svg') %]" aria-hidden="true">
+        <div class="eol-banner-content">
+            <p>[% locale.maketext("We are concerned that this server is using [output,strong,_1], which reached end of life on [datetime,_2].", eol_software_name, eol_date) %]</p>
+            <div class="eol-banner-actions text-right flip">
+                [% IF eol_survey_link %]
+                <a class="btn btn-default eol-callout-btn eol-survey-link" href="[% eol_survey_link %]" target="cp-eolsurvey">
+                    <i class="fas fa-external-link-alt" aria-hidden="true"></i> [% locale.maketext("[_1] Survey", eol_software_name) %]
+                </a>
+                [% END %]
+                <a class="btn btn-primary eol-callout-btn" href="[% eol_upgrade_link %]">
+                    [% locale.maketext("Upgrade Now") %] <i class="fas fa-arrow-end" aria-hidden="true"></i>
+                </a>
+            </div>
+        </div>
+    </div>
+</section>
+<!-- Modal for user survey. Shown when user clicks calloutCollapseLink, ONLY if survey has never been visited. -->
+[% IF load_modal %]
+<div class="eol-modal close-eol-modal" id="eolSurveyModal" tabindex="-1" role="dialog" aria-labelledby="eolModalLabel" aria-hidden="true">
+  <div class="modal-dialog modal-lg" role="document">
+    <div class="modal-content">
+      <div class="modal-header">
+        <p class="modal-title" id="eolModalLabel">[% locale.maketext("Make Your Voice Heard") %]</p>
+      </div>
+      <div class="modal-body text-center">
+            <p>[% locale.maketext("We are concerned that this server is using [output,strong,_1], which reached end of life on [datetime,_2].", eol_software_name, eol_date) %]</p>
+            <p>[% locale.maketext("Will you complete a 1-minute survey to help us better serve you?") %]</p>
+      </div>
+      <div class="eol-modal-footer text-center">
+        <button type="button" class="btn btn-default eol-callout-btn" data-dismiss="modal">
+            [% locale.maketext("Not Right Now") %]
+        </button>
+        <a id="eolModalPrimaryBtn" class="btn btn-primary eol-callout-btn eol-survey-link" href="[% eol_survey_link %]" target="cp-eolsurvey" tabindex="0">
+            <i class="fas fa-external-link-alt" aria-hidden="true"></i> [% locale.maketext("[_1] Survey", eol_software_name) %]
+        </a>
+      </div>
+    </div>
+  </div>
+</div>
+<script type="text/javascript" src="[% jquery_url %]"></script>
+<script type="text/javascript" src="[% bootstrap_js_url %]"></script>
+[% END %]
+
+<script type="text/javascript">
+    (function() {
+        "use strict";
+        var largeCallout = document.getElementById("eolCallout");
+        var banner = document.getElementById("eolBanner");
+        var modal;
+
+        // If jQuery and Bootstrap are loaded, attempt to initialize survey modal
+        if(typeof jQuery === "function" && typeof $().modal === "function") {
+            modal = $("#eolSurveyModal").modal({show: false});
+        }
+
+        /**
+        * Collapses large EOL callout, records event time to NVData
+        *
+        * @method collapseEOLCallout
+        */
+        function collapseEOLCallout() {
+            hideElement(largeCallout);
+            showElement(banner);
+
+            var isSurveyVisited = "[% is_survey_visited %]";
+            if (isSurveyVisited !== "true" && modal) {
+                modal.modal('show');
+            }
+
+            // Save collapse time, so we do not display large callout again for this user for the next 2 weeks
+            var today = (new Date()).toISOString();
+            setnvdata("[% callout_last_displayed_key %]", today);
+        }
+
+        /**
+        * Sets nvdata
+        *
+        * @method setnvdata
+        * @param {string} key - the nvdata key
+        * @param {string} value - the value for the nvdata key
+        */
+        function setnvdata(key, value) {
+            var data = {
+                "api.version": 1,
+                "personalization": {},
+            };
+            data["personalization"][key] = value;
+
+            fetch(PAGE.token + "/json-api/personalization_set", {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                },
+                body: JSON.stringify(data),
+            });
+        }
+
+        /**
+        * Applies appropriate bootstrap classes to show a DOM element
+        *
+        * @method showElement
+        * @param {HTMLElement} element
+        */
+        function showElement(element) {
+            if(!element || !element.classList) {
+                throw new Error("showElement expects an HTMLElement as parameter but received:", element);
+            }
+            element.classList.remove("hide");
+            element.classList.add("show");
+        }
+
+        /**
+        * Applies appropriate bootstrap classes to hide a DOM element
+        *
+        * @method hideElement
+        * @param {HTMLElement} element
+        */
+        function hideElement(element) {
+            if(!element || !element.classList) {
+                throw new Error("showElement expects an HTMLElement as parameter but received:", element);
+            }
+            element.classList.remove("show");
+            element.classList.add("hide");
+        }
+
+        /**
+        * initialization
+        *
+        * @method init
+        */
+        function init() {
+            var lastCalloutDate = "[% callout_last_displayed %]";
+            // Display either large callout or small banner based on time since last callout
+            if (!lastCalloutDate) {
+                showElement(largeCallout);
+            } else {
+                var timeElapsed = Math.abs(new Date() - new Date(lastCalloutDate));
+                var msDisplayInterval = 1210000000; // 2 weeks
+                // If lastCalloutDate is invalid, fall back to large callout
+                if(isNaN(timeElapsed) || timeElapsed > msDisplayInterval) {
+                    showElement(largeCallout);
+                } else {
+                    showElement(banner);
+                }
+            }
+
+            var calloutCollapseLink = document.getElementById("calloutCollapseLink");
+            if (calloutCollapseLink) {
+                calloutCollapseLink.addEventListener("click", collapseEOLCallout);
+            }
+
+            var surveyLinks = document.querySelectorAll(".eol-survey-link");
+            var recordEOLSurveyClick = function() {
+                setnvdata("[% is_survey_visited_key %]", "true");
+                if (modal) {
+                    modal.modal('hide');
+                }
+            }
+            if (surveyLinks) {
+                surveyLinks.forEach(link => {
+                    link.addEventListener("click", recordEOLSurveyClick);
+                });
+            }
+        }
+
+        init();
+    }());
+</script>

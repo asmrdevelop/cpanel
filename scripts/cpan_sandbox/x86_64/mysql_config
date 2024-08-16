@@ -1,0 +1,14 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+$ENV{'LANG'} = 'C';
+
+my @paths = grep( !/cpan_sandbox/, split( /:/, $ENV{'PATH'} ) );
+foreach my $path (@paths) {
+    if ( -x $path . '/' . 'mysql_config' ) {
+        if ( grep( /--libs/, @ARGV ) && -e '/usr/lib64' ) {
+            print "-L/usr/lib64 ";
+        }
+        exec( $path . '/' . 'mysql_config', @ARGV );
+    }
+}
+die;

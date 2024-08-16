@@ -1,0 +1,97 @@
+[% USE Whostmgr -%]
+[% WRAPPER 'master_templates/master.tmpl' theme="yui"
+breadcrumburl = '/scripts11/fetch_mail_queue'
+scripts = [
+Whostmgr.find_file_url('sharedjs/cometd_optimized.js')
+Whostmgr.find_file_url('sharedjs/yui/yui.cometd_optimized.js')
+]
+;
+-%]
+
+<style>
+.eximtxt { margin:0; }
+.termtxt {
+    font-family:     "Courier New",
+    Courier,
+    monospace;
+}
+</style>
+
+<h3 class="simpleheading">[% actionmsg %]</h3>
+
+<textarea class="termtxt" id="msgs" rows="25" cols="80"></textarea>
+
+<div style="display:none;" id="finished">Complete.</div>
+
+<div id="actionpanel" style="display:none;">
+    <div class="hd" id="statushd">[% actionmsg %]</div>
+    <div class="bd">
+            <div id="status">Connecting...</div>
+    </div>
+    <div class="ft" id="statusft"></div>
+</div>
+
+<script>
+
+var cometd = new YAHOO.util.Cometd;
+var  actionpanel = new YAHOO.widget.Panel("actionpanel", { width:"320px", visible:false, constraintoviewport:true, close:false, fixedcenter:true } );
+
+function read_deliver_messages_mail_queue() {
+    cometd.configure('[% cp_security_token %]/cometd');
+    cometd.handshake();
+    var lastmsgid;
+
+    var this_sub = cometd.subscribe('[% cfg.channel FILTER html %]', function(o) {
+            if (o.complete) {
+                cometd.unsubscribe(this_sub);
+                cometd.disconnect();
+                document.getElementById('finished').style.display='';
+                actionpanel.hide();
+                alert("Process Complete");
+                return;
+            }
+
+            var msgsEl = document.getElementById('msgs');
+
+            var messages = o.data.split("\n");
+            for(var i=0;i<messages.length;i++) {
+                var thismsg = messages[i];
+                var thismatch = thismsg.match(/\s+([A-Za-z0-9]+-[A-Za-z0-9]+-[A-Za-z0-9]+)/);
+                if (thismatch && thismatch[0]) {
+                    lastmsgid = thismatch[0];
+                    document.getElementById('status').innerHTML='[% action %] ' + thismatch[0] + ' <img align="absmiddle" src="/img/yui/rel_interstitial_loading.gif">';
+                } else {
+                    var statusmatch = thismsg.match(/^\s+(.*)/);
+                    if(statusmatch && statusmatch[0] && !statusmatch[0].match(/^\s+cwd=/)) {
+                        document.getElementById('statusft').innerHTML='Previous Message: ' + lastmsgid + ': ' + statusmatch[0];
+                    }
+                }
+            }
+            msgsEl.value += o.data;
+        }
+    );
+
+    document.getElementById('actionpanel').style.display='';
+    actionpanel.render();
+    actionpanel.show();
+
+    setup_request();
+}
+
+function setup_request() {
+    if ( cometd.getStatus() == "connected") {
+        YAHOO.util.Connect.asyncRequest('POST', "[% uri FILTER html %]" , function() {}, 'channel=' + '[% cfg.channel FILTER html %]'  + '&msgids=' + '[% cfg.msgids FILTER html %]' );
+    } else {
+        setTimeout(setup_request,1000);
+    }
+}
+
+YAHOO.util.Event.onDOMReady( read_deliver_messages_mail_queue );
+
+</script>
+
+
+
+[% INCLUDE '_exim_queue_function.tmpl' %]
+
+[% END %]

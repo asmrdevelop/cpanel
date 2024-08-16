@@ -1,0 +1,158 @@
+<div id="{{idPrefix}}_popover_{{position}}"
+    class="upload-popover well">
+    <form id="{{idPrefix}}_saveForm_{{position}}" name="form" novalidate>
+        <div class="section text-dir-left">
+            <button type="button"
+                    id="{{idPrefix}}_btnCloseSavePopup_{{position}}"
+                    class="close text-dir-right flip"
+                    ng-click="actionHandler.cancel()"
+                    tooltip="[% locale.maketext('Close') %]"
+                    aria-label="[% locale.maketext('Close') %]">
+                <span aria-hidden="true" class="fas fa-times"></span>
+            </button>
+            <!-- Form inputs -->
+            <div class="form-group">
+                <div class="row">
+                    <div class="col-xs-12">
+                        <label for="{{idPrefix}}_txtProfileName_{{position}}">
+                            [% locale.maketext("Name") %]
+                        </label>
+                    </div>
+                    <div class="col-xs-12">
+                    </div>
+                </div>
+                <div class="row">
+                    <div class="col-xs-12">
+                        <input type="text" name="txtProfileName" id="{{idPrefix}}_txtProfileName_{{position}}"
+                                auto-focus="show"
+                                required
+                                ng-model="saveAsData.name"
+                                class="form-control">
+                        <span class="help-block">
+                            [% locale.maketext("Required.") %]
+                        </span>
+                    </div>
+                    <div class="col-xs-12">
+                        <ul id="{{idPrefix}}_valProfileName_{{position}}" validation-container field-name="txtProfileName">
+                            <validation-item
+                                field-name="txtProfileName"
+                                validation-name="required">
+                                [% locale.maketext("Profile name is required.") %]
+                            </validation-item>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+            <div class="form-group">
+                <div class="row">
+                    <div class="col-xs-12">
+                        <label for="{{idPrefix}}_txtFilename_{{position}}">
+                            [% locale.maketext("Filename") %]
+                        </label>
+                        <span class="info-block">
+                            [% locale.maketext("Enter the filename without an extension. The system automatically adds the [asis,JSON] extension.") %]
+                        </span>
+                    </div>
+                    <div class="col-xs-12">
+                    </div>
+                </div>
+                <div class="row">
+                    <div class="col-xs-12">
+                        <input type="text" name="txtFilename" id="{{idPrefix}}_txtFilename_{{position}}"
+                                required
+                                ng-model="saveAsData.filename.name"
+                                class="form-control"
+                                ng-change="validateFilenameInput()">
+                        <span class="help-block">
+                            [% locale.maketext("Required.") %]
+                            [% locale.maketext('Filename [output,strong,cannot] be [list_or_quoted,_1].', [".", ".."]) %]
+                            [% locale.maketext('Filename [output,strong,cannot] include the following characters: [list_and,_1]', ["/", "NUL"]) %]
+                        </span>
+                    </div>
+                    <div class="col-xs-12">
+                        <ul id="{{idPrefix}}_valFilename_{{position}}" validation-container field-name="txtFilename">
+                            <validation-item
+                                field-name="txtFilename"
+                                validation-name="required">
+                                [% locale.maketext("Filename is required.") %]
+                            </validation-item>
+                            <validation-item
+                                field-name="txtFilename"
+                                validation-name="invalidFilename">
+                                    <span ng-bind-html="saveAsData.filename.valMsg"></span>
+                            </validation-item>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+            <div class="form-group">
+                <div class="row">
+                    <div class="col-xs-12">
+                        <label for="{{idPrefix}}_txtProfileDesc_{{position}}">
+                            [% locale.maketext('Description') %]
+                        </label>
+                        <span class="info-block">
+                            [% locale.maketext("An optional description field to describe what this profile is about.") %]
+                        </span>
+                    </div>
+                </div>
+                <div class="row">
+                    <div class="col-xs-12">
+                        <input type="text" name="txtProfileDesc" id="{{idPrefix}}_txtProfileDesc_{{position}}"
+                                ng-model="saveAsData.desc"
+                                class="form-control">
+                    </div>
+                </div>
+            </div>
+            <div class="form-group">
+                <div class="row">
+                    <div class="col-xs-12">
+                        <label for="{{idPrefix}}_txtProfileTags_{{position}}">
+                            [% locale.maketext('Tags') %]
+                        </label>
+                        <span class="info-block">
+                            [% locale.maketext("You can add multiple comma-separated (,) tags.") %]
+                        </span>
+                    </div>
+                </div>
+                <div class="row">
+                    <div class="col-xs-12">
+                        <input type="text" name="txtProfileTags" id="{{idPrefix}}_txtProfileTags_{{position}}"
+                                ng-model="saveAsData.tagsAsString"
+                                class="form-control">
+                    </div>
+                </div>
+            </div>
+            <div class="form-group">
+                <div class="row">
+                    <div class="col-xs-12" ng-class="{ 'animate-highlight' : highlightOverwrite }">
+                        <div class="checkbox">
+                            <label>
+                                <input type="checkbox" ng-model="saveAsData.overwrite">
+                                [% locale.maketext("Overwrite an existing profile[comment,checkbox title.]") %]
+                            </label>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <!-- Action button -->
+            <div class="form-group">
+                <button id="{{idPrefix}}_btnSaveProfile_{{position}}"
+                        type="submit"
+                        spinner-id="{{idPrefix}}_spinnerSaveProfile_{{position}}"
+                        tooltip="[% locale.maketext('Save packages to new profile.') %]"
+                        cp-action="actionHandler.saveForm()"
+                        ng-disabled="form.$invalid || !form.$dirty">
+                    {{ saveButtonText }}
+                </button>
+                <button id="{{idPrefix}}_btnCancelStyleUpload_{{position}}"
+                        type="button"
+                        tootltip="Cancel"
+                        class="btn btn-link"
+                        ng-click="actionHandler.cancel()">
+                    [% locale.maketext("Cancel") %]
+                </button>
+            </div>
+        </div>
+    </form>
+</div>

@@ -1,0 +1,30 @@
+[% WRAPPER 'master_templates/master.tmpl'
+    theme="yui"
+    warn_linked_nodes=1
+    app_key='smtp_restrictions' -%]
+<p class='description'>
+[% locale.maketext('This feature prevents users from bypassing the mail server to send mail, a common practice used by spammers.') %]
+<br/>
+[% locale.maketext('It will allow only the [output,acronym,MTA,Mail Transport Agent], [asis,mailman], and [asis,root] to connect to remote [output,acronym,SMTP,Simple Mail Transfer Protocol] servers.') %]
+</p>
+<p class="description">[% locale.maketext('This control is also adjustable in [output,url,_1,Tweak Settings].', cp_security_token _ '/scripts2/tweaksettings') %]</p>
+[% IF data.updated -%]
+<p><strong>[% locale.maketext('This setting has been updated.') %]</strong></p>
+[% ELSIF data.error -%]
+<p>[% locale.maketext('An error occurred attempting to update this setting.') %]</p>
+[% END -%]
+[% button_text = '' %]
+<p>[% IF data.enabled -%]
+    [% button_text = locale.maketext('Disable') %]
+    [% action_value = 'Disable' %]
+    <strong>[% locale.maketext('The [output,acronym,SMTP,Simple Mail Transfer Protocol] restriction is enabled.') %]</strong>
+[% ELSE %]
+    [% button_text = locale.maketext('Enable') %]
+    [% action_value = 'Enable' %]
+    <strong>[% locale.maketext('The [output,acronym,SMTP,Simple Mail Transfer Protocol] restriction is disabled.') %]</strong>
+[%- END %]</p>
+<form action="[% action %]">
+<button type="submit" class="btn-primary">[% button_text %]</button>
+<input type="hidden" name="action" value="[% action_value %]" />
+</form>
+[% END #wrapper -%]

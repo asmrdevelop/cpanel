@@ -1,0 +1,73 @@
+[%#
+Variables passed in:
+
+user          - The username of the user this message is about.
+user_domain   - The domain name of the user this message is about.
+status        - The user's quota status. This can be 'full', 'critical', 'warn'.
+diskused      - The amount of diskspace used by the user in MiB.
+disklimit     - The maximum disk quota for the user in MiB.
+percentused   - The amount of diskspace used by the user's data as a percentage of its limit.
+sent_to_root  - A default boolean flag sent to all templates that indicates if the message was sent to 'root'.
+sent_to_owner - An additional boolean flag that indicates if this message was sent to the account's owner.
+inodesused    - Inodes used
+inodeslimit   - Inodes limit
+inodespercentused - The number of inodes used by the user's data as a percentage of its limit.
+
+For more information about how to customize notification templates, read our documentation at https://go.cpanel.net/notificationtemplates
+
+-%]
+
+[%
+    PROCESS "include/colors.tmpl";
+    PROCESS "include/styles.tmpl";
+
+    WRAPPER 'wrapper/main.html.tmpl';
+
+    NOTICE.email_reason = CPANEL.locale.maketext('Disk quota notification for “[_1]”.', NOTICE.user);
+
+%]
+
+<p>
+    [%
+        IF NOTICE.status == 'full';
+            CPANEL.locale.maketext('The user “[_1]” ([_2]) has reached their disk quota.', NOTICE.user, NOTICE.user_domain);
+        ELSIF NOTICE.status == 'critical';
+            CPANEL.locale.maketext('The user “[_1]” ([_2]) has nearly reached their disk quota.', NOTICE.user, NOTICE.user_domain);
+        ELSE;
+            CPANEL.locale.maketext('The user “[_1]” ([_2]) has almost reached their disk quota.', NOTICE.user, NOTICE.user_domain);
+        END;
+    %]
+</p>
+[% IF NOTICE.disklimit.defined %]
+<p>
+    [%
+      IF NOTICE.disklimit > 0;
+        CPANEL.locale.maketext('The account currently uses [numf,_1]% ([format_bytes,_2]/[format_bytes,_3]) of its disk capacity.', NOTICE.percentused, NOTICE.diskused*1024*1024, NOTICE.disklimit*1024*1024);
+      ELSE;
+        CPANEL.locale.maketext('The account currently uses [format_bytes,_1] of disk capacity.', NOTICE.diskused*1024*1024);
+      END;
+    %]
+</p>
+[% END %]
+[% IF NOTICE.inodeslimit.defined %]
+<p>
+    [%
+      IF NOTICE.inodeslimit > 0;
+        CPANEL.locale.maketext('The account currently uses [numf,_1]% ([numf,_2]/[numf,_3]) of its available files.', NOTICE.inodespercentused, NOTICE.inodesused, NOTICE.inodeslimit);
+      ELSE;
+        CPANEL.locale.maketext('The account currently has [numf,_1] files.', NOTICE.inodesused);
+      END;
+    %]
+</p>
+[% END %]
+<p>
+    [%
+        IF NOTICE.sent_to_root || NOTICE.sent_to_owner;
+            CPANEL.locale.maketext('Remove some files from this account, or increase the account’s disk quota.');
+        ELSE;
+            CPANEL.locale.maketext('Remove some files from this account, or ask the system administrator to increase the account’s disk quota.');
+        END;
+    %]
+</p>
+
+[% END %]

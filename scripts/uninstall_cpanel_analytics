@@ -1,0 +1,68 @@
+#!/usr/local/cpanel/3rdparty/bin/perl
+
+# cpanel - scripts/uninstall_cpanel_analytics      Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+
+package scripts::uninstall_cpanel_analytics;
+
+use strict;
+use warnings;
+
+use Getopt::Long ();
+
+use Cpanel::Plugins ();
+
+__PACKAGE__->run() if !caller();
+
+sub run {
+    if ( $> != 0 ) {
+        die "$0: must run as root\n";
+    }
+
+    my $help;
+
+    Getopt::Long::GetOptionsFromArray(
+        \@ARGV,
+        'help' => \$help,
+      )
+      and ( !@ARGV )
+      or do {
+        usage(1);
+        exit 1;
+      };
+
+    if ($help) {
+        usage();
+        exit;
+    }
+
+    return Cpanel::Plugins::uninstall_plugins('cpanel-analytics');
+}
+
+sub usage {
+    my ($status) = @_;
+
+    my $msg = <<"EOM";
+
+uninstall_cpanel_analytics: uninstall cpanel-analytics plugin
+
+Usage:
+    uninstall_cpanel_analytics [--help]
+
+  Options:
+    --help: print usage and exit
+EOM
+
+    if ($status) {
+        print STDERR $msg;
+    }
+    else {
+        print $msg;
+    }
+
+    return;
+}
+
+1;

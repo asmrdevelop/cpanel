@@ -1,0 +1,79 @@
+[%
+    USE Whostmgr;
+    USE JSON;
+
+    SET stylesheets = CPANEL.is_debug_mode_enabled() ?
+        [ Whostmgr.find_file_url('/templates/gsw/initial_setup/index.css') ]:
+        [ Whostmgr.find_file_url('/templates/gsw/initial_setup/index.min.css') ];
+
+    WRAPPER 'master_templates/master.tmpl'
+        base                  = PAGE_URL,
+        skipbreadcrumb        = 1,
+        skipsupport           = 1,
+        skipheader            = 1,
+        hide_header           = 1,
+        hide_navigation       = 1,
+        hide_license_warnings = 1,
+        stylesheets           = stylesheets,
+        CJT2_EXCLUSIVE        = 0,
+        theme                 = 'bootstrap';
+%]
+
+<div id="content">
+    <div>
+        <div class="product-logo">
+            [% Whostmgr.find_file_and_insert('/images/cpanel_whm_logo.svg') %]
+        </div>
+        <div id="license_purchase_intro" class="license-purchase-intro-container">
+            <h3 class="license-purchase-intro-heading">
+                <i class="fas fa-stopwatch" aria-hidden="true"></i>
+                [% locale.maketext("It’s Time to Purchase a cPanel [output,amp] WHM License") %]
+            </h3>
+
+            <div>
+                <p>[% locale.maketext('It looks like you need a cPanel [output,amp] WHM License to use the product. We will guide you through the different steps of the license purchase process.') %]</p>
+                <p>[% locale.maketext('Use your existing cPanel Store credentials when prompted to log in into the store. If you do not already have a cPanel Store account, you can create one using the [output,strong,Create Account] link on the cPanel Store login page.') %]</p>
+            </div>
+
+
+            <div class="panel panel-default margin-top-40">
+                <div class="panel-body">
+                    <div>
+                        <span class="step-text">
+                            <i class="fas fa-sign-in-alt" aria-hidden="true"></i>
+                            [% locale.maketext('cPanel [output,amp] WHM License') %]
+                        </span>
+                        <a class="btn btn-primary link-button"
+                            id="lnkRedirectToPurchaseLicense"
+                            href="[% cp_security_token %]/scripts12/license_purchase_status/">
+                            [% locale.maketext('Purchase') %] <i class="fas fa-arrow-right" aria-hidden="true"></i>
+                        </a>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="footer text-center">
+            <a class="footer-option" href="/logout" id="cancel-license-purchase">
+                <i class="far fa-times-circle fa-3x" aria-hidden="true"></i>
+                <span>[% locale.maketext('Cancel and Exit') %]</span>
+            </a>
+        </div>
+    </div>
+</div>
+
+<script type="text/javascript">
+(function(){
+    // hide analytics and nps slideouts
+    window.CPANEL.npsSlideoutHiddenPaths = window.CPANEL.npsSlideoutHiddenPaths || [];
+    window.CPANEL.npsSlideoutHiddenPaths.push(
+        /\/initial_setup_wizard1_do(\/|$)/
+    );
+
+    window.CPANEL.analyticsSlideoutHiddenPaths = window.CPANEL.analyticsSlideoutHiddenPaths || [];
+    window.CPANEL.analyticsSlideoutHiddenPaths.push(
+        /\/initial_setup_wizard1_do(\/|$)/
+    );
+})();
+
+</script>
+[% END # WRAPPER %]

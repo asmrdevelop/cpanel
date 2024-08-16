@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+
+# This is slightly inefficient. See https://webpros.atlassian.net/browse/ZC-7054
+
+PYTHON=""
+
+if [ -x /usr/bin/dnf ]; then
+    if [ -x /usr/bin/python3.6 ]; then
+        # they appear to have dnf, now make sure they actually have the libraries
+        if /usr/bin/python3.6 -c 'import dnf' &>/dev/null ; then
+            # C8
+            PYTHON=/usr/bin/python3.6
+        fi
+    fi
+
+    if [ ! "$PYTHON" ]; then
+        if [ -x /usr/bin/python3 ]; then
+            if /usr/bin/python3 -c 'import dnf' &>/dev/null ; then
+                PYTHON=/usr/bin/python3
+            fi
+        fi
+    fi
+fi
+
+if [ ! "$PYTHON" ]; then
+    # C6/C7
+    if [ -x /usr/bin/python2.7 ]; then
+        if /usr/bin/python2.7 -c 'import yum' &>/dev/null ; then
+            PYTHON=/usr/bin/python2.7
+        fi
+    fi
+
+    if [ ! "$PYTHON" ]; then
+        if /usr/bin/python -c 'import yum' &>/dev/null ; then
+            PYTHON=/usr/bin/python
+        fi
+    fi
+
+    if [ ! "$PYTHON" ]; then
+        if /usr/bin/python2 -c 'import yum' &>/dev/null ; then
+            PYTHON=/usr/bin/python2
+        fi
+    fi
+fi
+
+if [ "$PYTHON" ]; then
+    exec $PYTHON "$@"
+else
+    echo "Python cannot import your yum or dnf libraries" >/dev/stderr
+    exit 1;
+fi

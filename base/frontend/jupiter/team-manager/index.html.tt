@@ -1,0 +1,95 @@
+[%
+# base/frontend/jupiter/ng-apps-src/apps/team-manager/src/index.html.tt
+#                                                  Copyright 2022 cPanel, L.L.C.
+#                                                           All rights reserved.
+# copyright@cpanel.net                                         http://cpanel.net
+# This code is subject to the cPanel license. Unauthorized copying is prohibited
+%]
+
+[%
+USE JSON;
+USE ExpVar;
+USE Master;
+USE Email;
+USE CPBranding;
+
+SET CPANEL.CPVAR.dprefix = "../";
+
+SET TEMPLATE_PATH = 'team-manager/';
+SET APP_KEY       = 'team_manager';
+SET ROUTER_PATH = cp_security_token _ breadcrumb_url;
+SET style_sheets  = [];
+SET scripts       = []; # Do not change this name unless it is also changed in the partials below.
+SET email_accounts_app = CPBranding.get_application_from_available_applications(varcache.available_applications, "email_accounts");
+SET ftp_accounts_app = CPBranding.get_application_from_available_applications(varcache.available_applications, "ftp_accounts");
+SET web_disk_app = CPBranding.get_application_from_available_applications(varcache.available_applications, "web_disk");
+SET user_manager_app = CPBranding.get_application_from_available_applications(varcache.available_applications, "user_manager");
+SET team_manager_app = CPBranding.get_application_from_available_applications(varcache.available_applications, "team_manager");
+SET ftp_daemon_info = execute_or_die('Ftp', 'get_ftp_daemon_info', {}).data;
+
+# The following content is inserted by underscore-template-loader's require macro.
+#
+#----------------------------------------------------
+# ∨∨∨ THIS IS GENERATED CODE, DO NOT MODIFY IT ∨∨∨
+#----------------------------------------------------
+#
+# Build webpack css bundle list
+style_sheets.push(TEMPLATE_PATH _ 'vendor.05fc74720adefe33.css');
+style_sheets.push(TEMPLATE_PATH _ 'styles.8730a0a24ca9e88f.css');
+
+# Build webpack javascript bundle list
+scripts.push(TEMPLATE_PATH _ 'runtime.5a04a361dc91054f.js');
+scripts.push(TEMPLATE_PATH _ 'vendor.f4a5e31c77abc89f.js');
+scripts.push(TEMPLATE_PATH _ 'polyfills.21552dea659a8b78.js');
+scripts.push(TEMPLATE_PATH _ 'main.e9f108b647775c88.js');
+
+#
+#----------------------------------------------------
+# ^^^ THIS IS GENERATED CODE, DO NOT MODIFY IT ^^^
+#----------------------------------------------------
+
+WRAPPER '_assets/master.html.tt'
+    app_key = APP_KEY,
+    base = RESOURCE_PATH,
+    include_legacy_stylesheets = 0,
+    include_legacy_scripts = 0,
+    include_cjt = 0,
+    use_master_bootstrap = 1,
+    page_stylesheets = style_sheets,
+    page_scripts = scripts,
+    is_ng = 1;
+%]
+<script>
+    window.PAGE = {
+        base: [% ROUTER_PATH.json() %],
+        userName: [% CPANEL.user.json() %],
+        maxTeamUsers: [% CPANEL.CPDATA.MAX_TEAM_USERS.json() %],
+        emailApp: [% email_accounts_app.json() %],
+        ftpApp: [% ftp_accounts_app.json() %],
+        webDiskApp: [% web_disk_app.json() %],
+        userManagerApp: [% user_manager_app.json() %],
+        deprefix: [% CPANEL.CPVAR.dprefix.json() || '""' %],
+        teamOwnerDomain: [% CPANEL.CPDATA.DNS.json() %],
+        maxEmailQuota: [% CPANEL.CPDATA.MAX_EMAILACCT_QUOTA.json() %],
+        defaultEmailQuota: [% Email.get_user_default_email_quota().html() %],
+        isEmailServiceAvailable: [% ExpVar.expand('$hasexim') ? 1 : 0 %],
+        ftpDaemonInfo: [% ftp_daemon_info.json() %],
+        isWebdiskServiceAvailable: [% ExpVar.expand('$hascpdavd') ? 1 : 0 %],
+    }
+</script>
+
+    [% IF !ExpVar.expand('$has_team_license') %]
+        <meta http-equiv="refresh" content="0;url='[% CPANEL.CPVAR.dprefix %]index.html'"/>
+    [% ELSIF !team_manager_app %]
+        <div class="body-content">
+            <div class="alert alert-danger">
+                <span class="glyphicon glyphicon-remove-sign" aria-hidden="true"></span>
+                <div class="alert-message">
+                    [% locale.maketext('[output,strong,Error:] This feature, “[_1]”, is not enabled on your account. Please contact your hosting provider for access.', 'team_manager') %]
+                </div>
+            </div>
+        </div>
+    [% ELSE %]
+        <cp-team-manager-root></cp-team-manager-root>
+    [% END %]
+[% END %]

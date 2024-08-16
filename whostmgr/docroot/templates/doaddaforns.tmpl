@@ -1,0 +1,30 @@
+[% IF ! end -%]
+[% PROCESS 'master_templates/_defheader.tmpl'
+    header = locale.maketext('Configure Address Records for nameserver “[_1]”.', data.nameserver)
+    statusapp = 'Configuring Address Records for nameserver'
+    status = 'Configuring Address Records for nameserver'
+    inside_frame_or_tab_or_popup = 1
+    theme="yui"
+-%]
+[% ELSE #end -%]
+
+[% IF data.status %]
+[% PROCESS '_setstatusdone.tmpl' -%]
+<div class="okmsg" id="added">
+<p>The following IP addresses have been assigned to the [% data.nameserver.html() %] nameserver:</p>
+<pre>
+    [% data.nsipv4.html() %]
+    [% IF data.nsipv6 %]
+    [% data.nsipv6.html() %]
+    [% END %]
+</pre>
+</div>
+[% ELSE %]
+[% PROCESS '_setstatuserror.tmpl' -%]
+<div class="errormsg" id="notAdded">
+[% data.statusmsg.html() %]
+</div>
+[% END %]
+
+[% PROCESS 'master_templates/_deffooter.tmpl' theme="yui" inside_frame_or_tab_or_popup = 1 -%]
+[% END -%]

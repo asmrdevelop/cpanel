@@ -1,0 +1,120 @@
+[%
+
+USE Whostmgr;
+USE JSON;
+
+SET PAGE_BASE = '/scripts2/listsubdomains/';
+SET PAGE_NAME = Whostmgr.get_page_name_by_url(PAGE_BASE);
+
+WRAPPER 'master_templates/master.tmpl'
+    app_key = 'list_subdomains'
+    breadcrumburl = PAGE_BASE,
+    base =  PAGE_BASE,
+    theme='bootstrap',
+    CJT2_EXCLUSIVE = 1;
+
+PROCESS 'master_templates/cjt2_header_include.tt';
+
+%]
+<div ng-controller="tableCtrl" class="list-container" ng-cloak>
+  <div class="row search-page-container">
+      <div class="col-xs-12 col-sm-12 col-md-4 col-lg-4">
+          <search ng-model="meta.filterValue" ng-change="searchList()"></search>
+      </div>
+      <div class="col-xs-12 col-sm-12 col-md-8 col-lg-8">
+          <div class="pagination-container hidden-xs hidden-sm">
+              <page-size id="pageSize"
+                  allowed-sizes="meta.pageSizes"
+                  total-items="meta.totalItems"
+                  ng-model="meta.pageSize"
+                  show-all="true"
+                  ng-show="showPager"
+                  ng-change="selectPageSize()">
+              </page-size>
+              <uib-pagination id="paginateItems"
+                  total-items="meta.totalItems"
+                  ng-model="meta.currentPage"
+                  max-size="0"
+                  boundary-links="true"
+                  rotate="false"
+                  previous-text="<"
+                  next-text=">"
+                  first-text="<<"
+                  last-text=">>"
+                  items-per-page="meta.pageSize"
+                  ng-show="showPager"
+                  ng-change="selectPage()">
+              </uib-pagination>
+          </div>
+      </div>
+  </div>
+  <div class="row hidden-xs hidden-sm">
+    <div class="col-xs-8">
+    </div>
+    <div class="col-xs-4">
+      <div class="page-stats pull-right">
+        <span class="title">[% locale.maketext('[output,strong,Showing] [_1] - [_2] of [_3] items', '{{ meta.start }}', '{{ meta.limit }}', '{{ meta.totalItems }}') %]</span>
+      </div>
+    </div>
+  </div>
+  <table class="table table-striped responsive-table">
+    <thead>
+      <tr>
+        <th><span toggle-sort sort-meta="meta" sort-field="domain" onSort="sortList">[% locale.maketext('Domain') %]</span></th>
+        <th><span toggle-sort sort-meta="meta" sort-field="user" onSort="sortList">[% locale.maketext('User') %]</span></th>
+        <th><span toggle-sort sort-meta="meta" sort-field="subdomain" onSort="sortList">[% locale.maketext('Subdomain') %]</span></th>
+        <th><span>[% locale.maketext('Addon or Parked Domain') %]</span></th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr ng-repeat="subdomain in filteredList">
+          <td data-title="[% locale.maketext('Domain') %]">
+            <span>{{ subdomain.domain }}</span>
+            <span ng-if="subdomain.parked">([% locale.maketext('Parked') %])</span>
+          </td>
+          <td data-title="[% locale.maketext('User') %]">{{ subdomain.user }}</td>
+          <td data-title="[% locale.maketext('Subdomain') %]">
+            <span>{{ subdomain.subdomain }}</span>
+            <span ng-if="subdomain.user !== 'nobody'">
+                <form action="[% cp_security_token _ '/xfercpanel' %]"
+                    method="post"
+                    class="form-inline-block"
+                    target="_blank"
+                    id="removeForm_{{ subdomain.subdomain }}">
+                    <input type="hidden" name="user" value="{{ subdomain.user }}">
+                    <input type="hidden" name="goto_app" value="Domains_SubDomains">
+                    <button type="submit" id="remove_{{ subdomain.subdomain }}" class="btn btn-link">
+                        <span class="fas fa-trash"></span>
+                        [% locale.maketext('Remove') %]
+                    </button>
+                </form>
+            </span>
+        </td>
+          <td data-title="[% locale.maketext('Addon or Parked Domain') %]">
+            <div ng-repeat="parkeddomain in subdomain.parkeddomains">
+              <div ng-if="parkeddomain">
+                  <span>{{ parkeddomain }}</span>
+                  <form action="[% cp_security_token _ '/scripts2/unpark' %]"
+                      method="post"
+                      class="form-inline-block"
+                      id="unparkForm_{{ parked }}">
+                      <input type="hidden" name="pdomain" value="{{ parkeddomain }}">
+                      <button type="submit" id="unpark_{{ parkeddomain }}" class="btn btn-link">
+                          <span class="fas fa-times"></span>
+                          [% locale.maketext('Unpark') %]
+                      </button>
+                  </form>
+              </div>
+            </div>
+          </td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<script type="text/javascript">
+    var PAGE = PAGE || {};
+    PAGE.domains = [% JSON.stringify(data.domaindata) %];
+    PAGE.searchDomain = '[% data.search.html() %]';
+</script>
+[% END #wrapper -%]

@@ -1,0 +1,102 @@
+[%
+    USE Whostmgr;
+    USE JSON;
+
+    SET PAGE_BASE = base_path;
+    SET PAGE_NAME = Whostmgr.get_page_name_by_url(PAGE_BASE);
+
+    WRAPPER 'master_templates/master.tmpl'
+        header         = locale.makevar(PAGE_NAME),
+        app_key        = data.app_key,
+        breadcrumburl  = PAGE_BASE,
+        base           = PAGE_BASE,
+        CJT2_EXCLUSIVE = 1,
+        theme          = 'bootstrap';
+        extrastyle = '
+.ng-dirty input.ng-dirty.ng-valid:not(.no-validation-border) {
+    border-color: #ccc;
+}
+.ng-dirty input.ng-dirty.ng-valid:not(.no-validation-border):focus {
+    border-color: #66afe9;
+}
+.page-stats {
+    margin-bottom: 20px;
+}
+.panel {
+    margin-bottom: 10px;
+}
+.select-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+}
+.select-list-item {
+    border-top: 1px solid #ddd;
+    padding: 4px 8px;
+}
+.select-list-item:nth-child(odd) {
+    background-color: #f9f9f9;
+}
+';
+%]
+
+<div id="viewContent"
+    ng-controller="listZones"
+    class="ng-cloak section"
+    ng-cloak>
+    <div class="row">
+        <div class="col-xs-12 col-sm-12 col-md-6 col-lg-6">
+            <p id="dnsedithdr" class="description">[% ui.header_text %]</p>
+                <div class="form-group">
+                    <search id="zoneSearchFilter"
+                        ng-model="filterValue"
+                        class="no-validation-border"
+                        ng-change="searchFilterChanged()"></search>
+                </div>
+                <div id="zonechoice" class="form-group panel panel-default" >
+                    <div id="zoneChoiceViewport"
+                        class="panel-body" ui-scroll-viewport style="overflow-anchor: none; overflow-y: auto; display: block; padding:0; height:300px;">
+                        <ul class="select-list">
+                            <li class="select-list-item"
+                                ui-scroll="zone in zonesDatasource"
+                                adapter="uiScrollAdapter"
+                                start-index="0">
+                                <div class="[% ui.is_kill ? 'checkbox' : 'radio' -%]" style="margin:0">
+                                    <label style="display:block;margin:0">
+                                        <input
+                                            ng-model="selectedItems[zone]"
+                                            ng-change="onSelectItem(zone)"
+                                            name="p"
+                                            type="[% ui.is_kill ? 'checkbox' : 'radio' -%]"
+                                            value="{{ :: zone }}">
+                                        <span ng-bind=":: zone"></span>
+                                    </label>
+                                </div>
+                            </li>
+                        </ul>
+                    </div>
+                </div>
+                <p class="page-stats" ng-bind="showingText"></p>
+
+            <form action="[% ui.action %]" name="secform" class="layout-medium">
+                <input type="hidden" name="domainselect" ng-repeat="(key, value) in selectedItems" value="{{key}}" ng-if="isZoneSelected(key)">
+
+                <div id="actionbutton" class="form-group">
+                    <input class="btn btn-primary" type="submit" value="[% ui.button_text %]" id="forward" ng-disabled="isFormDisabled()" />
+                </div>
+
+            </form>
+
+        </div>
+    </div>
+</div>
+
+<script type="text/javascript">
+    var PAGE = window.PAGE || {};
+    PAGE.domains = [% data.dnslist.json() -%];
+    PAGE.multiEnabled = [% ui.is_kill ? 'true' : 'false' %];
+</script>
+
+[% PROCESS 'master_templates/cjt2_header_include.tt' %]
+
+[% END %]
